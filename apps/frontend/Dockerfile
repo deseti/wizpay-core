@@ -16,7 +16,7 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 
 ARG NEXT_PUBLIC_CONTRACT_ADDRESS=
-ARG NEXT_PUBLIC_API_URL=
+ARG NEXT_PUBLIC_API_URL=http://localhost:4000
 ARG NEXT_PUBLIC_BACKEND_API_BASE_URL=
 ARG NEXT_PUBLIC_RPC_URL=
 ARG NEXT_PUBLIC_ARC_TESTNET_RPC_URL=
@@ -50,4 +50,4 @@ COPY --from=builder /app/lib/shims ./lib/shims
 
 EXPOSE 3000
 
-CMD ["npm", "start"]
+CMD ["npm", "run", "start"]

@@ -1,46 +1,55 @@
 services:
+  backend:
+    build: ./apps/backend
+    env_file: .env
+    depends_on:
+      - postgres
+    environment:
+      PORT: 4000
+    ports:
+      - "4000:4000"
+    networks:
+      - wizpay-network
+
   frontend:
     build:
       context: ./apps/frontend
       args:
         DOCKER_BUILD: "true"
         NEXT_PUBLIC_CONTRACT_ADDRESS: ${NEXT_PUBLIC_CONTRACT_ADDRESS}
-        NEXT_PUBLIC_API_URL: ${API_URL}
-        NEXT_PUBLIC_BACKEND_API_BASE_URL: ${API_URL}
-        NEXT_PUBLIC_RPC_URL: ${RPC_URL}
-        NEXT_PUBLIC_ARC_TESTNET_RPC_URL: ${RPC_URL}
+        NEXT_PUBLIC_API_URL: http://localhost:4000
+        NEXT_PUBLIC_BACKEND_API_BASE_URL: http://backend:4000
+        NEXT_PUBLIC_RPC_URL: ${NEXT_PUBLIC_RPC_URL:-${RPC_URL}}
+        NEXT_PUBLIC_ARC_TESTNET_RPC_URL: ${NEXT_PUBLIC_ARC_TESTNET_RPC_URL:-${RPC_URL}}
     env_file: .env
-    environment:
-      NODE_ENV: production
-      PORT: 3000
-      NEXT_PUBLIC_CONTRACT_ADDRESS: ${NEXT_PUBLIC_CONTRACT_ADDRESS}
-      NEXT_PUBLIC_API_URL: ${API_URL}
-      NEXT_PUBLIC_BACKEND_API_BASE_URL: ${API_URL}
-      NEXT_PUBLIC_RPC_URL: ${RPC_URL}
-      NEXT_PUBLIC_ARC_TESTNET_RPC_URL: ${RPC_URL}
-    ports:
-      - "3000:3000"
     depends_on:
       - backend
+    environment:
+      PORT: 3000
+      NEXT_PUBLIC_API_URL: http://localhost:4000
+      NEXT_PUBLIC_BACKEND_API_BASE_URL: http://backend:4000
+    ports:
+      - "3000:3000"
     networks:
       - wizpay-network
 
-  backend:
-    build:
-      context: ./apps/backend-legacy
-    env_file: .env
+  postgres:
+    image: postgres:15
+    restart: always
     environment:
-      NODE_ENV: production
-      PORT: 4000
-      RPC_URL: ${RPC_URL}
-      ARC_RPC_URL: ${RPC_URL}
-      WIZPAY_ADDRESS: ${NEXT_PUBLIC_CONTRACT_ADDRESS}
-      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+      POSTGRES_USER: wizpay
+      POSTGRES_PASSWORD: wizpay
+      POSTGRES_DB: wizpay
     ports:
-      - "4000:4000"
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
     networks:
       - wizpay-network
 
 networks:
   wizpay-network:
     driver: bridge
+
+volumes:
+  postgres_data:

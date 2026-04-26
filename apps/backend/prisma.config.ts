@@ -1,8 +1,7 @@
-import 'dotenv/config';
+import { config as loadEnv } from 'dotenv';
 import { defineConfig } from 'prisma/config';
 
-const defaultDatabaseUrl =
-  'postgresql://postgres:postgres@localhost:5432/wizpay?schema=public';
+loadEnv({ path: '../../.env' });
 
 export default defineConfig({
   schema: 'src/database/schema.prisma',
@@ -10,6 +9,6 @@ export default defineConfig({
     path: 'src/database/migrations',
   },
   datasource: {
-    url: process.env.DATABASE_URL ?? defaultDatabaseUrl,
+    url: process.env.DATABASE_URL ?? '',
   },
 });

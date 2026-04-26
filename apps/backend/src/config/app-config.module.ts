@@ -9,6 +9,7 @@ import { validateEnvironment } from './env.validation';
       isGlobal: true,
       cache: true,
       expandVariables: true,
+      envFilePath: '../../.env',
       load: [configuration],
       validate: validateEnvironment,
     }),

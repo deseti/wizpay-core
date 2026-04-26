@@ -1,5 +1,4 @@
 import {
-  DEFAULT_DATABASE_URL,
   DEFAULT_REDIS_HOST,
   DEFAULT_REDIS_PORT,
 } from './configuration';
@@ -12,10 +11,15 @@ type EnvironmentValues = Record<string, unknown> & {
 
 export function validateEnvironment(config: Record<string, unknown>) {
   const environment = config as EnvironmentValues;
+  const databaseUrl = environment.DATABASE_URL?.trim();
   const redisPort = Number.parseInt(
     environment.REDIS_PORT ?? String(DEFAULT_REDIS_PORT),
     10,
   );
+
+  if (!databaseUrl) {
+    throw new Error('DATABASE_URL is required');
+  }
 
   if (!Number.isInteger(redisPort) || redisPort <= 0) {
     throw new Error('REDIS_PORT must be a positive integer');
@@ -23,8 +27,7 @@ export function validateEnvironment(config: Record<string, unknown>) {
 
   return {
     ...config,
-    DATABASE_URL:
-      environment.DATABASE_URL?.trim() || DEFAULT_DATABASE_URL,
+    DATABASE_URL: databaseUrl,
     REDIS_HOST: environment.REDIS_HOST?.trim() || DEFAULT_REDIS_HOST,
     REDIS_PORT: String(redisPort),
   };
