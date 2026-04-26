@@ -1,13 +1,27 @@
 services:
   backend:
     build: ./apps/backend
-    env_file: .env
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
     environment:
       PORT: 4000
+      DATABASE_URL: postgresql://wizpay:wizpay@postgres:5432/wizpay
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      DOCKER: "true"
     ports:
       - "4000:4000"
+    networks:
+      - wizpay-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: wizpay-redis
+    ports:
+      - "6379:6379"
     networks:
       - wizpay-network
 
@@ -40,6 +54,11 @@ services:
       POSTGRES_USER: wizpay
       POSTGRES_PASSWORD: wizpay
       POSTGRES_DB: wizpay
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wizpay -d wizpay"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
     ports:
       - "5432:5432"
     volumes:
