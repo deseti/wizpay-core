@@ -1,0 +1,30 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Task {
+  id        String    @id @default(uuid()) @db.Uuid
+  type      String
+  status    String
+  payload   Json
+  result    Json?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  logs      TaskLog[]
+}
+
+model TaskLog {
+  id        String   @id @default(uuid()) @db.Uuid
+  taskId    String   @db.Uuid
+  step      String
+  status    String
+  message   String
+  createdAt DateTime @default(now())
+  task      Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@index([taskId])
+}
