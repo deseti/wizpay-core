@@ -622,7 +622,7 @@ function getLongRunningTransferMessage(
 }
 
 export function BridgeScreen() {
-  const { arcWallet, sepoliaWallet } = useCircleWallet();
+  const { arcWallet, sepoliaWallet, createTransferChallenge, executeChallenge, getWalletBalances } = useCircleWallet();
   const { toast } = useToast();
   const restoredTransferRef = useRef(false);
   const normalizedLegacyDefaultRef = useRef(false);
@@ -638,6 +638,7 @@ export function BridgeScreen() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [walletStatusError, setWalletStatusError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isDepositingToTreasury, setIsDepositingToTreasury] = useState(false);
   const [isWalletLoading, setIsWalletLoading] = useState(false);
   const [isWalletBootstrapping, setIsWalletBootstrapping] = useState(false);
   const [isPollingTransfer, setIsPollingTransfer] = useState(false);
@@ -1109,7 +1110,53 @@ export function BridgeScreen() {
     setIsTrackingUnavailable(false);
 
     try {
+      // 1. Fetch user source wallet
+      const userSourceWallet = sourceChain === "ARC-TESTNET" ? arcWallet : sepoliaWallet;
+      
+      if (!userSourceWallet?.id) {
+        throw new Error(`Personal ${sourceOption.label} wallet not connected.`);
+      }
+
+      setIsDepositingToTreasury(true);
+      
+      // 2. Fetch USDC Token ID from user wallet
+      const balances = await getWalletBalances(userSourceWallet.id);
+      const usdcBalance = balances.find((b) => b.symbol === "USDC" || b.tokenAddress?.toLowerCase() === sourceTokenAddress.toLowerCase());
+
+      if (!usdcBalance?.tokenId) {
+         throw new Error(`Could not find USDC token in your personal ${sourceOption.label} wallet. Available tokens: ${balances.map(b => `${b.symbol}=${b.tokenAddress}`).join(", ")}`);
+      }
+
+      if (Number(usdcBalance.amount) < Number(amount)) {
+         throw new Error(`Insufficient personal balance. You only have ${usdcBalance.amount} USDC on ${sourceOption.label}.`);
+      }
+
+      // 3. User deposits to Treasury Wallet
       const referenceId = `BRIDGE-${destinationChain}-${Date.now()}`;
+      toast({
+        title: "Step 1: Deposit",
+        description: `Please approve the transfer of ${amount} USDC to the treasury wallet.`,
+      });
+
+      const challenge = await createTransferChallenge({
+        walletId: userSourceWallet.id,
+        destinationAddress: transferWallet.walletAddress,
+        amounts: [amount.toString()],
+        feeLevel: "MEDIUM",
+        tokenId: usdcBalance.tokenId
+      });
+
+      await executeChallenge(challenge.challengeId);
+      
+      toast({
+         title: "Step 2: Bridge",
+         description: "Deposit requested. Executing bridge optimistically..."
+      });
+      await new Promise(resolve => setTimeout(resolve, 2500));
+      
+      setIsDepositingToTreasury(false);
+
+      // 4. Treasury initiates the actual bridge
       const queuedTransfer = await createCircleTransfer({
         amount,
         blockchain: destinationChain,
@@ -1143,6 +1190,7 @@ export function BridgeScreen() {
       });
     } finally {
       setIsSubmitting(false);
+      setIsDepositingToTreasury(false);
     }
   }
 

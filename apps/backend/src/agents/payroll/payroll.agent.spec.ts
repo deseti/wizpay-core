@@ -9,7 +9,7 @@ describe('PayrollAgent', () => {
   const taskFixture: TaskDetails = {
     id: 'c7e01b44-0569-466d-b521-b4302fdd49d0',
     type: TaskType.PAYROLL,
-    status: TaskStatus.ASSIGNED,
+    status: TaskStatus.IN_PROGRESS, // orchestrator already advanced to in_progress
     payload: {
       recipients: [
         {
@@ -49,7 +49,7 @@ describe('PayrollAgent', () => {
     jest.clearAllMocks();
   });
 
-  it('executes payroll transfers and marks the task as executed', async () => {
+  it('executes payroll transfers and returns the result', async () => {
     circleService.transfer.mockResolvedValue({ txId: 'mock_tx_id' });
 
     await expect(payrollAgent.execute(taskFixture)).resolves.toEqual({
@@ -70,52 +70,47 @@ describe('PayrollAgent', () => {
       ],
     });
 
-    expect(taskService.updateStatus).toHaveBeenNthCalledWith(
-      1,
-      taskFixture.id,
-      TaskStatus.IN_PROGRESS,
-      {
-        step: 'task.in_progress',
-        message: 'Payroll execution started',
-      },
-    );
+    // Agent no longer calls updateStatus — status lifecycle is owned by OrchestratorService
+    expect(taskService.updateStatus).not.toHaveBeenCalled();
+
+    // Agent logs individual transfer steps only
     expect(circleService.transfer).toHaveBeenCalledTimes(2);
     expect(taskService.logStep).toHaveBeenCalledTimes(2);
-    expect(taskService.updateStatus).toHaveBeenNthCalledWith(
-      2,
+    expect(taskService.logStep).toHaveBeenCalledWith(
       taskFixture.id,
-      TaskStatus.EXECUTED,
-      expect.objectContaining({
-        step: 'task.executed',
-        message: 'Payroll execution completed',
-      }),
+      'payroll.transfer',
+      TaskStatus.IN_PROGRESS,
+      expect.stringContaining('0xabc'),
     );
   });
 
-  it('marks the task as failed when a transfer throws', async () => {
+  it('throws when a transfer fails (orchestrator handles status update)', async () => {
     circleService.transfer.mockRejectedValue(new Error('transfer failed'));
 
     await expect(payrollAgent.execute(taskFixture)).rejects.toThrow(
       'transfer failed',
     );
 
-    expect(taskService.updateStatus).toHaveBeenNthCalledWith(
-      1,
-      taskFixture.id,
-      TaskStatus.IN_PROGRESS,
-      {
-        step: 'task.in_progress',
-        message: 'Payroll execution started',
-      },
+    // Agent does NOT update status — that is now OrchestratorService.executeTask()'s job
+    expect(taskService.updateStatus).not.toHaveBeenCalled();
+  });
+
+  it('throws when recipients are missing', async () => {
+    const badTask: TaskDetails = { ...taskFixture, payload: {} };
+
+    await expect(payrollAgent.execute(badTask)).rejects.toThrow(
+      'Payroll task payload must include recipients',
     );
-    expect(taskService.updateStatus).toHaveBeenNthCalledWith(
-      2,
-      taskFixture.id,
-      TaskStatus.FAILED,
-      {
-        step: 'task.failed',
-        message: 'transfer failed',
-      },
+  });
+
+  it('throws when a recipient has invalid fields', async () => {
+    const badTask: TaskDetails = {
+      ...taskFixture,
+      payload: { recipients: [{ to: '0xabc', amount: 'not-a-number', currency: 'USDC' }] },
+    };
+
+    await expect(payrollAgent.execute(badTask)).rejects.toThrow(
+      'Payroll task payload contains an invalid recipient',
     );
   });
 });

@@ -1,17 +1,26 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger } from '@nestjs/common';
+import { AgentRouterService } from '../agents/agent-router.service';
+import { TaskStatus } from '../task/task-status.enum';
+import { TaskType } from '../task/task-type.enum';
+import { AgentExecutionResult } from '../agents/agent.interface';
+import { TaskDetails, TaskPayload } from '../task/task.types';
 import { TASK_QUEUE_MAP } from '../queue/queue.constants';
 import { QueueService } from '../queue/queue.service';
 import { TaskService } from '../task/task.service';
-import { TaskStatus } from '../task/task-status.enum';
-import { TaskType } from '../task/task-type.enum';
-import { TaskDetails, TaskPayload } from '../task/task.types';
 
 @Injectable()
 export class OrchestratorService {
+  private readonly logger = new Logger(OrchestratorService.name);
+
   constructor(
     private readonly taskService: TaskService,
     private readonly queueService: QueueService,
+    private readonly agentRouterService: AgentRouterService,
   ) {}
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Public API — called by HTTP controller
+  // ─────────────────────────────────────────────────────────────────────────────
 
   async handleTask(type: TaskType, payload: TaskPayload): Promise<TaskDetails> {
     const route = TASK_QUEUE_MAP[type];
@@ -45,5 +54,110 @@ export class OrchestratorService {
     }
 
     return this.taskService.getTaskById(task.id);
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Execution entry point — called ONLY by workers
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Execute a previously enqueued task by its ID.
+   *
+   * Idempotency:
+   * - Only tasks with status "assigned" are executed.
+   * - Tasks already "in_progress" or "executed" are skipped silently.
+   * - This makes worker retries safe: re-processing an already-completed task
+   *   is a no-op.
+   *
+   * Flow:
+   *   assigned → in_progress → [agent.execute()] → executed | failed
+   */
+  async executeTask(taskId: string): Promise<AgentExecutionResult | null> {
+    const task = await this.taskService.getTaskById(taskId);
+
+    // ── Idempotency guard ────────────────────────────────────────────────────
+    if (task.status !== TaskStatus.ASSIGNED) {
+      this.logger.warn(
+        `[orchestrator] Skipping task ${taskId} — status is "${task.status}", expected "assigned"`,
+      );
+      return null;
+    }
+
+    this.logger.log(
+      `[orchestrator] Execution started — taskId=${taskId} type=${task.type}`,
+    );
+
+    // ── Mark in-progress ────────────────────────────────────────────────────
+    await this.taskService.updateStatus(taskId, TaskStatus.IN_PROGRESS, {
+      step: 'task.in_progress',
+      message: `Task picked up for execution`,
+    });
+
+    try {
+      // ── Route to agent ──────────────────────────────────────────────────
+      const result = await this.routeToAgent(task);
+
+      // ── Mark executed ───────────────────────────────────────────────────
+      await this.taskService.updateStatus(taskId, TaskStatus.EXECUTED, {
+        step: 'task.executed',
+        message: 'Task execution completed',
+        result,
+      });
+
+      this.logger.log(
+        `[orchestrator] Execution success — taskId=${taskId} type=${task.type}`,
+      );
+
+      return result;
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Task execution failed';
+
+      this.logger.error(
+        `[orchestrator] Execution failed — taskId=${taskId} type=${task.type} error="${message}"`,
+        error instanceof Error ? error.stack : undefined,
+      );
+
+      // ── Mark failed (best-effort, never swallow the original error) ─────
+      try {
+        await this.taskService.updateStatus(taskId, TaskStatus.FAILED, {
+          step: 'task.failed',
+          message,
+        });
+      } catch (statusError) {
+        const fallback =
+          statusError instanceof Error
+            ? statusError.message
+            : 'Unable to update task status to failed';
+
+        this.logger.error(
+          `[orchestrator] Could not update status to failed — taskId=${taskId} reason="${fallback}"`,
+        );
+
+        await this.taskService.logStep(
+          taskId,
+          'task.failed.log',
+          TaskStatus.FAILED,
+          fallback,
+        );
+      }
+
+      // Re-throw so BullMQ registers the job as failed and applies retry policy.
+      throw error;
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Internal routing — agents are NEVER exposed to workers
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  private async routeToAgent(task: TaskDetails): Promise<AgentExecutionResult> {
+    const taskType = task.type as TaskType;
+
+    this.logger.log(
+      `[orchestrator] Routing taskId=${task.id} to agent="${taskType}"`,
+    );
+
+    return this.agentRouterService.execute(taskType, task);
   }
 }

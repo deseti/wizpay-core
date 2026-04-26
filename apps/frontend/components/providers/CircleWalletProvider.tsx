@@ -93,6 +93,7 @@ type CircleWalletTokenBalance = {
   raw: Record<string, unknown>;
   symbol: string | null;
   tokenAddress: string | null;
+  tokenId: string | null;
   updatedAt: string | null;
 };
 
@@ -158,6 +159,9 @@ type CircleWalletContextValue = {
   createContractExecutionChallenge: (
     payload: Record<string, unknown>
   ) => Promise<CircleChallengeHandle>;
+  createTransferChallenge: (
+    payload: Record<string, unknown>
+  ) => Promise<CircleChallengeHandle>;
   createTypedDataChallenge: (
     payload: Record<string, unknown>
   ) => Promise<CircleChallengeHandle>;
@@ -184,6 +188,8 @@ type CircleWalletContextValue = {
 
 const CIRCLE_APP_ID = process.env.NEXT_PUBLIC_CIRCLE_APP_ID ?? "";
 const GOOGLE_CLIENT_ID = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID ?? "";
+// Passkey is disabled when the env var is empty — controls both UI and logic.
+const PASSKEY_ENABLED = Boolean(process.env.NEXT_PUBLIC_CIRCLE_PASSKEY_CLIENT_KEY?.trim());
 const PASSKEY_CONFIG = getCirclePasskeyConfig();
 const APP_ID_COOKIE_KEY = "wizpay.circle.app-id";
 const DEVICE_ID_STORAGE_KEY = "wizpay.circle.device-id";
@@ -498,6 +504,7 @@ function normalizeCircleWalletTokenBalance(
       typeof token?.tokenAddress === "string" && token.tokenAddress
         ? token.tokenAddress
         : null,
+    tokenId: typeof token?.id === "string" && token.id ? token.id : null,
     updatedAt:
       typeof record.updateDate === "string" && record.updateDate
         ? record.updateDate
@@ -875,6 +882,59 @@ function clearCircleOAuthState() {
 }
 
 export function CircleWalletProvider({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
+  // If CIRCLE_APP_ID is not configured, skip SDK initialization entirely.
+  // Google and OTP logins both require Circle SDK, so we render a no-op
+  // context that signals auth is unavailable rather than crashing.
+  if (!CIRCLE_APP_ID) {
+    console.warn(
+      "[CircleWalletProvider] NEXT_PUBLIC_CIRCLE_APP_ID is not set. " +
+      "Auth is disabled. Set it in .env and rebuild the Docker image."
+    );
+    return (
+      <CircleWalletContext.Provider value={DISABLED_CONTEXT_VALUE}>
+        {children}
+      </CircleWalletContext.Provider>
+    );
+  }
+
+  return <CircleWalletProviderInner>{children}</CircleWalletProviderInner>;
+}
+
+const DISABLED_CONTEXT_VALUE: CircleWalletContextValue = {
+  arcWallet: null,
+  authMethod: null,
+  authError: "Circle App ID is not configured. Set NEXT_PUBLIC_CIRCLE_APP_ID and rebuild.",
+  authStatus: null,
+  authenticated: false,
+  closeLogin: () => {},
+  createContractExecutionChallenge: async () => { throw new Error("Auth not configured."); },
+  createTypedDataChallenge: async () => { throw new Error("Auth not configured."); },
+  executeChallenge: async () => { throw new Error("Auth not configured."); },
+  getDevCredentials: () => null,
+  getWalletBalances: async () => [],
+  hasPendingEmailOtp: false,
+  isAuthenticating: false,
+  login: () => {},
+  loginMethodLabel: "Circle",
+  logout: () => {},
+  primaryWallet: null,
+  ready: false,
+  refreshWallets: async () => {},
+  requestEmailOtp: async () => {},
+  requestGoogleLogin: async () => {},
+  requestPasskeyLogin: async () => {},
+  requestPasskeyRegistration: async () => {},
+  sepoliaWallet: null,
+  userEmail: null,
+  verifyEmailOtp: () => {},
+  wallets: [],
+};
+
+function CircleWalletProviderInner({
   children,
 }: {
   children: React.ReactNode;
@@ -1403,6 +1463,35 @@ export function CircleWalletProvider({
     [postW3sAction, session]
   );
 
+  const createTransferChallenge = useCallback(
+    async (payload: Record<string, unknown>) => {
+      if (!session || isPasskeySession(session) || !session.userToken) {
+        throw new Error("Circle session is not available.");
+      }
+
+      const response = await postW3sAction("createTransferChallenge", {
+        userToken: session.userToken,
+        payload,
+      });
+
+      if (!isRecord(response)) {
+        throw new Error("Circle did not return a valid challenge response.");
+      }
+
+      const challengeId = extractChallengeId(response);
+
+      if (!challengeId) {
+        throw new Error("Circle did not return a challenge identifier.");
+      }
+
+      return {
+        challengeId,
+        raw: response,
+      };
+    },
+    [postW3sAction, session]
+  );
+
   const createTypedDataChallenge = useCallback(
     async (payload: Record<string, unknown>) => {
       if (isPasskeySession(session)) {
@@ -1464,7 +1553,7 @@ export function CircleWalletProvider({
   );
 
   const getWalletBalances = useCallback(
-    async (walletId: string) => {
+    async (walletId: string): Promise<CircleWalletTokenBalance[]> => {
       if (isPasskeySession(session)) {
         const runtime = passkeyRuntimeByWalletIdRef.current.get(walletId);
 
@@ -1472,7 +1561,8 @@ export function CircleWalletProvider({
           throw new Error("Passkey wallet session is not ready.");
         }
 
-        return getPasskeyTokenBalances(runtime);
+        const _passkeyBalances = await getPasskeyTokenBalances(runtime);
+        return _passkeyBalances.map(pb => ({ ...pb, tokenId: null })) as CircleWalletTokenBalance[];
       }
 
       if (!session || isPasskeySession(session) || !session.userToken) {
@@ -1638,7 +1728,31 @@ export function CircleWalletProvider({
         }
       } catch (error) {
         if (!cancelled) {
-          handleAuthFailure(error);
+          const message =
+            error instanceof Error ? error.message : "Unknown error";
+
+          // Surface a clear, actionable message when the server-side API key
+          // is missing — this is the most common Docker misconfiguration.
+          if (
+            message.includes("CIRCLE_API_KEY") ||
+            message.includes("createDeviceToken") ||
+            message.includes("Circle action failed")
+          ) {
+            console.error(
+              "[CircleWalletProvider] createDeviceToken failed. " +
+              "Check that CIRCLE_API_KEY is set in root .env and the Docker " +
+              "container was restarted. Also verify http://localhost:3000 is " +
+              "listed in Circle Console → Allowed Origins.",
+              error
+            );
+            setAuthError(
+              "Authentication initialization failed. " +
+              "The server CIRCLE_API_KEY may be missing or the Circle App ID may not " +
+              "allow localhost:3000. Check server logs and Circle Console."
+            );
+          } else {
+            handleAuthFailure(error);
+          }
         }
       }
     }
@@ -1648,7 +1762,7 @@ export function CircleWalletProvider({
     return () => {
       cancelled = true;
     };
-  }, [deviceId, ensureDeviceId, ready]);
+  }, [deviceId, ensureDeviceId, handleAuthFailure, ready]);
 
   useEffect(() => {
     if (!session) {
@@ -2020,6 +2134,7 @@ export function CircleWalletProvider({
       authenticated: Boolean(session),
       closeLogin: () => setIsLoginOpen(false),
       createContractExecutionChallenge,
+      createTransferChallenge,
       createTypedDataChallenge,
       executeChallenge,
       getDevCredentials,
@@ -2055,6 +2170,7 @@ export function CircleWalletProvider({
       authError,
       authStatus,
       createContractExecutionChallenge,
+      createTransferChallenge,
       createTypedDataChallenge,
       executeChallenge,
       getDevCredentials,
@@ -2083,6 +2199,7 @@ export function CircleWalletProvider({
         authError={authError}
         authStatus={authStatus}
         canUseGoogle={Boolean(CIRCLE_APP_ID && GOOGLE_CLIENT_ID)}
+        canUsePasskey={PASSKEY_ENABLED}
         hasPendingEmailOtp={hasPendingEmailOtp}
         isDeviceReady={Boolean(deviceId)}
         isAuthenticating={isAuthenticating}
@@ -2103,6 +2220,7 @@ function CircleWalletLoginDialog({
   authError,
   authStatus,
   canUseGoogle,
+  canUsePasskey,
   hasPendingEmailOtp,
   isDeviceReady,
   isAuthenticating,
@@ -2118,6 +2236,7 @@ function CircleWalletLoginDialog({
   authError: string | null;
   authStatus: string | null;
   canUseGoogle: boolean;
+  canUsePasskey: boolean;
   hasPendingEmailOtp: boolean;
   isDeviceReady: boolean;
   isAuthenticating: boolean;
@@ -2153,13 +2272,15 @@ function CircleWalletLoginDialog({
             Connect Circle Wallet
           </DialogTitle>
           <DialogDescription>
-            Sign in with Circle using passkeys, Google, or email OTP. Passkey
-            sign-in is bound to app.wizpay.xyz and keeps the Circle wallet session on
-            this device.
+            {canUsePasskey
+              ? "Sign in with Circle using passkeys, Google, or email OTP."
+              : "Sign in with Circle using Google or email OTP."}
           </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-5">
+          {/* Passkey section — only rendered when NEXT_PUBLIC_CIRCLE_PASSKEY_CLIENT_KEY is set */}
+          {canUsePasskey && (
           <div className="rounded-2xl border border-border/40 bg-card/40 p-4">
             <div className="mb-3 flex items-center gap-2">
               <Fingerprint className="h-4 w-4 text-primary" />
@@ -2212,6 +2333,7 @@ function CircleWalletLoginDialog({
               </p>
             )}
           </div>
+          )}
 
           <div className="rounded-2xl border border-border/40 bg-card/40 p-4">
             <div className="mb-3 flex items-center gap-2">

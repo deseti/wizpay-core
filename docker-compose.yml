@@ -12,6 +12,8 @@ services:
       REDIS_HOST: redis
       REDIS_PORT: 6379
       DOCKER: "true"
+      CIRCLE_API_KEY: ${CIRCLE_API_KEY}
+      CIRCLE_BASE_URL: ${CIRCLE_BASE_URL}
     ports:
       - "4000:4000"
     networks:
@@ -28,20 +30,43 @@ services:
   frontend:
     build:
       context: ./apps/frontend
+      # ── Build-time args ───────────────────────────────────────────────────
+      # docker-compose auto-loads the root .env file, so ${VAR} here resolves
+      # from .env without any shell export. Values are baked into the Next.js
+      # bundle during `npm run build` in the Dockerfile builder stage.
+      #
+      # To change a value: edit root .env, then rebuild with:
+      #   docker compose down && docker compose up --build
       args:
-        DOCKER_BUILD: "true"
-        NEXT_PUBLIC_CONTRACT_ADDRESS: ${NEXT_PUBLIC_CONTRACT_ADDRESS}
-        NEXT_PUBLIC_API_URL: http://localhost:4000
-        NEXT_PUBLIC_BACKEND_API_BASE_URL: http://backend:4000
-        NEXT_PUBLIC_RPC_URL: ${NEXT_PUBLIC_RPC_URL:-${RPC_URL}}
-        NEXT_PUBLIC_ARC_TESTNET_RPC_URL: ${NEXT_PUBLIC_ARC_TESTNET_RPC_URL:-${RPC_URL}}
-    env_file: .env
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL}
+        NEXT_PUBLIC_BACKEND_API_BASE_URL: ${NEXT_PUBLIC_BACKEND_API_BASE_URL}
+        NEXT_PUBLIC_GOOGLE_CLIENT_ID: ${NEXT_PUBLIC_GOOGLE_CLIENT_ID}
+        NEXT_PUBLIC_CIRCLE_APP_ID: ${NEXT_PUBLIC_CIRCLE_APP_ID}
+        NEXT_PUBLIC_CIRCLE_PASSKEY_CLIENT_KEY: ${NEXT_PUBLIC_CIRCLE_PASSKEY_CLIENT_KEY}
+        NEXT_PUBLIC_CIRCLE_PASSKEY_CLIENT_URL: ${NEXT_PUBLIC_CIRCLE_PASSKEY_CLIENT_URL}
+        NEXT_PUBLIC_RPC_URL: ${NEXT_PUBLIC_RPC_URL}
+        NEXT_PUBLIC_ARC_TESTNET_RPC_URL: ${NEXT_PUBLIC_ARC_TESTNET_RPC_URL}
     depends_on:
       - backend
     environment:
       PORT: 3000
-      NEXT_PUBLIC_API_URL: http://localhost:4000
-      NEXT_PUBLIC_BACKEND_API_BASE_URL: http://backend:4000
+      # ── Server-side runtime vars (Next.js API routes, not bundled) ──────────
+      # IMPORTANT: Add http://localhost:3000 to Circle Console → Allowed Origins
+      CIRCLE_API_KEY: ${CIRCLE_API_KEY}
+      CIRCLE_BASE_URL: ${CIRCLE_BASE_URL}
+      CIRCLE_ENTITY_SECRET: ${CIRCLE_ENTITY_SECRET}
+      CIRCLE_WALLETS_BASE_URL: ${CIRCLE_WALLETS_BASE_URL}
+      CIRCLE_TRANSFER_BLOCKCHAIN: ${CIRCLE_TRANSFER_BLOCKCHAIN}
+      CIRCLE_TRANSFER_FEE_LEVEL: ${CIRCLE_TRANSFER_FEE_LEVEL}
+      CIRCLE_BRIDGE_TRANSFER_SPEED: ${CIRCLE_BRIDGE_TRANSFER_SPEED}
+      CIRCLE_WALLET_ID_ARC: ${CIRCLE_WALLET_ID_ARC}
+      CIRCLE_WALLET_ID_SEPOLIA: ${CIRCLE_WALLET_ID_SEPOLIA}
+      CIRCLE_WALLET_SET_ID_ARC: ${CIRCLE_WALLET_SET_ID_ARC}
+      CIRCLE_WALLET_SET_ID_SEPOLIA: ${CIRCLE_WALLET_SET_ID_SEPOLIA}
+      CIRCLE_WALLET_ADDRESS_ARC: ${CIRCLE_WALLET_ADDRESS_ARC}
+      CIRCLE_WALLET_ADDRESS_SEPOLIA: ${CIRCLE_WALLET_ADDRESS_SEPOLIA}
+      UPSTASH_REDIS_REST_URL: ${UPSTASH_REDIS_REST_URL}
+      UPSTASH_REDIS_REST_TOKEN: ${UPSTASH_REDIS_REST_TOKEN}
     ports:
       - "3000:3000"
     networks:
