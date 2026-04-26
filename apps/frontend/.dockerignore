@@ -1,6 +1,8 @@
 node_modules
 .next
+.next/cache
 .git
+.github
 logs
 *.log
 npm-debug.log*
@@ -9,3 +11,12 @@ yarn-error.log*
 pnpm-debug.log*
 .env
 .env.*
+.env.local
+coverage
+test
+tests
+__tests__
+*.spec.*
+*.test.*
+README.md
+*.md
