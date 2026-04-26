@@ -1,0 +1,35 @@
+import type { Address } from "viem";
+
+const configuredWizPayAddress =
+  process.env.NEXT_PUBLIC_CONTRACT_ADDRESS?.trim() ||
+  process.env.NEXT_PUBLIC_WIZPAY_ADDRESS?.trim();
+
+export const WIZPAY_ADDRESS =
+  (configuredWizPayAddress ||
+    "0x87ACE45582f45cC81AC1E627E875AE84cbd75946") as Address;
+export const LEGACY_WIZPAY_ADDRESS =
+  "0xE89f7c3781Dd24baE53d6ef9Af8a6a174731b4c8" as Address;
+export const WIZPAY_HISTORY_ADDRESSES = [
+  WIZPAY_ADDRESS,
+  LEGACY_WIZPAY_ADDRESS,
+] as const;
+export const WIZPAY_HISTORY_FROM_BLOCK = 35_790_000n;
+
+export const USDC_ADDRESS =
+  "0x3600000000000000000000000000000000000000" as Address;
+export const EURC_ADDRESS =
+  "0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a" as Address;
+export const ETHEREUM_SEPOLIA_USDC_ADDRESS =
+  "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238" as Address;
+export const ETHEREUM_SEPOLIA_EURC_ADDRESS =
+  "0x08210F9170F89Ab7658F0B5E3fF39b0E03C594D4" as Address;
+
+// ── V2 FX (custom StableFXAdapter_V2 vault) ──
+export const STABLE_FX_ADAPTER_V2_ADDRESS =
+  "0x400d3935B904cbdB6B5eb2Fd50E6843f1b0AD8d6" as Address;
+
+// ── Official Arc + Circle StableFX settlement ──
+export const FX_ESCROW_ADDRESS =
+  "0x867650F5eAe8df91445971f14d89fd84F0C9a9f8" as Address;
+export const PERMIT2_ADDRESS =
+  "0x000000000022D473030F116dDEE9F6B43aC78BA3" as Address;

@@ -1,0 +1,46 @@
+services:
+  frontend:
+    build:
+      context: ./apps/frontend
+      args:
+        DOCKER_BUILD: "true"
+        NEXT_PUBLIC_CONTRACT_ADDRESS: ${NEXT_PUBLIC_CONTRACT_ADDRESS}
+        NEXT_PUBLIC_API_URL: ${API_URL}
+        NEXT_PUBLIC_BACKEND_API_BASE_URL: ${API_URL}
+        NEXT_PUBLIC_RPC_URL: ${RPC_URL}
+        NEXT_PUBLIC_ARC_TESTNET_RPC_URL: ${RPC_URL}
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      NEXT_PUBLIC_CONTRACT_ADDRESS: ${NEXT_PUBLIC_CONTRACT_ADDRESS}
+      NEXT_PUBLIC_API_URL: ${API_URL}
+      NEXT_PUBLIC_BACKEND_API_BASE_URL: ${API_URL}
+      NEXT_PUBLIC_RPC_URL: ${RPC_URL}
+      NEXT_PUBLIC_ARC_TESTNET_RPC_URL: ${RPC_URL}
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    networks:
+      - wizpay-network
+
+  backend:
+    build:
+      context: ./apps/backend-legacy
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      PORT: 4000
+      RPC_URL: ${RPC_URL}
+      ARC_RPC_URL: ${RPC_URL}
+      WIZPAY_ADDRESS: ${NEXT_PUBLIC_CONTRACT_ADDRESS}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+    ports:
+      - "4000:4000"
+    networks:
+      - wizpay-network
+
+networks:
+  wizpay-network:
+    driver: bridge

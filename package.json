@@ -1,0 +1,8 @@
+{
+  "name": "wizpay-core",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ]
+}

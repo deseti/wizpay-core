@@ -1,0 +1,8 @@
+{
+  "folders": [
+    { "path": "apps/frontend" },
+    { "path": "apps/backend-legacy" },
+    { "path": "apps/landing" },
+    { "path": "packages/contracts" }
+  ]
+}

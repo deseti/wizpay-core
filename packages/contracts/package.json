@@ -1,0 +1,22 @@
+{
+  "name": "wizpay_router",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Foundry workspace for WizPay contracts",
+  "type": "module",
+  "scripts": {
+    "build": "forge build",
+    "test": "forge test",
+    "deploy": "forge script script/Deploy.s.sol:Deploy --rpc-url ${ARC_TESTNET_RPC_URL} --broadcast",
+    "anvil": "anvil"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {},
+  "dependencies": {
+    "dotenv": "^17.2.3",
+    "ethers": "^6.16.0",
+    "node-fetch": "^3.3.2"
+  }
+}

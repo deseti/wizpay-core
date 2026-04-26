@@ -1,0 +1,9 @@
+FROM ghcr.io/foundry-rs/foundry:stable
+
+WORKDIR /app
+
+COPY . .
+
+RUN forge build
+
+CMD ["forge", "build"]

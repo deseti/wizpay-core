@@ -1,0 +1,23 @@
+{
+  "network": "arc-testnet",
+  "chainId": 5042002,
+  "timestamp": "2026-04-07T07:11:51.262Z",
+  "deployer": "0x32F251fc36A1174901124589EAC2d4E391816F69",
+  "previousWizPay": "0xE89f7c3781Dd24baE53d6ef9Af8a6a174731b4c8",
+  "contracts": {
+    "WizPay": "0x87ACE45582f45cC81AC1E627E875AE84cbd75946",
+    "MockFXEngine": "0xCbaf97B317A9cAAAE27c3d8deD48d845C4064C32",
+    "RealUSDC": "0x3600000000000000000000000000000000000000",
+    "RealEURC": "0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a",
+    "RealUSYC": "0xe9185F0c5F296Ed1797AaE4238D26CCaBEadb86C"
+  },
+  "config": {
+    "feeBps": "10",
+    "feeCollector": "0x32F251fc36A1174901124589EAC2d4E391816F69",
+    "whitelistEnabled": false
+  },
+  "deployment": {
+    "blockNumber": "35914346",
+    "transactionHash": "0xad95784866128ada86330970d5f964c01520525b02a6095224ff1a91776ca5a5"
+  }
+}
