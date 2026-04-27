@@ -3,6 +3,7 @@ import { AgentsModule } from '../agents/agents.module';
 import { QueueModule } from '../queue/queue.module';
 import { TaskModule } from '../task/task.module';
 import { OrchestratorService } from './orchestrator.service';
+import { PayrollInitService } from './payroll-init.service';
 import { TaskController } from './task.controller';
 
 @Module({
@@ -12,7 +13,7 @@ import { TaskController } from './task.controller';
     forwardRef(() => AgentsModule),
   ],
   controllers: [TaskController],
-  providers: [OrchestratorService],
+  providers: [OrchestratorService, PayrollInitService],
   exports: [OrchestratorService],
 })
-export class OrchestratorModule { }
+export class OrchestratorModule {}

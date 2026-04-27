@@ -36,6 +36,7 @@ export function useWizPay(): WizPayState {
     loadNextBatch: state.loadNextBatch,
     recipients: state.recipients,
     pendingBatches: state.pendingBatches,
+    referenceId: state.referenceId,
     refetchAllowance: contract.refetchAllowance,
     setStatusMessage: state.setStatusMessage,
     setErrorMessage: state.setErrorMessage,

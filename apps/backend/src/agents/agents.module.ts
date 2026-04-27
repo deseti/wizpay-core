@@ -21,6 +21,6 @@ import { SwapAgent } from './swap.agent';
     LiquidityAgent,
     AgentRouterService,
   ],
-  exports: [AgentRouterService],
+  exports: [AgentRouterService, PayrollBatchService, PayrollValidationService],
 })
 export class AgentsModule {}

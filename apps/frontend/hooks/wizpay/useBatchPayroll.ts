@@ -2,6 +2,7 @@
 
 import { useCallback, useMemo, useState } from "react";
 
+import { backendFetch } from "@/lib/backend-api";
 import {
   getFriendlyErrorMessage,
   parseAmountToUnits,
@@ -37,7 +38,34 @@ interface UseBatchPayrollOptions {
     batchRecipients?: RecipientDraft[],
     batchReferenceId?: string
   ) => Promise<TransactionActionResult>;
+  referenceId: string;
   totalBatches: number;
+}
+
+interface PayrollInitRecipient {
+  address: string;
+  amount: string;
+  targetToken: TokenSymbol;
+}
+
+interface PayrollInitBatch {
+  index: number;
+  referenceId: string;
+  recipientCount: number;
+  totalAmount: string;
+  recipients: PayrollInitRecipient[];
+}
+
+interface PayrollInitPlan {
+  sourceToken: TokenSymbol;
+  referenceId: string;
+  approvalAmount: string;
+  totals: {
+    totalAmount: string;
+    totalRecipients: number;
+    totalBatches: number;
+  };
+  batches: PayrollInitBatch[];
 }
 
 interface BatchPayrollTotals {
@@ -101,18 +129,13 @@ function calculateTotals(
   return { totalAmount, totalRecipients, totalDistributed };
 }
 
-function getBatchReferenceId(baseReferenceId: string, batchIndex: number) {
-  if (batchIndex === 0) {
-    return baseReferenceId;
-  }
-
-  const matchedSuffix = baseReferenceId.match(/(.*)-(\d+)$/);
-
-  if (matchedSuffix) {
-    return `${matchedSuffix[1]}-${parseInt(matchedSuffix[2], 10) + batchIndex}`;
-  }
-
-  return `${baseReferenceId}-${batchIndex + 1}`;
+function toRecipientDraftBatch(batch: PayrollInitBatch): RecipientDraft[] {
+  return batch.recipients.map((recipient, recipientIndex) => ({
+    id: `backend-${batch.index}-${recipientIndex}`,
+    address: recipient.address,
+    amount: recipient.amount,
+    targetToken: recipient.targetToken,
+  }));
 }
 
 // ─── Hook ───────────────────────────────────────────────────────────
@@ -128,6 +151,7 @@ export function useBatchPayroll({
   loadNextBatch,
   recipients,
   pendingBatches,
+  referenceId,
   refetchAllowance,
   setErrorMessage,
   setStatusMessage,
@@ -167,21 +191,50 @@ export function useBatchPayroll({
     setErrorMessage(null);
 
     try {
+        setProgress({
+          stage: "preparing",
+          label: "Preparing...",
+          currentBatch: 1,
+          totalBatches,
+        });
+        setStatusMessage("Preparing payroll plan on the backend...");
+
+        const initPlan = await backendFetch<PayrollInitPlan>(
+          "/tasks/payroll/init",
+          {
+            method: "POST",
+            body: JSON.stringify({
+              sourceToken: activeToken.symbol,
+              referenceId,
+              recipients: batches.flat().map((recipient) => ({
+                address: recipient.address,
+                amount: recipient.amount,
+                targetToken: recipient.targetToken,
+              })),
+            }),
+          }
+        );
+
+        const plannedBatches = initPlan.batches.map((batch) => ({
+          ...batch,
+          draftRecipients: toRecipientDraftBatch(batch),
+        }));
+        const plannedTotalBatches = initPlan.totals.totalBatches;
+        const plannedTotalRecipients = initPlan.totals.totalRecipients;
+        const totalApprovalAmount = BigInt(initPlan.approvalAmount);
       const nextSubmissionHashes: string[] = [];
-      const referenceSeed = `PAY-${Date.now()}`;
-      const effectiveReferenceId = referenceSeed;
-      const totalApprovalAmount = totals.totalAmount;
+        let nextApprovalHash: string | null = null;
 
       if (totalApprovalAmount > 0n && currentAllowance < totalApprovalAmount) {
         setProgress({
           stage: "preparing",
           label: "Approving...",
           currentBatch: 1,
-          totalBatches,
+            totalBatches: plannedTotalBatches,
         });
 
         setStatusMessage(
-          `Confirm the ${activeToken.symbol} approval in your wallet. This covers ${totals.totalRecipients} recipient${totals.totalRecipients === 1 ? "" : "s"} across ${totalBatches} batch${totalBatches === 1 ? "" : "es"}.`
+            `Confirm the ${activeToken.symbol} approval in your wallet. This covers ${plannedTotalRecipients} recipient${plannedTotalRecipients === 1 ? "" : "s"} across ${plannedTotalBatches} batch${plannedTotalBatches === 1 ? "" : "es"}.`
         );
 
         const approvalResult = await approveBatchAmount(totalApprovalAmount);
@@ -191,12 +244,13 @@ export function useBatchPayroll({
             stage: "error",
             label: "Approval failed",
             currentBatch: 1,
-            totalBatches,
+              totalBatches: plannedTotalBatches,
           });
           return;
         }
 
         if (approvalResult.hash) {
+            nextApprovalHash = approvalResult.hash;
           setApprovalHash(approvalResult.hash);
           setHashes([approvalResult.hash]);
         }
@@ -204,40 +258,39 @@ export function useBatchPayroll({
         await refetchAllowance();
       }
 
-      for (let batchIndex = 0; batchIndex < batches.length; batchIndex += 1) {
-        const batch = batches[batchIndex];
-        const batchReferenceId = getBatchReferenceId(
-          effectiveReferenceId,
-          batchIndex
-        );
+        for (let batchIndex = 0; batchIndex < plannedBatches.length; batchIndex += 1) {
+          const batch = plannedBatches[batchIndex];
 
         setProgress({
           stage: "executing",
           label:
-            totalBatches > 1
-              ? `Batch ${batchIndex + 1}/${totalBatches}...`
+              plannedTotalBatches > 1
+                ? `Batch ${batchIndex + 1}/${plannedTotalBatches}...`
               : "Sending...",
           currentBatch: batchIndex + 1,
-          totalBatches,
+            totalBatches: plannedTotalBatches,
         });
 
         setStatusMessage(
-          totalBatches > 1
-            ? `Confirm payroll batch ${batchIndex + 1} of ${totalBatches} in your wallet.`
+            plannedTotalBatches > 1
+              ? `Confirm payroll batch ${batchIndex + 1} of ${plannedTotalBatches} in your wallet.`
             : "Confirm the payroll batch in your wallet."
         );
 
-        const result = await submitCurrentBatch(batch, batchReferenceId);
+          const result = await submitCurrentBatch(
+            batch.draftRecipients,
+            batch.referenceId
+          );
 
         if (!result.ok) {
           setProgress({
             stage: "error",
             label:
-              totalBatches > 1
+                plannedTotalBatches > 1
                 ? `Batch ${batchIndex + 1} failed`
                 : "Payroll failed",
             currentBatch: batchIndex + 1,
-            totalBatches,
+              totalBatches: plannedTotalBatches,
           });
           return;
         }
@@ -246,16 +299,16 @@ export function useBatchPayroll({
           nextSubmissionHashes.push(result.hash);
         }
 
-        if (batchIndex < batches.length - 1) {
+        if (batchIndex < plannedBatches.length - 1) {
           loadNextBatch();
         }
       }
 
-      const nextHashes = approvalHash
-        ? [approvalHash, ...nextSubmissionHashes]
+      const nextHashes = nextApprovalHash
+        ? [nextApprovalHash, ...nextSubmissionHashes]
         : nextSubmissionHashes;
       const latestHash =
-        nextSubmissionHashes[nextSubmissionHashes.length - 1] ?? approvalHash;
+        nextSubmissionHashes[nextSubmissionHashes.length - 1] ?? nextApprovalHash;
 
       setHashes(nextHashes);
       setSubmissionHashes(nextSubmissionHashes);
@@ -263,13 +316,13 @@ export function useBatchPayroll({
 
       setProgress({
         stage: "success",
-        label: totalBatches > 1 ? "All batches sent" : "Batch sent",
-        currentBatch: totalBatches,
-        totalBatches,
+        label: plannedTotalBatches > 1 ? "All batches sent" : "Batch sent",
+        currentBatch: plannedTotalBatches,
+        totalBatches: plannedTotalBatches,
       });
       setStatusMessage(
-        totalBatches > 1
-          ? `All ${totalBatches} payroll batches were confirmed in the active wallet.`
+        plannedTotalBatches > 1
+          ? `All ${plannedTotalBatches} payroll batches were confirmed in the active wallet.`
           : "Payroll batch confirmed in the active wallet."
       );
       setIsSuccess(true);
@@ -289,19 +342,17 @@ export function useBatchPayroll({
     }
   }, [
     activeToken.symbol,
-    approvalHash,
     approveBatchAmount,
     batches,
     currentAllowance,
     currentBatchNumber,
     loadNextBatch,
+    referenceId,
     refetchAllowance,
     setErrorMessage,
     setStatusMessage,
     submitCurrentBatch,
     totalBatches,
-    totals.totalAmount,
-    totals.totalRecipients,
   ]);
 
   const reset = useCallback(() => {
