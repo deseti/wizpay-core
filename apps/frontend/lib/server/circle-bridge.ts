@@ -10,6 +10,10 @@ import { createPublicClient, createWalletClient, http } from "viem";
 
 import { getRedisClient } from "@/lib/redis";
 import {
+  loadBridgeRecordFromDatabase,
+  saveBridgeRecordToDatabase,
+} from "@/lib/server/bridge-store";
+import {
   CircleTransferError,
   getTransferWallet,
   type CircleTransferBlockchain,
@@ -101,6 +105,7 @@ interface QueuedCircleBridgeTransfer {
 }
 
 const BRIDGE_REDIS_KEY_PREFIX = "bridge:";
+const MIN_BRIDGE_REDIS_TTL_SECONDS = 600;
 const DEFAULT_BRIDGE_REDIS_TTL_SECONDS = 1_800;
 const DEFAULT_BRIDGE_TX_WAIT_TIMEOUT_MS = 600_000;
 const DEFAULT_BRIDGE_RPC_POLLING_INTERVAL_MS = 2_000;
@@ -258,6 +263,16 @@ export async function getCircleBridgeStatus(
       "CIRCLE_BRIDGE_NOT_FOUND"
     );
   }
+
+  const normalizedRecord = normalizeBridgeRecord(record);
+
+  if (hasBridgeRecordChanged(record, normalizedRecord)) {
+    await saveBridgeRecord(normalizedRecord);
+    console.debug("Polling tx:", transferId, "status:", normalizedRecord.status);
+    return normalizedRecord;
+  }
+
+  console.debug("Polling tx:", transferId, "status:", record.status);
 
   return record;
 }
@@ -624,6 +639,8 @@ async function updateBridgeRecord(
 async function getBridgeRecord(
   transferId: string
 ): Promise<CircleBridgeTransferRecord | null> {
+  let redisError: unknown = null;
+
   try {
     const payload = await getBridgeRedisClient().get<
       CircleBridgeTransferRecord | string
@@ -632,24 +649,79 @@ async function getBridgeRecord(
     );
 
     if (!payload) {
-      return null;
-    }
+      redisError = null;
+    } else {
+      const record = deserializeBridgeRecord(payload);
 
-    return deserializeBridgeRecord(payload);
+      await refreshBridgeRedisState(record);
+
+      return record;
+    }
   } catch (error) {
-    throw toBridgeStorageError(error, "load", transferId);
+    redisError = error;
   }
+
+  let databaseError: unknown = null;
+
+  try {
+    const record = await loadBridgeRecordFromDatabase(transferId);
+
+    if (record) {
+      console.debug("Rehydrated bridge tracking from DB", {
+        status: record.status,
+        transferId,
+      });
+
+      await refreshBridgeRedisState(record);
+
+      return record;
+    }
+  } catch (error) {
+    databaseError = error;
+  }
+
+  if (redisError || databaseError) {
+    throw toBridgeStorageError(
+      redisError ?? databaseError,
+      "load",
+      transferId
+    );
+  }
+
+  return null;
 }
 
 async function saveBridgeRecord(record: CircleBridgeTransferRecord) {
+  let databasePersisted = false;
+  let databaseError: unknown = null;
+
   try {
-    await getBridgeRedisClient().set(
-      getBridgeRedisKey(record.transferId),
-      JSON.stringify(record),
-      { ex: getBridgeRedisTtlSeconds() }
-    );
+    databasePersisted = await saveBridgeRecordToDatabase(record);
   } catch (error) {
+    databaseError = error;
+  }
+
+  try {
+    await saveBridgeRecordToRedis(record);
+  } catch (error) {
+    if (databasePersisted) {
+      console.warn("Bridge Redis write failed; DB copy remains available.", {
+        error: error instanceof Error ? error.message : String(error),
+        status: record.status,
+        transferId: record.transferId,
+      });
+      return;
+    }
+
     throw toBridgeStorageError(error, "persist", record.transferId);
+  }
+
+  if (databaseError) {
+    console.warn("Bridge DB write failed; Redis copy remains available.", {
+      error: databaseError instanceof Error ? databaseError.message : String(databaseError),
+      status: record.status,
+      transferId: record.transferId,
+    });
   }
 }
 
@@ -676,10 +748,30 @@ function getBridgeRedisTtlSeconds() {
   );
 
   if (Number.isFinite(configuredTtl) && configuredTtl > 0) {
-    return configuredTtl;
+    return Math.max(configuredTtl, MIN_BRIDGE_REDIS_TTL_SECONDS);
   }
 
   return DEFAULT_BRIDGE_REDIS_TTL_SECONDS;
+}
+
+async function saveBridgeRecordToRedis(record: CircleBridgeTransferRecord) {
+  await getBridgeRedisClient().set(
+    getBridgeRedisKey(record.transferId),
+    JSON.stringify(record),
+    { ex: getBridgeRedisTtlSeconds() }
+  );
+}
+
+async function refreshBridgeRedisState(record: CircleBridgeTransferRecord) {
+  try {
+    await saveBridgeRecordToRedis(record);
+  } catch (error) {
+    console.warn("Bridge Redis TTL refresh failed.", {
+      error: error instanceof Error ? error.message : String(error),
+      status: record.status,
+      transferId: record.transferId,
+    });
+  }
 }
 
 function toBridgeStorageError(
@@ -1210,6 +1302,62 @@ function deriveTransferStatus(steps: CircleBridgeStepRecord[]) {
   }
 
   return "pending" as const;
+}
+
+function normalizeBridgeRecord(record: CircleBridgeTransferRecord) {
+  const allStepsSucceeded =
+    record.steps.length > 0 &&
+    record.steps.every(
+      (step) => step.state === "success" || step.state === "noop"
+    );
+  const hasErroredStep = record.steps.some((step) => step.state === "error");
+
+  const status = allStepsSucceeded
+    ? ("settled" as const)
+    : hasErroredStep
+      ? ("failed" as const)
+      : record.status === "settled" || record.status === "failed"
+        ? record.status
+        : deriveTransferStatus(record.steps);
+
+  const stage =
+    status === "settled"
+      ? "completed"
+      : status === "failed"
+        ? "failed"
+        : getBridgeStageFromSteps(record.steps, record.stage);
+
+  const rawStatus =
+    status === "settled"
+      ? "completed"
+      : status === "failed"
+        ? "failed"
+        : getRawStatusFromSteps(record.steps, record.rawStatus);
+
+  const failedStep = record.steps.find((step) => step.state === "error");
+
+  return {
+    ...record,
+    stage,
+    status,
+    rawStatus,
+    errorReason:
+      status === "failed"
+        ? record.errorReason || failedStep?.errorMessage || "Bridge failed"
+        : null,
+  };
+}
+
+function hasBridgeRecordChanged(
+  current: CircleBridgeTransferRecord,
+  next: CircleBridgeTransferRecord
+) {
+  return (
+    current.stage !== next.stage ||
+    current.status !== next.status ||
+    current.rawStatus !== next.rawStatus ||
+    current.errorReason !== next.errorReason
+  );
 }
 
 function getRawStatusForStep(stepId: CircleBridgeStepId) {

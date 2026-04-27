@@ -97,16 +97,41 @@ export class OrchestratorService {
       // ── Route to agent ──────────────────────────────────────────────────
       const result = await this.routeToAgent(task);
 
-      // ── Mark executed ───────────────────────────────────────────────────
-      await this.taskService.updateStatus(taskId, TaskStatus.EXECUTED, {
-        step: 'task.executed',
-        message: 'Task execution completed',
-        result,
-      });
+      // ── Determine finalization strategy ──────────────────────────────────
+      //
+      // ASYNC tasks (payroll): Agent returns submission results and enqueues
+      //   poll jobs. Task stays in_progress. TransactionPollerService will
+      //   finalize the task (executed/partial/failed) when all txs resolve.
+      //
+      // SYNC tasks (swap, bridge, etc): Agent blocks until completion and
+      //   returns a final result. Task is marked executed immediately.
+      //
+      const isAsyncTask = task.type === TaskType.PAYROLL;
 
-      this.logger.log(
-        `[orchestrator] Execution success — taskId=${taskId} type=${task.type}`,
-      );
+      if (isAsyncTask) {
+        // Store submission result but keep status as in_progress
+        await this.taskService.logStep(
+          taskId,
+          'task.submissions_complete',
+          TaskStatus.IN_PROGRESS,
+          `Agent submitted all transfers. Awaiting confirmations via tx_poll queue.`,
+        );
+
+        this.logger.log(
+          `[orchestrator] Agent submissions complete (async) — taskId=${taskId} type=${task.type}`,
+        );
+      } else {
+        // Synchronous task — mark executed immediately
+        await this.taskService.updateStatus(taskId, TaskStatus.EXECUTED, {
+          step: 'task.executed',
+          message: 'Task execution completed',
+          result,
+        });
+
+        this.logger.log(
+          `[orchestrator] Execution success (sync) — taskId=${taskId} type=${task.type}`,
+        );
+      }
 
       return result;
     } catch (error) {

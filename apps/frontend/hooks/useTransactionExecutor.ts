@@ -1,3 +1,14 @@
+/**
+ * @deprecated This hook is deprecated.
+ *
+ * Transaction execution has been moved to the NestJS backend.
+ * Frontend no longer executes transactions directly via Circle/Viem wallet clients.
+ * Use `useTaskPolling` to submit tasks to `POST /tasks` instead.
+ *
+ * This file is kept for backward compatibility with any non-payroll flows
+ * that may still need client-side wallet interaction (e.g., token approvals
+ * during the transition period).
+ */
 "use client";
 
 import { encodeFunctionData, type Abi, type Address, type Hex } from "viem";

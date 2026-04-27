@@ -1,7 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { isStableFxMode } from "@/lib/fx-config";
+import { useCallback, useMemo, useState } from "react";
 
 import {
   getFriendlyErrorMessage,
@@ -10,6 +9,8 @@ import {
   type TokenSymbol,
 } from "@/lib/wizpay";
 import type { TransactionActionResult } from "@/lib/types";
+
+// ─── Types ──────────────────────────────────────────────────────────
 
 type BatchPayrollStage =
   | "idle"
@@ -23,7 +24,6 @@ interface UseBatchPayrollOptions {
     symbol: TokenSymbol;
     decimals: number;
   };
-  approvalAmount: bigint;
   approveBatchAmount: (amount: bigint) => Promise<TransactionActionResult>;
   currentAllowance: bigint;
   currentBatchNumber: number;
@@ -33,7 +33,10 @@ interface UseBatchPayrollOptions {
   refetchAllowance: () => Promise<unknown>;
   setStatusMessage: (message: string | null) => void;
   setErrorMessage: (message: string | null) => void;
-  submitCurrentBatch: () => Promise<TransactionActionResult>;
+  submitCurrentBatch: (
+    batchRecipients?: RecipientDraft[],
+    batchReferenceId?: string
+  ) => Promise<TransactionActionResult>;
   totalBatches: number;
 }
 
@@ -64,8 +67,7 @@ interface BatchPayrollResult extends BatchPayrollTotals {
   reset: () => void;
 }
 
-const NEXT_BATCH_TIMEOUT_MS = 4000;
-const NEXT_BATCH_POLL_MS = 50;
+// ─── Helpers ────────────────────────────────────────────────────────
 
 function normalizeBatches(
   currentRecipients: RecipientDraft[],
@@ -96,76 +98,30 @@ function calculateTotals(
     }
   }
 
-  return {
-    totalAmount,
-    totalRecipients,
-    totalDistributed,
-  };
+  return { totalAmount, totalRecipients, totalDistributed };
 }
 
-function calculateApprovalRequirementForBatch(
-  batch: RecipientDraft[],
-  activeToken: UseBatchPayrollOptions["activeToken"]
-) {
-  if (isStableFxMode) {
-    return batch.reduce((batchTotal, recipient) => {
-      if (recipient.targetToken === activeToken.symbol) {
-        return batchTotal;
-      }
-
-      return batchTotal + parseAmountToUnits(recipient.amount, activeToken.decimals);
-    }, 0n);
+function getBatchReferenceId(baseReferenceId: string, batchIndex: number) {
+  if (batchIndex === 0) {
+    return baseReferenceId;
   }
 
-  return batch.reduce((batchTotal, recipient) => {
-    return batchTotal + parseAmountToUnits(recipient.amount, activeToken.decimals);
-  }, 0n);
-}
+  const matchedSuffix = baseReferenceId.match(/(.*)-(\d+)$/);
 
-function createIdleProgress(totalBatches: number): BatchPayrollProgress {
-  return {
-    stage: "idle",
-    label: null,
-    currentBatch: 0,
-    totalBatches,
-  };
-}
-
-async function waitForCondition(
-  predicate: () => boolean,
-  timeoutMs: number
-) {
-  const startedAt = Date.now();
-
-  while (Date.now() - startedAt < timeoutMs) {
-    if (predicate()) {
-      return true;
-    }
-
-    await new Promise<void>((resolve) => {
-      window.setTimeout(resolve, NEXT_BATCH_POLL_MS);
-    });
+  if (matchedSuffix) {
+    return `${matchedSuffix[1]}-${parseInt(matchedSuffix[2], 10) + batchIndex}`;
   }
 
-  return false;
+  return `${baseReferenceId}-${batchIndex + 1}`;
 }
 
-function getAllowanceFromRefetchResult(result: unknown) {
-  if (
-    typeof result === "object" &&
-    result !== null &&
-    "data" in result &&
-    typeof result.data === "bigint"
-  ) {
-    return result.data;
-  }
+// ─── Hook ───────────────────────────────────────────────────────────
 
-  return null;
-}
-
+/**
+ * useBatchPayroll — Orchestrate approval + multi-batch payroll client-side.
+ */
 export function useBatchPayroll({
   activeToken,
-  approvalAmount,
   approveBatchAmount,
   currentAllowance,
   currentBatchNumber,
@@ -173,8 +129,8 @@ export function useBatchPayroll({
   recipients,
   pendingBatches,
   refetchAllowance,
-  setStatusMessage,
   setErrorMessage,
+  setStatusMessage,
   submitCurrentBatch,
   totalBatches,
 }: UseBatchPayrollOptions): BatchPayrollResult {
@@ -186,83 +142,19 @@ export function useBatchPayroll({
     () => calculateTotals(batches, activeToken.decimals),
     [activeToken.decimals, batches]
   );
-  const totalApprovalAmount = useMemo(() => {
-    if (isStableFxMode) {
-      return batches.reduce((totalAmount, batch) => {
-        return (
-          totalAmount +
-          batch.reduce((batchTotal, recipient) => {
-            if (recipient.targetToken === activeToken.symbol) {
-              return batchTotal;
-            }
 
-            return (
-              batchTotal +
-              parseAmountToUnits(recipient.amount, activeToken.decimals)
-            );
-          }, 0n)
-        );
-      }, 0n)
-    }
-
-    return totals.totalAmount;
-  }, [activeToken.decimals, activeToken.symbol, batches, totals.totalAmount]);
-  const batchApprovalRequirements = useMemo(
-    () => batches.map((batch) => calculateApprovalRequirementForBatch(batch, activeToken)),
-    [activeToken, batches]
-  );
   const [isRunning, setIsRunning] = useState(false);
   const [isSuccess, setIsSuccess] = useState(false);
-  const [progress, setProgress] = useState<BatchPayrollProgress>(() =>
-    createIdleProgress(totalBatches)
-  );
+  const [progress, setProgress] = useState<BatchPayrollProgress>({
+    stage: "idle",
+    label: null,
+    currentBatch: 0,
+    totalBatches,
+  });
   const [approvalHash, setApprovalHash] = useState<string | null>(null);
   const [lastHash, setLastHash] = useState<string | null>(null);
   const [hashes, setHashes] = useState<string[]>([]);
   const [submissionHashes, setSubmissionHashes] = useState<string[]>([]);
-  const latestStateRef = useRef({
-    approvalAmount,
-    approveBatchAmount,
-    currentAllowance,
-    currentBatchNumber,
-    errorMessage: null as string | null,
-    loadNextBatch,
-    refetchAllowance,
-    submitCurrentBatch,
-    totalApprovalAmount,
-    totalBatches,
-  });
-
-  useEffect(() => {
-    latestStateRef.current = {
-      approvalAmount,
-      approveBatchAmount,
-      currentAllowance,
-      currentBatchNumber,
-      errorMessage: null,
-      loadNextBatch,
-      refetchAllowance,
-      submitCurrentBatch,
-      totalApprovalAmount,
-      totalBatches,
-    };
-  }, [
-    approvalAmount,
-    approveBatchAmount,
-    currentAllowance,
-    currentBatchNumber,
-    loadNextBatch,
-    refetchAllowance,
-    submitCurrentBatch,
-    totalApprovalAmount,
-    totalBatches,
-  ]);
-
-  useEffect(() => {
-    if (!isRunning && !isSuccess) {
-      setProgress(createIdleProgress(totalBatches));
-    }
-  }, [isRunning, isSuccess, totalBatches]);
 
   const execute = useCallback(async () => {
     setIsRunning(true);
@@ -273,193 +165,144 @@ export function useBatchPayroll({
     setSubmissionHashes([]);
     setStatusMessage(null);
     setErrorMessage(null);
-    setProgress({
-      stage: "preparing",
-      label: "Preparing payroll...",
-      currentBatch: latestStateRef.current.currentBatchNumber,
-      totalBatches: latestStateRef.current.totalBatches,
-    });
 
     try {
-      const nextHashes: string[] = [];
       const nextSubmissionHashes: string[] = [];
-      let trackedAllowance = latestStateRef.current.currentAllowance;
-      let batchIndex = 0;
-      const getRemainingApprovalRequirement = (startIndex: number) => {
-        return batchApprovalRequirements
-          .slice(startIndex)
-          .reduce((totalAmount, amount) => totalAmount + amount, 0n);
-      };
-      const needsInitialApproval =
-        latestStateRef.current.totalApprovalAmount > 0n &&
-        trackedAllowance < latestStateRef.current.totalApprovalAmount;
+      const referenceSeed = `PAY-${Date.now()}`;
+      const effectiveReferenceId = referenceSeed;
+      const totalApprovalAmount = totals.totalAmount;
 
-      if (needsInitialApproval) {
+      if (totalApprovalAmount > 0n && currentAllowance < totalApprovalAmount) {
         setProgress({
           stage: "preparing",
-          label: "Approving payroll budget in Circle...",
-          currentBatch: latestStateRef.current.currentBatchNumber,
-          totalBatches: latestStateRef.current.totalBatches,
+          label: "Approving...",
+          currentBatch: 1,
+          totalBatches,
         });
 
-        const approvalResult = await latestStateRef.current.approveBatchAmount(
-          latestStateRef.current.totalApprovalAmount
+        setStatusMessage(
+          `Confirm the ${activeToken.symbol} approval in your wallet. This covers ${totals.totalRecipients} recipient${totals.totalRecipients === 1 ? "" : "s"} across ${totalBatches} batch${totalBatches === 1 ? "" : "es"}.`
         );
+
+        const approvalResult = await approveBatchAmount(totalApprovalAmount);
 
         if (!approvalResult.ok) {
           setProgress({
             stage: "error",
-            label: "Approval did not complete.",
-            currentBatch: latestStateRef.current.currentBatchNumber,
-            totalBatches: latestStateRef.current.totalBatches,
+            label: "Approval failed",
+            currentBatch: 1,
+            totalBatches,
           });
           return;
         }
 
         if (approvalResult.hash) {
-          setApprovalHash((current) => current ?? approvalResult.hash);
-          setLastHash(approvalResult.hash);
-          nextHashes.push(approvalResult.hash);
+          setApprovalHash(approvalResult.hash);
+          setHashes([approvalResult.hash]);
         }
 
-        const refreshedAllowance = await latestStateRef.current.refetchAllowance();
-        trackedAllowance =
-          getAllowanceFromRefetchResult(refreshedAllowance) ??
-          latestStateRef.current.totalApprovalAmount;
+        await refetchAllowance();
       }
 
-      while (true) {
-        const activeBatchNumber = latestStateRef.current.currentBatchNumber;
-        const activeTotalBatches = latestStateRef.current.totalBatches;
-        const activeBatchApprovalRequirement =
-          batchApprovalRequirements[batchIndex] ?? 0n;
+      for (let batchIndex = 0; batchIndex < batches.length; batchIndex += 1) {
+        const batch = batches[batchIndex];
+        const batchReferenceId = getBatchReferenceId(
+          effectiveReferenceId,
+          batchIndex
+        );
 
         setProgress({
           stage: "executing",
-          label: `Settling batch ${activeBatchNumber} of ${activeTotalBatches}...`,
-          currentBatch: activeBatchNumber,
-          totalBatches: activeTotalBatches,
+          label:
+            totalBatches > 1
+              ? `Batch ${batchIndex + 1}/${totalBatches}...`
+              : "Sending...",
+          currentBatch: batchIndex + 1,
+          totalBatches,
         });
 
-        const submitResult = await latestStateRef.current.submitCurrentBatch();
+        setStatusMessage(
+          totalBatches > 1
+            ? `Confirm payroll batch ${batchIndex + 1} of ${totalBatches} in your wallet.`
+            : "Confirm the payroll batch in your wallet."
+        );
 
-        if (!submitResult.ok) {
+        const result = await submitCurrentBatch(batch, batchReferenceId);
+
+        if (!result.ok) {
           setProgress({
             stage: "error",
-            label: `Batch ${activeBatchNumber} did not complete.`,
-            currentBatch: activeBatchNumber,
-            totalBatches: activeTotalBatches,
+            label:
+              totalBatches > 1
+                ? `Batch ${batchIndex + 1} failed`
+                : "Payroll failed",
+            currentBatch: batchIndex + 1,
+            totalBatches,
           });
           return;
         }
 
-        if (submitResult.hash) {
-          setLastHash(submitResult.hash);
-          nextHashes.push(submitResult.hash);
-          nextSubmissionHashes.push(submitResult.hash);
+        if (result.hash) {
+          nextSubmissionHashes.push(result.hash);
         }
 
-        trackedAllowance =
-          trackedAllowance > activeBatchApprovalRequirement
-            ? trackedAllowance - activeBatchApprovalRequirement
-            : 0n;
-
-        if (activeBatchNumber >= activeTotalBatches) {
-          break;
-        }
-
-        latestStateRef.current.loadNextBatch();
-
-        const didAdvance = await waitForCondition(
-          () => latestStateRef.current.currentBatchNumber === activeBatchNumber + 1,
-          NEXT_BATCH_TIMEOUT_MS
-        );
-
-        if (!didAdvance) {
-          throw new Error(
-            "The next payroll batch did not load before the timeout window ended."
-          );
-        }
-
-        batchIndex += 1;
-
-        const refreshedAllowance = await latestStateRef.current.refetchAllowance();
-        trackedAllowance =
-          getAllowanceFromRefetchResult(refreshedAllowance) ?? trackedAllowance;
-
-        const remainingApprovalRequirement = getRemainingApprovalRequirement(batchIndex);
-
-        const needsNextApproval =
-          remainingApprovalRequirement > 0n &&
-          trackedAllowance < remainingApprovalRequirement;
-
-        if (needsNextApproval) {
-          setProgress({
-            stage: "preparing",
-            label: `Refreshing approval for batch ${latestStateRef.current.currentBatchNumber}...`,
-            currentBatch: latestStateRef.current.currentBatchNumber,
-            totalBatches: latestStateRef.current.totalBatches,
-          });
-
-          const approvalResult = await latestStateRef.current.approveBatchAmount(
-            remainingApprovalRequirement
-          );
-
-          if (!approvalResult.ok) {
-            setProgress({
-              stage: "error",
-              label: `Approval for batch ${latestStateRef.current.currentBatchNumber} did not complete.`,
-              currentBatch: latestStateRef.current.currentBatchNumber,
-              totalBatches: latestStateRef.current.totalBatches,
-            });
-            return;
-          }
-
-          if (approvalResult.hash) {
-            setApprovalHash((current) => current ?? approvalResult.hash);
-            setLastHash(approvalResult.hash);
-            nextHashes.push(approvalResult.hash);
-          }
-
-          const nextAllowance = await latestStateRef.current.refetchAllowance();
-          trackedAllowance =
-            getAllowanceFromRefetchResult(nextAllowance) ??
-            remainingApprovalRequirement;
+        if (batchIndex < batches.length - 1) {
+          loadNextBatch();
         }
       }
+
+      const nextHashes = approvalHash
+        ? [approvalHash, ...nextSubmissionHashes]
+        : nextSubmissionHashes;
+      const latestHash =
+        nextSubmissionHashes[nextSubmissionHashes.length - 1] ?? approvalHash;
 
       setHashes(nextHashes);
       setSubmissionHashes(nextSubmissionHashes);
+      setLastHash(latestHash ?? null);
+
       setProgress({
         stage: "success",
-        label:
-          latestStateRef.current.totalBatches > 1
-            ? "All payroll batches settled."
-            : "Payroll batch settled.",
-        currentBatch: latestStateRef.current.totalBatches,
-        totalBatches: latestStateRef.current.totalBatches,
+        label: totalBatches > 1 ? "All batches sent" : "Batch sent",
+        currentBatch: totalBatches,
+        totalBatches,
       });
       setStatusMessage(
-        latestStateRef.current.totalBatches > 1
-          ? "Payroll completed across every prepared batch."
-          : "Payroll completed successfully."
+        totalBatches > 1
+          ? `All ${totalBatches} payroll batches were confirmed in the active wallet.`
+          : "Payroll batch confirmed in the active wallet."
       );
       setIsSuccess(true);
     } catch (error) {
+      const message = getFriendlyErrorMessage(error);
+
       setProgress({
         stage: "error",
-        label: "Payroll stopped before completion.",
-        currentBatch: latestStateRef.current.currentBatchNumber,
-        totalBatches: latestStateRef.current.totalBatches,
+        label: "Payroll failed",
+        currentBatch: currentBatchNumber,
+        totalBatches,
       });
 
-      if (!latestStateRef.current.errorMessage) {
-        setErrorMessage(getFriendlyErrorMessage(error));
-      }
+      setErrorMessage(message);
     } finally {
       setIsRunning(false);
     }
-  }, [batchApprovalRequirements, setErrorMessage, setStatusMessage]);
+  }, [
+    activeToken.symbol,
+    approvalHash,
+    approveBatchAmount,
+    batches,
+    currentAllowance,
+    currentBatchNumber,
+    loadNextBatch,
+    refetchAllowance,
+    setErrorMessage,
+    setStatusMessage,
+    submitCurrentBatch,
+    totalBatches,
+    totals.totalAmount,
+    totals.totalRecipients,
+  ]);
 
   const reset = useCallback(() => {
     setIsRunning(false);
@@ -468,8 +311,13 @@ export function useBatchPayroll({
     setLastHash(null);
     setHashes([]);
     setSubmissionHashes([]);
-    setProgress(createIdleProgress(latestStateRef.current.totalBatches));
-  }, []);
+    setProgress({
+      stage: "idle",
+      label: null,
+      currentBatch: 0,
+      totalBatches,
+    });
+  }, [totalBatches]);
 
   return {
     ...totals,

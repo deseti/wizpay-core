@@ -8,11 +8,22 @@ export class BridgeAgent implements TaskAgent {
   constructor(private readonly blockchainService: BlockchainService) {}
 
   async execute(task: TaskDetails): Promise<AgentExecutionResult> {
-    const execution = await this.blockchainService.prepareBridgeTransfer(task);
+    // TODO: Implement real bridge execution via BlockchainService.
+    // The previous prepareBridgeTransfer() was a placeholder.
+    // When implemented, this will:
+    //   1. Validate bridge parameters (source chain, dest chain, amount)
+    //   2. Call the bridge contract via blockchainService.sendTransaction()
+    //   3. Monitor cross-chain confirmation
 
     return {
       agent: 'bridge',
-      execution,
+      execution: {
+        adapter: 'blockchain',
+        operation: 'bridge_contract_call',
+        taskId: task.id,
+        payload: task.payload,
+        mode: 'placeholder',
+      },
     };
   }
 }

@@ -20,6 +20,7 @@ describe('TaskController (e2e)', () => {
     createdAt: new Date('2026-04-26T00:00:00.000Z'),
     updatedAt: new Date('2026-04-26T00:00:00.000Z'),
     logs: [],
+    transactions: [],
   };
 
   const orchestratorService = {

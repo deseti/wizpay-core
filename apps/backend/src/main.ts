@@ -6,6 +6,10 @@ async function bootstrap() {
   const logger = new Logger('Bootstrap');
   const app = await NestFactory.create(AppModule);
   app.enableShutdownHooks();
+  app.enableCors({
+    origin: ['http://localhost:3000'],
+    credentials: true,
+  });
 
   const port = process.env.PORT ?? 4000;
   await app.listen(port);

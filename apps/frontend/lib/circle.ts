@@ -1,4 +1,10 @@
 /**
+ * @deprecated — Circle API calls are moving to the NestJS backend CircleService.
+ *
+ * This file previously handled Circle StableFX API calls from Next.js API routes.
+ * All Circle API interactions now go through the backend exclusively.
+ * API keys (CIRCLE_API_KEY) must NOT be accessible from frontend code.
+ *
  * Circle StableFX API Client
  *
  * Production client for Circle's institutional FX settlement API.

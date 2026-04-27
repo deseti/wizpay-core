@@ -17,7 +17,7 @@ COPY . .
 # To add a new public var: add ARG + ENV here AND in docker-compose build.args
 # AND in the root .env file.
 ARG NEXT_PUBLIC_API_URL=http://localhost:4000
-ARG NEXT_PUBLIC_BACKEND_API_BASE_URL=http://backend:4000
+ARG NEXT_PUBLIC_BACKEND_API_BASE_URL=http://localhost:4000
 ARG NEXT_PUBLIC_GOOGLE_CLIENT_ID=
 ARG NEXT_PUBLIC_CIRCLE_APP_ID=
 ARG NEXT_PUBLIC_CIRCLE_PASSKEY_CLIENT_KEY=

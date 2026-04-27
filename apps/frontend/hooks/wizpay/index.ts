@@ -26,12 +26,10 @@ export function useWizPay(): WizPayState {
   const contract = useWizPayContract({
     state,
     batchAmount,
-    validRecipientCount,
   });
 
   const batchPayroll = useBatchPayroll({
     activeToken: contract.activeToken,
-    approvalAmount: contract.approvalAmount,
     approveBatchAmount: contract.requestApproval,
     currentAllowance: contract.currentAllowance,
     currentBatchNumber: state.currentBatchNumber,
@@ -66,14 +64,17 @@ export function useWizPay(): WizPayState {
   const smartBatchButtonText = batchPayroll.isRunning
     ? batchPayroll.progress.label ?? "Sending..."
     : "Send";
+  const requiresSmartBatchApproval =
+    batchPayroll.totalAmount > 0n &&
+    contract.currentAllowance < batchPayroll.totalAmount;
   const estimatedSmartBatchConfirmations =
-    state.totalBatches + (contract.needsApproval ? 1 : 0);
+    state.totalBatches + (requiresSmartBatchApproval ? 1 : 0);
   const smartBatchHelperText = batchPayroll.isSupported
     ? state.totalBatches > 1
-      ? `Click Send once to automatically run ${state.totalBatches} payroll batch settlements for ${batchPayroll.totalRecipients} recipients. Circle may still ask for up to ${estimatedSmartBatchConfirmations} confirmation${estimatedSmartBatchConfirmations === 1 ? "" : "s"}${contract.needsApproval ? `: 1 approval plus ${state.totalBatches} batch transactions.` : ` for ${state.totalBatches} batch transactions.`} WizPay is capped at 50 recipients per transaction, so larger drafts still settle as multiple on-chain batches.`
-      : contract.needsApproval
-        ? "Click Send once to automatically run the approval and the current payroll batch. Circle may still ask for 2 confirmations: 1 approval plus 1 batch settlement."
-        : "Click Send once to automatically run the current payroll batch. Circle may still ask for 1 confirmation for settlement."
+      ? `A single payroll run can include ${batchPayroll.totalRecipients} recipients; Arc just caps each on-chain batch at 50 recipients. Click Send once to run ${state.totalBatches} batch${state.totalBatches === 1 ? "" : "es"}. Your active wallet will ask for up to ${estimatedSmartBatchConfirmations} confirmation${estimatedSmartBatchConfirmations === 1 ? "" : "s"}${requiresSmartBatchApproval ? `: 1 approval plus ${state.totalBatches} batch transactions.` : ` for ${state.totalBatches} batch transactions.`}`
+      : requiresSmartBatchApproval
+        ? `Click Send once to approve ${state.selectedToken} and submit the current payroll batch. Your active wallet will ask for 2 confirmations: 1 approval plus 1 batch transaction.`
+        : "Click Send once to submit the current payroll batch. Your active wallet will ask for 1 batch confirmation."
     : null;
 
   const resetComposer = useCallback(() => {

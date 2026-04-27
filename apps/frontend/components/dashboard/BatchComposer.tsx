@@ -207,7 +207,6 @@ interface BatchComposerProps {
   quoteLoading: boolean;
   quoteRefreshing: boolean;
   rowDiagnostics: (string | null)[];
-  estimatedGas: bigint | null;
   isBusy: boolean;
   insufficientBalance: boolean;
   updateRecipient: (id: string, field: keyof Omit<RecipientDraft, "id">, value: string) => void;
@@ -241,7 +240,6 @@ export function BatchComposer({
   quoteLoading,
   quoteRefreshing,
   rowDiagnostics,
-  estimatedGas,
   isBusy,
   insufficientBalance,
   updateRecipient,
@@ -403,14 +401,10 @@ export function BatchComposer({
         <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div className="space-y-2">
             <CardTitle className="text-lg">
-              {isStableFxMode
-                ? "Official Circle StableFX Payroll"
-                : "StableFX Adapter V2 Payroll"}
+              User-Controlled Payroll on Arc
             </CardTitle>
             <CardDescription>
-              {isStableFxMode
-                ? "Circle quote, Permit2 signature, and FxEscrow settlement for cross-currency rows. Same-token rows use direct Circle transfers on Arc."
-                : "Send one input token, let each recipient choose USDC or EURC, and route cross-currency rows through the on-chain StableFX adapter pool."}
+              Payroll executes client-side through the active wallet. Imported recipient lists can contain 50, 100, or 1000 recipients in one run; the app just splits them into Arc batches of up to 50 recipients, and each batch is confirmed from the user wallet.
             </CardDescription>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -419,6 +413,9 @@ export function BatchComposer({
                 Batch {currentBatchNumber} of {totalBatches}
               </Badge>
             )}
+            <Badge variant="outline" className="font-mono text-[11px] border-amber-500/20 text-amber-300/80 bg-amber-500/5">
+              Arc max: 50 / batch
+            </Badge>
             <Badge variant="outline" className="font-mono text-[11px] border-primary/20 text-primary/70 bg-primary/5">
               {`${fxProviderLabel}: ${formatCompactAddress(activeFxEngineAddress)}`}
             </Badge>
@@ -947,14 +944,12 @@ export function BatchComposer({
             {activeToken.symbol}
           </p>
           <p className="text-muted-foreground/70 text-xs">
-            {isStableFxMode
-              ? "Settlement path: Circle StableFX RFQ + Permit2 + FxEscrow"
-              : `Settlement path: WizPay + ${fxProviderLabel} LP at ${formatCompactAddress(activeFxEngineAddress)}${estimatedGas ? ` · Est. gas: ${estimatedGas.toLocaleString("en-US")}` : ""}`}
+            Execution path: active user-controlled wallet {"->"} Arc transaction(s)
           </p>
           {smartBatchAvailable ? (
             <p className="text-xs text-muted-foreground/70">
               {smartBatchHelperText ??
-                "Click Send once to run approval and every required payroll batch automatically. Circle may still ask you to confirm each transaction."}
+                "Click Send once to request approval and submit every required Arc payroll batch from the active wallet. Circle user-controlled mode will show confirmation popups for each required signature."}
             </p>
           ) : smartBatchReason ? (
             <p className="text-xs text-amber-300/80">

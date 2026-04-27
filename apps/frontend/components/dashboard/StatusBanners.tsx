@@ -58,7 +58,7 @@ export function StatusBanners({
             </div>
             <div className="space-y-1">
               <p className="text-sm font-semibold text-foreground">
-                Batch status
+                Wallet status
               </p>
               <p className="text-sm text-muted-foreground">{statusMessage}</p>
             </div>
@@ -74,7 +74,7 @@ export function StatusBanners({
             </div>
             <div className="space-y-1">
               <p className="text-sm font-semibold text-destructive">
-                Submission blocked
+                Wallet execution failed
               </p>
               <p className="text-sm text-muted-foreground">{errorMessage}</p>
             </div>
@@ -87,7 +87,7 @@ export function StatusBanners({
           <CardHeader>
             <CardTitle>Latest Transactions</CardTitle>
             <CardDescription>
-              Approval hashes and the latest settlement reference.
+              Approval hashes and Circle settlement references for the latest payroll run.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
@@ -135,18 +135,23 @@ export function StatusBanners({
                     <p className="text-sm font-semibold">
                       {isExplorerHash(submitTxHash)
                         ? "Batch Submit"
-                        : "Circle Reference"}
+                        : "Circle Challenge"}
                     </p>
                     {submitState === "confirmed" ? (
                       <Badge className="gap-1 bg-emerald-500/15 text-emerald-300 border-emerald-500/25">
                         <CheckCircle2 className="h-3 w-3" />
-                        {isExplorerHash(submitTxHash) ? "Confirmed" : "Settled"}
+                        Confirmed
                       </Badge>
                     ) : null}
                   </div>
                   <p className="break-all font-mono text-xs text-muted-foreground/70">
                     {submitTxHash}
                   </p>
+                  {!isExplorerHash(submitTxHash) ? (
+                    <p className="text-xs text-muted-foreground/70">
+                      Circle can return a temporary challenge reference before the final Arc transaction hash is available.
+                    </p>
+                  ) : null}
                 </div>
                 <div className="flex gap-2">
                   <Button

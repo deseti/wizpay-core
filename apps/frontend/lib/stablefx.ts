@@ -1,4 +1,6 @@
 /**
+ * @deprecated — StableFX mapping layer is moving to backend CircleService.
+ *
  * StableFX Service — Circle Integration Layer
  *
  * Maps Circle StableFX API responses into the WizPay-internal

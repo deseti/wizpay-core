@@ -82,7 +82,6 @@ function SendWorkspace() {
             quoteLoading={wp.quoteLoading}
             quoteRefreshing={wp.quoteRefreshing}
             rowDiagnostics={wp.rowDiagnostics}
-            estimatedGas={wp.estimatedGas}
             isBusy={wp.isBusy}
             insufficientBalance={wp.insufficientBalance}
             updateRecipient={wp.updateRecipient}

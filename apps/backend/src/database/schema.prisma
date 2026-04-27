@@ -8,14 +8,15 @@ datasource db {
 }
 
 model Task {
-  id        String    @id @default(uuid()) @db.Uuid
-  type      String
-  status    String
-  payload   Json
-  result    Json?
-  createdAt DateTime  @default(now())
-  updatedAt DateTime  @updatedAt
-  logs      TaskLog[]
+  id           String            @id @default(uuid()) @db.Uuid
+  type         String
+  status       String
+  payload      Json
+  result       Json?
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+  logs         TaskLog[]
+  transactions TaskTransaction[]
 }
 
 model TaskLog {
@@ -28,4 +29,36 @@ model TaskLog {
   task      Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
 
   @@index([taskId])
+}
+
+/// Tracks individual on-chain transactions within a task.
+/// Each payroll recipient gets one TaskTransaction record.
+model TaskTransaction {
+  id          String   @id @default(uuid()) @db.Uuid
+  taskId      String   @db.Uuid
+  /// Circle transaction ID
+  txId        String
+  /// Recipient address
+  recipient   String
+  /// Human-readable amount
+  amount      String
+  /// Token symbol (USDC, EURC)
+  currency    String
+  /// pending | completed | failed
+  status      String   @default("pending")
+  /// On-chain tx hash (null until confirmed)
+  txHash      String?
+  /// Error reason (only for failed transactions)
+  errorReason String?
+  /// Batch index within the payroll
+  batchIndex  Int      @default(0)
+  /// Number of poll attempts made
+  pollAttempts Int     @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  task        Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@index([taskId])
+  @@index([txId])
+  @@index([taskId, status])
 }

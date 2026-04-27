@@ -4,6 +4,8 @@ export enum QueueName {
   PAYROLL = 'payroll',
   SWAP = 'swap',
   BRIDGE = 'bridge',
+  /** Queue for polling Circle transaction status (non-blocking) */
+  TX_POLL = 'tx_poll',
 }
 
 export interface QueueRoutingDefinition {

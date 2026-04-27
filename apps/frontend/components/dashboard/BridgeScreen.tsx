@@ -621,12 +621,52 @@ function getLongRunningTransferMessage(
   return "Still processing on-chain. You can check back later.";
 }
 
+function recoverTerminalTransfer(
+  transfer: CircleTransfer | null
+): CircleTransfer | null {
+  if (!transfer) {
+    return null;
+  }
+
+  const allStepsSucceeded =
+    transfer.steps.length > 0 &&
+    transfer.steps.every(
+      (step) => step.state === "success" || step.state === "noop"
+    );
+
+  if (allStepsSucceeded) {
+    return {
+      ...transfer,
+      stage: "completed",
+      status: "settled",
+      rawStatus: "completed",
+      errorReason: null,
+    };
+  }
+
+  const failedStep = transfer.steps.find((step) => step.state === "error");
+
+  if (failedStep || transfer.status === "failed") {
+    return {
+      ...transfer,
+      stage: "failed",
+      status: "failed",
+      rawStatus: "failed",
+      errorReason:
+        transfer.errorReason || failedStep?.errorMessage || "Bridge failed",
+    };
+  }
+
+  return null;
+}
+
 export function BridgeScreen() {
   const { arcWallet, sepoliaWallet, createTransferChallenge, executeChallenge, getWalletBalances } = useCircleWallet();
   const { toast } = useToast();
   const restoredTransferRef = useRef(false);
   const normalizedLegacyDefaultRef = useRef(false);
   const terminalNoticeRef = useRef<string | null>(null);
+  const reconnectingPollCountRef = useRef(0);
 
   const [destinationChain, setDestinationChain] = useState<CircleTransferBlockchain>(
     getOppositeBlockchain(DEFAULT_SOURCE_BLOCKCHAIN)
@@ -642,7 +682,7 @@ export function BridgeScreen() {
   const [isWalletLoading, setIsWalletLoading] = useState(false);
   const [isWalletBootstrapping, setIsWalletBootstrapping] = useState(false);
   const [isPollingTransfer, setIsPollingTransfer] = useState(false);
-  const [isTrackingUnavailable, setIsTrackingUnavailable] = useState(false);
+  const [isReconnectingToTracking, setIsReconnectingToTracking] = useState(false);
   const [isReviewDialogOpen, setIsReviewDialogOpen] = useState(false);
   const [isSuccessDialogOpen, setIsSuccessDialogOpen] = useState(false);
   const tokenSymbol = BRIDGE_ASSET_SYMBOL;
@@ -740,6 +780,13 @@ export function BridgeScreen() {
     const storedTransfer = getStoredActiveTransfer();
 
     if (!storedTransfer) {
+      return;
+    }
+
+    const recoveredTransfer = recoverTerminalTransfer(storedTransfer);
+
+    if (recoveredTransfer) {
+      clearStoredActiveTransfer();
       return;
     }
 
@@ -859,8 +906,9 @@ export function BridgeScreen() {
   }, [transfer]);
 
   useEffect(() => {
-    if (!transfer?.transferId || !isTransferActive || isTrackingUnavailable) {
+    if (!transfer?.transferId || !isTransferActive) {
       setIsPollingTransfer(false);
+      setIsReconnectingToTracking(false);
       return;
     }
 
@@ -877,42 +925,15 @@ export function BridgeScreen() {
           return;
         }
 
+        console.debug("Polling tx:", activeTransferId, "status:", latestTransfer.status);
+
         setTransfer(latestTransfer);
         setStoredActiveTransfer(latestTransfer);
-        setIsTrackingUnavailable(false);
+        reconnectingPollCountRef.current = 0;
+        setIsReconnectingToTracking(false);
         setErrorMessage(null);
 
-        if (latestTransfer.status === "settled") {
-          const terminalKey = `${latestTransfer.transferId}:settled`;
-
-          if (terminalNoticeRef.current !== terminalKey) {
-            terminalNoticeRef.current = terminalKey;
-            setIsSuccessDialogOpen(true);
-            clearStoredActiveTransfer();
-            toast({
-              title: "Bridge completed",
-              description: `${tokenSymbol} arrived on ${transferDestinationOption.label}.`,
-            });
-            void refreshTransferWallet();
-          }
-        }
-
-        if (latestTransfer.status === "failed") {
-          const terminalKey = `${latestTransfer.transferId}:failed`;
-
-          if (terminalNoticeRef.current !== terminalKey) {
-            terminalNoticeRef.current = terminalKey;
-            clearStoredActiveTransfer();
-            toast({
-              title: "Bridge transfer failed",
-              description:
-                latestTransfer.errorReason ||
-                `Circle could not finish the ${transferSourceOption.label} to ${transferDestinationOption.label} bridge.`,
-              variant: "destructive",
-            });
-            void refreshTransferWallet();
-          }
-        }
+        handleTerminalTransferUpdate(latestTransfer);
       } catch (error) {
         if (cancelled) {
           return;
@@ -922,13 +943,22 @@ export function BridgeScreen() {
           error instanceof TransferApiError &&
           error.code === "CIRCLE_BRIDGE_NOT_FOUND"
         ) {
-          setIsTrackingUnavailable(true);
-          setErrorMessage(
-            "Live Redis tracking for this bridge is no longer available. The last known progress stays visible here, but automatic updates have stopped."
-          );
+          const recoveredTransfer = recoverTerminalTransfer(transfer);
+
+          if (recoveredTransfer) {
+            setTransfer(recoveredTransfer);
+            setIsReconnectingToTracking(false);
+            setErrorMessage(null);
+            handleTerminalTransferUpdate(recoveredTransfer);
+            return;
+          }
+
+          reconnectingPollCountRef.current += 1;
+          setIsReconnectingToTracking(true);
           return;
         }
 
+        setIsReconnectingToTracking(false);
         setErrorMessage(
           getBridgeErrorMessage(error, {
             destinationLabel: transferDestinationOption.label,
@@ -950,10 +980,10 @@ export function BridgeScreen() {
       pollTransferFnRef.current = null;
     };
   }, [
-    isTrackingUnavailable,
     isTransferActive,
     toast,
     tokenSymbol,
+    transfer,
     transfer?.transferId,
     transferDestinationOption.label,
     transferSourceOption.label,
@@ -964,8 +994,44 @@ export function BridgeScreen() {
     activeInterval: BRIDGE_POLL_INTERVAL_MS,
     idleInterval: 15_000,
     idleAfter: 60_000,
-    enabled: Boolean(transfer?.transferId) && isTransferActive && !isTrackingUnavailable,
+    enabled: Boolean(transfer?.transferId) && isTransferActive,
   });
+
+  function handleTerminalTransferUpdate(latestTransfer: CircleTransfer) {
+    if (latestTransfer.status === "settled") {
+      const terminalKey = `${latestTransfer.transferId}:settled`;
+
+      if (terminalNoticeRef.current !== terminalKey) {
+        terminalNoticeRef.current = terminalKey;
+        setIsSuccessDialogOpen(true);
+        clearStoredActiveTransfer();
+        toast({
+          title: "Bridge completed",
+          description: `${tokenSymbol} arrived on ${transferDestinationOption.label}.`,
+        });
+        void refreshTransferWallet();
+      }
+
+      return;
+    }
+
+    if (latestTransfer.status === "failed") {
+      const terminalKey = `${latestTransfer.transferId}:failed`;
+
+      if (terminalNoticeRef.current !== terminalKey) {
+        terminalNoticeRef.current = terminalKey;
+        clearStoredActiveTransfer();
+        toast({
+          title: "Bridge transfer failed",
+          description:
+            latestTransfer.errorReason ||
+            `Circle could not finish the ${transferSourceOption.label} to ${transferDestinationOption.label} bridge.`,
+          variant: "destructive",
+        });
+        void refreshTransferWallet();
+      }
+    }
+  }
 
   async function refreshTransferWallet() {
     setIsWalletLoading(true);
@@ -1107,7 +1173,8 @@ export function BridgeScreen() {
     setErrorMessage(null);
     setIsReviewDialogOpen(false);
     setIsSuccessDialogOpen(false);
-    setIsTrackingUnavailable(false);
+    reconnectingPollCountRef.current = 0;
+    setIsReconnectingToTracking(false);
 
     try {
       // 1. Fetch user source wallet
@@ -1274,12 +1341,11 @@ export function BridgeScreen() {
                   </div>
                 ) : null}
 
-                {isTrackingUnavailable ? (
+                {isReconnectingToTracking ? (
                   <div className="mt-4 rounded-2xl border border-amber-500/25 bg-amber-500/5 px-4 py-3 text-sm text-amber-700 dark:text-amber-300">
-                    Redis tracking expired or was removed, so live polling has
-                    stopped. The last known burn, attestation, and mint status
-                    remains visible here while the bridge may still continue
-                    on-chain.
+                    Reconnecting to tracking... Redis cache was cleared or
+                    rotated, so WizPay is retrying from durable bridge history
+                    until this transfer reaches a final state.
                   </div>
                 ) : null}
 
@@ -1931,6 +1997,8 @@ export function BridgeScreen() {
                   setAmount("");
                   setDestinationAddress("");
                   setErrorMessage(null);
+                  reconnectingPollCountRef.current = 0;
+                  setIsReconnectingToTracking(false);
                   terminalNoticeRef.current = null;
                 }}>
                   Start New Bridge

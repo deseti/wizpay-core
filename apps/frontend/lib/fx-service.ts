@@ -1,4 +1,6 @@
 /**
+ * @deprecated — FX service is moving to backend PayrollAgent + CircleService.
+ *
  * Unified FX Service
  *
  * Provides a single interface for FX quoting regardless of the active mode.

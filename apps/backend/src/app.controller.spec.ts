@@ -18,6 +18,7 @@ describe('TaskController', () => {
     createdAt: new Date('2026-04-26T00:00:00.000Z'),
     updatedAt: new Date('2026-04-26T00:00:00.000Z'),
     logs: [],
+    transactions: [],
   };
 
   const orchestratorService = {
@@ -55,7 +56,7 @@ describe('TaskController', () => {
         type: TaskType.PAYROLL,
         payload,
       }),
-    ).resolves.toEqual(taskFixture);
+    ).resolves.toEqual({ data: taskFixture });
 
     expect(orchestratorService.handleTask).toHaveBeenCalledWith(
       TaskType.PAYROLL,
@@ -64,7 +65,9 @@ describe('TaskController', () => {
   });
 
   it('fetches tasks through the task service', async () => {
-    await expect(controller.getTask(taskFixture.id)).resolves.toEqual(taskFixture);
+    await expect(controller.getTask(taskFixture.id)).resolves.toEqual({
+      data: taskFixture,
+    });
     expect(taskService.getTaskById).toHaveBeenCalledWith(taskFixture.id);
   });
 });

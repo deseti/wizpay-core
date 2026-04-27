@@ -3,20 +3,34 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { Prisma, Task, TaskLog } from '@prisma/client';
+import { Prisma, Task, TaskLog, TaskTransaction } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
 import { TaskStatus } from './task-status.enum';
-import { TaskDetails, TaskLogRecord, TaskPayload } from './task.types';
+import {
+  AppendTransactionInput,
+  TaskDetails,
+  TaskLogRecord,
+  TaskPayload,
+  TaskTransactionRecord,
+  TxStatus,
+  UpdateTransactionInput,
+} from './task.types';
 
-type TaskWithLogs = Task & { logs: TaskLog[] };
+type TaskWithRelations = Task & { logs: TaskLog[]; transactions: TaskTransaction[] };
 
 const ALLOWED_TRANSITIONS: Record<TaskStatus, readonly TaskStatus[]> = {
   [TaskStatus.CREATED]: [TaskStatus.ASSIGNED, TaskStatus.FAILED],
   [TaskStatus.ASSIGNED]: [TaskStatus.IN_PROGRESS, TaskStatus.FAILED],
-  [TaskStatus.IN_PROGRESS]: [TaskStatus.REVIEW, TaskStatus.EXECUTED, TaskStatus.FAILED],
+  [TaskStatus.IN_PROGRESS]: [
+    TaskStatus.REVIEW,
+    TaskStatus.EXECUTED,
+    TaskStatus.PARTIAL,
+    TaskStatus.FAILED,
+  ],
   [TaskStatus.REVIEW]: [TaskStatus.APPROVED, TaskStatus.FAILED],
   [TaskStatus.APPROVED]: [TaskStatus.EXECUTED, TaskStatus.FAILED],
   [TaskStatus.EXECUTED]: [],
+  [TaskStatus.PARTIAL]: [],
   [TaskStatus.FAILED]: [],
 };
 
@@ -31,7 +45,7 @@ export class TaskService {
         status: TaskStatus.CREATED,
         payload: payload as Prisma.InputJsonValue,
       },
-      include: { logs: true },
+      include: { logs: true, transactions: true },
     });
 
     await this.logStep(
@@ -112,12 +126,127 @@ export class TaskService {
     };
   }
 
+  // ════════════════════════════════════════════════════════════════════
+  //  Transaction tracking
+  // ════════════════════════════════════════════════════════════════════
+
+  /**
+   * Append a new transaction record to a task.
+   * Called by PayrollAgent after each CircleService.transfer() call.
+   */
+  async appendTransaction(
+    input: AppendTransactionInput,
+  ): Promise<TaskTransactionRecord> {
+    const tx = await this.prisma.taskTransaction.create({
+      data: {
+        taskId: input.taskId,
+        txId: input.txId,
+        recipient: input.recipient,
+        amount: input.amount,
+        currency: input.currency,
+        batchIndex: input.batchIndex,
+        status: 'pending',
+      },
+    });
+
+    return this.mapTransaction(tx);
+  }
+
+  /**
+   * Update a transaction's status, txHash, errorReason, or pollAttempts.
+   * Called by TransactionPollerService after each poll.
+   */
+  async updateTransaction(
+    txId: string,
+    update: UpdateTransactionInput,
+  ): Promise<TaskTransactionRecord> {
+    const existing = await this.prisma.taskTransaction.findFirst({
+      where: { txId },
+    });
+
+    if (!existing) {
+      throw new NotFoundException(`Transaction ${txId} not found`);
+    }
+
+    const tx = await this.prisma.taskTransaction.update({
+      where: { id: existing.id },
+      data: {
+        status: update.status,
+        ...(update.txHash !== undefined ? { txHash: update.txHash } : {}),
+        ...(update.errorReason !== undefined
+          ? { errorReason: update.errorReason }
+          : {}),
+        ...(update.pollAttempts !== undefined
+          ? { pollAttempts: update.pollAttempts }
+          : {}),
+      },
+    });
+
+    return this.mapTransaction(tx);
+  }
+
+  /**
+   * Get all transactions for a task.
+   */
+  async getTaskTransactions(
+    taskId: string,
+  ): Promise<TaskTransactionRecord[]> {
+    const txs = await this.prisma.taskTransaction.findMany({
+      where: { taskId },
+      orderBy: [{ batchIndex: 'asc' }, { createdAt: 'asc' }],
+    });
+
+    return txs.map((tx) => this.mapTransaction(tx));
+  }
+
+  /**
+   * Check if all transactions for a task have reached a terminal state.
+   * Returns aggregation counts + whether the task is ready for finalization.
+   */
+  async getTransactionAggregation(taskId: string): Promise<{
+    total: number;
+    completed: number;
+    failed: number;
+    pending: number;
+    allTerminal: boolean;
+    txHashes: string[];
+  }> {
+    const txs = await this.prisma.taskTransaction.findMany({
+      where: { taskId },
+      select: { status: true, txHash: true },
+    });
+
+    const total = txs.length;
+    const completed = txs.filter((tx) => tx.status === 'completed').length;
+    const failed = txs.filter((tx) => tx.status === 'failed').length;
+    const pending = total - completed - failed;
+    const txHashes = txs
+      .filter((tx) => tx.txHash != null)
+      .map((tx) => tx.txHash as string);
+
+    return {
+      total,
+      completed,
+      failed,
+      pending,
+      allTerminal: pending === 0 && total > 0,
+      txHashes,
+    };
+  }
+
+  // ════════════════════════════════════════════════════════════════════
+  //  Task retrieval
+  // ════════════════════════════════════════════════════════════════════
+
   async getTaskById(taskId: string): Promise<TaskDetails> {
     const task = await this.prisma.task.findUnique({
       where: { id: taskId },
       include: {
         logs: {
           orderBy: { createdAt: 'asc' },
+        },
+        transactions: {
+          orderBy: [{ batchIndex: 'asc' }, { createdAt: 'asc' }],
         },
       },
     });
@@ -129,6 +258,15 @@ export class TaskService {
     return this.mapTask(task);
   }
 
+  async hasLogStep(taskId: string, step: string): Promise<boolean> {
+    const existingLog = await this.prisma.taskLog.findFirst({
+      where: { taskId, step },
+      select: { id: true },
+    });
+
+    return existingLog != null;
+  }
+
   private ensureTransition(currentStatus: TaskStatus, nextStatus: TaskStatus) {
     if (!ALLOWED_TRANSITIONS[currentStatus].includes(nextStatus)) {
       throw new BadRequestException(
@@ -137,7 +275,7 @@ export class TaskService {
     }
   }
 
-  private mapTask(task: TaskWithLogs): TaskDetails {
+  private mapTask(task: TaskWithRelations): TaskDetails {
     return {
       id: task.id,
       type: task.type,
@@ -154,6 +292,25 @@ export class TaskService {
         message: log.message,
         createdAt: log.createdAt,
       })),
+      transactions: task.transactions.map((tx) => this.mapTransaction(tx)),
+    };
+  }
+
+  private mapTransaction(tx: TaskTransaction): TaskTransactionRecord {
+    return {
+      id: tx.id,
+      taskId: tx.taskId,
+      txId: tx.txId,
+      recipient: tx.recipient,
+      amount: tx.amount,
+      currency: tx.currency,
+      status: tx.status as TxStatus,
+      txHash: tx.txHash,
+      errorReason: tx.errorReason,
+      batchIndex: tx.batchIndex,
+      pollAttempts: tx.pollAttempts,
+      createdAt: tx.createdAt,
+      updatedAt: tx.updatedAt,
     };
   }
 
