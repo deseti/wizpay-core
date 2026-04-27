@@ -32,8 +32,6 @@ export function useWizPay(): WizPayState {
     activeToken: contract.activeToken,
     approveBatchAmount: contract.requestApproval,
     currentAllowance: contract.currentAllowance,
-    currentBatchNumber: state.currentBatchNumber,
-    loadNextBatch: state.loadNextBatch,
     recipients: state.recipients,
     pendingBatches: state.pendingBatches,
     referenceId: state.referenceId,
@@ -41,7 +39,6 @@ export function useWizPay(): WizPayState {
     setStatusMessage: state.setStatusMessage,
     setErrorMessage: state.setErrorMessage,
     submitCurrentBatch: contract.handleSubmit,
-    totalBatches: state.totalBatches,
   });
 
   // 3. Initialize History
@@ -62,6 +59,7 @@ export function useWizPay(): WizPayState {
     state.submitState === "wallet" ||
     state.submitState === "confirming";
 
+  const smartBatchCount = batchPayroll.task?.totalUnits ?? state.totalBatches;
   const smartBatchButtonText = batchPayroll.isRunning
     ? batchPayroll.progress.label ?? "Sending..."
     : "Send";
@@ -69,10 +67,10 @@ export function useWizPay(): WizPayState {
     batchPayroll.totalAmount > 0n &&
     contract.currentAllowance < batchPayroll.totalAmount;
   const estimatedSmartBatchConfirmations =
-    state.totalBatches + (requiresSmartBatchApproval ? 1 : 0);
+    smartBatchCount + (requiresSmartBatchApproval ? 1 : 0);
   const smartBatchHelperText = batchPayroll.isSupported
-    ? state.totalBatches > 1
-      ? `A single payroll run can include ${batchPayroll.totalRecipients} recipients; Arc just caps each on-chain batch at 50 recipients. Click Send once to run ${state.totalBatches} batch${state.totalBatches === 1 ? "" : "es"}. Your active wallet will ask for up to ${estimatedSmartBatchConfirmations} confirmation${estimatedSmartBatchConfirmations === 1 ? "" : "s"}${requiresSmartBatchApproval ? `: 1 approval plus ${state.totalBatches} batch transactions.` : ` for ${state.totalBatches} batch transactions.`}`
+    ? smartBatchCount > 1
+      ? `A single payroll run can include ${batchPayroll.totalRecipients} recipients; Arc just caps each on-chain batch at 50 recipients. Click Send once to run ${smartBatchCount} batch${smartBatchCount === 1 ? "" : "es"}. Your active wallet will ask for up to ${estimatedSmartBatchConfirmations} confirmation${estimatedSmartBatchConfirmations === 1 ? "" : "s"}${requiresSmartBatchApproval ? `: 1 approval plus ${smartBatchCount} batch transactions.` : ` for ${smartBatchCount} batch transactions.`}`
       : requiresSmartBatchApproval
         ? `Click Send once to approve ${state.selectedToken} and submit the current payroll batch. Your active wallet will ask for 2 confirmations: 1 approval plus 1 batch transaction.`
         : "Click Send once to submit the current payroll batch. Your active wallet will ask for 1 batch confirmation."
@@ -142,6 +140,8 @@ export function useWizPay(): WizPayState {
     smartBatchButtonText,
     smartBatchHelperText,
     smartBatchSubmissionHashes: batchPayroll.submissionHashes,
+    payrollTaskId: batchPayroll.taskId,
+    payrollTask: batchPayroll.task,
     handleSmartBatchSubmit: batchPayroll.execute,
   };
 }

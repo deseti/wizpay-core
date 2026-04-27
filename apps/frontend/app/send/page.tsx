@@ -15,12 +15,43 @@ import { useActiveWalletAddress } from "@/hooks/useActiveWalletAddress";
 import { useWizPay } from "@/hooks/wizpay";
 import { useState } from "react";
 
+function getTaskMetadataString(
+  metadata: Record<string, unknown> | null | undefined,
+  key: string
+) {
+  const value = metadata?.[key];
+  return typeof value === "string" ? value : null;
+}
+
+function getTaskMetadataNumber(
+  metadata: Record<string, unknown> | null | undefined,
+  key: string
+) {
+  const value = metadata?.[key];
+  return typeof value === "number" ? value : null;
+}
+
 function SendWorkspace() {
   const wp = useWizPay();
   const { walletAddress } = useActiveWalletAddress();
   const [showReceive, setShowReceive] = useState(false);
-  const showSuccessModal =
-    wp.submitState === "confirmed" && wp.currentBatchNumber === wp.totalBatches;
+  const showSuccessModal = wp.payrollTask?.status === "executed";
+  const taskMetadata = wp.payrollTask?.metadata;
+  const taskTotalAmount = getTaskMetadataString(taskMetadata, "totalAmount");
+  const taskReferenceId = getTaskMetadataString(taskMetadata, "referenceId");
+  const taskRecipientCount = getTaskMetadataNumber(taskMetadata, "totalRecipients");
+  const taskSubmissionHashes = wp.smartBatchSubmissionHashes;
+  const taskLastHash = taskSubmissionHashes[taskSubmissionHashes.length - 1] ?? null;
+  const successTotalAmount = taskTotalAmount
+    ? BigInt(taskTotalAmount)
+    : wp.sessionTotalAmount > 0n
+      ? wp.sessionTotalAmount
+      : wp.batchAmount;
+  const successRecipientCount =
+    taskRecipientCount ??
+    (wp.sessionTotalRecipients > 0
+      ? wp.sessionTotalRecipients
+      : wp.validRecipientCount);
 
   return (
     <>
@@ -114,11 +145,7 @@ function SendWorkspace() {
         </section>
 
         <StatusBanners
-          statusMessage={wp.statusMessage}
-          errorMessage={wp.errorMessage}
-          approveTxHash={wp.approveTxHash}
-          submitTxHash={wp.submitTxHash}
-          submitState={wp.submitState}
+          task={wp.payrollTask}
           copiedHash={wp.copiedHash}
           copyHash={wp.copyHash}
         />
@@ -132,15 +159,15 @@ function SendWorkspace() {
       <SuccessModal
         isOpen={showSuccessModal}
         onClose={wp.dismissSuccessModal}
-        txHash={wp.submitTxHash}
+        txHash={taskLastHash}
         approvalTxHash={wp.approveTxHash}
-        txHashes={wp.smartBatchSubmissionHashes}
-        totalAmount={wp.sessionTotalAmount || wp.batchAmount}
+        txHashes={taskSubmissionHashes}
+        totalAmount={successTotalAmount}
         tokenSymbol={wp.activeToken.symbol}
         decimals={wp.activeToken.decimals}
-        recipientCount={wp.sessionTotalRecipients || wp.validRecipientCount}
-        isMultiBatch={wp.totalBatches > 1}
-        referenceId={wp.referenceId}
+        recipientCount={successRecipientCount}
+        isMultiBatch={(wp.payrollTask?.totalUnits ?? wp.totalBatches) > 1}
+        referenceId={taskReferenceId ?? wp.referenceId}
         sessionTotalDistributed={wp.sessionTotalDistributed}
       />
 

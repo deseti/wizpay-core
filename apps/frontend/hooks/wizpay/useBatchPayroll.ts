@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { backendFetch } from "@/lib/backend-api";
 import {
@@ -9,7 +9,11 @@ import {
   type RecipientDraft,
   type TokenSymbol,
 } from "@/lib/wizpay";
-import type { TransactionActionResult } from "@/lib/types";
+import type {
+  BackendTask,
+  BackendTaskUnit,
+  TransactionActionResult,
+} from "@/lib/types";
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -27,10 +31,8 @@ interface UseBatchPayrollOptions {
   };
   approveBatchAmount: (amount: bigint) => Promise<TransactionActionResult>;
   currentAllowance: bigint;
-  currentBatchNumber: number;
   recipients: RecipientDraft[];
   pendingBatches: RecipientDraft[][];
-  loadNextBatch: () => void;
   refetchAllowance: () => Promise<unknown>;
   setStatusMessage: (message: string | null) => void;
   setErrorMessage: (message: string | null) => void;
@@ -39,7 +41,6 @@ interface UseBatchPayrollOptions {
     batchReferenceId?: string
   ) => Promise<TransactionActionResult>;
   referenceId: string;
-  totalBatches: number;
 }
 
 interface PayrollInitRecipient {
@@ -48,24 +49,32 @@ interface PayrollInitRecipient {
   targetToken: TokenSymbol;
 }
 
-interface PayrollInitBatch {
+interface PayrollTaskUnit {
+  id: string;
   index: number;
-  referenceId: string;
-  recipientCount: number;
-  totalAmount: string;
-  recipients: PayrollInitRecipient[];
+  type: string;
+  status: "PENDING" | "SUCCESS" | "FAILED";
+  payload: {
+    referenceId?: string;
+    recipients?: PayrollInitRecipient[];
+    sourceToken?: TokenSymbol;
+    totalAmount?: string;
+    recipientCount?: number;
+  };
 }
 
 interface PayrollInitPlan {
-  sourceToken: TokenSymbol;
-  referenceId: string;
+  taskId: string;
   approvalAmount: string;
-  totals: {
-    totalAmount: string;
-    totalRecipients: number;
-    totalBatches: number;
-  };
-  batches: PayrollInitBatch[];
+  referenceId: string;
+  totalUnits: number;
+  units: PayrollTaskUnit[];
+}
+
+interface ReportTaskUnitResponse {
+  task: BackendTask;
+  unit: BackendTaskUnit;
+  nextUnit: PayrollTaskUnit | null;
 }
 
 interface BatchPayrollTotals {
@@ -87,6 +96,8 @@ interface BatchPayrollResult extends BatchPayrollTotals {
   isRunning: boolean;
   isSuccess: boolean;
   progress: BatchPayrollProgress;
+  taskId: string | null;
+  task: BackendTask | null;
   approvalHash: string | null;
   lastHash: string | null;
   hashes: string[];
@@ -129,13 +140,50 @@ function calculateTotals(
   return { totalAmount, totalRecipients, totalDistributed };
 }
 
-function toRecipientDraftBatch(batch: PayrollInitBatch): RecipientDraft[] {
-  return batch.recipients.map((recipient, recipientIndex) => ({
-    id: `backend-${batch.index}-${recipientIndex}`,
+function toRecipientDraftBatch(unit: PayrollTaskUnit): RecipientDraft[] {
+  return (unit.payload.recipients ?? []).map((recipient, recipientIndex) => ({
+    id: `backend-${unit.index}-${recipientIndex}`,
     address: recipient.address,
     amount: recipient.amount,
     targetToken: recipient.targetToken,
   }));
+}
+
+function isTaskTerminal(task: BackendTask | null) {
+  return task?.status === "executed" || task?.status === "review" || task?.status === "failed";
+}
+
+function getTaskProgress(task: BackendTask | null, fallbackTotal: number): BatchPayrollProgress {
+  const latestLog = task?.logs[task.logs.length - 1];
+
+  if (!task) {
+    return {
+      stage: "idle",
+      label: null,
+      currentBatch: 0,
+      totalBatches: fallbackTotal,
+    };
+  }
+
+  return {
+    stage:
+      task.status === "executed"
+        ? "success"
+        : task.status === "review" || task.status === "failed"
+          ? "error"
+          : task.status === "created" || task.status === "assigned"
+            ? "preparing"
+            : "executing",
+    label: latestLog?.message ?? null,
+    currentBatch: task.completedUnits + task.failedUnits,
+    totalBatches: task.totalUnits || fallbackTotal,
+  };
+}
+
+function getSubmissionHashes(task: BackendTask | null) {
+  return (task?.units ?? [])
+    .map((unit) => unit.txHash)
+    .filter((value): value is string => Boolean(value));
 }
 
 // ─── Hook ───────────────────────────────────────────────────────────
@@ -147,8 +195,6 @@ export function useBatchPayroll({
   activeToken,
   approveBatchAmount,
   currentAllowance,
-  currentBatchNumber,
-  loadNextBatch,
   recipients,
   pendingBatches,
   referenceId,
@@ -156,7 +202,6 @@ export function useBatchPayroll({
   setErrorMessage,
   setStatusMessage,
   submitCurrentBatch,
-  totalBatches,
 }: UseBatchPayrollOptions): BatchPayrollResult {
   const batches = useMemo(
     () => normalizeBatches(recipients, pendingBatches),
@@ -168,37 +213,51 @@ export function useBatchPayroll({
   );
 
   const [isRunning, setIsRunning] = useState(false);
-  const [isSuccess, setIsSuccess] = useState(false);
-  const [progress, setProgress] = useState<BatchPayrollProgress>({
-    stage: "idle",
-    label: null,
-    currentBatch: 0,
-    totalBatches,
-  });
+  const [taskId, setTaskId] = useState<string | null>(null);
+  const [task, setTask] = useState<BackendTask | null>(null);
   const [approvalHash, setApprovalHash] = useState<string | null>(null);
-  const [lastHash, setLastHash] = useState<string | null>(null);
-  const [hashes, setHashes] = useState<string[]>([]);
-  const [submissionHashes, setSubmissionHashes] = useState<string[]>([]);
+
+  const refreshTask = useCallback(async (nextTaskId: string) => {
+    const nextTask = await backendFetch<BackendTask>(`/tasks/${nextTaskId}`);
+    setTask(nextTask);
+    return nextTask;
+  }, []);
+
+  useEffect(() => {
+    if (!taskId || isTaskTerminal(task)) {
+      return;
+    }
+
+    const intervalId = window.setInterval(() => {
+      void refreshTask(taskId).catch(() => {
+        // Ignore background polling errors; foreground actions surface them.
+      });
+    }, 2500);
+
+    return () => window.clearInterval(intervalId);
+  }, [refreshTask, task, taskId]);
+
+  const submissionHashes = useMemo(() => getSubmissionHashes(task), [task]);
+  const hashes = useMemo(
+    () => (approvalHash ? [approvalHash, ...submissionHashes] : submissionHashes),
+    [approvalHash, submissionHashes]
+  );
+  const lastHash = submissionHashes[submissionHashes.length - 1] ?? approvalHash;
+  const progress = useMemo(
+    () => getTaskProgress(task, Math.max(1, batches.length)),
+    [batches.length, task]
+  );
+  const isSuccess = task?.status === "executed";
 
   const execute = useCallback(async () => {
     setIsRunning(true);
-    setIsSuccess(false);
+    setTask(null);
+    setTaskId(null);
     setApprovalHash(null);
-    setLastHash(null);
-    setHashes([]);
-    setSubmissionHashes([]);
     setStatusMessage(null);
     setErrorMessage(null);
 
     try {
-        setProgress({
-          stage: "preparing",
-          label: "Preparing...",
-          currentBatch: 1,
-          totalBatches,
-        });
-        setStatusMessage("Preparing payroll plan on the backend...");
-
         const initPlan = await backendFetch<PayrollInitPlan>(
           "/tasks/payroll/init",
           {
@@ -215,127 +274,61 @@ export function useBatchPayroll({
           }
         );
 
-        const plannedBatches = initPlan.batches.map((batch) => ({
-          ...batch,
-          draftRecipients: toRecipientDraftBatch(batch),
-        }));
-        const plannedTotalBatches = initPlan.totals.totalBatches;
-        const plannedTotalRecipients = initPlan.totals.totalRecipients;
+        setTaskId(initPlan.taskId);
+        await refreshTask(initPlan.taskId);
+
         const totalApprovalAmount = BigInt(initPlan.approvalAmount);
-      const nextSubmissionHashes: string[] = [];
-        let nextApprovalHash: string | null = null;
 
       if (totalApprovalAmount > 0n && currentAllowance < totalApprovalAmount) {
-        setProgress({
-          stage: "preparing",
-          label: "Approving...",
-          currentBatch: 1,
-            totalBatches: plannedTotalBatches,
-        });
-
-        setStatusMessage(
-            `Confirm the ${activeToken.symbol} approval in your wallet. This covers ${plannedTotalRecipients} recipient${plannedTotalRecipients === 1 ? "" : "s"} across ${plannedTotalBatches} batch${plannedTotalBatches === 1 ? "" : "es"}.`
-        );
-
         const approvalResult = await approveBatchAmount(totalApprovalAmount);
 
         if (!approvalResult.ok) {
-          setProgress({
-            stage: "error",
-            label: "Approval failed",
-            currentBatch: 1,
-              totalBatches: plannedTotalBatches,
-          });
+          await refreshTask(initPlan.taskId);
           return;
         }
 
         if (approvalResult.hash) {
-            nextApprovalHash = approvalResult.hash;
           setApprovalHash(approvalResult.hash);
-          setHashes([approvalResult.hash]);
         }
 
         await refetchAllowance();
       }
 
-        for (let batchIndex = 0; batchIndex < plannedBatches.length; batchIndex += 1) {
-          const batch = plannedBatches[batchIndex];
+      let nextUnit: PayrollTaskUnit | null = initPlan.units[0] ?? null;
 
-        setProgress({
-          stage: "executing",
-          label:
-              plannedTotalBatches > 1
-                ? `Batch ${batchIndex + 1}/${plannedTotalBatches}...`
-              : "Sending...",
-          currentBatch: batchIndex + 1,
-            totalBatches: plannedTotalBatches,
-        });
-
-        setStatusMessage(
-            plannedTotalBatches > 1
-              ? `Confirm payroll batch ${batchIndex + 1} of ${plannedTotalBatches} in your wallet.`
-            : "Confirm the payroll batch in your wallet."
+      while (nextUnit) {
+        const result = await submitCurrentBatch(
+          toRecipientDraftBatch(nextUnit),
+          typeof nextUnit.payload.referenceId === "string"
+            ? nextUnit.payload.referenceId
+            : initPlan.referenceId
         );
 
-          const result = await submitCurrentBatch(
-            batch.draftRecipients,
-            batch.referenceId
-          );
+        const reportResult: ReportTaskUnitResponse = await backendFetch<ReportTaskUnitResponse>(
+          `/tasks/${initPlan.taskId}/units/${nextUnit.id}/report`,
+          {
+            method: "POST",
+            body: JSON.stringify(
+              result.ok
+                ? {
+                    status: "SUCCESS",
+                    txHash: result.hash,
+                  }
+                : {
+                    status: "FAILED",
+                    error: "Wallet batch execution did not complete successfully.",
+                  }
+            ),
+          }
+        );
 
-        if (!result.ok) {
-          setProgress({
-            stage: "error",
-            label:
-                plannedTotalBatches > 1
-                ? `Batch ${batchIndex + 1} failed`
-                : "Payroll failed",
-            currentBatch: batchIndex + 1,
-              totalBatches: plannedTotalBatches,
-          });
-          return;
-        }
-
-        if (result.hash) {
-          nextSubmissionHashes.push(result.hash);
-        }
-
-        if (batchIndex < plannedBatches.length - 1) {
-          loadNextBatch();
-        }
+        setTask(reportResult.task);
+        nextUnit = reportResult.nextUnit;
       }
 
-      const nextHashes = nextApprovalHash
-        ? [nextApprovalHash, ...nextSubmissionHashes]
-        : nextSubmissionHashes;
-      const latestHash =
-        nextSubmissionHashes[nextSubmissionHashes.length - 1] ?? nextApprovalHash;
-
-      setHashes(nextHashes);
-      setSubmissionHashes(nextSubmissionHashes);
-      setLastHash(latestHash ?? null);
-
-      setProgress({
-        stage: "success",
-        label: plannedTotalBatches > 1 ? "All batches sent" : "Batch sent",
-        currentBatch: plannedTotalBatches,
-        totalBatches: plannedTotalBatches,
-      });
-      setStatusMessage(
-        plannedTotalBatches > 1
-          ? `All ${plannedTotalBatches} payroll batches were confirmed in the active wallet.`
-          : "Payroll batch confirmed in the active wallet."
-      );
-      setIsSuccess(true);
+      await refreshTask(initPlan.taskId);
     } catch (error) {
       const message = getFriendlyErrorMessage(error);
-
-      setProgress({
-        stage: "error",
-        label: "Payroll failed",
-        currentBatch: currentBatchNumber,
-        totalBatches,
-      });
-
       setErrorMessage(message);
     } finally {
       setIsRunning(false);
@@ -345,30 +338,20 @@ export function useBatchPayroll({
     approveBatchAmount,
     batches,
     currentAllowance,
-    currentBatchNumber,
-    loadNextBatch,
     referenceId,
     refetchAllowance,
+    refreshTask,
     setErrorMessage,
     setStatusMessage,
     submitCurrentBatch,
-    totalBatches,
   ]);
 
   const reset = useCallback(() => {
     setIsRunning(false);
-    setIsSuccess(false);
+    setTask(null);
+    setTaskId(null);
     setApprovalHash(null);
-    setLastHash(null);
-    setHashes([]);
-    setSubmissionHashes([]);
-    setProgress({
-      stage: "idle",
-      label: null,
-      currentBatch: 0,
-      totalBatches,
-    });
-  }, [totalBatches]);
+  }, []);
 
   return {
     ...totals,
@@ -377,6 +360,8 @@ export function useBatchPayroll({
     isRunning,
     isSuccess,
     progress,
+    taskId,
+    task,
     approvalHash,
     lastHash,
     hashes,

@@ -65,6 +65,60 @@ export interface TransactionActionResult {
   hash: string | null;
 }
 
+export type BackendTaskStatus =
+  | "created"
+  | "assigned"
+  | "in_progress"
+  | "review"
+  | "executed"
+  | "failed"
+  | "approved"
+  | "partial";
+
+export type BackendTaskLogLevel = "INFO" | "ERROR";
+
+export type BackendTaskUnitStatus = "PENDING" | "SUCCESS" | "FAILED";
+
+export interface BackendTaskLog {
+  id: string;
+  taskId: string;
+  level: BackendTaskLogLevel;
+  step: string;
+  status: string;
+  message: string;
+  context: Record<string, unknown> | null;
+  createdAt: string;
+}
+
+export interface BackendTaskUnit {
+  id: string;
+  taskId: string;
+  type: string;
+  index: number;
+  status: BackendTaskUnitStatus;
+  txHash: string | null;
+  error: string | null;
+  payload: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface BackendTask {
+  id: string;
+  type: string;
+  status: BackendTaskStatus;
+  totalUnits: number;
+  completedUnits: number;
+  failedUnits: number;
+  metadata: Record<string, unknown> | null;
+  payload: Record<string, unknown>;
+  result: Record<string, unknown> | null;
+  createdAt: string;
+  updatedAt: string;
+  logs: BackendTaskLog[];
+  units: BackendTaskUnit[];
+}
+
 /* ── The shape returned by useWizPay() ── */
 export interface WizPayState {
   /* token selection */
@@ -156,6 +210,8 @@ export interface WizPayState {
   smartBatchButtonText: string | null;
   smartBatchHelperText: string | null;
   smartBatchSubmissionHashes: string[];
+  payrollTaskId: string | null;
+  payrollTask: BackendTask | null;
   handleSmartBatchSubmit: () => Promise<void>;
 
   /* clipboard */

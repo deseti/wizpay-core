@@ -12,6 +12,7 @@ import { OrchestratorService } from './orchestrator.service';
 import { PayrollInitService } from './payroll-init.service';
 import { CreateTaskDto } from '../task/dto/create-task.dto';
 import { TaskService } from '../task/task.service';
+import type { ReportTaskUnitInput } from '../task/task.types';
 
 @Controller('tasks')
 export class TaskController {
@@ -32,6 +33,17 @@ export class TaskController {
   async initPayroll(@Body() payload: Record<string, unknown>) {
     return {
       data: await this.payrollInitService.prepare(payload ?? {}),
+    };
+  }
+
+  @Post(':taskId/units/:unitId/report')
+  async reportTaskUnit(
+    @Param('taskId', new ParseUUIDPipe()) taskId: string,
+    @Param('unitId', new ParseUUIDPipe()) unitId: string,
+    @Body() body: ReportTaskUnitInput,
+  ) {
+    return {
+      data: await this.taskService.reportUnit(taskId, unitId, body),
     };
   }
 

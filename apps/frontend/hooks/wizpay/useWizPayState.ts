@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState, useEffect } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { type Hex } from "viem";
 import {
   createRecipient,
@@ -19,20 +19,19 @@ export function useWizPayState() {
   const [recipients, setRecipients] = useState<RecipientDraft[]>(() => [
     createRecipient("USDC"),
   ]);
-  const [referenceId, setReferenceId] = useState<string>("");
+  const [referenceId, setReferenceId] = useState<string>(() => generateReferenceId());
   const [errors, setErrors] = useState<Record<string, string>>({});
-
-  const [pendingBatches, setPendingBatches] = useState<RecipientDraft[][]>([]);
-  const [currentBatchNumber, setCurrentBatchNumber] = useState<number>(1);
-  const [totalBatches, setTotalBatches] = useState<number>(1);
 
   const [sessionTotalAmount, setSessionTotalAmount] = useState<bigint>(0n);
   const [sessionTotalRecipients, setSessionTotalRecipients] = useState<number>(0);
   const [sessionTotalDistributed, setSessionTotalDistributed] = useState<Record<TokenSymbol, bigint>>({ USDC: 0n, EURC: 0n });
 
-  useEffect(() => {
-    setReferenceId(generateReferenceId());
-  }, []);
+  const pendingBatches = useMemo<RecipientDraft[][]>(() => [], []);
+  const currentBatchNumber = 1;
+  const totalBatches = useMemo(
+    () => Math.max(1, Math.ceil(recipients.length / 50)),
+    [recipients.length]
+  );
   
   const [approvalState, setApprovalState] = useState<StepState>("idle");
   const [submitState, setSubmitState] = useState<StepState>("idle");
@@ -63,10 +62,7 @@ export function useWizPayState() {
   );
 
   const addRecipient = useCallback(() => {
-    setRecipients((current) => {
-      if (current.length >= 50) return current;
-      return [...current, createRecipient(selectedToken)];
-    });
+    setRecipients((current) => [...current, createRecipient(selectedToken)]);
   }, [selectedToken]);
 
   const removeRecipient = useCallback((id: string) => {
@@ -77,53 +73,15 @@ export function useWizPayState() {
   }, []);
 
   const importRecipients = useCallback((rows: RecipientDraft[]) => {
-    if (rows.length > 50) {
-      const chunks: RecipientDraft[][] = [];
-      for (let i = 0; i < rows.length; i += 50) {
-        chunks.push(rows.slice(i, i + 50));
-      }
-      setRecipients(chunks[0]);
-      setPendingBatches(chunks.slice(1));
-      setTotalBatches(chunks.length);
-      setCurrentBatchNumber(1);
-    } else {
-      setRecipients(rows);
-      setPendingBatches([]);
-      setTotalBatches(1);
-      setCurrentBatchNumber(1);
-    }
+    setRecipients(rows.length > 0 ? rows : [createRecipient(selectedToken)]);
     setErrors({});
     setSessionTotalAmount(0n);
     setSessionTotalRecipients(0);
     setSessionTotalDistributed({ USDC: 0n, EURC: 0n });
-  }, []);
+  }, [selectedToken]);
 
   const loadNextBatch = useCallback(() => {
-    setPendingBatches((current) => {
-      if (current.length === 0) return current;
-      const [nextBatch, ...rest] = current;
-      setRecipients(nextBatch);
-      return rest;
-    });
-
-    setCurrentBatchNumber((prev) => prev + 1);
-
-    setApprovalState("idle");
-    setSubmitState("idle");
-    setApproveTxHash(null);
-    setSubmitTxHash(null);
-    setStatusMessage(null);
-    setErrorMessage(null);
-    setErrors({});
-
-    setReferenceId((prevId) => {
-      if (!prevId) return generateReferenceId();
-      const match = prevId.match(/(.*)-(\d+)$/);
-      if (match) {
-        return `${match[1]}-${parseInt(match[2], 10) + 1}`;
-      }
-      return `${prevId}-2`;
-    });
+    return;
   }, []);
 
   // Compute prepared recipients
@@ -181,9 +139,6 @@ export function useWizPayState() {
     setRecipients([createRecipient("USDC")]);
     setReferenceId(generateReferenceId());
     setErrors({});
-    setPendingBatches([]);
-    setCurrentBatchNumber(1);
-    setTotalBatches(1);
     setApprovalState("idle");
     setSubmitState("idle");
     setApproveTxHash(null);
