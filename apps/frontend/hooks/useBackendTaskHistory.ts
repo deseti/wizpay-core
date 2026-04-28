@@ -4,6 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import type { Address } from "viem";
 import { backendFetch } from "@/lib/backend-api";
 import { USDC_ADDRESS, EURC_ADDRESS } from "@/constants/addresses";
+import { isTransactionHash } from "@/lib/wizpay";
 import type {
   BackendTask,
   BackendTaskListResponse,
@@ -60,13 +61,30 @@ function liquidityActionType(task: BackendTask): HistoryActionType {
   return op === "remove" ? "remove_lp" : "add_lp";
 }
 
+function resolveTaskTxHash(task: BackendTask): `0x${string}` | null {
+  const candidates = [
+    task.units[0]?.txHash,
+    task.result?.txHash,
+    task.result?.execution?.txHash,
+    task.result?.execution?.transfer?.txHash,
+    task.result?.execution?.transfer?.txHashMint,
+    task.result?.execution?.transfer?.txHashBurn,
+  ];
+
+  for (const candidate of candidates) {
+    if (isTransactionHash(candidate)) {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
 /** Convert a backend task to a UnifiedHistoryItem for display */
 export function backendTaskToHistoryItem(
   task: BackendTask
 ): UnifiedHistoryItem | null {
-  const txHash =
-    (task.units[0]?.txHash as `0x${string}` | null) ??
-    (task.result?.txHash as `0x${string}` | null);
+  const txHash = resolveTaskTxHash(task);
 
   const createdAt = new Date(task.createdAt).getTime();
 

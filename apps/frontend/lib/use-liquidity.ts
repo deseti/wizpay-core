@@ -1,9 +1,13 @@
 import { keepPreviousData } from "@tanstack/react-query";
-import { type Address } from "viem";
+import { type Address, type Hex } from "viem";
 import { usePublicClient, useReadContract } from "wagmi";
 
 import { useActiveWalletAddress } from "@/hooks/useActiveWalletAddress";
 import { useTransactionExecutor } from "@/hooks/useTransactionExecutor";
+import {
+  LIQUIDITY_ADDED_EVENT,
+  LIQUIDITY_REMOVED_EVENT,
+} from "@/constants/abi";
 import { STABLE_FX_ADAPTER_V2_ADDRESS } from "@/constants/addresses";
 import { STABLE_FX_ADAPTER_V2_ABI } from "@/constants/stablefx-abi";
 import { ERC20_ABI } from "@/constants/erc20";
@@ -18,6 +22,20 @@ function waitFor(ms: number) {
     window.setTimeout(resolve, ms);
   });
 }
+
+type LiquidityAddedLog = {
+  transactionHash: Hex | null;
+  args: {
+    amountIn?: bigint;
+  };
+};
+
+type LiquidityRemovedLog = {
+  transactionHash: Hex | null;
+  args: {
+    sharesBurned?: bigint;
+  };
+};
 
 export function useLiquidity(tokenAddress: Address) {
   const publicClient = usePublicClient({ chainId: arcTestnet.id });
@@ -111,12 +129,14 @@ export function useLiquidity(tokenAddress: Address) {
     args,
     contractAddress,
     functionName,
+    recoverTxHash,
     refId,
   }: {
     abi: typeof ERC20_ABI | typeof STABLE_FX_ADAPTER_V2_ABI;
     args: readonly unknown[];
     contractAddress: Address;
     functionName: string;
+    recoverTxHash?: (startBlock: bigint) => Promise<Hex | null>;
     refId: string;
   }) => {
     if (!walletAddress) {
@@ -138,14 +158,80 @@ export function useLiquidity(tokenAddress: Address) {
         ? executionResult.hash
         : null);
 
-    if (resolvedTxHash && publicClient) {
+    const recoveredTxHash =
+      resolvedTxHash ??
+      (recoverTxHash ? await recoverTxHash(executionResult.startBlock) : null);
+
+    if (recoveredTxHash && publicClient) {
       await publicClient.waitForTransactionReceipt({
-        hash: resolvedTxHash,
+        hash: recoveredTxHash,
         confirmations: 1,
       });
     }
 
-    return resolvedTxHash ?? executionResult.referenceId;
+    return recoveredTxHash ?? executionResult.referenceId;
+  };
+
+  const waitForLiquidityEvent = async ({
+    amount,
+    shares,
+    startBlock,
+    type,
+  }: {
+    amount?: bigint;
+    shares?: bigint;
+    startBlock: bigint;
+    type: "add" | "remove";
+  }) => {
+    if (!publicClient) {
+      return null;
+    }
+
+    for (let attempt = 0; attempt < MAX_CONFIRMATION_POLLS; attempt += 1) {
+      if (type === "add") {
+        const logs = (await publicClient.getLogs({
+          address: STABLE_FX_ADAPTER_V2_ADDRESS,
+          event: LIQUIDITY_ADDED_EVENT,
+          args: { token: tokenAddress },
+          fromBlock: startBlock,
+        })) as LiquidityAddedLog[];
+
+        const matched = logs.find(
+          (log) =>
+            Boolean(log.transactionHash) &&
+            (typeof amount === "bigint" ? log.args.amountIn === amount : true)
+        );
+
+        if (matched?.transactionHash) {
+          return matched.transactionHash;
+        }
+      } else {
+        const logs = (await publicClient.getLogs({
+          address: STABLE_FX_ADAPTER_V2_ADDRESS,
+          event: LIQUIDITY_REMOVED_EVENT,
+          args: { token: tokenAddress },
+          fromBlock: startBlock,
+        })) as LiquidityRemovedLog[];
+
+        const matched = logs.find(
+          (log) =>
+            Boolean(log.transactionHash) &&
+            (typeof shares === "bigint"
+              ? log.args.sharesBurned === shares
+              : true)
+        );
+
+        if (matched?.transactionHash) {
+          return matched.transactionHash;
+        }
+      }
+
+      if (attempt < MAX_CONFIRMATION_POLLS - 1) {
+        await waitFor(POLL_INTERVAL_MS);
+      }
+    }
+
+    return null;
   };
 
   const waitForAllowanceUpdate = async (targetAmount: bigint) => {
@@ -197,6 +283,12 @@ export function useLiquidity(tokenAddress: Address) {
       args: [tokenAddress, amount],
       contractAddress: STABLE_FX_ADAPTER_V2_ADDRESS,
       functionName: "addLiquidity",
+      recoverTxHash: (startBlock) =>
+        waitForLiquidityEvent({
+          amount,
+          startBlock,
+          type: "add",
+        }),
       refId: `liquidity-add-${Date.now()}`,
     });
   };
@@ -207,6 +299,12 @@ export function useLiquidity(tokenAddress: Address) {
       args: [tokenAddress, shares],
       contractAddress: STABLE_FX_ADAPTER_V2_ADDRESS,
       functionName: "removeLiquidity",
+      recoverTxHash: (startBlock) =>
+        waitForLiquidityEvent({
+          shares,
+          startBlock,
+          type: "remove",
+        }),
       refId: `liquidity-remove-${Date.now()}`,
     });
   };
