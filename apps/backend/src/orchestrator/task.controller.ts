@@ -5,8 +5,10 @@ import {
   Controller,
   Get,
   Param,
+  ParseIntPipe,
   ParseUUIDPipe,
   Post,
+  Query,
   UnauthorizedException,
   UsePipes,
   ValidationPipe,
@@ -140,6 +142,35 @@ export class TaskController {
         body.type,
         body.payload ?? {},
       ),
+    };
+  }
+
+  /**
+   * GET /tasks — List tasks with optional filters.
+   *
+   * Query params:
+   *   type       — filter by task type (payroll, swap, bridge, liquidity, fx)
+   *   status     — filter by status (executed, failed, in_progress, …)
+   *   wallet     — filter by wallet/recipient address stored in metadata
+   *   limit      — max results (default 50, max 200)
+   *   offset     — pagination offset (default 0)
+   */
+  @Get()
+  async listTasks(
+    @Query('type') type?: string,
+    @Query('status') status?: string,
+    @Query('wallet') walletAddress?: string,
+    @Query('limit', new ParseIntPipe({ optional: true })) limit?: number,
+    @Query('offset', new ParseIntPipe({ optional: true })) offset?: number,
+  ) {
+    return {
+      data: await this.taskService.getTaskList({
+        type,
+        status,
+        walletAddress,
+        limit,
+        offset,
+      }),
     };
   }
 

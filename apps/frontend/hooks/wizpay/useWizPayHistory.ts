@@ -19,6 +19,7 @@ import { activeFxEngineAddress } from "@/lib/fx-config";
 import { arcTestnet } from "@/lib/wagmi";
 import { sameAddress } from "@/lib/wizpay";
 import type { HistoryItem, UnifiedHistoryItem } from "@/lib/types";
+import { useBackendTaskHistory } from "@/hooks/useBackendTaskHistory";
 
 interface BatchHistoryLog {
   address: Address;
@@ -360,10 +361,31 @@ export function useWizPayHistory({
     queryClient.removeQueries({ queryKey: ["lp-history"] });
   }, [walletAddress, queryClient]);
 
+  // Backend task history (swap, bridge, fx, payroll, liquidity from DB)
+  const { items: backendItems, isLoading: backendLoading } = useBackendTaskHistory({
+    walletAddress: walletAddress ?? undefined,
+  });
+
+  // Merge on-chain + backend items, deduplicate by txHash
+  const mergedHistory = useMemo<UnifiedHistoryItem[]>(() => {
+    const onChainHashes = new Set(
+      unifiedHistory
+        .filter((item) => item.txHash && item.txHash !== "0x")
+        .map((item) => item.txHash.toLowerCase())
+    );
+    // Include backend items not already represented on-chain
+    const newBackendItems = backendItems.filter(
+      (item) => !item.txHash || item.txHash === "0x" || !onChainHashes.has(item.txHash.toLowerCase())
+    );
+    return [...unifiedHistory, ...newBackendItems].sort(
+      (a, b) => b.timestampMs - a.timestampMs
+    );
+  }, [unifiedHistory, backendItems]);
+
   return {
     history,
-    unifiedHistory,
+    unifiedHistory: mergedHistory,
     totalRouted,
-    historyLoading: historyQuery.isLoading || lpHistoryQuery.isLoading,
+    historyLoading: historyQuery.isLoading || lpHistoryQuery.isLoading || backendLoading,
   };
 }

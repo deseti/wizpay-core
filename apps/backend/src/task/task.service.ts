@@ -669,6 +669,53 @@ export class TaskService {
     return this.mapTask(task);
   }
 
+  async getTaskList(options: {
+    type?: string;
+    status?: string;
+    walletAddress?: string;
+    limit?: number;
+    offset?: number;
+  }): Promise<{ items: TaskDetails[]; total: number }> {
+    const limit = Math.min(options.limit ?? 50, 200);
+    const offset = options.offset ?? 0;
+
+    // Build where clause — wallet filtering matches against metadata JSON
+    const where: Prisma.TaskWhereInput = {
+      ...(options.type ? { type: options.type } : {}),
+      ...(options.status ? { status: options.status } : {}),
+      ...(options.walletAddress
+        ? {
+            OR: [
+              { metadata: { path: ['walletAddress'], equals: options.walletAddress } },
+              { metadata: { path: ['recipient'], equals: options.walletAddress } },
+              { payload: { path: ['walletAddress'], equals: options.walletAddress } },
+              { payload: { path: ['recipient'], equals: options.walletAddress } },
+            ],
+          }
+        : {}),
+    };
+
+    const [tasks, total] = await Promise.all([
+      this.prisma.task.findMany({
+        where,
+        include: {
+          logs: { orderBy: { createdAt: 'asc' } },
+          units: { orderBy: [{ index: 'asc' }, { createdAt: 'asc' }] },
+          transactions: { orderBy: [{ batchIndex: 'asc' }, { createdAt: 'asc' }] },
+        },
+        orderBy: { createdAt: 'desc' },
+        take: limit,
+        skip: offset,
+      }),
+      this.prisma.task.count({ where }),
+    ]);
+
+    return {
+      items: tasks.map((t) => this.mapTask(t)),
+      total,
+    };
+  }
+
   async hasLogStep(taskId: string, step: string): Promise<boolean> {
     const existingLog = await this.prisma.taskLog.findFirst({
       where: { taskId, step },

@@ -55,11 +55,26 @@ const ACTION_CONFIG: Record<
     label: "Remove LP",
     className: "bg-amber-500/12 text-amber-300/90 border-amber-500/25",
   },
+  swap: {
+    label: "Swap",
+    className: "bg-violet-500/12 text-violet-300/90 border-violet-500/25",
+  },
+  bridge: {
+    label: "Bridge",
+    className: "bg-cyan-500/12 text-cyan-300/90 border-cyan-500/25",
+  },
+  fx: {
+    label: "FX",
+    className: "bg-pink-500/12 text-pink-300/90 border-pink-500/25",
+  },
 };
 
 const FILTER_TABS: { value: ActivityFilter; label: string }[] = [
   { value: "all", label: "All" },
   { value: "payroll", label: "Payroll" },
+  { value: "swap", label: "Swap" },
+  { value: "bridge", label: "Bridge" },
+  { value: "fx", label: "FX" },
   { value: "add_lp", label: "Add LP" },
   { value: "remove_lp", label: "Remove LP" },
 ];
@@ -70,6 +85,17 @@ function getDetailText(item: UnifiedHistoryItem): string {
       TOKEN_BY_ADDRESS.get(item.tokenIn?.toLowerCase() ?? "")?.symbol ?? "?";
     return `${item.recipientCount} recipients · ${formatTokenAmount(item.totalAmountIn ?? 0n, 6)} ${inToken}`;
   }
+  if (item.type === "swap") {
+    const inSym = TOKEN_BY_ADDRESS.get(item.tokenIn?.toLowerCase() ?? "")?.symbol ?? "Token";
+    const outSym = TOKEN_BY_ADDRESS.get(item.tokenOut?.toLowerCase() ?? "")?.symbol ?? "Token";
+    const amt = formatTokenAmount(item.totalAmountIn ?? 0n, 6);
+    return `${amt} ${inSym} → ${outSym}`;
+  }
+  if (item.type === "bridge" || item.type === "fx") {
+    const inSym = TOKEN_BY_ADDRESS.get(item.tokenIn?.toLowerCase() ?? "")?.symbol ?? "Token";
+    const amt = formatTokenAmount(item.totalAmountIn ?? 0n, 6);
+    return `${amt} ${inSym}`;
+  }
   const tokenSym =
     TOKEN_BY_ADDRESS.get(item.lpToken?.toLowerCase() ?? "")?.symbol ?? "Token";
   const amount = formatTokenAmount(item.lpAmount ?? 0n, 6);
@@ -77,9 +103,13 @@ function getDetailText(item: UnifiedHistoryItem): string {
 }
 
 function getReferenceText(item: UnifiedHistoryItem): string {
-  if (item.type === "payroll" && item.referenceId) return item.referenceId;
+  if (item.referenceId) return item.referenceId;
   if (item.type === "add_lp") return "Deposit Liquidity";
-  return "Withdraw Liquidity";
+  if (item.type === "remove_lp") return "Withdraw Liquidity";
+  if (item.type === "swap") return "Token Swap";
+  if (item.type === "bridge") return "Bridge Transfer";
+  if (item.type === "fx") return "FX Settlement";
+  return "—";
 }
 
 /* ── Skeleton rows ── */
@@ -265,24 +295,36 @@ export function TransactionHistory({
                           </div>
                         </TableCell>
                         <TableCell className="font-mono text-sm whitespace-nowrap">
-                          {item.type === "payroll"
+                          {(item.type === "payroll" || item.type === "swap" || item.type === "bridge" || item.type === "fx")
                             ? `${formatTokenAmount(item.totalAmountIn ?? 0n, 6)} ${TOKEN_BY_ADDRESS.get(item.tokenIn?.toLowerCase() ?? "")?.symbol ?? ""}`
                             : `${formatTokenAmount(item.lpAmount ?? 0n, 6)} ${TOKEN_BY_ADDRESS.get(item.lpToken?.toLowerCase() ?? "")?.symbol ?? ""}`}
                         </TableCell>
                         <TableCell>
                           <div className="flex items-center gap-2">
-                            <Badge className="bg-emerald-500/12 text-emerald-300/90 border-emerald-500/25">
-                              Confirmed
-                            </Badge>
-                            <a
-                              href={txLink(item.txHash)}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="inline-flex items-center gap-1 text-sm text-primary hover:underline transition-colors"
-                            >
-                              View tx
-                              <ExternalLink className="h-3.5 w-3.5" />
-                            </a>
+                            {(item as { backendStatus?: string }).backendStatus && (item as { backendStatus?: string }).backendStatus !== "executed" ? (
+                              <Badge className={
+                                (item as { backendStatus?: string }).backendStatus === "failed"
+                                  ? "bg-red-500/12 text-red-300/90 border-red-500/25"
+                                  : "bg-yellow-500/12 text-yellow-300/90 border-yellow-500/25"
+                              }>
+                                {(item as { backendStatus?: string }).backendStatus}
+                              </Badge>
+                            ) : (
+                              <Badge className="bg-emerald-500/12 text-emerald-300/90 border-emerald-500/25">
+                                Confirmed
+                              </Badge>
+                            )}
+                            {item.txHash && item.txHash !== "0x" && (
+                              <a
+                                href={txLink(item.txHash)}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="inline-flex items-center gap-1 text-sm text-primary hover:underline transition-colors"
+                              >
+                                View tx
+                                <ExternalLink className="h-3.5 w-3.5" />
+                              </a>
+                            )}
                           </div>
                         </TableCell>
                       </TableRow>

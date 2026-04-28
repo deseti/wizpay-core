@@ -39,7 +39,7 @@ export interface HistoryItem {
 }
 
 /* ── Unified history covering all dashboard event types ── */
-export type HistoryActionType = "payroll" | "add_lp" | "remove_lp";
+export type HistoryActionType = "payroll" | "add_lp" | "remove_lp" | "swap" | "bridge" | "fx";
 
 export interface UnifiedHistoryItem {
   type: HistoryActionType;
@@ -117,6 +117,11 @@ export interface BackendTask {
   updatedAt: string;
   logs: BackendTaskLog[];
   units: BackendTaskUnit[];
+}
+
+export interface BackendTaskListResponse {
+  items: BackendTask[];
+  total: number;
 }
 
 /* ── The shape returned by useWizPay() ── */
