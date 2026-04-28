@@ -7,6 +7,7 @@ import { useTransactionExecutor } from "@/hooks/useTransactionExecutor";
 import { STABLE_FX_ADAPTER_V2_ADDRESS } from "@/constants/addresses";
 import { STABLE_FX_ADAPTER_V2_ABI } from "@/constants/stablefx-abi";
 import { ERC20_ABI } from "@/constants/erc20";
+import { isTransactionHash } from "@/lib/wizpay";
 import { arcTestnet } from "@/lib/wagmi";
 
 const POLL_INTERVAL_MS = 1500;
@@ -110,7 +111,6 @@ export function useLiquidity(tokenAddress: Address) {
     args,
     contractAddress,
     functionName,
-    recoverTxHash,
     refId,
   }: {
     abi: typeof ERC20_ABI | typeof STABLE_FX_ADAPTER_V2_ABI;
@@ -132,14 +132,20 @@ export function useLiquidity(tokenAddress: Address) {
       refId,
     });
 
-    if (executionResult.txHash && publicClient) {
+    const resolvedTxHash =
+      executionResult.txHash ??
+      (isTransactionHash(executionResult.hash)
+        ? executionResult.hash
+        : null);
+
+    if (resolvedTxHash && publicClient) {
       await publicClient.waitForTransactionReceipt({
-        hash: executionResult.txHash,
+        hash: resolvedTxHash,
         confirmations: 1,
       });
     }
 
-    return executionResult.txHash ?? executionResult.referenceId;
+    return resolvedTxHash ?? executionResult.referenceId;
   };
 
   const waitForAllowanceUpdate = async (targetAmount: bigint) => {

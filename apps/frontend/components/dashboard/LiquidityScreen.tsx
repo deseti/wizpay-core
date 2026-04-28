@@ -136,7 +136,7 @@ export function LiquidityScreen() {
       if (taskId && unitId) {
         await reportLiquidityResult(taskId, unitId, {
           status: "SUCCESS",
-          txHash: txHashResult ?? undefined,
+          txHash: isTransactionHash(txHashResult) ? txHashResult : undefined,
         });
       }
 
@@ -151,7 +151,7 @@ export function LiquidityScreen() {
         reportLiquidityResult(taskId, unitId, {
           status: "FAILED",
           error: msg,
-          txHash: txHashResult ?? undefined,
+          txHash: isTransactionHash(txHashResult) ? txHashResult : undefined,
         }).catch(() => undefined);
       }
 
@@ -191,7 +191,7 @@ export function LiquidityScreen() {
       if (taskId && unitId) {
         await reportLiquidityResult(taskId, unitId, {
           status: "SUCCESS",
-          txHash: txHashResult ?? undefined,
+          txHash: isTransactionHash(txHashResult) ? txHashResult : undefined,
         });
       }
 
@@ -206,7 +206,7 @@ export function LiquidityScreen() {
         reportLiquidityResult(taskId, unitId, {
           status: "FAILED",
           error: msg,
-          txHash: txHashResult ?? undefined,
+          txHash: isTransactionHash(txHashResult) ? txHashResult : undefined,
         }).catch(() => undefined);
       }
 
