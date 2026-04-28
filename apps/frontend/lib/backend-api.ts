@@ -23,10 +23,6 @@ export async function backendFetch<T>(
     headers.set("Content-Type", "application/json");
   }
 
-  if (typeof window !== "undefined") {
-    console.log("API URL:", apiBaseUrl);
-  }
-
   const response = await fetch(buildBackendUrl(path, apiBaseUrl), {
     ...init,
     cache: "no-store",
