@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { backendFetch } from "@/lib/backend-api";
+import { useActiveWalletAddress } from "@/hooks/useActiveWalletAddress";
 import {
   getFriendlyErrorMessage,
   parseAmountToUnits,
@@ -203,6 +204,7 @@ export function useBatchPayroll({
   setStatusMessage,
   submitCurrentBatch,
 }: UseBatchPayrollOptions): BatchPayrollResult {
+  const { walletAddress } = useActiveWalletAddress();
   const batches = useMemo(
     () => normalizeBatches(recipients, pendingBatches),
     [pendingBatches, recipients]
@@ -265,6 +267,7 @@ export function useBatchPayroll({
             body: JSON.stringify({
               sourceToken: activeToken.symbol,
               referenceId,
+              walletAddress,
               recipients: batches.flat().map((recipient) => ({
                 address: recipient.address,
                 amount: recipient.amount,
@@ -338,6 +341,7 @@ export function useBatchPayroll({
     approveBatchAmount,
     batches,
     currentAllowance,
+    walletAddress,
     referenceId,
     refetchAllowance,
     refreshTask,

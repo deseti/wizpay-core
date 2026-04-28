@@ -17,12 +17,14 @@ export function useWizPayHistory({
   activeToken: { address: Address };
   refetchCb: () => void;
 }) {
-  const { walletAddress } = useActiveWalletAddress();
+  const { isConnected } = useActiveWalletAddress();
   // Backend task history only (no on-chain log scans).
   const { items: backendItems, isLoading: backendLoading } = useBackendTaskHistory({
-    walletAddress: walletAddress ?? undefined,
+    // Keep history complete while older tasks may not carry initiator wallet metadata.
+    // Once all task types persist walletAddress consistently, this can be re-enabled.
+    walletAddress: undefined,
     limit: 50,
-    enabled: Boolean(walletAddress),
+    enabled: isConnected,
   });
 
   const unifiedHistory = useMemo<UnifiedHistoryItem[]>(() => {

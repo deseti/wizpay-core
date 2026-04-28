@@ -1,13 +1,39 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
+import type { Address } from "viem";
 import { backendFetch } from "@/lib/backend-api";
+import { USDC_ADDRESS, EURC_ADDRESS } from "@/constants/addresses";
 import type {
   BackendTask,
   BackendTaskListResponse,
   HistoryActionType,
   UnifiedHistoryItem,
 } from "@/lib/types";
+
+function asAddress(value: unknown): Address | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim();
+  if (/^0x[a-fA-F0-9]{40}$/.test(normalized)) {
+    return normalized.toLowerCase() as Address;
+  }
+  if (normalized.toUpperCase() === "USDC") return USDC_ADDRESS;
+  if (normalized.toUpperCase() === "EURC") return EURC_ADDRESS;
+  return undefined;
+}
+
+function toBigIntValue(value: unknown): bigint | undefined {
+  if (typeof value === "bigint") return value;
+  if (typeof value === "number") return BigInt(Math.trunc(value));
+  if (typeof value === "string" && value.trim()) {
+    try {
+      return BigInt(value);
+    } catch {
+      return undefined;
+    }
+  }
+  return undefined;
+}
 
 /** Map backend task type → HistoryActionType */
 function toHistoryActionType(taskType: string): HistoryActionType | null {
@@ -55,6 +81,15 @@ export function backendTaskToHistoryItem(
 
   const meta = task.metadata ?? {};
   const payload = task.payload ?? {};
+  const tokenIn = asAddress(meta.tokenIn ?? payload.tokenIn ?? meta.sourceToken ?? payload.sourceToken);
+  const tokenOut = asAddress(meta.tokenOut ?? payload.tokenOut ?? payload.targetToken);
+  const totalAmountIn =
+    toBigIntValue(meta.amountIn) ??
+    toBigIntValue(payload.amountIn) ??
+    toBigIntValue(meta.totalAmount) ??
+    toBigIntValue(payload.totalAmount) ??
+    toBigIntValue(meta.amount) ??
+    toBigIntValue(payload.amount);
 
   return {
     type,
@@ -62,11 +97,9 @@ export function backendTaskToHistoryItem(
     blockNumber: 0n,
     timestampMs: createdAt,
     // payroll
-    tokenIn: (meta.tokenIn ?? payload.tokenIn ?? meta.sourceToken ?? payload.sourceToken) as `0x${string}` | undefined,
-    tokenOut: (meta.tokenOut ?? payload.tokenOut) as `0x${string}` | undefined,
-    totalAmountIn: meta.amountIn || payload.amountIn
-      ? BigInt(String(meta.amountIn ?? payload.amountIn ?? "0"))
-      : undefined,
+    tokenIn,
+    tokenOut,
+    totalAmountIn,
     totalAmountOut: undefined,
     totalFees: undefined,
     recipientCount:
@@ -82,10 +115,8 @@ export function backendTaskToHistoryItem(
         ? payload.referenceId
         : task.id.slice(0, 8).toUpperCase(),
     // lp
-    lpToken: (meta.token ?? payload.token) as `0x${string}` | undefined,
-    lpAmount: meta.amount || payload.amount
-      ? BigInt(String(meta.amount ?? payload.amount ?? "0"))
-      : undefined,
+    lpToken: asAddress(meta.token ?? payload.token),
+    lpAmount: toBigIntValue(meta.amount) ?? toBigIntValue(payload.amount),
     lpShares: undefined,
     // extra
     backendTaskId: task.id,

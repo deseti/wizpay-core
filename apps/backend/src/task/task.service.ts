@@ -104,6 +104,10 @@ export class TaskService {
       typeof payload.sourceToken === 'string' && payload.sourceToken.trim()
         ? payload.sourceToken.trim()
         : 'USDC';
+    const walletAddress =
+      typeof payload.walletAddress === 'string' && payload.walletAddress.trim()
+        ? payload.walletAddress.trim().toLowerCase()
+        : undefined;
     const referenceId = this.normalizeReferenceId(payload.referenceId);
     const units = batches.map((batch) => ({
       type: 'batch' as const,
@@ -134,6 +138,7 @@ export class TaskService {
             approvalAmount: totals.totalAmount.toString(),
             referenceId,
             sourceToken,
+            ...(walletAddress ? { walletAddress } : {}),
             totalBatches: totals.totalBatches,
             totalRecipients: totals.totalRecipients,
             totalAmount: totals.totalAmount.toString(),
@@ -688,8 +693,12 @@ export class TaskService {
             OR: [
               { metadata: { path: ['walletAddress'], equals: options.walletAddress } },
               { metadata: { path: ['recipient'], equals: options.walletAddress } },
+              { metadata: { path: ['destinationAddress'], equals: options.walletAddress } },
+              { metadata: { path: ['sourceAddress'], equals: options.walletAddress } },
               { payload: { path: ['walletAddress'], equals: options.walletAddress } },
               { payload: { path: ['recipient'], equals: options.walletAddress } },
+              { payload: { path: ['destinationAddress'], equals: options.walletAddress } },
+              { payload: { path: ['sourceAddress'], equals: options.walletAddress } },
             ],
           }
         : {}),
