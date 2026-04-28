@@ -97,6 +97,7 @@ interface UseBackendTaskHistoryOptions {
   walletAddress?: string;
   type?: string;
   limit?: number;
+  enabled?: boolean;
   /** polling interval ms (default 30s) */
   refetchInterval?: number;
 }
@@ -108,7 +109,13 @@ interface UseBackendTaskHistoryOptions {
 export function useBackendTaskHistory(
   options: UseBackendTaskHistoryOptions = {}
 ) {
-  const { walletAddress, type, limit = 100, refetchInterval = 30_000 } = options;
+  const {
+    walletAddress,
+    type,
+    limit = 50,
+    enabled = true,
+    refetchInterval = 30_000,
+  } = options;
 
   const params = new URLSearchParams();
   if (type) params.set("type", type);
@@ -122,6 +129,7 @@ export function useBackendTaskHistory(
     queryKey: ["backend-task-history", walletAddress, type, limit],
     queryFn: () =>
       backendFetch<BackendTaskListResponse>(`/tasks?${params.toString()}`),
+    enabled,
     refetchInterval,
     staleTime: 15_000,
   });
