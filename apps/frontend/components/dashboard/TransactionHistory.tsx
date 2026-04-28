@@ -23,8 +23,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { TOKEN_BY_ADDRESS } from "@/constants/erc20";
 import type { UnifiedHistoryItem, HistoryActionType } from "@/lib/types";
 import {
-  EXPLORER_BASE_URL,
   formatTokenAmount,
+  getExplorerTxUrl,
 } from "@/lib/wizpay";
 import { useActivityHistory, type ActivityFilter } from "@/hooks/useActivityHistory";
 
@@ -33,10 +33,6 @@ function formatDateTime(timestampMs: number) {
     dateStyle: "medium",
     timeStyle: "short",
   }).format(timestampMs);
-}
-
-function txLink(hash: string) {
-  return `${EXPLORER_BASE_URL}/tx/${hash}`;
 }
 
 const ACTION_CONFIG: Record<
@@ -271,6 +267,7 @@ export function TransactionHistory({
                 <TableBody>
                   {displayItems.map((item, idx) => {
                     const cfg = ACTION_CONFIG[item.type];
+                    const txUrl = getExplorerTxUrl(item.txHash);
                     return (
                       <TableRow key={`${item.txHash}-${idx}`} className="border-border/20 hover:bg-primary/3 transition-colors">
                         <TableCell className="text-sm whitespace-nowrap">
@@ -314,9 +311,9 @@ export function TransactionHistory({
                                 Confirmed
                               </Badge>
                             )}
-                            {item.txHash && item.txHash !== "0x" && (
+                            {txUrl && (
                               <a
-                                href={txLink(item.txHash)}
+                                href={txUrl}
                                 target="_blank"
                                 rel="noreferrer"
                                 className="inline-flex items-center gap-1 text-sm text-primary hover:underline transition-colors"
@@ -338,6 +335,7 @@ export function TransactionHistory({
             <div className="space-y-3 md:hidden">
               {displayItems.map((item, idx) => {
                 const cfg = ACTION_CONFIG[item.type];
+                const txUrl = getExplorerTxUrl(item.txHash);
                 return (
                   <Card
                     key={`${item.txHash}-mobile-${idx}`}
@@ -363,15 +361,21 @@ export function TransactionHistory({
                           {getDetailText(item)}
                         </p>
                       </div>
-                      <a
-                        href={txLink(item.txHash)}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="inline-flex items-center gap-1 text-sm text-primary hover:underline transition-colors"
-                      >
-                        Open on ArcScan
-                        <ExternalLink className="h-3.5 w-3.5" />
-                      </a>
+                      {txUrl ? (
+                        <a
+                          href={txUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex items-center gap-1 text-sm text-primary hover:underline transition-colors"
+                        >
+                          Open on ArcScan
+                          <ExternalLink className="h-3.5 w-3.5" />
+                        </a>
+                      ) : (
+                        <p className="text-xs text-muted-foreground/60">
+                          Tx hash pending, explorer link not available yet.
+                        </p>
+                      )}
                     </CardContent>
                   </Card>
                 );

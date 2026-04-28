@@ -6,6 +6,7 @@ import {
   ArrowRightLeft,
   CheckCircle2,
   ExternalLink,
+  MessageCircle,
   ShieldCheck,
 } from "lucide-react";
 import { usePublicClient, useReadContract } from "wagmi";
@@ -599,6 +600,34 @@ export function SwapScreen() {
 
             {successState ? (
               <div className="mt-6 space-y-4">
+                {(() => {
+                  const shareText = `Swap completed on WizPay: ${successState.amountIn} ${successState.tokenIn} to ${successState.tokenOut}.${
+                    successState.explorerUrl
+                      ? `\n\nTrack tx: ${successState.explorerUrl}`
+                      : successState.txHash
+                        ? `\n\nReference: ${successState.txHash}`
+                        : ""
+                  }`;
+                  const xShareUrl = `https://x.com/intent/tweet?text=${encodeURIComponent(
+                    shareText
+                  )}`;
+
+                  return (
+                    <div className="flex flex-col gap-3">
+                      <Button
+                        variant="outline"
+                        className="w-full gap-2 border-[#1DA1F2]/50 text-[#1DA1F2] hover:bg-[#1DA1F2]/10"
+                        asChild
+                      >
+                        <a href={xShareUrl} target="_blank" rel="noreferrer">
+                          <MessageCircle className="h-4 w-4" />
+                          Share to X (Twitter)
+                        </a>
+                      </Button>
+                    </div>
+                  );
+                })()}
+
                 <div className="rounded-2xl border border-border/40 bg-background/45 p-4">
                   <div className="flex items-center justify-between gap-3 text-sm">
                     <span className="text-muted-foreground/70">Route</span>

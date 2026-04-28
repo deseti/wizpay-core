@@ -23,7 +23,7 @@ import { SkeletonBalance } from "@/components/ui/skeleton-loaders";
 import { EmptyStateView } from "@/components/ui/empty-state";
 import { useTokenBalances } from "@/hooks/useTokenBalances";
 import { useWizPay } from "@/hooks/wizpay";
-import { formatTokenAmount, TOKEN_OPTIONS } from "@/lib/wizpay";
+import { formatTokenAmount, getExplorerTxUrl, TOKEN_OPTIONS } from "@/lib/wizpay";
 import { TOKEN_BY_ADDRESS } from "@/constants/erc20";
 import type { UnifiedHistoryItem } from "@/lib/types";
 
@@ -177,13 +177,11 @@ function RecentActivity({ items }: { items: UnifiedHistoryItem[] }) {
           : item.lpAmount
             ? formatTokenAmount(item.lpAmount, 6)
             : "—";
+        const txUrl = getExplorerTxUrl(item.txHash);
 
         return (
-          <a
+          <div
             key={item.txHash}
-            href={`https://testnet.arcscan.app/tx/${item.txHash}`}
-            target="_blank"
-            rel="noopener noreferrer"
             className="flex items-center gap-3 rounded-xl px-3 py-3.5 transition-all hover:bg-muted/20 active:scale-[0.98] min-h-[52px]"
           >
             <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-muted/30">
@@ -203,7 +201,19 @@ function RecentActivity({ items }: { items: UnifiedHistoryItem[] }) {
             <p className="text-sm font-mono font-medium">
               {amount} {tokenLabel}
             </p>
-          </a>
+            {txUrl ? (
+              <a
+                href={txUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-xs text-primary hover:underline"
+              >
+                View tx
+              </a>
+            ) : (
+              <span className="text-[11px] text-muted-foreground/60">Pending hash</span>
+            )}
+          </div>
         );
       })}
     </div>

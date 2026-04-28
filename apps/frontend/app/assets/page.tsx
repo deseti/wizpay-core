@@ -14,7 +14,7 @@ import {
 import { EmptyStateView } from "@/components/ui/empty-state";
 import { useTokenBalances } from "@/hooks/useTokenBalances";
 import { useWizPay } from "@/hooks/wizpay";
-import { formatTokenAmount, TOKEN_OPTIONS, EXPLORER_BASE_URL } from "@/lib/wizpay";
+import { formatTokenAmount, getExplorerTxUrl, TOKEN_OPTIONS, EXPLORER_BASE_URL } from "@/lib/wizpay";
 import { useActiveWalletAddress } from "@/hooks/useActiveWalletAddress";
 import { TOKEN_BY_ADDRESS } from "@/constants/erc20";
 import type { UnifiedHistoryItem } from "@/lib/types";
@@ -110,13 +110,11 @@ function TokenDetailCard({
                 : item.lpAmount
                   ? formatTokenAmount(item.lpAmount, 6)
                   : "—";
+              const txUrl = getExplorerTxUrl(item.txHash);
 
               return (
-                <a
+                <div
                   key={item.txHash}
-                  href={`${EXPLORER_BASE_URL}/tx/${item.txHash}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
                   className="flex items-center justify-between px-3 py-2.5 hover:bg-muted/15 transition-colors"
                 >
                   <div>
@@ -129,7 +127,19 @@ function TokenDetailCard({
                     </p>
                   </div>
                   <p className="text-xs font-mono">{amount} {symbol}</p>
-                </a>
+                  {txUrl ? (
+                    <a
+                      href={txUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-xs text-primary hover:underline"
+                    >
+                      View tx
+                    </a>
+                  ) : (
+                    <span className="text-[10px] text-muted-foreground/60">Pending hash</span>
+                  )}
+                </div>
               );
             })}
           </div>

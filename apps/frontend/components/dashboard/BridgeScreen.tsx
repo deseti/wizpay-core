@@ -7,6 +7,7 @@ import {
   Clock3,
   Droplet,
   ExternalLink,
+  MessageCircle,
   RefreshCw,
   Route,
   Wallet,
@@ -142,6 +143,14 @@ function shortenAddress(address: string | null | undefined) {
   }
 
   return `${address.slice(0, 6)}...${address.slice(-4)}`;
+}
+
+function hasExplorerTxHash(url: string | null | undefined) {
+  if (!url) {
+    return false;
+  }
+
+  return /\/tx\/(0x[a-fA-F0-9]{64})(?:$|[/?#])/.test(url);
 }
 
 function getStoredTransferWallet(blockchain: CircleTransferBlockchain) {
@@ -749,6 +758,19 @@ export function BridgeScreen() {
   );
   const burnStep = orderedSteps.find((step) => step.id === "burn");
   const mintStep = orderedSteps.find((step) => step.id === "mint");
+  const burnExplorerUrl = hasExplorerTxHash(burnStep?.explorerUrl)
+    ? burnStep?.explorerUrl
+    : null;
+  const mintExplorerUrl = hasExplorerTxHash(mintStep?.explorerUrl)
+    ? mintStep?.explorerUrl
+    : null;
+  const shareBridgeUrl = mintExplorerUrl ?? burnExplorerUrl;
+  const bridgeShareText = transfer
+    ? `Bridge completed on WizPay: ${transfer.amount} ${tokenSymbol} from ${transferSourceOption.label} to ${transferDestinationOption.label}.${shareBridgeUrl ? `\n\nTrack tx: ${shareBridgeUrl}` : ""}`
+    : "Bridge completed on WizPay.";
+  const bridgeXShareUrl = `https://x.com/intent/tweet?text=${encodeURIComponent(
+    bridgeShareText
+  )}`;
   const shouldShowLongRunningMessage = Boolean(
     transfer &&
       isTransferActive &&
@@ -1764,12 +1786,12 @@ export function BridgeScreen() {
                     </span>
                   </div>
 
-                  {burnStep?.explorerUrl || mintStep?.explorerUrl ? (
+                  {burnExplorerUrl || mintExplorerUrl ? (
                     <div className="grid gap-2">
-                      {burnStep?.explorerUrl ? (
+                      {burnExplorerUrl ? (
                         <Button asChild size="sm" variant="outline" className="w-full">
                           <a
-                            href={burnStep.explorerUrl}
+                            href={burnExplorerUrl}
                             target="_blank"
                             rel="noreferrer"
                           >
@@ -1778,10 +1800,10 @@ export function BridgeScreen() {
                           </a>
                         </Button>
                       ) : null}
-                      {mintStep?.explorerUrl ? (
+                      {mintExplorerUrl ? (
                         <Button asChild size="sm" variant="outline" className="w-full">
                           <a
-                            href={mintStep.explorerUrl}
+                            href={mintExplorerUrl}
                             target="_blank"
                             rel="noreferrer"
                           >
@@ -1964,10 +1986,10 @@ export function BridgeScreen() {
                 </div>
 
                 <div className="grid gap-2">
-                  {burnStep?.explorerUrl ? (
+                  {burnExplorerUrl ? (
                     <Button asChild variant="outline" className="w-full">
                       <a
-                        href={burnStep.explorerUrl}
+                        href={burnExplorerUrl}
                         target="_blank"
                         rel="noreferrer"
                       >
@@ -1976,10 +1998,10 @@ export function BridgeScreen() {
                       </a>
                     </Button>
                   ) : null}
-                  {mintStep?.explorerUrl ? (
+                  {mintExplorerUrl ? (
                     <Button asChild variant="outline" className="w-full">
                       <a
-                        href={mintStep.explorerUrl}
+                        href={mintExplorerUrl}
                         target="_blank"
                         rel="noreferrer"
                       >
@@ -1989,6 +2011,17 @@ export function BridgeScreen() {
                     </Button>
                   ) : null}
                 </div>
+
+                <Button
+                  variant="outline"
+                  className="w-full gap-2 border-[#1DA1F2]/50 text-[#1DA1F2] hover:bg-[#1DA1F2]/10"
+                  asChild
+                >
+                  <a href={bridgeXShareUrl} target="_blank" rel="noreferrer">
+                    <MessageCircle className="h-4 w-4" />
+                    Share to X (Twitter)
+                  </a>
+                </Button>
 
                 <Button className="w-full" onClick={() => {
                   setIsSuccessDialogOpen(false);
