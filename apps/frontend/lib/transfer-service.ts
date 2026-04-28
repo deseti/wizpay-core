@@ -1,3 +1,5 @@
+import { BackendApiError, backendFetch } from "@/lib/backend-api";
+
 export interface CircleTransferStep {
   id: string;
   name: string;
@@ -87,6 +89,23 @@ interface CreateCircleTransferParams {
   blockchain?: CircleTransferBlockchain;
 }
 
+interface BackendTaskLog {
+  step: string;
+  message: string;
+  createdAt: string;
+  context?: Record<string, unknown> | null;
+}
+
+interface BackendTaskRecord {
+  id: string;
+  status: string;
+  payload: Record<string, unknown>;
+  result: Record<string, unknown> | null;
+  logs: BackendTaskLog[];
+  createdAt: string;
+  updatedAt: string;
+}
+
 interface ApiErrorPayload {
   error?: string;
   code?: string;
@@ -164,16 +183,299 @@ export async function bootstrapCircleTransferWallet(
 export async function createCircleTransfer(
   params: CreateCircleTransferParams
 ): Promise<CircleTransfer> {
-  return apiFetch<CircleTransfer>("/api/transfers", {
-    method: "POST",
-    body: JSON.stringify(params),
-  });
+  try {
+    const task = await backendFetch<BackendTaskRecord>("/tasks", {
+      method: "POST",
+      body: JSON.stringify({
+        type: "bridge",
+        payload: {
+          destinationAddress: params.destinationAddress,
+          amount: params.amount,
+          referenceId: params.referenceId,
+          tokenAddress: params.tokenAddress,
+          walletId: params.walletId,
+          walletAddress: params.walletAddress,
+          blockchain: params.blockchain,
+        },
+      }),
+    });
+
+    return mapBackendTaskToTransfer(task);
+  } catch (error) {
+    throw mapBackendErrorToTransferError(error);
+  }
 }
 
 export async function getCircleTransferStatus(
   transferId: string
 ): Promise<CircleTransfer> {
-  return apiFetch<CircleTransfer>(
-    `/api/transfers/${encodeURIComponent(transferId)}`
-  );
+  try {
+    const task = await backendFetch<BackendTaskRecord>(
+      `/tasks/${encodeURIComponent(transferId)}`
+    );
+    return mapBackendTaskToTransfer(task);
+  } catch (error) {
+    throw mapBackendErrorToTransferError(error);
+  }
+}
+
+function mapBackendTaskToTransfer(task: BackendTaskRecord): CircleTransfer {
+  const payload = task.payload ?? {};
+  const transfer = readTransferResult(task.result);
+  const executionPayload = readExecutionPayload(task.result);
+  const rawStatus = mapTaskStatusToRawStatus(task.status, transfer);
+  const status = mapTaskStatusToTransferStatus(task.status, transfer);
+  const stage = mapRawStatusToStage(rawStatus, status);
+
+  return {
+    id: transfer?.id ?? task.id,
+    transferId: transfer?.transferId ?? task.id,
+    status,
+    rawStatus,
+    txHash: transfer?.txHash ?? null,
+    txHashBurn: transfer?.txHashBurn ?? null,
+    txHashMint: transfer?.txHashMint ?? null,
+    sourceWalletId:
+      transfer?.sourceWalletId ?? readString(executionPayload, "walletId") ?? null,
+    walletId: transfer?.walletId ?? readString(payload, "walletId") ?? null,
+    walletAddress:
+      transfer?.walletAddress ?? readString(payload, "walletAddress") ?? null,
+    sourceAddress:
+      transfer?.sourceAddress ??
+      readString(executionPayload, "walletAddress") ??
+      readString(payload, "walletAddress") ??
+      null,
+    sourceChain: transfer?.sourceChain ?? readBlockchain(transfer, "sourceBlockchain"),
+    sourceBlockchain:
+      readBlockchain(transfer, "sourceBlockchain") ??
+      getSourceBlockchain(readBlockchain(payload, "blockchain") ?? "ARC-TESTNET"),
+    destinationChain: transfer?.destinationChain ?? readBlockchain(transfer, "blockchain"),
+    destinationAddress:
+      transfer?.destinationAddress ?? readString(payload, "destinationAddress") ?? null,
+    amount: transfer?.amount ?? readString(payload, "amount") ?? "0",
+    tokenAddress: transfer?.tokenAddress ?? readString(payload, "tokenAddress") ?? "",
+    blockchain:
+      readBlockchain(transfer, "blockchain") ??
+      readBlockchain(payload, "blockchain") ??
+      "ARC-TESTNET",
+    provider: transfer?.provider ?? "circle",
+    referenceId:
+      transfer?.referenceId ?? readString(payload, "referenceId") ?? `BRIDGE-${task.id}`,
+    createdAt: transfer?.createdAt ?? task.createdAt,
+    updatedAt: transfer?.updatedAt ?? task.updatedAt,
+    stage,
+    errorReason:
+      transfer?.errorReason ?? readTaskFailureMessage(task.logs) ?? null,
+    steps:
+      transfer?.steps && transfer.steps.length > 0
+        ? transfer.steps
+        : inferStepsFromTask(task, rawStatus, status),
+  };
+}
+
+function readTransferResult(
+  result: Record<string, unknown> | null
+): CircleTransfer | null {
+  if (!result || typeof result !== "object") {
+    return null;
+  }
+
+  const execution = result.execution;
+
+  if (!execution || typeof execution !== "object") {
+    return null;
+  }
+
+  const transfer = (execution as Record<string, unknown>).transfer;
+
+  if (!transfer || typeof transfer !== "object") {
+    return null;
+  }
+
+  return transfer as CircleTransfer;
+}
+
+function readExecutionPayload(
+  result: Record<string, unknown> | null
+): Record<string, unknown> {
+  if (!result || typeof result !== "object") {
+    return {};
+  }
+
+  const execution = result.execution;
+
+  if (!execution || typeof execution !== "object") {
+    return {};
+  }
+
+  const payload = (execution as Record<string, unknown>).payload;
+  return payload && typeof payload === "object"
+    ? (payload as Record<string, unknown>)
+    : {};
+}
+
+function inferStepsFromTask(
+  task: BackendTaskRecord,
+  rawStatus: string,
+  transferStatus: CircleTransfer["status"]
+): CircleTransferStep[] {
+  const burnSuccess = rawStatus === "burned" || rawStatus === "attested" || transferStatus === "settled";
+  const attested = rawStatus === "attested" || transferStatus === "settled";
+  const mintSuccess = transferStatus === "settled";
+  const failed = transferStatus === "failed";
+  const failureMessage = readTaskFailureMessage(task.logs);
+
+  return [
+    {
+      id: "burn",
+      name: "Burn on source chain",
+      state: failed ? "error" : burnSuccess ? "success" : "pending",
+      txHash: null,
+      explorerUrl: null,
+      errorMessage: failed ? failureMessage : null,
+    },
+    {
+      id: "attestation",
+      name: "Waiting for Circle attestation",
+      state: failed ? "error" : attested ? "success" : "pending",
+      txHash: null,
+      explorerUrl: null,
+      errorMessage: failed ? failureMessage : null,
+    },
+    {
+      id: "mint",
+      name: "Mint on destination chain",
+      state: failed ? "error" : mintSuccess ? "success" : "pending",
+      txHash: null,
+      explorerUrl: null,
+      errorMessage: failed ? failureMessage : null,
+    },
+  ];
+}
+
+function mapTaskStatusToTransferStatus(
+  taskStatus: string,
+  transfer: CircleTransfer | null
+): CircleTransfer["status"] {
+  if (transfer) {
+    return transfer.status;
+  }
+
+  if (taskStatus === "executed") {
+    return "settled";
+  }
+
+  if (taskStatus === "failed" || taskStatus === "partial") {
+    return "failed";
+  }
+
+  if (taskStatus === "assigned") {
+    return "pending";
+  }
+
+  return "processing";
+}
+
+function mapTaskStatusToRawStatus(
+  taskStatus: string,
+  transfer: CircleTransfer | null
+): string {
+  if (transfer?.rawStatus) {
+    return transfer.rawStatus;
+  }
+
+  if (taskStatus === "assigned") {
+    return "queued";
+  }
+
+  if (taskStatus === "in_progress") {
+    return "processing";
+  }
+
+  if (taskStatus === "executed") {
+    return "completed";
+  }
+
+  return taskStatus;
+}
+
+function mapRawStatusToStage(
+  rawStatus: string,
+  status: CircleTransfer["status"]
+): CircleTransfer["stage"] {
+  if (status === "settled") {
+    return "completed";
+  }
+
+  if (status === "failed") {
+    return "failed";
+  }
+
+  if (rawStatus === "burned") {
+    return "attesting";
+  }
+
+  if (rawStatus === "attested") {
+    return "minting";
+  }
+
+  return "pending";
+}
+
+function readTaskFailureMessage(logs: BackendTaskLog[]): string | null {
+  for (let index = logs.length - 1; index >= 0; index -= 1) {
+    const log = logs[index];
+    if (log.step === "task.failed" || log.step === "bridge.failed") {
+      return log.message;
+    }
+  }
+
+  return null;
+}
+
+function readString(
+  source: Record<string, unknown> | CircleTransfer | null,
+  key: string
+): string | null {
+  if (!source || typeof source !== "object") {
+    return null;
+  }
+
+  const value = (source as Record<string, unknown>)[key];
+  return typeof value === "string" ? value : null;
+}
+
+function readBlockchain(
+  source: Record<string, unknown> | CircleTransfer | null,
+  key: string
+): CircleTransferBlockchain | null {
+  const value = readString(source, key);
+  return value === "ARC-TESTNET" || value === "ETH-SEPOLIA" ? value : null;
+}
+
+function getSourceBlockchain(
+  destination: CircleTransferBlockchain
+): CircleTransferBlockchain {
+  return destination === "ARC-TESTNET" ? "ETH-SEPOLIA" : "ARC-TESTNET";
+}
+
+function mapBackendErrorToTransferError(error: unknown): TransferApiError {
+  if (error instanceof TransferApiError) {
+    return error;
+  }
+
+  if (error instanceof BackendApiError) {
+    return new TransferApiError(
+      error.message,
+      error.status,
+      error.code,
+      error.details
+    );
+  }
+
+  if (error instanceof Error) {
+    return new TransferApiError(error.message, 500);
+  }
+
+  return new TransferApiError("Unexpected bridge API error", 500);
 }

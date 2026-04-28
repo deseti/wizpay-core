@@ -3,10 +3,12 @@ import { AdaptersModule } from '../adapters/adapters.module';
 import { IntegrationsModule } from '../integrations/integrations.module';
 import { OrchestratorModule } from '../orchestrator/orchestrator.module';
 import { TaskModule } from '../task/task.module';
+import { BridgeProcessor } from './processors/bridge.processor';
 import { PayrollProcessor } from './processors/payroll.processor';
 import { TransactionPollerService } from './processors/transaction-poller.service';
 import { TxPollProcessor } from './processors/tx-poll.processor';
 import { QueueService } from './queue.service';
+import { BridgeWorker } from './workers/bridge.worker';
 import { PayrollWorker } from './workers/payroll.worker';
 import { TxPollWorker } from './workers/tx-poll.worker';
 
@@ -21,6 +23,8 @@ import { TxPollWorker } from './workers/tx-poll.worker';
   ],
   providers: [
     QueueService,
+    BridgeProcessor,
+    BridgeWorker,
     PayrollProcessor,
     PayrollWorker,
     TransactionPollerService,
