@@ -3,4 +3,5 @@ export enum TaskType {
   SWAP = 'swap',
   BRIDGE = 'bridge',
   LIQUIDITY = 'liquidity',
+  FX = 'fx',
 }

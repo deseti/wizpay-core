@@ -71,6 +71,7 @@ export interface CircleFxQuote {
   feeCurrency: string;
   expiresAt: string;
   provider: string;
+  typedData?: Record<string, unknown>;
 }
 
 export interface CircleFxTradeRequest {
@@ -524,6 +525,7 @@ export class CircleService {
       fee: string;
       expiresAt: string;
       createdAt: string;
+      typedData?: Record<string, unknown>;
     }>('/v1/exchange/stablefx/quotes', {
       method: 'POST',
       body: JSON.stringify({
@@ -546,6 +548,7 @@ export class CircleService {
       feeCurrency: circleRes.to.currency,
       expiresAt: circleRes.expiresAt,
       provider: 'circle-stablefx',
+      ...(circleRes.typedData ? { typedData: circleRes.typedData } : {}),
     };
   }
 

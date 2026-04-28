@@ -13,7 +13,9 @@ import { PrismaService } from '../database/prisma.service';
 import { TaskStatus } from './task-status.enum';
 import {
   AppendTransactionInput,
+  CreateLiquidityTaskResult,
   CreatePayrollTaskResult,
+  CreateSwapTaskResult,
   ReportTaskUnitInput,
   ReportTaskUnitResult,
   TaskDetails,
@@ -199,6 +201,143 @@ export class TaskService {
           status: unit.status as TaskUnitStatus,
           type: unit.type as TaskUnitRecord['type'],
         })),
+    };
+  }
+
+  async createSwapTask(
+    payload: TaskPayload,
+  ): Promise<CreateSwapTaskResult> {
+    const tokenIn = typeof payload.tokenIn === 'string' ? payload.tokenIn : '';
+    const tokenOut = typeof payload.tokenOut === 'string' ? payload.tokenOut : '';
+    const amountIn = typeof payload.amountIn === 'string' ? payload.amountIn : '';
+    const minAmountOut = typeof payload.minAmountOut === 'string' ? payload.minAmountOut : '0';
+    const recipient = typeof payload.recipient === 'string' ? payload.recipient : '';
+
+    if (!tokenIn || !tokenOut || !amountIn || !recipient) {
+      throw new BadRequestException(
+        'Missing required fields: tokenIn, tokenOut, amountIn, recipient',
+      );
+    }
+
+    const referenceId = `SWAP-${Date.now()}`;
+
+    const task = await this.prisma.$transaction(async (tx) => {
+      const created = await tx.task.create({
+        data: {
+          type: TaskType.SWAP,
+          status: TaskStatus.ASSIGNED,
+          totalUnits: 1,
+          completedUnits: 0,
+          failedUnits: 0,
+          metadata: { referenceId, tokenIn, tokenOut, amountIn, minAmountOut, recipient } as Prisma.InputJsonValue,
+          payload: payload as Prisma.InputJsonValue,
+        },
+      });
+
+      await tx.taskUnit.create({
+        data: {
+          taskId: created.id,
+          type: 'step',
+          index: 0,
+          status: 'PENDING',
+          payload: { referenceId, tokenIn, tokenOut, amountIn, minAmountOut, recipient } as Prisma.InputJsonValue,
+        },
+      });
+
+      await tx.taskLog.create({
+        data: {
+          taskId: created.id,
+          level: 'INFO',
+          step: 'task.assigned',
+          status: TaskStatus.ASSIGNED,
+          message: `Swap task created: ${amountIn} ${tokenIn} → ${tokenOut}`,
+          context: { referenceId, tokenIn, tokenOut } as Prisma.InputJsonValue,
+        },
+      });
+
+      return tx.task.findUniqueOrThrow({
+        where: { id: created.id },
+        include: { logs: true, units: true, transactions: true },
+      });
+    });
+
+    const unit = task.units[0];
+
+    return {
+      taskId: task.id,
+      unitId: unit.id,
+      referenceId,
+      tokenIn,
+      tokenOut,
+      amountIn,
+      minAmountOut,
+      recipient,
+    };
+  }
+
+  async createLiquidityTask(
+    payload: TaskPayload,
+  ): Promise<CreateLiquidityTaskResult> {
+    const operation = payload.operation === 'add' || payload.operation === 'remove'
+      ? payload.operation
+      : null;
+    const token = typeof payload.token === 'string' ? payload.token : '';
+    const amount = typeof payload.amount === 'string' ? payload.amount : '';
+
+    if (!operation || !token || !amount) {
+      throw new BadRequestException(
+        'Missing required fields: operation (add|remove), token, amount',
+      );
+    }
+
+    const task = await this.prisma.$transaction(async (tx) => {
+      const created = await tx.task.create({
+        data: {
+          type: TaskType.LIQUIDITY,
+          status: TaskStatus.ASSIGNED,
+          totalUnits: 1,
+          completedUnits: 0,
+          failedUnits: 0,
+          metadata: { operation, token, amount } as Prisma.InputJsonValue,
+          payload: payload as Prisma.InputJsonValue,
+        },
+      });
+
+      await tx.taskUnit.create({
+        data: {
+          taskId: created.id,
+          type: 'step',
+          index: 0,
+          status: 'PENDING',
+          payload: { operation, token, amount } as Prisma.InputJsonValue,
+        },
+      });
+
+      await tx.taskLog.create({
+        data: {
+          taskId: created.id,
+          level: 'INFO',
+          step: 'task.assigned',
+          status: TaskStatus.ASSIGNED,
+          message: `Liquidity task created: ${operation} ${amount} of ${token}`,
+          context: { operation, token, amount } as Prisma.InputJsonValue,
+        },
+      });
+
+      return tx.task.findUniqueOrThrow({
+        where: { id: created.id },
+        include: { logs: true, units: true, transactions: true },
+      });
+    });
+
+    const unit = task.units[0];
+
+    return {
+      taskId: task.id,
+      unitId: unit.id,
+      operation,
+      token,
+      amount,
     };
   }
 

@@ -44,6 +44,7 @@ import {
   type TokenSymbol,
 } from "@/lib/wizpay";
 import { arcTestnet } from "@/lib/wagmi";
+import { initSwapTask, reportSwapResult } from "@/lib/swap-service";
 
 const MAX_CONFIRMATION_POLLS = 20;
 const POLL_INTERVAL_MS = 1500;
@@ -92,10 +93,11 @@ export function SwapScreen() {
   const [tokenOut, setTokenOut] = useState<TokenSymbol>("EURC");
   const [amountIn, setAmountIn] = useState("");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [isApproving, setIsApproving] = useState(false);
-  const [isSwapping, setIsSwapping] = useState(false);
+  const [swapStep, setSwapStep] = useState<"idle" | "approving" | "swapping">("idle");
   const [isSuccessDialogOpen, setIsSuccessDialogOpen] = useState(false);
   const [successState, setSuccessState] = useState<SwapSuccessState | null>(null);
+  const isApproving = swapStep === "approving";
+  const isSwapping = swapStep === "swapping";
 
   const tokenInConfig = SUPPORTED_TOKENS[tokenIn];
   const tokenOutConfig = SUPPORTED_TOKENS[tokenOut];
@@ -267,59 +269,11 @@ export function SwapScreen() {
     );
   }
 
-  async function handleApprove() {
-    if (!canSubmit) {
-      setErrorMessage("Connect the active wallet and enter a valid swap amount first.");
-      return;
-    }
-
-    if (!publicClient) {
-      setErrorMessage("Arc public client is not ready yet.");
-      return;
-    }
-
-    setIsApproving(true);
-    setErrorMessage(null);
-
-    try {
-      const approvalResult = await executeTransaction({
-        abi: ERC20_ABI,
-        args: [WIZPAY_ADDRESS, amountInUnits],
-        chainId: arcTestnet.id,
-        contractAddress: tokenInConfig.address,
-        functionName: "approve",
-        refId: `SWAP-APPROVE-${Date.now()}`,
-      });
-
-      await waitForAllowanceUpdate(approvalResult.txHash);
-
-      toast({
-        title: "Swap approval confirmed",
-        description: `${tokenIn} is now ready for self-swap through WizPay.`,
-      });
-    } catch (error) {
-      const message = getFriendlyErrorMessage(error);
-      setErrorMessage(message);
-      toast({
-        title: "Approval failed",
-        description: message,
-        variant: "destructive",
-      });
-    } finally {
-      setIsApproving(false);
-    }
-  }
-
   const { isProcessing: isGuarded, guard } = useActionGuard();
 
   async function handleSwap() {
     if (!canSubmit) {
       setErrorMessage("Connect the active wallet and enter a valid swap amount first.");
-      return;
-    }
-
-    if (needsApproval) {
-      setErrorMessage(`Approve ${tokenIn} before submitting the swap.`);
       return;
     }
 
@@ -333,11 +287,40 @@ export function SwapScreen() {
       return;
     }
 
-    setIsSwapping(true);
+    setSwapStep("idle");
     setErrorMessage(null);
 
+    let taskId: string | null = null;
+    let unitId: string | null = null;
+
     try {
-      const referenceId = `SWAP-${Date.now()}`;
+      // 1. Approve if needed (inline, no separate button click)
+      if (needsApproval) {
+        setSwapStep("approving");
+        const approvalResult = await executeTransaction({
+          abi: ERC20_ABI,
+          args: [WIZPAY_ADDRESS, amountInUnits],
+          chainId: arcTestnet.id,
+          contractAddress: tokenInConfig.address,
+          functionName: "approve",
+          refId: `SWAP-APPROVE-${Date.now()}`,
+        });
+        await waitForAllowanceUpdate(approvalResult.txHash);
+      }
+
+      setSwapStep("swapping");
+
+      // 2. Register swap task in backend — get a tracked referenceId
+      const plan = await initSwapTask({
+        tokenIn: tokenInConfig.address,
+        tokenOut: tokenOutConfig.address,
+        amountIn: amountInUnits.toString(),
+        minAmountOut: minimumOut.toString(),
+        recipient: walletAddress,
+      });
+      taskId = plan.taskId;
+      unitId = plan.unitId;
+      const referenceId = plan.referenceId;
       const tokenOuts = [tokenOutConfig.address];
       const recipients: readonly Address[] = [walletAddress];
       const amountsIn = [amountInUnits];
@@ -381,6 +364,14 @@ export function SwapScreen() {
       });
       const finalHash = confirmedHash ?? executionResult.hash;
 
+      // 2. Report success to backend
+      if (taskId && unitId) {
+        await reportSwapResult(taskId, unitId, {
+          status: "SUCCESS",
+          txHash: typeof finalHash === "string" ? finalHash : undefined,
+        });
+      }
+
       setSuccessState({
         amountIn,
         amountOut:
@@ -409,13 +400,22 @@ export function SwapScreen() {
     } catch (error) {
       const message = getFriendlyErrorMessage(error);
       setErrorMessage(message);
+
+      // Report failure to backend if task was already created
+      if (taskId && unitId) {
+        reportSwapResult(taskId, unitId, {
+          status: "FAILED",
+          error: message,
+        }).catch(() => undefined);
+      }
+
       toast({
         title: "Swap failed",
         description: message,
         variant: "destructive",
       });
     } finally {
-      setIsSwapping(false);
+      setSwapStep("idle");
     }
   }
 
@@ -540,42 +540,32 @@ export function SwapScreen() {
               </div>
             )}
 
-            {/* Action Buttons */}
+            {/* Action Button — approve + swap in one click */}
             <div className="space-y-3">
-              {needsApproval ? (
-                <Button
-                  onClick={handleApprove}
-                  disabled={!canSubmit || isApproving || isSwapping}
-                  className="w-full h-12 text-base glow-btn bg-gradient-to-r from-primary to-violet-500 text-primary-foreground shadow-lg shadow-primary/20"
-                >
-                  {isApproving ? (
-                    <span className="flex items-center gap-2">
-                      <span className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
-                      Approving...
-                    </span>
-                  ) : (
-                    <>
-                      <ShieldCheck className="h-4 w-4 mr-2" />
-                      Approve {tokenIn}
-                    </>
-                  )}
-                </Button>
-              ) : (
-                <Button
-                  onClick={() => void guard(handleSwap)}
-                  disabled={!canSubmit || isSwapping || isApproving || isGuarded}
-                  className="w-full h-12 text-base glow-btn bg-gradient-to-r from-primary to-violet-500 text-primary-foreground shadow-lg shadow-primary/20"
-                >
-                  {isSwapping ? (
-                    <span className="flex items-center gap-2">
-                      <span className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
-                      Swapping...
-                    </span>
-                  ) : (
-                    "Swap"
-                  )}
-                </Button>
-              )}
+              <Button
+                onClick={() => void guard(handleSwap)}
+                disabled={!canSubmit || swapStep !== "idle" || isGuarded}
+                className="w-full h-12 text-base glow-btn bg-gradient-to-r from-primary to-violet-500 text-primary-foreground shadow-lg shadow-primary/20"
+              >
+                {swapStep === "approving" ? (
+                  <span className="flex items-center gap-2">
+                    <span className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
+                    Approving {tokenIn}...
+                  </span>
+                ) : swapStep === "swapping" ? (
+                  <span className="flex items-center gap-2">
+                    <span className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
+                    Swapping...
+                  </span>
+                ) : needsApproval ? (
+                  <>
+                    <ShieldCheck className="h-4 w-4 mr-2" />
+                    Approve &amp; Swap
+                  </>
+                ) : (
+                  "Swap"
+                )}
+              </Button>
             </div>
           </CardContent>
         </Card>

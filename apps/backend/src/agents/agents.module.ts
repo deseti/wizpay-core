@@ -4,6 +4,7 @@ import { QueueModule } from '../queue/queue.module';
 import { TaskModule } from '../task/task.module';
 import { AgentRouterService } from './agent-router.service';
 import { BridgeAgent } from './bridge.agent';
+import { FxAgent } from './fx.agent';
 import { LiquidityAgent } from './liquidity.agent';
 import { PayrollAgent } from './payroll/payroll.agent';
 import { PayrollBatchService } from './payroll/payroll-batch.service';
@@ -18,6 +19,7 @@ import { SwapAgent } from './swap.agent';
     PayrollValidationService,
     SwapAgent,
     BridgeAgent,
+    FxAgent,
     LiquidityAgent,
     AgentRouterService,
   ],

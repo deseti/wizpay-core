@@ -3,6 +3,7 @@ import { TaskType } from '../task/task-type.enum';
 import { TaskDetails } from '../task/task.types';
 import { AgentExecutionResult } from './agent.interface';
 import { BridgeAgent } from './bridge.agent';
+import { FxAgent } from './fx.agent';
 import { LiquidityAgent } from './liquidity.agent';
 import { PayrollAgent } from './payroll/payroll.agent';
 import { SwapAgent } from './swap.agent';
@@ -14,6 +15,7 @@ export class AgentRouterService {
     private readonly swapAgent: SwapAgent,
     private readonly bridgeAgent: BridgeAgent,
     private readonly liquidityAgent: LiquidityAgent,
+    private readonly fxAgent: FxAgent,
   ) {}
 
   async execute(
@@ -29,6 +31,8 @@ export class AgentRouterService {
         return this.bridgeAgent.execute(task);
       case TaskType.LIQUIDITY:
         return this.liquidityAgent.execute(task);
+      case TaskType.FX:
+        return this.fxAgent.execute(task);
       default:
         throw new BadRequestException(`Unsupported task type ${taskType}`);
     }

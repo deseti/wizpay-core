@@ -58,6 +58,25 @@ export interface CreatePayrollTaskResult {
   units: Array<Pick<TaskUnitRecord, 'id' | 'index' | 'payload' | 'status' | 'type'>>;
 }
 
+export interface CreateSwapTaskResult {
+  taskId: string;
+  unitId: string;
+  referenceId: string;
+  tokenIn: string;
+  tokenOut: string;
+  amountIn: string;
+  minAmountOut: string;
+  recipient: string;
+}
+
+export interface CreateLiquidityTaskResult {
+  taskId: string;
+  unitId: string;
+  operation: 'add' | 'remove';
+  token: string;
+  amount: string;
+}
+
 export interface ReportTaskUnitInput {
   status: Extract<TaskUnitStatus, 'SUCCESS' | 'FAILED'>;
   txHash?: string | null;

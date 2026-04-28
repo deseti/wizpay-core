@@ -11,6 +11,7 @@
  */
 
 import { isStableFxMode } from "./fx-config";
+import { backendFetch } from "./backend-api";
 import type { FxQuote, FxTrade } from "./stablefx";
 
 // ─── Types ──────────────────────────────────────────────────────────
@@ -22,18 +23,17 @@ export interface FxQuoteParams {
   recipientAddress?: string;
 }
 
-// ─── Client-side API helpers (call our own Next.js routes) ──────────
+interface TaskLogEntry {
+  step: string;
+  message: string;
+}
 
-async function apiFetch<T>(url: string, options?: RequestInit): Promise<T> {
-  const res = await fetch(url, {
-    headers: { "Content-Type": "application/json" },
-    ...options,
-  });
-  const json = await res.json();
-  if (!res.ok) {
-    throw new Error(json.error || `API error ${res.status}`);
-  }
-  return json.data as T;
+interface BackendTaskResponse {
+  id: string;
+  status: string;
+  payload: Record<string, unknown>;
+  result: Record<string, unknown> | null;
+  logs: TaskLogEntry[];
 }
 
 /**
@@ -46,7 +46,7 @@ export async function getQuote(
 ): Promise<FxQuote | null> {
   if (!isStableFxMode) return null;
 
-  return apiFetch<FxQuote>("/api/fx/quote", {
+  return backendFetch<FxQuote>("/tasks/fx/quote", {
     method: "POST",
     body: JSON.stringify(params),
   });
@@ -72,10 +72,12 @@ export async function executeFxTrade(params: {
     throw new Error("executeFxTrade is only available in StableFX mode");
   }
 
-  return apiFetch<FxTrade>("/api/fx/execute", {
+  const task = await backendFetch<BackendTaskResponse>("/tasks/fx/execute", {
     method: "POST",
     body: JSON.stringify(params),
   });
+
+  return mapTaskToFxTrade(task, params.senderAddress, params.referenceId);
 }
 
 /**
@@ -87,5 +89,83 @@ export async function getFxTradeStatus(tradeId: string): Promise<FxTrade> {
     throw new Error("getFxTradeStatus is only available in StableFX mode");
   }
 
-  return apiFetch<FxTrade>(`/api/fx/status/${encodeURIComponent(tradeId)}`);
+  const task = await backendFetch<BackendTaskResponse>(
+    `/tasks/${encodeURIComponent(tradeId)}`
+  );
+
+  return mapTaskToFxTrade(task);
+}
+
+function mapTaskToFxTrade(
+  task: BackendTaskResponse,
+  fallbackSenderAddress?: string,
+  fallbackReferenceId?: string
+): FxTrade {
+  const execution = readObject(task.result, "execution");
+  const trade = readObject(execution, "trade");
+  const payload = task.payload ?? {};
+
+  return {
+    tradeId: task.id,
+    quoteId: readString(trade, "quoteId") || readString(payload, "quoteId") || "",
+    status: mapTaskStatus(task.status, readString(trade, "status")),
+    sourceCurrency: readString(trade, "sourceCurrency") || "",
+    targetCurrency: readString(trade, "targetCurrency") || "",
+    sourceAmount: readString(trade, "sourceAmount") || "0",
+    targetAmount: readString(trade, "targetAmount") || "0",
+    exchangeRate: readString(trade, "exchangeRate") || "0",
+    senderAddress:
+      readString(payload, "senderAddress") || fallbackSenderAddress || "",
+    referenceId:
+      readString(payload, "referenceId") || fallbackReferenceId || "",
+    createdAt: readString(trade, "createdAt") || new Date().toISOString(),
+    settledAt: readString(trade, "settledAt") || null,
+  };
+}
+
+function mapTaskStatus(
+  taskStatus: string,
+  tradeStatus: string | null
+): FxTrade["status"] {
+  if (tradeStatus === "pending" || tradeStatus === "processing" || tradeStatus === "settled" || tradeStatus === "failed") {
+    return tradeStatus;
+  }
+
+  if (taskStatus === "executed") {
+    return "settled";
+  }
+
+  if (taskStatus === "failed" || taskStatus === "partial") {
+    return "failed";
+  }
+
+  if (taskStatus === "assigned") {
+    return "pending";
+  }
+
+  return "processing";
+}
+
+function readObject(
+  source: Record<string, unknown> | null,
+  key: string
+): Record<string, unknown> | null {
+  if (!source || typeof source !== "object") {
+    return null;
+  }
+
+  const value = source[key];
+  return value && typeof value === "object" ? (value as Record<string, unknown>) : null;
+}
+
+function readString(
+  source: Record<string, unknown> | null,
+  key: string
+): string | null {
+  if (!source || typeof source !== "object") {
+    return null;
+  }
+
+  const value = source[key];
+  return typeof value === "string" ? value : null;
 }

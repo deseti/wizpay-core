@@ -36,6 +36,7 @@ import {
   type TokenSymbol,
 } from "@/lib/wizpay";
 import { USDC_ADDRESS, EURC_ADDRESS } from "@/constants/addresses";
+import { initLiquidityTask, reportLiquidityResult } from "@/lib/swap-service";
 
 const TOKEN_ADDRESSES: Record<TokenSymbol, `0x${string}`> = {
   USDC: USDC_ADDRESS,
@@ -104,7 +105,20 @@ export function LiquidityScreen() {
   };
 
   const handleDeposit = async () => {
+    let taskId: string | null = null;
+    let unitId: string | null = null;
+    let txHashResult: string | null = null;
+
     try {
+      // Register liquidity task in backend before execution
+      const plan = await initLiquidityTask({
+        operation: "add",
+        token: tokenAddress,
+        amount: amountBn.toString(),
+      });
+      taskId = plan.taskId;
+      unitId = plan.unitId;
+
       if (needsDepositApproval) {
         setStep("approving");
         const approveHash = await approveToken(amountBn);
@@ -113,19 +127,53 @@ export function LiquidityScreen() {
       }
       setStep("executing");
       const hash = await addLiquidity(amountBn);
+      txHashResult = hash;
       setTxHash(hash);
       await waitForTx(hash);
       await refetchAll();
+
+      // Report success to backend
+      if (taskId && unitId) {
+        await reportLiquidityResult(taskId, unitId, {
+          status: "SUCCESS",
+          txHash: txHashResult ?? undefined,
+        });
+      }
+
       setStep("success");
     } catch (error) {
       console.error("Deposit failed:", error);
-      setErrorMsg(getErrorMessage(error));
+      const msg = getErrorMessage(error);
+      setErrorMsg(msg);
+
+      // Report failure to backend if task was created
+      if (taskId && unitId) {
+        reportLiquidityResult(taskId, unitId, {
+          status: "FAILED",
+          error: msg,
+          txHash: txHashResult ?? undefined,
+        }).catch(() => undefined);
+      }
+
       setStep("error");
     }
   };
 
   const handleWithdraw = async () => {
+    let taskId: string | null = null;
+    let unitId: string | null = null;
+    let txHashResult: string | null = null;
+
     try {
+      // Register liquidity task in backend before execution
+      const plan = await initLiquidityTask({
+        operation: "remove",
+        token: tokenAddress,
+        amount: amountBn.toString(),
+      });
+      taskId = plan.taskId;
+      unitId = plan.unitId;
+
       if (needsWithdrawApproval) {
         setStep("approving");
         const approveHash = await approveLpToken(amountBn);
@@ -134,13 +182,34 @@ export function LiquidityScreen() {
       }
       setStep("executing");
       const hash = await removeLiquidity(amountBn);
+      txHashResult = hash;
       setTxHash(hash);
       await waitForTx(hash);
       await refetchAll();
+
+      // Report success to backend
+      if (taskId && unitId) {
+        await reportLiquidityResult(taskId, unitId, {
+          status: "SUCCESS",
+          txHash: txHashResult ?? undefined,
+        });
+      }
+
       setStep("success");
     } catch (error) {
       console.error("Withdraw failed:", error);
-      setErrorMsg(getErrorMessage(error));
+      const msg = getErrorMessage(error);
+      setErrorMsg(msg);
+
+      // Report failure to backend if task was created
+      if (taskId && unitId) {
+        reportLiquidityResult(taskId, unitId, {
+          status: "FAILED",
+          error: msg,
+          txHash: txHashResult ?? undefined,
+        }).catch(() => undefined);
+      }
+
       setStep("error");
     }
   };

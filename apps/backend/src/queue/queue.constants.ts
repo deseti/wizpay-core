@@ -30,4 +30,8 @@ export const TASK_QUEUE_MAP: Record<TaskType, QueueRoutingDefinition> = {
     queueName: QueueName.SWAP,
     agentKey: TaskType.LIQUIDITY,
   },
+  [TaskType.FX]: {
+    queueName: QueueName.SWAP,
+    agentKey: TaskType.FX,
+  },
 };

@@ -1,10 +1,13 @@
 import {
+  BadGatewayException,
+  BadRequestException,
   Body,
   Controller,
   Get,
   Param,
   ParseUUIDPipe,
   Post,
+  UnauthorizedException,
   UsePipes,
   ValidationPipe,
 } from '@nestjs/common';
@@ -12,6 +15,8 @@ import { OrchestratorService } from './orchestrator.service';
 import { PayrollInitService } from './payroll-init.service';
 import { CreateTaskDto } from '../task/dto/create-task.dto';
 import { TaskService } from '../task/task.service';
+import { CircleService } from '../adapters/circle.service';
+import { TaskType } from '../task/task-type.enum';
 import type { ReportTaskUnitInput } from '../task/task.types';
 
 @Controller('tasks')
@@ -20,7 +25,55 @@ export class TaskController {
     private readonly orchestratorService: OrchestratorService,
     private readonly taskService: TaskService,
     private readonly payrollInitService: PayrollInitService,
+    private readonly circleService: CircleService,
   ) {}
+
+  @Post('fx/quote')
+  async quoteFx(@Body() payload: Record<string, unknown>) {
+    const sourceCurrency =
+      typeof payload.sourceCurrency === 'string' ? payload.sourceCurrency : '';
+    const targetCurrency =
+      typeof payload.targetCurrency === 'string' ? payload.targetCurrency : '';
+    const sourceAmount =
+      typeof payload.sourceAmount === 'string' ? payload.sourceAmount : '';
+    const recipientAddress =
+      typeof payload.recipientAddress === 'string'
+        ? payload.recipientAddress
+        : undefined;
+
+    if (!sourceCurrency || !targetCurrency || !sourceAmount) {
+      throw new BadRequestException(
+        'Missing required fields: sourceCurrency, targetCurrency, sourceAmount',
+      );
+    }
+
+    try {
+      return {
+        data: await this.circleService.getQuote({
+          sourceCurrency,
+          targetCurrency,
+          sourceAmount,
+          recipientAddress,
+        }),
+      };
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Unable to fetch FX quote';
+
+      if (message.includes('401')) {
+        throw new UnauthorizedException(message);
+      }
+
+      throw new BadGatewayException(message);
+    }
+  }
+
+  @Post('fx/execute')
+  async executeFx(@Body() payload: Record<string, unknown>) {
+    return {
+      data: await this.orchestratorService.handleTask(TaskType.FX, payload ?? {}),
+    };
+  }
 
   /**
    * POST /tasks/payroll/init — Validate and batch a payroll run before execution.
@@ -33,6 +86,20 @@ export class TaskController {
   async initPayroll(@Body() payload: Record<string, unknown>) {
     return {
       data: await this.payrollInitService.prepare(payload ?? {}),
+    };
+  }
+
+  @Post('swap/init')
+  async initSwap(@Body() payload: Record<string, unknown>) {
+    return {
+      data: await this.taskService.createSwapTask(payload ?? {}),
+    };
+  }
+
+  @Post('liquidity/init')
+  async initLiquidity(@Body() payload: Record<string, unknown>) {
+    return {
+      data: await this.taskService.createLiquidityTask(payload ?? {}),
     };
   }
 
