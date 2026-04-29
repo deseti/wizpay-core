@@ -82,7 +82,11 @@ export class BridgeAgent implements TaskAgent {
       },
     );
 
-    const finalTransfer = await this.pollUntilTerminal(task.id, transferId);
+    const finalTransfer = await this.pollUntilTerminal(
+      task.id,
+      transferId,
+      normalizeBridgeChain(this.readString(bridgePayload, 'sourceBlockchain')),
+    );
     const rawStatus = this.readString(finalTransfer, 'status') ?? 'unknown';
 
     if (rawStatus !== 'settled') {
@@ -121,15 +125,18 @@ export class BridgeAgent implements TaskAgent {
   private async pollUntilTerminal(
     taskId: string,
     transferId: string,
+    sourceChain: CanonicalBridgeChain | null,
   ): Promise<Record<string, unknown>> {
-    const maxAttempts = this.getMaxPollAttempts();
+    const maxAttempts = this.getMaxPollAttempts(sourceChain);
     const pollDelayMs = this.getPollDelayMs();
     let previousStage: string | null = null;
+    let previousStatus: string | null = null;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       const transfer = await this.getTransferStatus(transferId);
       const status = this.readString(transfer, 'status') ?? 'unknown';
       const stage = this.readString(transfer, 'stage');
+      previousStatus = status;
 
       if (stage && stage !== previousStage) {
         previousStage = stage;
@@ -159,9 +166,11 @@ export class BridgeAgent implements TaskAgent {
     }
 
     this.logger.error(
-      `Bridge transfer polling timed out (transferId=${transferId}).`,
+      `Bridge transfer polling timed out (transferId=${transferId}, sourceChain=${sourceChain ?? 'unknown'}, lastStage=${previousStage ?? 'unknown'}, lastStatus=${previousStatus ?? 'unknown'}).`,
     );
-    throw new Error('Bridge transfer polling timed out.');
+    throw new Error(
+      'Bridge transfer polling timed out before Circle reported a terminal status.',
+    );
   }
 
   private async createTransfer(
@@ -428,13 +437,19 @@ export class BridgeAgent implements TaskAgent {
     return Number.isFinite(configured) && configured > 0 ? configured : 4000;
   }
 
-  private getMaxPollAttempts(): number {
+  private getMaxPollAttempts(sourceChain: CanonicalBridgeChain | null): number {
     const configured = Number.parseInt(
-      this.configService.get<string>('BRIDGE_MAX_POLL_ATTEMPTS') ?? '90',
+      this.configService.get<string>('BRIDGE_MAX_POLL_ATTEMPTS') ?? '',
       10,
     );
 
-    return Number.isFinite(configured) && configured > 0 ? configured : 90;
+    if (Number.isFinite(configured) && configured > 0) {
+      return configured;
+    }
+
+    // Sepolia-source bridges regularly take longer than the original 6 minute
+    // polling window, so give them the full 30 minute bridge tracking TTL.
+    return sourceChain === 'eth_sepolia' ? 450 : 90;
   }
 
   private waitFor(ms: number): Promise<void> {

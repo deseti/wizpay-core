@@ -99,10 +99,34 @@ interface QueuedCircleBridgeTransfer {
   record: CircleBridgeTransferRecord;
 }
 
+interface BridgeWaitChain {
+  chain?: string;
+  name?: string;
+  rpcEndpoints?: readonly string[];
+  type?: string;
+}
+
+interface BridgeWaitReceipt {
+  txHash: string;
+  status: "success" | "reverted";
+  cumulativeGasUsed?: bigint;
+  gasUsed?: bigint;
+  blockNumber?: bigint;
+  blockHash?: string;
+  transactionIndex?: number;
+  effectiveGasPrice?: bigint;
+}
+
+interface BridgeWaitConfig {
+  confirmations?: number;
+  maxSupportedTransactionVersion?: number;
+  timeout?: number;
+}
+
 const BRIDGE_REDIS_KEY_PREFIX = "bridge:";
 const MIN_BRIDGE_REDIS_TTL_SECONDS = 600;
 const DEFAULT_BRIDGE_REDIS_TTL_SECONDS = 1_800;
-const DEFAULT_BRIDGE_TX_WAIT_TIMEOUT_MS = 600_000;
+const DEFAULT_BRIDGE_TX_WAIT_TIMEOUT_MS = 180_000;
 const DEFAULT_BRIDGE_RPC_POLLING_INTERVAL_MS = 2_000;
 const ARC_TESTNET_RPC_URL =
   normalizeOptionalString(process.env.NEXT_PUBLIC_ARC_TESTNET_RPC_URL) ||
@@ -806,17 +830,220 @@ function createBridgeAdapter(config: CircleBridgeConfig) {
   });
   const originalWaitForTransaction = baseAdapter.waitForTransaction.bind(baseAdapter);
 
-  baseAdapter.waitForTransaction = ((txHash, waitConfig, chain) =>
-    originalWaitForTransaction(
+  baseAdapter.waitForTransaction = (async (txHash, waitConfig, chain) => {
+    const normalizedWaitConfig: BridgeWaitConfig = {
+      ...waitConfig,
+      timeout: waitConfig?.timeout ?? getBridgeTransactionWaitTimeoutMs(),
+    };
+
+    if (shouldUseCustomEvmTransactionWait(txHash, chain)) {
+      return waitForEvmTransactionReceipt(
+        txHash,
+        normalizedWaitConfig,
+        chain,
+      );
+    }
+
+    return originalWaitForTransaction(
       txHash,
-      {
-        ...waitConfig,
-        timeout: waitConfig?.timeout ?? getBridgeTransactionWaitTimeoutMs(),
-      },
+      normalizedWaitConfig,
       chain,
-    )) as typeof baseAdapter.waitForTransaction;
+    );
+  }) as typeof baseAdapter.waitForTransaction;
 
   return baseAdapter;
+}
+
+function shouldUseCustomEvmTransactionWait(
+  txHash: string,
+  chain: unknown,
+): chain is BridgeWaitChain {
+  return (
+    txHash.startsWith("0x") &&
+    Boolean(chain) &&
+    typeof chain === "object" &&
+    (Array.isArray((chain as BridgeWaitChain).rpcEndpoints) ||
+      (chain as BridgeWaitChain).type === "evm")
+  );
+}
+
+async function waitForEvmTransactionReceipt(
+  txHash: string,
+  waitConfig: BridgeWaitConfig | undefined,
+  chain: BridgeWaitChain,
+): Promise<BridgeWaitReceipt> {
+  const pollingIntervalMs = getBridgeRpcPollingIntervalMs();
+  const timeoutMs = Math.max(
+    waitConfig?.timeout ?? getBridgeTransactionWaitTimeoutMs(),
+    pollingIntervalMs,
+  );
+  const confirmations = Math.max(waitConfig?.confirmations ?? 1, 1);
+  const deadlineAt = Date.now() + timeoutMs;
+  const rpcUrls = getEvmReceiptRpcUrls(chain);
+  let lastError: unknown = null;
+
+  if (rpcUrls.length === 0) {
+    throw new Error(
+      `No RPC endpoints are configured to confirm ${chain.name || chain.chain || "the EVM"} transaction ${txHash}.`,
+    );
+  }
+
+  while (Date.now() <= deadlineAt) {
+    for (const rpcUrl of rpcUrls) {
+      try {
+        const receipt = await fetchEvmTransactionReceipt(rpcUrl, txHash);
+
+        if (!receipt) {
+          continue;
+        }
+
+        if (confirmations > 1 && receipt.blockNumber) {
+          const latestBlockNumber = await fetchEvmBlockNumber(rpcUrl);
+
+          if (
+            latestBlockNumber < receipt.blockNumber + BigInt(confirmations - 1)
+          ) {
+            continue;
+          }
+        }
+
+        return receipt;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+
+    await waitFor(pollingIntervalMs);
+  }
+
+  if (lastError instanceof Error) {
+    throw lastError;
+  }
+
+  throw new Error(
+    `Timed out while waiting for transaction with hash "${txHash}" to be confirmed.`,
+  );
+}
+
+function getEvmReceiptRpcUrls(chain: BridgeWaitChain) {
+  const fallbackUrls =
+    chain.chain === "Ethereum_Sepolia"
+      ? [ETHEREUM_SEPOLIA_RPC_URL]
+      : chain.chain === "Arc_Testnet"
+        ? [ARC_TESTNET_RPC_URL]
+        : [];
+
+  return Array.from(
+    new Set(
+      [...(chain.rpcEndpoints || []), ...fallbackUrls]
+        .map((url) => url.trim())
+        .filter(Boolean),
+    ),
+  );
+}
+
+async function fetchEvmTransactionReceipt(
+  rpcUrl: string,
+  txHash: string,
+): Promise<BridgeWaitReceipt | null> {
+  const receipt = (await callEvmRpc(
+    rpcUrl,
+    "eth_getTransactionReceipt",
+    [txHash],
+  )) as Record<string, unknown> | null;
+
+  if (!receipt) {
+    return null;
+  }
+
+  return {
+    txHash: getRequiredString(receipt, "transactionHash") || txHash,
+    status:
+      getRequiredString(receipt, "status") === "0x0"
+        ? "reverted"
+        : "success",
+    cumulativeGasUsed: parseHexToBigInt(receipt.cumulativeGasUsed),
+    gasUsed: parseHexToBigInt(receipt.gasUsed),
+    blockNumber: parseHexToBigInt(receipt.blockNumber),
+    blockHash: getRequiredString(receipt, "blockHash") || undefined,
+    transactionIndex: parseHexToNumber(receipt.transactionIndex),
+    effectiveGasPrice: parseHexToBigInt(receipt.effectiveGasPrice),
+  };
+}
+
+async function fetchEvmBlockNumber(rpcUrl: string) {
+  const latestBlock = await callEvmRpc(rpcUrl, "eth_blockNumber", []);
+  return parseHexToBigInt(latestBlock) || 0n;
+}
+
+async function callEvmRpc(
+  rpcUrl: string,
+  method: string,
+  params: unknown[],
+) {
+  const response = await fetch(rpcUrl, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method,
+      params,
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error(
+      `RPC request ${method} failed for ${rpcUrl} with status ${response.status}.`,
+    );
+  }
+
+  const payload = (await response.json()) as {
+    error?: { message?: string };
+    result?: unknown;
+  };
+
+  if (payload.error) {
+    throw new Error(
+      payload.error.message || `RPC request ${method} failed for ${rpcUrl}.`,
+    );
+  }
+
+  return payload.result;
+}
+
+function getRequiredString(
+  value: Record<string, unknown>,
+  key: string,
+) {
+  const candidate = value[key];
+  return typeof candidate === "string" && candidate ? candidate : null;
+}
+
+function parseHexToBigInt(value: unknown) {
+  if (typeof value !== "string" || !value) {
+    return undefined;
+  }
+
+  try {
+    return BigInt(value);
+  } catch {
+    return undefined;
+  }
+}
+
+function parseHexToNumber(value: unknown) {
+  const parsed = parseHexToBigInt(value);
+
+  return typeof parsed === "bigint" ? Number(parsed) : undefined;
+}
+
+function waitFor(ms: number) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 }
 
 
