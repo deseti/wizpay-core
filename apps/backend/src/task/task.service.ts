@@ -11,6 +11,7 @@ import { TaskType } from './task-type.enum';
 import { Prisma, Task, TaskLog, TaskTransaction, TaskUnit } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
 import { TaskStatus } from './task-status.enum';
+import { normalizeChainTxId } from '../common/multichain';
 import {
   AppendTransactionInput,
   CreateLiquidityTaskResult,
@@ -430,6 +431,11 @@ export class TaskService {
     result: ReportTaskUnitInput,
   ): Promise<ReportTaskUnitResult> {
     return this.prisma.$transaction(async (tx) => {
+      const normalizedTxHash =
+        result.txHash === undefined
+          ? undefined
+          : normalizeChainTxId(result.txHash);
+
       const unit = await tx.taskUnit.findFirst({
         where: { id: unitId, taskId },
       });
@@ -453,7 +459,7 @@ export class TaskService {
         where: { id: unit.id },
         data: {
           status: result.status,
-          ...(result.txHash !== undefined ? { txHash: result.txHash } : {}),
+          ...(normalizedTxHash !== undefined ? { txHash: normalizedTxHash } : {}),
           ...(result.error !== undefined ? { error: result.error } : {}),
         },
       });
@@ -505,7 +511,7 @@ export class TaskService {
               : `Unit ${updatedUnit.index + 1} reported failure`,
           context: {
             error: result.error ?? null,
-            txHash: result.txHash ?? null,
+            txHash: normalizedTxHash ?? null,
             unitId: updatedUnit.id,
             unitIndex: updatedUnit.index,
             unitStatus: result.status,

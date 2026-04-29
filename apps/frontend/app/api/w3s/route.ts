@@ -271,8 +271,8 @@ export async function POST(request: Request) {
           userToken,
           body: {
             idempotencyKey: crypto.randomUUID(),
-            accountType: "SCA",
-            blockchains: ["ARC-TESTNET", "ETH-SEPOLIA"],
+            accountType: "EOA",
+            blockchains: ["ARC-TESTNET", "ETH-SEPOLIA", "SOL-DEVNET"],
           },
           retryOnRateLimit: true,
         });
@@ -315,6 +315,33 @@ export async function POST(request: Request) {
           method: "GET",
           path: `/v1/w3s/wallets/${walletId}/balances`,
           userToken,
+          retryOnRateLimit: true,
+        });
+      }
+
+      case "createUserWalletChallenge": {
+        const { userToken, payload } = params;
+
+        if (
+          typeof userToken !== "string" ||
+          !userToken ||
+          !payload ||
+          typeof payload !== "object"
+        ) {
+          return NextResponse.json(
+            { error: "Missing userToken or payload" },
+            { status: 400 }
+          );
+        }
+
+        return circleRequest({
+          method: "POST",
+          path: "/v1/w3s/user/wallets",
+          userToken,
+          body: {
+            idempotencyKey: crypto.randomUUID(),
+            ...(payload as Record<string, unknown>),
+          },
           retryOnRateLimit: true,
         });
       }

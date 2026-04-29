@@ -4,11 +4,11 @@ import { useQuery } from "@tanstack/react-query";
 import type { Address } from "viem";
 import { backendFetch } from "@/lib/backend-api";
 import { USDC_ADDRESS, EURC_ADDRESS } from "@/constants/addresses";
-import { isTransactionHash } from "@/lib/wizpay";
 import type {
   BackendTask,
   BackendTaskListResponse,
   HistoryActionType,
+  NormalizedBridgeTransfer,
   UnifiedHistoryItem,
 } from "@/lib/types";
 
@@ -61,8 +61,24 @@ function liquidityActionType(task: BackendTask): HistoryActionType {
   return op === "remove" ? "remove_lp" : "add_lp";
 }
 
-function resolveTaskTxHash(task: BackendTask): `0x${string}` | null {
+/** Accept EVM tx hashes (0x + 64 hex) or Solana signatures (base58, 64-88 chars). */
+function isChainTxId(value: unknown): value is string {
+  if (typeof value !== "string" || !value.trim()) return false;
+  const v = value.trim();
+  // EVM
+  if (/^0x[a-fA-F0-9]{64}$/.test(v)) return true;
+  // Solana signature: base58, 64–88 chars
+  if (v.length >= 64 && v.length <= 88 && /^[1-9A-HJ-NP-Za-km-z]+$/.test(v)) return true;
+  return false;
+}
+
+function resolveTaskTxHash(task: BackendTask): string | null {
+  const nt = task.result?.execution?.normalizedTransfer as NormalizedBridgeTransfer | undefined;
+
   const candidates = [
+    nt?.txId,
+    nt?.txIdMint,
+    nt?.txIdBurn,
     task.units[0]?.txHash,
     task.result?.txHash,
     task.result?.execution?.txHash,
@@ -72,8 +88,8 @@ function resolveTaskTxHash(task: BackendTask): `0x${string}` | null {
   ];
 
   for (const candidate of candidates) {
-    if (isTransactionHash(candidate)) {
-      return candidate;
+    if (isChainTxId(candidate)) {
+      return candidate as string;
     }
   }
 
@@ -109,9 +125,14 @@ export function backendTaskToHistoryItem(
     toBigIntValue(meta.amount) ??
     toBigIntValue(payload.amount);
 
+  const bridgeTransfer =
+    task.type === "bridge"
+      ? (task.result?.execution?.normalizedTransfer as NormalizedBridgeTransfer | undefined)
+      : undefined;
+
   return {
     type,
-    txHash: txHash ?? "0x",
+    txHash: (txHash ?? "0x") as `0x${string}`,
     blockNumber: 0n,
     timestampMs: createdAt,
     // payroll
@@ -136,6 +157,8 @@ export function backendTaskToHistoryItem(
     lpToken: asAddress(meta.token ?? payload.token),
     lpAmount: toBigIntValue(meta.amount) ?? toBigIntValue(payload.amount),
     lpShares: undefined,
+    // bridge
+    bridgeTransfer,
     // extra
     backendTaskId: task.id,
     backendStatus: task.status,

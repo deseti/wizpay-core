@@ -7,6 +7,7 @@ import { TaskDetails, TaskPayload } from '../task/task.types';
 import { TASK_QUEUE_MAP } from '../queue/queue.constants';
 import { QueueService } from '../queue/queue.service';
 import { TaskService } from '../task/task.service';
+import { normalizeBridgeChain } from '../common/multichain';
 
 @Injectable()
 export class OrchestratorService {
@@ -29,7 +30,14 @@ export class OrchestratorService {
       throw new BadRequestException(`Unsupported task type ${type}`);
     }
 
-    const task = await this.taskService.createTask(type, payload);
+    // Enrich bridge payloads with canonical chain identifiers so metadata is
+    // always queryable without re-parsing the raw blockchain string.
+    const enrichedPayload =
+      type === TaskType.BRIDGE
+        ? this.enrichBridgePayload(payload)
+        : payload;
+
+    const task = await this.taskService.createTask(type, enrichedPayload);
 
     try {
       await this.taskService.updateStatus(task.id, TaskStatus.ASSIGNED, {
@@ -41,7 +49,7 @@ export class OrchestratorService {
         taskId: task.id,
         taskType: type,
         agentKey: route.agentKey,
-        payload,
+        payload: enrichedPayload,
       });
     } catch (error) {
       await this.taskService.updateStatus(task.id, TaskStatus.FAILED, {
@@ -184,5 +192,29 @@ export class OrchestratorService {
     );
 
     return this.agentRouterService.execute(taskType, task);
+  }
+
+  /**
+   * Enrich a bridge payload with canonical chain identifiers.
+   * Adds `destinationChain` and (when inferrable) `sourceChain` so that
+   * these values are stored in task metadata at creation time, enabling
+   * chain-aware worker routing in Phase 3 without re-parsing raw strings.
+   */
+  private enrichBridgePayload(payload: TaskPayload): TaskPayload {
+    const blockchain =
+      typeof payload.blockchain === 'string' ? payload.blockchain : null;
+    const sourceBlockchain =
+      typeof payload.sourceBlockchain === 'string'
+        ? payload.sourceBlockchain
+        : null;
+
+    const destinationChain = normalizeBridgeChain(blockchain);
+    const sourceChain = normalizeBridgeChain(sourceBlockchain);
+
+    return {
+      ...payload,
+      ...(destinationChain ? { destinationChain } : {}),
+      ...(sourceChain ? { sourceChain } : {}),
+    };
   }
 }

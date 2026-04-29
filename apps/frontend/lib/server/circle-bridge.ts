@@ -1,12 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import type { ChainDefinition } from "@circle-fin/app-kit";
-import { ArcTestnet, EthereumSepolia } from "@circle-fin/app-kit/chains";
-import { ViemAdapter } from "@circle-fin/adapter-viem-v2";
-import { BridgeKit } from "@circle-fin/bridge-kit";
-import { BridgeChain } from "@circle-fin/bridge-kit/chains";
-import { http as circleWalletsHttp } from "@circle-fin/usdckit/providers/circle-wallets";
-import { createPublicClient, createWalletClient, http } from "viem";
+import type { BridgeKit } from "@circle-fin/bridge-kit";
 
 import { getRedisClient } from "@/lib/redis";
 import {
@@ -78,6 +72,7 @@ interface CreateCircleBridgeTransferInput {
   walletId?: string;
   walletAddress?: string;
   blockchain?: CircleTransferBlockchain;
+  sourceBlockchain?: CircleTransferBlockchain;
 }
 
 interface CircleBridgeConfig {
@@ -119,53 +114,30 @@ const ETHEREUM_SEPOLIA_RPC_URL =
 const BRIDGE_CHAIN_LABELS: Record<CircleTransferBlockchain, string> = {
   "ARC-TESTNET": "Arc Testnet",
   "ETH-SEPOLIA": "Ethereum Sepolia",
+  "SOLANA-DEVNET": "Solana Devnet",
 };
 
-const BRIDGE_CHAIN_BY_TRANSFER_CHAIN: Record<
-  CircleTransferBlockchain,
-  BridgeChain
-> = {
-  "ARC-TESTNET": BridgeChain.Arc_Testnet,
-  "ETH-SEPOLIA": BridgeChain.Ethereum_Sepolia,
+const BRIDGE_CHAIN_BY_TRANSFER_CHAIN: Record<CircleTransferBlockchain, string> = {
+  "ARC-TESTNET": "Arc_Testnet",
+  "ETH-SEPOLIA": "Ethereum_Sepolia",
+  "SOLANA-DEVNET": "Solana_Devnet",
 };
 
 const USDC_TOKEN_BY_CHAIN: Record<CircleTransferBlockchain, string> = {
   "ARC-TESTNET": "0x3600000000000000000000000000000000000000",
   "ETH-SEPOLIA": "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238",
+  // Solana Devnet USDC (Circle official)
+  "SOLANA-DEVNET": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
 };
 
-type BridgeAdapterCapabilities = ConstructorParameters<typeof ViemAdapter>[1];
-
-const BRIDGE_SUPPORTED_CHAINS = [
-  withExplicitBridgeRpcEndpoint(ArcTestnet as unknown as ChainDefinition, ARC_TESTNET_RPC_URL),
-  withExplicitBridgeRpcEndpoint(
-    EthereumSepolia as unknown as ChainDefinition,
-    ETHEREUM_SEPOLIA_RPC_URL
-  ),
-] as unknown as BridgeAdapterCapabilities["supportedChains"];
-
-class CircleBridgeViemAdapter extends ViemAdapter {
-  override async waitForTransaction(
-    txHash: Parameters<ViemAdapter["waitForTransaction"]>[0],
-    config: Parameters<ViemAdapter["waitForTransaction"]>[1],
-    chain: Parameters<ViemAdapter["waitForTransaction"]>[2]
-  ) {
-    return super.waitForTransaction(
-      txHash,
-      {
-        ...config,
-        timeout: config?.timeout ?? getBridgeTransactionWaitTimeoutMs(),
-      },
-      chain
-    );
-  }
-}
 
 export async function queueCircleBridgeTransfer(
   input: CreateCircleBridgeTransferInput
 ): Promise<QueuedCircleBridgeTransfer> {
   const destinationBlockchain = normalizeBlockchain(input.blockchain);
-  const sourceBlockchain = getSourceBlockchain(destinationBlockchain);
+  const sourceBlockchain = input.sourceBlockchain
+    ? normalizeBlockchain(input.sourceBlockchain)
+    : getSourceBlockchain(destinationBlockchain);
 
   if (sourceBlockchain === destinationBlockchain) {
     throw new CircleTransferError(
@@ -183,7 +155,7 @@ export async function queueCircleBridgeTransfer(
     normalizeOptionalString(input.referenceId) ||
     `BRIDGE-${destinationBlockchain}-${Date.now()}`;
   const normalizedAmount = normalizeAmount(input.amount);
-  const destinationAddress = normalizeDestinationAddress(input.destinationAddress);
+  const destinationAddress = normalizeDestinationAddress(input.destinationAddress, destinationBlockchain);
   const expectedTokenAddress = USDC_TOKEN_BY_CHAIN[destinationBlockchain];
   const requestedTokenAddress = normalizeOptionalString(input.tokenAddress);
 
@@ -311,6 +283,8 @@ export async function runCircleBridgeTransfer(
     to: {
       chain: BRIDGE_CHAIN_BY_TRANSFER_CHAIN[input.destinationBlockchain],
       recipientAddress: input.destinationAddress,
+      // Circle Orbit relayer (IRIS API) handles the mint on all destination chains,
+      // including Solana Devnet via CCTP v2. useForwarder:true is correct for all.
       useForwarder: true as const,
     },
     amount: input.amount,
@@ -810,9 +784,11 @@ function createBridgeRuntime() {
   assertBridgeConfig(config);
 
   try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { BridgeKit: BridgeKitImpl } = require("@circle-fin/bridge-kit") as typeof import("@circle-fin/bridge-kit");
     return {
       adapter: createBridgeAdapter(config),
-      kit: new BridgeKit(),
+      kit: new BridgeKitImpl(),
       config,
     };
   } catch (error) {
@@ -821,60 +797,15 @@ function createBridgeRuntime() {
 }
 
 function createBridgeAdapter(config: CircleBridgeConfig) {
-  return new CircleBridgeViemAdapter(
-    {
-      getPublicClient: ({ chain }) =>
-        createPublicClient({
-          chain,
-          pollingInterval: getBridgeRpcPollingIntervalMs(),
-          transport: http(getBridgeRpcUrl(chain.id)),
-        }),
-      getWalletClient: ({ chain }) =>
-        createWalletClient({
-          chain,
-          transport: circleWalletsHttp({
-            apiKey: config.circleApiKey,
-            entitySecret: config.circleEntitySecret,
-            baseUrl: config.circleWalletsBaseUrl,
-            chainId: chain.id,
-            pollingInterval: getBridgeRpcPollingIntervalMs(),
-            fallbackTransport: http(getBridgeRpcUrl(chain.id)),
-          }),
-        }),
-    },
-    {
-      addressContext: "developer-controlled",
-      supportedChains: BRIDGE_SUPPORTED_CHAINS,
-    }
-  );
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { createCircleWalletsAdapter } = require("@circle-fin/adapter-circle-wallets") as typeof import("@circle-fin/adapter-circle-wallets");
+  return createCircleWalletsAdapter({
+    apiKey: config.circleApiKey,
+    entitySecret: config.circleEntitySecret,
+    baseUrl: config.circleWalletsBaseUrl,
+  });
 }
 
-function withExplicitBridgeRpcEndpoint(
-  chain: ChainDefinition,
-  rpcEndpoint: string
-): ChainDefinition {
-  return {
-    ...chain,
-    rpcEndpoints: [rpcEndpoint],
-  };
-}
-
-function getBridgeRpcUrl(chainId: number): string {
-  if (chainId === 5_042_002) {
-    return ARC_TESTNET_RPC_URL;
-  }
-
-  if (chainId === 11_155_111) {
-    return ETHEREUM_SEPOLIA_RPC_URL;
-  }
-
-  throw new CircleTransferError(
-    `Unsupported bridge RPC chainId ${chainId}.`,
-    500,
-    "CIRCLE_BRIDGE_RPC_CHAIN_UNSUPPORTED",
-    { chainId }
-  );
-}
 
 function getBridgeTransactionWaitTimeoutMs() {
   const configuredTimeout = Number.parseInt(
@@ -958,19 +889,26 @@ function getBridgeConfig(): CircleBridgeConfig {
 function getSourceBlockchain(
   destinationBlockchain: CircleTransferBlockchain
 ): CircleTransferBlockchain {
-  return destinationBlockchain === "ARC-TESTNET"
-    ? "ETH-SEPOLIA"
-    : "ARC-TESTNET";
+  if (destinationBlockchain === "ARC-TESTNET") {
+    return "ETH-SEPOLIA";
+  }
+
+  // Solana Devnet: source is Arc Testnet (Circle CCTP v2 hub → Solana via Wormhole).
+  // ETH-SEPOLIA and any future EVM destination: source is Arc Testnet.
+  return "ARC-TESTNET";
 }
 
 function normalizeBlockchain(
   blockchain: string | undefined
 ): CircleTransferBlockchain {
-  const normalizedBlockchain = (blockchain || "ETH-SEPOLIA").toUpperCase();
+  const normalizedBlockchain = (blockchain || "ETH-SEPOLIA")
+    .toUpperCase()
+    .replace(/_/g, "-");
 
   if (
     normalizedBlockchain === "ARC-TESTNET" ||
-    normalizedBlockchain === "ETH-SEPOLIA"
+    normalizedBlockchain === "ETH-SEPOLIA" ||
+    normalizedBlockchain === "SOLANA-DEVNET"
   ) {
     return normalizedBlockchain;
   }
@@ -997,8 +935,28 @@ function normalizeAmount(amount: string): string {
   return trimmedAmount;
 }
 
-function normalizeDestinationAddress(address: string): string {
+function normalizeDestinationAddress(
+  address: string,
+  destinationBlockchain?: CircleTransferBlockchain
+): string {
   const normalizedAddress = address.trim();
+
+  if (destinationBlockchain === "SOLANA-DEVNET") {
+    // Solana pubkeys: base58, 32-44 chars.
+    if (
+      normalizedAddress.length < 32 ||
+      normalizedAddress.length > 44 ||
+      !/^[1-9A-HJ-NP-Za-km-z]+$/.test(normalizedAddress)
+    ) {
+      throw new CircleTransferError(
+        "Destination wallet must be a valid Solana base58 address for Solana Devnet.",
+        400,
+        "CIRCLE_TRANSFER_INVALID_DESTINATION"
+      );
+    }
+
+    return normalizedAddress;
+  }
 
   if (!/^0x[a-fA-F0-9]{40}$/.test(normalizedAddress)) {
     throw new CircleTransferError(

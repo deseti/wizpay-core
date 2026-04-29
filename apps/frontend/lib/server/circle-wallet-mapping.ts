@@ -30,6 +30,11 @@ const WALLET_ENV_NAMES_BY_CHAIN: Record<
     walletIdEnvName: "CIRCLE_WALLET_ID_SEPOLIA",
     walletSetIdEnvName: "CIRCLE_WALLET_SET_ID_SEPOLIA",
   },
+  "SOLANA-DEVNET": {
+    walletAddressEnvName: "CIRCLE_WALLET_ADDRESS_SOLANA",
+    walletIdEnvName: "CIRCLE_WALLET_ID_SOLANA",
+    walletSetIdEnvName: "CIRCLE_WALLET_SET_ID_SOLANA",
+  },
 };
 
 export function normalizeCircleWalletChain(
@@ -39,7 +44,8 @@ export function normalizeCircleWalletChain(
 
   if (
     normalizedChain === "ARC-TESTNET" ||
-    normalizedChain === "ETH-SEPOLIA"
+    normalizedChain === "ETH-SEPOLIA" ||
+    normalizedChain === "SOLANA-DEVNET"
   ) {
     return normalizedChain;
   }

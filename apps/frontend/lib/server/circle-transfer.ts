@@ -24,7 +24,7 @@ import {
   type CircleWalletByChain,
 } from "@/lib/server/circle-wallet-mapping";
 
-export type CircleTransferBlockchain = "ARC-TESTNET" | "ETH-SEPOLIA";
+export type CircleTransferBlockchain = "ARC-TESTNET" | "ETH-SEPOLIA" | "SOLANA-DEVNET";
 
 export interface CircleTransferWalletBalance {
   amount: string;
@@ -163,11 +163,14 @@ export interface CircleTransferRuntimeDebugSnapshot {
 const SUPPORTED_BLOCKCHAINS = new Set<CircleTransferBlockchain>([
   "ARC-TESTNET",
   "ETH-SEPOLIA",
+  "SOLANA-DEVNET",
 ]);
 
 const DEFAULT_TOKEN_BY_CHAIN: Record<CircleTransferBlockchain, string> = {
   "ARC-TESTNET": "0x3600000000000000000000000000000000000000",
   "ETH-SEPOLIA": "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238",
+  // Solana Devnet USDC (Circle official SPL token)
+  "SOLANA-DEVNET": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
 };
 
 const ARC_TESTNET_RPC_URL =
@@ -232,10 +235,11 @@ const ERC20_BALANCE_ABI = [
   },
 ] as const;
 
-const publicClientsByChain: Record<
+// Viem EVM public clients (Solana is not EVM — use Circle API for balance)
+const publicClientsByChain: Partial<Record<
   CircleTransferBlockchain,
   ReturnType<typeof createPublicClient>
-> = {
+>> = {
   "ARC-TESTNET": createPublicClient({
     chain: arcTestnetPublicChain,
     transport: http(ARC_TESTNET_RPC_URL),
@@ -244,6 +248,7 @@ const publicClientsByChain: Record<
     chain: ethereumSepoliaPublicChain,
     transport: http(ETHEREUM_SEPOLIA_RPC_URL),
   }),
+  // "SOLANA-DEVNET" intentionally omitted — use Circle API balance for Solana
 };
 
 const DEFAULT_WALLET_SET_NAME = "WizPay Transfer Wallet Set";
@@ -321,7 +326,7 @@ export async function bootstrapTransferWallet(
   const walletResponse = await wrapCircleCall(
     async () =>
       client.createWallets({
-        blockchains: [blockchain as Blockchain],
+        blockchains: [toCircleApiBlockchain(blockchain)],
         count: 1,
         walletSetId,
         metadata: [
@@ -560,6 +565,7 @@ function getConfig(): CircleTransferConfig {
     chainWallets: {
       "ARC-TESTNET": getWalletByChain("ARC-TESTNET"),
       "ETH-SEPOLIA": getWalletByChain("ETH-SEPOLIA"),
+      "SOLANA-DEVNET": getWalletByChain("SOLANA-DEVNET"),
     },
     circleWalletsBaseUrl: normalizedCircleWalletsBaseUrl,
     defaultBlockchain: normalizeBlockchain(configuredBlockchain),
@@ -604,6 +610,20 @@ function toRuntimeDebugConfig(
         walletSetId:
           normalizeOptionalString(
             config.chainWallets["ETH-SEPOLIA"].walletSetId
+          ) || null,
+      },
+      "SOLANA-DEVNET": {
+        walletAddress:
+          normalizeOptionalString(
+            config.chainWallets["SOLANA-DEVNET"].walletAddress
+          ) || null,
+        walletId:
+          normalizeOptionalString(
+            config.chainWallets["SOLANA-DEVNET"].walletId
+          ) || null,
+        walletSetId:
+          normalizeOptionalString(
+            config.chainWallets["SOLANA-DEVNET"].walletSetId
           ) || null,
       },
     },
@@ -789,7 +809,9 @@ function walletMatchesBlockchain(
   blockchain: CircleTransferBlockchain
 ) {
   try {
-    return normalizeBlockchain(String(wallet.blockchain)) === blockchain;
+    // Circle API returns blockchain strings like "SOL-DEVNET" — normalize before comparing
+    const walletChain = String(wallet.blockchain).toUpperCase().replace(/^SOL-DEVNET$/, "SOLANA-DEVNET");
+    return normalizeBlockchain(walletChain) === blockchain;
   } catch {
     return false;
   }
@@ -864,7 +886,7 @@ async function getFirstWalletInSet(
     async () =>
       client.listWallets({
         walletSetId,
-        blockchain: blockchain as Blockchain,
+        blockchain: toCircleApiBlockchain(blockchain),
         xRequestId: randomUUID(),
       }),
     `Failed to list wallets for Circle wallet set ${walletSetId}.`
@@ -991,6 +1013,11 @@ async function getWalletBalanceFromRpc(
 ): Promise<CircleTransferWalletBalance | null> {
   try {
     const publicClient = publicClientsByChain[wallet.blockchain];
+
+    // Solana and other non-EVM chains don't have a viem public client
+    if (!publicClient) {
+      return null;
+    }
 
     if (isArcNativeUsdcToken(wallet.blockchain, tokenAddress)) {
       const amount = await publicClient.getBalance({
@@ -1154,7 +1181,9 @@ function normalizeOptionalString(value: string | undefined): string | undefined 
 function normalizeBlockchain(
   blockchain: string | undefined
 ): CircleTransferBlockchain {
-  const normalizedBlockchain = (blockchain || "ARC-TESTNET").toUpperCase();
+  const raw = (blockchain || "ARC-TESTNET").toUpperCase();
+  // Map Circle API response values to our internal keys
+  const normalizedBlockchain = raw === "SOL-DEVNET" ? "SOLANA-DEVNET" : raw;
 
   if (SUPPORTED_BLOCKCHAINS.has(normalizedBlockchain as CircleTransferBlockchain)) {
     return normalizedBlockchain as CircleTransferBlockchain;
@@ -1165,6 +1194,14 @@ function normalizeBlockchain(
     400,
     "CIRCLE_TRANSFER_UNSUPPORTED_BLOCKCHAIN"
   );
+}
+
+/** Map our internal blockchain key to the Circle API blockchain enum value. */
+function toCircleApiBlockchain(blockchain: CircleTransferBlockchain): Blockchain {
+  if (blockchain === "SOLANA-DEVNET") {
+    return "SOL-DEVNET" as Blockchain;
+  }
+  return blockchain as Blockchain;
 }
 
 function getDefaultTokenAddress(blockchain: CircleTransferBlockchain): string {

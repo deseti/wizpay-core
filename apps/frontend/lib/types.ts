@@ -41,6 +41,28 @@ export interface HistoryItem {
 /* ── Unified history covering all dashboard event types ── */
 export type HistoryActionType = "payroll" | "add_lp" | "remove_lp" | "swap" | "bridge" | "fx";
 
+/** One atomic step of a cross-chain bridge transfer. */
+export interface NormalizedBridgeStep {
+  id: string;
+  name: string;
+  state: string;
+  chain: string | null;
+  txId: string | null;
+  explorerUrl: string | null;
+}
+
+/** Normalized result from a completed bridge transfer. Mirrors backend NormalizedBridgeTransfer. */
+export interface NormalizedBridgeTransfer {
+  transferId: string | null;
+  status: string;
+  sourceChain: string | null;
+  destinationChain: string | null;
+  txId: string | null;
+  txIdBurn: string | null;
+  txIdMint: string | null;
+  steps: NormalizedBridgeStep[];
+}
+
 export interface UnifiedHistoryItem {
   type: HistoryActionType;
   txHash: Hex;
@@ -58,6 +80,8 @@ export interface UnifiedHistoryItem {
   lpToken?: Address;
   lpAmount?: bigint;
   lpShares?: bigint;
+  /* Bridge-specific */
+  bridgeTransfer?: NormalizedBridgeTransfer;
 }
 
 export interface TransactionActionResult {

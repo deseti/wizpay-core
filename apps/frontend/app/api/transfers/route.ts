@@ -21,6 +21,7 @@ export async function POST(request: Request) {
       walletId?: string;
       walletAddress?: string;
       blockchain?: CircleTransferBlockchain;
+      sourceBlockchain?: CircleTransferBlockchain;
     };
     const {
       destinationAddress,
@@ -30,6 +31,7 @@ export async function POST(request: Request) {
       walletId,
       walletAddress,
       blockchain,
+      sourceBlockchain,
     } = body;
 
     if (!destinationAddress || !amount) {
@@ -47,6 +49,7 @@ export async function POST(request: Request) {
       walletId,
       walletAddress,
       blockchain,
+      sourceBlockchain,
     });
 
     after(async () => {

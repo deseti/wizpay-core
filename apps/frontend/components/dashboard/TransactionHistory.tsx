@@ -28,6 +28,26 @@ import {
 } from "@/lib/wizpay";
 import { useActivityHistory, type ActivityFilter } from "@/hooks/useActivityHistory";
 
+/** Returns the best explorer URL for a history item.
+ *  For bridge items, prefers step-level explorerUrls from normalizedTransfer
+ *  when the primary txHash is a Solana signature (not an EVM hash). */
+function resolveExplorerUrl(item: UnifiedHistoryItem): string | null {
+  const evmUrl = getExplorerTxUrl(item.txHash);
+  if (evmUrl) return evmUrl;
+
+  // Bridge: walk steps for the first valid explorerUrl
+  const bt = (item as UnifiedHistoryItem & { bridgeTransfer?: { steps?: { explorerUrl: string | null }[] } }).bridgeTransfer;
+  if (bt?.steps) {
+    for (const step of bt.steps) {
+      if (step.explorerUrl && step.explorerUrl.startsWith("https://")) {
+        return step.explorerUrl;
+      }
+    }
+  }
+
+  return null;
+}
+
 function formatDateTime(timestampMs: number) {
   return new Intl.DateTimeFormat(undefined, {
     dateStyle: "medium",
@@ -267,7 +287,7 @@ export function TransactionHistory({
                 <TableBody>
                   {displayItems.map((item, idx) => {
                     const cfg = ACTION_CONFIG[item.type];
-                    const txUrl = getExplorerTxUrl(item.txHash);
+                    const txUrl = resolveExplorerUrl(item);
                     return (
                       <TableRow key={`${item.txHash}-${idx}`} className="border-border/20 hover:bg-primary/3 transition-colors">
                         <TableCell className="text-sm whitespace-nowrap">
@@ -335,7 +355,7 @@ export function TransactionHistory({
             <div className="space-y-3 md:hidden">
               {displayItems.map((item, idx) => {
                 const cfg = ACTION_CONFIG[item.type];
-                const txUrl = getExplorerTxUrl(item.txHash);
+                const txUrl = resolveExplorerUrl(item);
                 return (
                   <Card
                     key={`${item.txHash}-mobile-${idx}`}

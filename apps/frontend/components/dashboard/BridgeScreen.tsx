@@ -73,6 +73,10 @@ type StoredTransferWalletMap = Partial<
   Record<CircleTransferBlockchain, StoredTransferWallet>
 >;
 
+type DestinationWalletMap = Partial<
+  Record<CircleTransferBlockchain, CircleTransferWallet | null>
+>;
+
 const DESTINATION_OPTIONS: Array<{
   id: CircleTransferBlockchain;
   label: string;
@@ -85,15 +89,21 @@ const DESTINATION_OPTIONS: Array<{
     id: "ETH-SEPOLIA",
     label: "Ethereum Sepolia",
   },
+  {
+    id: "SOLANA-DEVNET",
+    label: "Solana Devnet",
+  },
 ];
 
 const APP_TREASURY_WALLET_TITLE = "Source Treasury Wallet";
 const APP_TREASURY_WALLET_LABEL = "source treasury wallet";
 const BRIDGE_ASSET_SYMBOL = "USDC";
 
-const USDC_ADDRESS_BY_CHAIN: Record<CircleTransferBlockchain, string> = {
+const USDC_ADDRESS_BY_CHAIN: Partial<Record<CircleTransferBlockchain, string>> = {
   "ARC-TESTNET": USDC_ADDRESS,
   "ETH-SEPOLIA": ETHEREUM_SEPOLIA_USDC_ADDRESS,
+  // Solana Devnet USDC (Circle official SPL token)
+  "SOLANA-DEVNET": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
 };
 
 function getOptionByChain(chain: CircleTransferBlockchain) {
@@ -103,10 +113,35 @@ function getOptionByChain(chain: CircleTransferBlockchain) {
   );
 }
 
-function getOppositeBlockchain(
-  blockchain: CircleTransferBlockchain
+function getDefaultDestinationBlockchain(
+  sourceBlockchain: CircleTransferBlockchain
 ): CircleTransferBlockchain {
-  return blockchain === "ARC-TESTNET" ? "ETH-SEPOLIA" : "ARC-TESTNET";
+  return (
+    DESTINATION_OPTIONS.find((option) => option.id !== sourceBlockchain)?.id ??
+    "ARC-TESTNET"
+  );
+}
+
+/** Whether a chain uses Solana (non-EVM) address format. */
+function isSolanaChain(chain: CircleTransferBlockchain): boolean {
+  return chain === "SOLANA-DEVNET";
+}
+
+/** Validate destination address for the selected chain. */
+function isValidDestinationAddress(
+  address: string,
+  chain: CircleTransferBlockchain
+): boolean {
+  const trimmed = address.trim();
+  if (!trimmed) return false;
+  if (isSolanaChain(chain)) {
+    return (
+      trimmed.length >= 32 &&
+      trimmed.length <= 44 &&
+      /^[1-9A-HJ-NP-Za-km-z]+$/.test(trimmed)
+    );
+  }
+  return /^0x[a-fA-F0-9]{40}$/.test(trimmed);
 }
 
 function normalizeBridgeStepId(value: string | undefined): BridgeStepId | null {
@@ -150,7 +185,8 @@ function hasExplorerTxHash(url: string | null | undefined) {
     return false;
   }
 
-  return /\/tx\/(0x[a-fA-F0-9]{64})(?:$|[/?#])/.test(url);
+  // Match EVM tx hash (0x + 64 hex chars) or Solana signature (base58, 64-88 chars)
+  return /\/tx\/(0x[a-fA-F0-9]{64}|[1-9A-HJ-NP-Za-km-z]{64,88})(?:$|[/?#])/.test(url);
 }
 
 function getStoredTransferWallet(blockchain: CircleTransferBlockchain) {
@@ -670,15 +706,24 @@ function recoverTerminalTransfer(
 }
 
 export function BridgeScreen() {
-  const { arcWallet, sepoliaWallet, createTransferChallenge, executeChallenge, getWalletBalances } = useCircleWallet();
+  const {
+    arcWallet,
+    sepoliaWallet,
+    solanaWallet,
+    createTransferChallenge,
+    executeChallenge,
+    getWalletBalances,
+  } = useCircleWallet();
   const { toast } = useToast();
   const restoredTransferRef = useRef(false);
-  const normalizedLegacyDefaultRef = useRef(false);
   const terminalNoticeRef = useRef<string | null>(null);
   const reconnectingPollCountRef = useRef(0);
 
+  const [sourceChain, setSourceChain] = useState<CircleTransferBlockchain>(
+    DEFAULT_SOURCE_BLOCKCHAIN
+  );
   const [destinationChain, setDestinationChain] = useState<CircleTransferBlockchain>(
-    getOppositeBlockchain(DEFAULT_SOURCE_BLOCKCHAIN)
+    getDefaultDestinationBlockchain(DEFAULT_SOURCE_BLOCKCHAIN)
   );
   const [amount, setAmount] = useState("");
   const [destinationAddress, setDestinationAddress] = useState("");
@@ -694,14 +739,17 @@ export function BridgeScreen() {
   const [isReconnectingToTracking, setIsReconnectingToTracking] = useState(false);
   const [isReviewDialogOpen, setIsReviewDialogOpen] = useState(false);
   const [isSuccessDialogOpen, setIsSuccessDialogOpen] = useState(false);
+  const [destinationWallets, setDestinationWallets] =
+    useState<DestinationWalletMap>({});
+  const [isDestinationWalletsLoading, setIsDestinationWalletsLoading] =
+    useState(false);
   const tokenSymbol = BRIDGE_ASSET_SYMBOL;
 
+  const sourceOption = useMemo(() => getOptionByChain(sourceChain), [sourceChain]);
   const destinationOption = useMemo(
     () => getOptionByChain(destinationChain),
     [destinationChain]
   );
-  const sourceChain = getOppositeBlockchain(destinationChain);
-  const sourceOption = useMemo(() => getOptionByChain(sourceChain), [sourceChain]);
   const treasuryWalletOption = useMemo(
     () =>
       transferWallet ? getOptionByChain(transferWallet.blockchain) : sourceOption,
@@ -718,9 +766,12 @@ export function BridgeScreen() {
   const suggestedDestinationAddress =
     destinationChain === "ARC-TESTNET"
       ? arcWallet?.address ?? ""
-      : sepoliaWallet?.address ?? "";
+      : destinationChain === "ETH-SEPOLIA"
+      ? sepoliaWallet?.address ?? ""
+      : solanaWallet?.address ?? "";
   const destinationTokenAddress = USDC_ADDRESS_BY_CHAIN[destinationChain];
   const sourceTokenAddress = USDC_ADDRESS_BY_CHAIN[sourceChain];
+  const isSameChainRoute = sourceChain === destinationChain;
   const requestedAmount = Number(amount || "0");
   const walletBalanceAmount = Number(transferWallet?.balance?.amount || "0");
   const treasuryWalletEmpty =
@@ -733,8 +784,10 @@ export function BridgeScreen() {
   const pollTransferFnRef = useRef<(() => Promise<void>) | null>(null);
   const canSubmit =
     Boolean(destinationTokenAddress) &&
+    Boolean(sourceTokenAddress) &&
     isPositiveDecimal(amount) &&
-    isValidAddress(destinationAddress) &&
+    !isSameChainRoute &&
+    isValidDestinationAddress(destinationAddress, destinationChain) &&
     Boolean(transferWallet) &&
     hasSufficientWalletBalance &&
     !isTransferActive;
@@ -819,30 +872,11 @@ export function BridgeScreen() {
     }
 
     setTransfer(storedTransfer);
+    setSourceChain(storedTransfer.sourceBlockchain);
     setDestinationChain(storedTransfer.blockchain);
     setAmount(storedTransfer.amount);
     setDestinationAddress(storedTransfer.destinationAddress || "");
   }, []);
-
-  useEffect(() => {
-    if (normalizedLegacyDefaultRef.current) {
-      return;
-    }
-
-    if (!restoredTransferRef.current) {
-      return;
-    }
-
-    normalizedLegacyDefaultRef.current = true;
-
-    if (transfer || getStoredActiveTransfer()) {
-      return;
-    }
-
-    if (destinationChain === "ETH-SEPOLIA") {
-      setDestinationChain(getOppositeBlockchain(DEFAULT_SOURCE_BLOCKCHAIN));
-    }
-  }, [destinationChain, transfer]);
 
   useEffect(() => {
     if (isTransferActive) {
@@ -1097,6 +1131,52 @@ export function BridgeScreen() {
     }
   }
 
+  async function refreshDestinationWallets() {
+    setIsDestinationWalletsLoading(true);
+
+    const chains = DESTINATION_OPTIONS.map((option) => option.id);
+
+    try {
+      const entries = await Promise.all(
+        chains.map(async (chain) => {
+          const tokenAddress = USDC_ADDRESS_BY_CHAIN[chain];
+
+          if (!tokenAddress) {
+            return [chain, null] as const;
+          }
+
+          const storedWallet = getStoredTransferWallet(chain);
+
+          try {
+            const wallet = await getCircleTransferWallet({
+              blockchain: chain,
+              tokenAddress,
+              walletId: storedWallet?.walletId || undefined,
+              walletAddress: storedWallet?.walletAddress || undefined,
+            });
+
+            setStoredTransferWallet(chain, wallet);
+            return [chain, wallet] as const;
+          } catch {
+            return [chain, null] as const;
+          }
+        })
+      );
+
+      const nextWallets: DestinationWalletMap = {};
+      for (const [chain, wallet] of entries) {
+        nextWallets[chain] = wallet;
+      }
+      setDestinationWallets(nextWallets);
+    } finally {
+      setIsDestinationWalletsLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    void refreshDestinationWallets();
+  }, []);
+
   async function handleBootstrapWallet() {
     setIsWalletBootstrapping(true);
     setWalletStatusError(null);
@@ -1111,6 +1191,7 @@ export function BridgeScreen() {
 
       setTransferWallet(wallet);
       setStoredTransferWallet(sourceChain, wallet);
+      void refreshDestinationWallets();
       setWalletStatusError(null);
       toast({
         title: "App treasury wallet ready",
@@ -1165,6 +1246,11 @@ export function BridgeScreen() {
       return;
     }
 
+    if (isSameChainRoute) {
+      setErrorMessage("Source and destination network must be different.");
+      return;
+    }
+
     if (!canSubmit) {
       setErrorMessage(
         "Enter a valid amount and destination wallet before starting the bridge."
@@ -1199,56 +1285,76 @@ export function BridgeScreen() {
     setIsReconnectingToTracking(false);
 
     try {
-      // 1. Fetch user source wallet
-      const userSourceWallet = sourceChain === "ARC-TESTNET" ? arcWallet : sepoliaWallet;
-      
-      if (!userSourceWallet?.id) {
-        throw new Error(`Personal ${sourceOption.label} wallet not connected.`);
+      const referenceId = `BRIDGE-${sourceChain}-TO-${destinationChain}-${Date.now()}`;
+      const userSourceWallet =
+        sourceChain === "ARC-TESTNET"
+          ? arcWallet
+          : sourceChain === "ETH-SEPOLIA"
+            ? sepoliaWallet
+            : null;
+      const requiresPersonalDeposit = sourceChain !== "SOLANA-DEVNET";
+
+      if (requiresPersonalDeposit) {
+        if (!userSourceWallet?.id) {
+          throw new Error(`Personal ${sourceOption.label} wallet not connected.`);
+        }
+
+        setIsDepositingToTreasury(true);
+
+        const balances = await getWalletBalances(userSourceWallet.id);
+        const usdcBalance = balances.find(
+          (b) =>
+            b.symbol === "USDC" ||
+            b.tokenAddress?.toLowerCase() === sourceTokenAddress?.toLowerCase()
+        );
+
+        if (!usdcBalance?.tokenId) {
+          throw new Error(
+            `Could not find USDC token in your personal ${sourceOption.label} wallet. Available tokens: ${balances.map((b) => `${b.symbol}=${b.tokenAddress}`).join(", ")}`
+          );
+        }
+
+        if (Number(usdcBalance.amount) < Number(amount)) {
+          throw new Error(
+            `Insufficient personal balance. You only have ${usdcBalance.amount} USDC on ${sourceOption.label}.`
+          );
+        }
+
+        toast({
+          title: "Step 1: Deposit",
+          description: `Please approve the transfer of ${amount} USDC to the treasury wallet.`,
+        });
+
+        const challenge = await createTransferChallenge({
+          walletId: userSourceWallet.id,
+          destinationAddress: transferWallet.walletAddress,
+          amounts: [amount.toString()],
+          feeLevel: "MEDIUM",
+          tokenId: usdcBalance.tokenId,
+        });
+
+        await executeChallenge(challenge.challengeId);
+
+        toast({
+          title: "Step 2: Bridge",
+          description: "Deposit requested. Executing bridge optimistically...",
+        });
+        await new Promise((resolve) => setTimeout(resolve, 2500));
+
+        setIsDepositingToTreasury(false);
+      } else {
+        toast({
+          title: "Bridge from treasury",
+          description:
+            "Solana source mode uses the app treasury wallet balance directly.",
+        });
       }
 
-      setIsDepositingToTreasury(true);
-      
-      // 2. Fetch USDC Token ID from user wallet
-      const balances = await getWalletBalances(userSourceWallet.id);
-      const usdcBalance = balances.find((b) => b.symbol === "USDC" || b.tokenAddress?.toLowerCase() === sourceTokenAddress.toLowerCase());
-
-      if (!usdcBalance?.tokenId) {
-         throw new Error(`Could not find USDC token in your personal ${sourceOption.label} wallet. Available tokens: ${balances.map(b => `${b.symbol}=${b.tokenAddress}`).join(", ")}`);
-      }
-
-      if (Number(usdcBalance.amount) < Number(amount)) {
-         throw new Error(`Insufficient personal balance. You only have ${usdcBalance.amount} USDC on ${sourceOption.label}.`);
-      }
-
-      // 3. User deposits to Treasury Wallet
-      const referenceId = `BRIDGE-${destinationChain}-${Date.now()}`;
-      toast({
-        title: "Step 1: Deposit",
-        description: `Please approve the transfer of ${amount} USDC to the treasury wallet.`,
-      });
-
-      const challenge = await createTransferChallenge({
-        walletId: userSourceWallet.id,
-        destinationAddress: transferWallet.walletAddress,
-        amounts: [amount.toString()],
-        feeLevel: "MEDIUM",
-        tokenId: usdcBalance.tokenId
-      });
-
-      await executeChallenge(challenge.challengeId);
-      
-      toast({
-         title: "Step 2: Bridge",
-         description: "Deposit requested. Executing bridge optimistically..."
-      });
-      await new Promise(resolve => setTimeout(resolve, 2500));
-      
-      setIsDepositingToTreasury(false);
-
-      // 4. Treasury initiates the actual bridge
+      // Treasury initiates the actual bridge
       const queuedTransfer = await createCircleTransfer({
         amount,
         blockchain: destinationChain,
+        sourceBlockchain: sourceChain,
         destinationAddress,
         referenceId,
         tokenAddress: destinationTokenAddress,
@@ -1259,6 +1365,7 @@ export function BridgeScreen() {
       terminalNoticeRef.current = null;
       setTransfer(queuedTransfer);
       setStoredActiveTransfer(queuedTransfer);
+      setSourceChain(queuedTransfer.sourceBlockchain);
       setDestinationChain(queuedTransfer.blockchain);
       setAmount(queuedTransfer.amount);
       setDestinationAddress(queuedTransfer.destinationAddress || destinationAddress);
@@ -1292,7 +1399,7 @@ export function BridgeScreen() {
           </h1>
           <p className="text-sm text-muted-foreground/70">
             Treasury-assisted Circle CCTP flow for forwarding testnet USDC
-            between Sepolia and Arc.
+            across Arc, Sepolia, and Solana Devnet.
           </p>
         </div>
       </div>
@@ -1307,8 +1414,9 @@ export function BridgeScreen() {
             Treasury-Assisted Bridge
           </CardTitle>
           <CardDescription>
-            Choose the source network for the treasury wallet. Circle burns on
-            that chain first, then mints on the opposite destination network.
+            Choose source and destination networks for the treasury wallet flow.
+            Circle burns on the selected source chain, then mints on the selected
+            destination chain.
           </CardDescription>
         </CardHeader>
         <CardContent className="grid gap-6 py-6 lg:grid-cols-[minmax(0,1fr)_19rem]">
@@ -1485,18 +1593,30 @@ export function BridgeScreen() {
                 </label>
                 <Select
                   value={sourceChain}
-                  onValueChange={(value) =>
-                    setDestinationChain(
-                      getOppositeBlockchain(value as CircleTransferBlockchain)
-                    )
-                  }
+                  onValueChange={(value) => {
+                    const newSource = value as CircleTransferBlockchain;
+                    if (newSource === destinationChain) {
+                      const fallbackDestination =
+                        getDefaultDestinationBlockchain(newSource);
+                      setDestinationChain(fallbackDestination);
+                      if (
+                        isSolanaChain(fallbackDestination) !==
+                        isSolanaChain(destinationChain)
+                      ) {
+                        setDestinationAddress("");
+                      }
+                    }
+                    setSourceChain(newSource);
+                  }}
                   disabled={isTransferActive || isSubmitting}
                 >
                   <SelectTrigger className="h-11 border-border/40 bg-background/50">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    {DESTINATION_OPTIONS.map((option) => (
+                    {DESTINATION_OPTIONS.filter(
+                      (option) => option.id !== destinationChain
+                    ).map((option) => (
                       <SelectItem key={option.id} value={option.id}>
                         {option.label}
                       </SelectItem>
@@ -1509,9 +1629,34 @@ export function BridgeScreen() {
                 <label className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground/60">
                   Destination network
                 </label>
-                <div className="flex h-11 items-center rounded-md border border-border/40 bg-background/50 px-3 text-sm font-medium">
-                  {destinationOption.label} · Recipient wallet
-                </div>
+                <Select
+                  value={destinationChain}
+                  onValueChange={(value) => {
+                    const newDestination = value as CircleTransferBlockchain;
+                    if (newDestination === sourceChain) {
+                      return;
+                    }
+                    // Clear address when chain type changes (EVM <-> Solana)
+                    if (isSolanaChain(newDestination) !== isSolanaChain(destinationChain)) {
+                      setDestinationAddress("");
+                    }
+                    setDestinationChain(newDestination);
+                  }}
+                  disabled={isTransferActive || isSubmitting}
+                >
+                  <SelectTrigger className="h-11 border-border/40 bg-background/50">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {DESTINATION_OPTIONS.filter(
+                      (option) => option.id !== sourceChain
+                    ).map((option) => (
+                      <SelectItem key={option.id} value={option.id}>
+                        {option.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
             </div>
 
@@ -1519,6 +1664,12 @@ export function BridgeScreen() {
               Route: burn from the {sourceOption.label} source treasury wallet,
               then mint to your destination address on {destinationOption.label}.
             </div>
+
+            {isSameChainRoute ? (
+              <div className="rounded-2xl border border-destructive/25 bg-destructive/5 px-4 py-3 text-sm text-destructive">
+                Source and destination network must be different.
+              </div>
+            ) : null}
 
             <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)]">
               <div className="space-y-2">
@@ -1543,7 +1694,7 @@ export function BridgeScreen() {
                   Destination wallet
                 </label>
                 <Input
-                  placeholder="0x..."
+                  placeholder={isSolanaChain(destinationChain) ? "Solana base58 address..." : "0x..."}
                   value={destinationAddress}
                   onChange={(event) => setDestinationAddress(event.target.value)}
                   className="h-11 border-border/40 bg-background/50 font-mono text-xs"
@@ -1714,8 +1865,8 @@ export function BridgeScreen() {
                 Your destination wallets
               </p>
               <p className="mt-1 text-xs text-muted-foreground/70">
-                These are your personal Circle wallets. The treasury wallet above
-                belongs to the app.
+                These are your personal Circle wallets across Arc, Sepolia, and
+                Solana Devnet.
               </p>
               <div className="mt-3 space-y-3 text-sm">
                 <div className="flex items-center gap-3">
@@ -1725,7 +1876,10 @@ export function BridgeScreen() {
                   <div>
                     <p className="font-medium">Arc Testnet</p>
                     <p className="font-mono text-xs text-muted-foreground/70">
-                      {shortenAddress(arcWallet?.address)}
+                      {shortenAddress(
+                        arcWallet?.address ||
+                          destinationWallets["ARC-TESTNET"]?.walletAddress
+                      )}
                     </p>
                   </div>
                 </div>
@@ -1736,10 +1890,41 @@ export function BridgeScreen() {
                   <div>
                     <p className="font-medium">Ethereum Sepolia</p>
                     <p className="font-mono text-xs text-muted-foreground/70">
-                      {shortenAddress(sepoliaWallet?.address)}
+                      {shortenAddress(
+                        sepoliaWallet?.address ||
+                          destinationWallets["ETH-SEPOLIA"]?.walletAddress
+                      )}
                     </p>
                   </div>
                 </div>
+                <div className="flex items-center gap-3">
+                  <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary/12 text-primary">
+                    <Wallet className="h-4 w-4" />
+                  </div>
+                  <div>
+                    <p className="font-medium">Solana Devnet</p>
+                    <p className="font-mono text-xs text-muted-foreground/70">
+                      {shortenAddress(
+                        solanaWallet?.address ||
+                          destinationWallets["SOLANA-DEVNET"]?.walletAddress
+                      )}
+                    </p>
+                  </div>
+                </div>
+              </div>
+              <div className="mt-3">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => void refreshDestinationWallets()}
+                  disabled={isDestinationWalletsLoading}
+                  className="w-full"
+                >
+                  <RefreshCw
+                    className={`h-4 w-4 ${isDestinationWalletsLoading ? "animate-spin" : ""}`}
+                  />
+                  Refresh destination wallets
+                </Button>
               </div>
             </div>
 

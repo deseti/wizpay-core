@@ -181,6 +181,7 @@ type CircleWalletContextValue = {
   requestPasskeyLogin: () => Promise<void>;
   requestPasskeyRegistration: (username: string) => Promise<void>;
   sepoliaWallet: CircleUserWallet | null;
+  solanaWallet: CircleUserWallet | null;
   userEmail: string | null;
   verifyEmailOtp: () => void;
   wallets: CircleUserWallet[];
@@ -211,7 +212,11 @@ const SESSION_STORAGE_KEY = "wizpay.circle.session";
 const SOCIAL_LOGIN_PROVIDER_STORAGE_KEY = "socialLoginProvider";
 const SOCIAL_LOGIN_STATE_STORAGE_KEY = "state";
 const SOCIAL_LOGIN_NONCE_STORAGE_KEY = "nonce";
-const SUPPORTED_WALLET_CHAINS = new Set(["ARC-TESTNET", "ETH-SEPOLIA"]);
+const SUPPORTED_WALLET_CHAINS = new Set([
+  "ARC-TESTNET",
+  "ETH-SEPOLIA",
+  "SOLANA-DEVNET",
+]);
 const INVALID_DEVICE_ERROR_CODES = new Set([155113, 155137, 155143, 155144, 155145]);
 const OAUTH_RECOVERY_ERROR_CODES = new Set([155114, 155140]);
 
@@ -929,6 +934,7 @@ const DISABLED_CONTEXT_VALUE: CircleWalletContextValue = {
   requestPasskeyLogin: async () => {},
   requestPasskeyRegistration: async () => {},
   sepoliaWallet: null,
+  solanaWallet: null,
   userEmail: null,
   verifyEmailOtp: () => {},
   wallets: [],
@@ -962,6 +968,7 @@ function CircleWalletProviderInner({
   >(null);
   const [ready, setReady] = useState(false);
   const [sepoliaWallet, setSepoliaWallet] = useState<CircleUserWallet | null>(null);
+  const [solanaWallet, setSolanaWallet] = useState<CircleUserWallet | null>(null);
   const [session, setSession] = useState<CircleSession | null>(null);
   const [wallets, setWallets] = useState<CircleUserWallet[]>([]);
 
@@ -1069,6 +1076,9 @@ function CircleWalletProviderInner({
     setArcWallet((runtimeSet?.arc?.wallet as CircleUserWallet | null) ?? null);
     setSepoliaWallet(
       (runtimeSet?.sepolia?.wallet as CircleUserWallet | null) ?? null
+    );
+    setSolanaWallet(
+      nextWallets.find((wallet) => wallet.blockchain === "SOLANA-DEVNET") ?? null
     );
   }, []);
 
@@ -1204,6 +1214,7 @@ function CircleWalletProviderInner({
   const initializeAndLoadWalletsRef = useRef<
     ((authSession: CircleW3SSession) => Promise<void>) | null
   >(null);
+  const ensuredSolanaByUserTokenRef = useRef(new Set<string>());
   const persistSessionRef = useRef<((nextSession: CircleSession | null) => void) | null>(
     null
   );
@@ -1268,7 +1279,11 @@ function CircleWalletProviderInner({
           username: activeSession.passkeyUsername,
         });
 
-        return;
+        return (passkeyRuntimeByWalletIdRef.current.size > 0
+          ? Array.from(passkeyRuntimeByWalletIdRef.current.values()).map(
+              (runtime) => runtime.wallet as CircleUserWallet
+            )
+          : []) as CircleUserWallet[];
       }
 
       const userToken = activeSession?.userToken;
@@ -1277,8 +1292,9 @@ function CircleWalletProviderInner({
         setWallets([]);
         setArcWallet(null);
         setSepoliaWallet(null);
+        setSolanaWallet(null);
         resetPasskeyRuntimeState();
-        return;
+        return [] as CircleUserWallet[];
       }
 
       const payload = (await postW3sAction("listWallets", {
@@ -1298,6 +1314,11 @@ function CircleWalletProviderInner({
       setSepoliaWallet(
         nextWallets.find((wallet) => wallet.blockchain === "ETH-SEPOLIA") ?? null
       );
+      setSolanaWallet(
+        nextWallets.find((wallet) => wallet.blockchain === "SOLANA-DEVNET") ?? null
+      );
+
+      return nextWallets;
     },
     [initializePasskeyWallets, postW3sAction, resetPasskeyRuntimeState, session]
   );
@@ -1333,6 +1354,68 @@ function CircleWalletProviderInner({
     [executePasskeyChallenge]
   );
 
+  const loadWalletsEnsuringSolana = useCallback(
+    async (authSession: CircleSession) => {
+      const existingWallets = await loadWallets(authSession);
+
+      if (isPasskeySession(authSession)) {
+        return existingWallets;
+      }
+
+      if (existingWallets.some((wallet) => wallet.blockchain === "SOLANA-DEVNET")) {
+        ensuredSolanaByUserTokenRef.current.add(authSession.userToken);
+        return existingWallets;
+      }
+
+      if (ensuredSolanaByUserTokenRef.current.has(authSession.userToken)) {
+        return existingWallets;
+      }
+
+      try {
+        setAuthStatus("Creating your Solana Devnet user wallet...");
+
+        const response = await postW3sAction("createUserWalletChallenge", {
+          userToken: authSession.userToken,
+          payload: {
+            accountType: "EOA",
+            blockchains: ["SOL-DEVNET"],
+          },
+        });
+
+        if (!isRecord(response)) {
+          return existingWallets;
+        }
+
+        const challengeId = extractChallengeId(response);
+
+        if (!challengeId) {
+          return existingWallets;
+        }
+
+        setAuthStatus("Confirming Solana wallet challenge...");
+        await executeChallengeForSession(challengeId, authSession);
+        await new Promise((resolve) => {
+          window.setTimeout(resolve, 1500);
+        });
+
+        setAuthStatus("Loading Circle wallets...");
+        const updatedWallets = await loadWallets(authSession);
+
+        if (
+          updatedWallets.some((wallet) => wallet.blockchain === "SOLANA-DEVNET")
+        ) {
+          ensuredSolanaByUserTokenRef.current.add(authSession.userToken);
+        }
+
+        return updatedWallets;
+      } catch (error) {
+        console.warn("[CircleWalletProvider] Failed to auto-create Solana user wallet", error);
+        return existingWallets;
+      }
+    },
+    [executeChallengeForSession, loadWallets, postW3sAction]
+  );
+
   const initializeAndLoadWallets = useCallback(
     async (authSession: CircleW3SSession) => {
       setIsAuthenticating(true);
@@ -1355,7 +1438,7 @@ function CircleWalletProviderInner({
         }
 
         setAuthStatus("Loading Circle wallets...");
-        await loadWallets(authSession);
+        await loadWalletsEnsuringSolana(authSession);
         setAuthStatus("Circle wallet ready.");
         setIsLoginOpen(false);
         clearCircleOAuthBackups();
@@ -1365,7 +1448,7 @@ function CircleWalletProviderInner({
 
         if (code === 155106) {
           setAuthStatus("Existing Circle wallet found. Loading wallets...");
-          await loadWallets(authSession);
+          await loadWalletsEnsuringSolana(authSession);
           setAuthStatus("Circle wallet restored.");
           setIsLoginOpen(false);
           clearCircleOAuthBackups();
@@ -1380,7 +1463,12 @@ function CircleWalletProviderInner({
         setIsAuthenticating(false);
       }
     },
-    [clearStoredLoginConfig, executeChallengeForSession, loadWallets, postW3sAction]
+    [
+      clearStoredLoginConfig,
+      executeChallengeForSession,
+      loadWalletsEnsuringSolana,
+      postW3sAction,
+    ]
   );
 
   const executeChallenge = useCallback(
@@ -1773,7 +1861,11 @@ function CircleWalletProviderInner({
 
     async function hydrateWallets() {
       try {
-        await loadWallets(session);
+        if (isPasskeySession(session)) {
+          await loadWallets(session);
+        } else {
+          await loadWalletsEnsuringSolana(session);
+        }
       } catch (error) {
         if (!cancelled) {
           handleAuthFailure(error);
@@ -1783,6 +1875,7 @@ function CircleWalletProviderInner({
           setWallets([]);
           setArcWallet(null);
           setSepoliaWallet(null);
+          setSolanaWallet(null);
         }
       }
     }
@@ -1794,7 +1887,14 @@ function CircleWalletProviderInner({
     return () => {
       cancelled = true;
     };
-  }, [clearPasskeyState, loadWallets, persistSession, session, wallets.length]);
+  }, [
+    clearPasskeyState,
+    loadWallets,
+    loadWalletsEnsuringSolana,
+    persistSession,
+    session,
+    wallets.length,
+  ]);
 
   const requestPasskeyRegistration = useCallback(
     async (username: string) => {
@@ -2099,10 +2199,11 @@ function CircleWalletProviderInner({
     setIsAuthenticating(false);
     setSession(null);
     setSepoliaWallet(null);
+    setSolanaWallet(null);
     setWallets([]);
   }, [clearPasskeyState, clearStoredLoginConfig, persistSession]);
 
-  const primaryWallet = arcWallet ?? sepoliaWallet ?? wallets[0] ?? null;
+  const primaryWallet = arcWallet ?? sepoliaWallet ?? solanaWallet ?? wallets[0] ?? null;
 
   const getDevCredentials = useCallback(() => {
     const resolvedSession =
@@ -2161,6 +2262,7 @@ function CircleWalletProviderInner({
       requestPasskeyLogin,
       requestPasskeyRegistration,
       sepoliaWallet,
+      solanaWallet,
       userEmail: session?.email ?? null,
       verifyEmailOtp,
       wallets,
@@ -2186,6 +2288,7 @@ function CircleWalletProviderInner({
       requestPasskeyLogin,
       requestPasskeyRegistration,
       sepoliaWallet,
+      solanaWallet,
       session,
       verifyEmailOtp,
       wallets,

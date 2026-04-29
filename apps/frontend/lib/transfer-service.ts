@@ -45,7 +45,7 @@ export interface CircleTransfer {
   steps: CircleTransferStep[];
 }
 
-export type CircleTransferBlockchain = "ARC-TESTNET" | "ETH-SEPOLIA";
+export type CircleTransferBlockchain = "ARC-TESTNET" | "ETH-SEPOLIA" | "SOLANA-DEVNET";
 
 export interface CircleTransferWalletBalance {
   amount: string;
@@ -87,6 +87,7 @@ interface CreateCircleTransferParams {
   walletId?: string;
   walletAddress?: string;
   blockchain?: CircleTransferBlockchain;
+  sourceBlockchain?: CircleTransferBlockchain;
 }
 
 interface BackendTaskLog {
@@ -196,6 +197,7 @@ export async function createCircleTransfer(
           walletId: params.walletId,
           walletAddress: params.walletAddress,
           blockchain: params.blockchain,
+          sourceBlockchain: params.sourceBlockchain,
         },
       }),
     });
@@ -248,6 +250,7 @@ function mapBackendTaskToTransfer(task: BackendTaskRecord): CircleTransfer {
     sourceChain: transfer?.sourceChain ?? readBlockchain(transfer, "sourceBlockchain"),
     sourceBlockchain:
       readBlockchain(transfer, "sourceBlockchain") ??
+      readBlockchain(payload, "sourceBlockchain") ??
       getSourceBlockchain(readBlockchain(payload, "blockchain") ?? "ARC-TESTNET"),
     destinationChain: transfer?.destinationChain ?? readBlockchain(transfer, "blockchain"),
     destinationAddress:
@@ -450,13 +453,19 @@ function readBlockchain(
   key: string
 ): CircleTransferBlockchain | null {
   const value = readString(source, key);
-  return value === "ARC-TESTNET" || value === "ETH-SEPOLIA" ? value : null;
+  return value === "ARC-TESTNET" || value === "ETH-SEPOLIA" || value === "SOLANA-DEVNET"
+    ? value
+    : null;
 }
 
 function getSourceBlockchain(
   destination: CircleTransferBlockchain
 ): CircleTransferBlockchain {
-  return destination === "ARC-TESTNET" ? "ETH-SEPOLIA" : "ARC-TESTNET";
+  if (destination === "ARC-TESTNET") {
+    return "ETH-SEPOLIA";
+  }
+  // ETH-SEPOLIA and SOLANA-DEVNET both bridge from Arc Testnet
+  return "ARC-TESTNET";
 }
 
 function mapBackendErrorToTransferError(error: unknown): TransferApiError {

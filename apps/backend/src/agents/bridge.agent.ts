@@ -1,8 +1,15 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { TaskDetails } from '../task/task.types';
+import { NormalizedBridgeStep, NormalizedBridgeTransfer, TaskDetails } from '../task/task.types';
 import { TaskService } from '../task/task.service';
 import { AgentExecutionResult, TaskAgent } from './agent.interface';
+import {
+  type CanonicalBridgeChain,
+  isEvmAddress,
+  isSolanaAddress,
+  normalizeBridgeChain,
+  normalizeChainTxId,
+} from '../common/multichain';
 
 @Injectable()
 export class BridgeAgent implements TaskAgent {
@@ -19,6 +26,26 @@ export class BridgeAgent implements TaskAgent {
     if (!bridgePayload.destinationAddress || !bridgePayload.amount) {
       throw new Error(
         'Bridge payload is missing destinationAddress or amount.',
+      );
+    }
+
+    const destinationChain = normalizeBridgeChain(bridgePayload.blockchain);
+
+    if (
+      destinationChain === 'solana_devnet' &&
+      !isSolanaAddress(bridgePayload.destinationAddress)
+    ) {
+      throw new Error(
+        'Bridge payload destinationAddress must be a valid Solana base58 address for Solana Devnet.',
+      );
+    }
+
+    if (
+      destinationChain !== 'solana_devnet' &&
+      !isEvmAddress(bridgePayload.destinationAddress)
+    ) {
+      throw new Error(
+        'Bridge payload destinationAddress must be a valid EVM address for Arc/Ethereum bridge routes.',
       );
     }
 
@@ -79,6 +106,7 @@ export class BridgeAgent implements TaskAgent {
         taskId: task.id,
         payload: bridgePayload,
         transfer: finalTransfer,
+        normalizedTransfer: this.normalizeTransferForResult(finalTransfer),
       },
     };
   }
@@ -189,6 +217,7 @@ export class BridgeAgent implements TaskAgent {
       walletId: this.readString(payload, 'walletId'),
       walletAddress: this.readString(payload, 'walletAddress'),
       blockchain: this.readString(payload, 'blockchain'),
+      sourceBlockchain: this.readString(payload, 'sourceBlockchain'),
     };
   }
 
@@ -204,6 +233,103 @@ export class BridgeAgent implements TaskAgent {
 
     const trimmed = value.trim();
     return trimmed ? trimmed : null;
+  }
+
+  private normalizeTransferForResult(transfer: Record<string, unknown>): NormalizedBridgeTransfer {
+    const sourceChain = normalizeBridgeChain(
+      this.readString(transfer, 'sourceBlockchain') ??
+        this.readString(transfer, 'sourceChain'),
+    );
+    const destinationChain = normalizeBridgeChain(
+      this.readString(transfer, 'blockchain') ??
+        this.readString(transfer, 'destinationChain'),
+    );
+
+    const stepsRaw = Array.isArray(transfer.steps) ? transfer.steps : [];
+    const normalizedSteps = stepsRaw
+      .map((step, index) => {
+        if (!step || typeof step !== 'object') {
+          return null;
+        }
+
+        const stepRecord = step as Record<string, unknown>;
+        const stepName =
+          this.readString(stepRecord, 'name') ??
+          this.readString(stepRecord, 'id') ??
+          `step_${index + 1}`;
+        const explorerUrl = this.readString(stepRecord, 'explorerUrl');
+        const stepTxId = normalizeChainTxId(this.readString(stepRecord, 'txHash'));
+
+        return {
+          id: this.readString(stepRecord, 'id') ?? `step_${index + 1}`,
+          name: stepName,
+          state: this.readString(stepRecord, 'state') ?? 'unknown',
+          chain: this.inferStepChain(
+            stepName,
+            explorerUrl,
+            sourceChain,
+            destinationChain,
+          ),
+          txId: stepTxId,
+          explorerUrl,
+        };
+      })
+      .filter((step) => step !== null) as NormalizedBridgeStep[];
+
+    return {
+      transferId: this.readString(transfer, 'transferId'),
+      status: this.readString(transfer, 'status') ?? 'unknown',
+      sourceChain,
+      destinationChain,
+      txId: normalizeChainTxId(this.readString(transfer, 'txHash')),
+      txIdBurn: normalizeChainTxId(this.readString(transfer, 'txHashBurn')),
+      txIdMint: normalizeChainTxId(this.readString(transfer, 'txHashMint')),
+      steps: normalizedSteps,
+    };
+  }
+
+  private inferStepChain(
+    stepName: string,
+    explorerUrl: string | null,
+    sourceChain: CanonicalBridgeChain | null,
+    destinationChain: CanonicalBridgeChain | null,
+  ): CanonicalBridgeChain | null {
+    const lowerName = stepName.toLowerCase();
+    const lowerExplorer = explorerUrl?.toLowerCase() ?? '';
+
+    if (lowerExplorer.includes('solscan.io')) {
+      return 'solana_devnet';
+    }
+
+    if (lowerExplorer.includes('arcscan.app')) {
+      return 'arc_testnet';
+    }
+
+    if (lowerExplorer.includes('etherscan.io')) {
+      return 'eth_sepolia';
+    }
+
+    if (lowerName.includes('burn')) {
+      return sourceChain;
+    }
+
+    if (lowerName.includes('mint')) {
+      return destinationChain;
+    }
+
+    if (lowerName.includes('solana')) {
+      return 'solana_devnet';
+    }
+
+    if (lowerName.includes('arc')) {
+      return 'arc_testnet';
+    }
+
+    if (lowerName.includes('sepolia') || lowerName.includes('ethereum')) {
+      return 'eth_sepolia';
+    }
+
+    return null;
   }
 
   private getFrontendApiUrl(path: string): string {
