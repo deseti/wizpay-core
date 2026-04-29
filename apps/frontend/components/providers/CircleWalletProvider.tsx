@@ -40,6 +40,11 @@ import {
   type PasskeyChainRuntime,
   type PasskeyRuntimeSet,
 } from "@/lib/circle-passkey";
+import {
+  ensureBackendWallet,
+  initializeBackendWallets,
+  syncBackendWallets,
+} from "@/lib/backend-wallets";
 
 type LoginMethod = "google" | "email" | "passkey";
 
@@ -95,12 +100,6 @@ type CircleWalletTokenBalance = {
   tokenAddress: string | null;
   tokenId: string | null;
   updatedAt: string | null;
-};
-
-type CircleDevCredentials = {
-  key: string;
-  token: string;
-  walletId: string;
 };
 
 type StoredLoginConfig = {
@@ -166,7 +165,6 @@ type CircleWalletContextValue = {
     payload: Record<string, unknown>
   ) => Promise<CircleChallengeHandle>;
   executeChallenge: (challengeId: string) => Promise<unknown>;
-  getDevCredentials: () => CircleDevCredentials | null;
   getWalletBalances: (walletId: string) => Promise<CircleWalletTokenBalance[]>;
   hasPendingEmailOtp: boolean;
   isAuthenticating: boolean;
@@ -919,7 +917,6 @@ const DISABLED_CONTEXT_VALUE: CircleWalletContextValue = {
   createContractExecutionChallenge: async () => { throw new Error("Auth not configured."); },
   createTypedDataChallenge: async () => { throw new Error("Auth not configured."); },
   executeChallenge: async () => { throw new Error("Auth not configured."); },
-  getDevCredentials: () => null,
   getWalletBalances: async () => [],
   hasPendingEmailOtp: false,
   isAuthenticating: false,
@@ -1297,13 +1294,12 @@ function CircleWalletProviderInner({
         return [] as CircleUserWallet[];
       }
 
-      const payload = (await postW3sAction("listWallets", {
+      const { wallets: syncedWallets } = await syncBackendWallets({
+        email: activeSession.email,
         userToken,
-      })) as {
-        wallets?: CircleUserWallet[];
-      };
+      });
 
-      const nextWallets = (payload.wallets ?? []).filter((wallet) =>
+      const nextWallets = syncedWallets.filter((wallet) =>
         SUPPORTED_WALLET_CHAINS.has(wallet.blockchain)
       );
 
@@ -1320,7 +1316,7 @@ function CircleWalletProviderInner({
 
       return nextWallets;
     },
-    [initializePasskeyWallets, postW3sAction, resetPasskeyRuntimeState, session]
+    [initializePasskeyWallets, resetPasskeyRuntimeState, session]
   );
 
   const executeChallengeForSession = useCallback(
@@ -1374,19 +1370,22 @@ function CircleWalletProviderInner({
       try {
         setAuthStatus("Creating your Solana Devnet user wallet...");
 
-        const response = await postW3sAction("createUserWalletChallenge", {
+        const response = await ensureBackendWallet({
+          chain: "SOLANA",
+          email: authSession.email,
           userToken: authSession.userToken,
-          payload: {
-            accountType: "EOA",
-            blockchains: ["SOL-DEVNET"],
-          },
         });
 
-        if (!isRecord(response)) {
+        if (!response.requiresUserApproval) {
+          if (response.wallet) {
+            ensuredSolanaByUserTokenRef.current.add(authSession.userToken);
+            return loadWallets(authSession);
+          }
+
           return existingWallets;
         }
 
-        const challengeId = extractChallengeId(response);
+        const challengeId = response.challengeId;
 
         if (!challengeId) {
           return existingWallets;
@@ -1413,7 +1412,7 @@ function CircleWalletProviderInner({
         return existingWallets;
       }
     },
-    [executeChallengeForSession, loadWallets, postW3sAction]
+    [executeChallengeForSession, loadWallets]
   );
 
   const initializeAndLoadWallets = useCallback(
@@ -1423,11 +1422,10 @@ function CircleWalletProviderInner({
       setAuthStatus("Initializing your Circle wallet...");
 
       try {
-        const payload = (await postW3sAction("initializeUser", {
+        const payload = await initializeBackendWallets({
+          email: authSession.email,
           userToken: authSession.userToken,
-        })) as {
-          challengeId?: string;
-        };
+        });
 
         if (payload.challengeId) {
           setAuthStatus("Circle wallet challenge ready. Confirm it to finish setup.");
@@ -1444,9 +1442,9 @@ function CircleWalletProviderInner({
         clearCircleOAuthBackups();
         clearStoredLoginConfig({ preserveGoogleCookies: true });
       } catch (error) {
-        const code = (error as Error & { code?: number }).code;
+        const code = (error as Error & { code?: number | string }).code;
 
-        if (code === 155106) {
+        if (code === 155106 || code === "155106") {
           setAuthStatus("Existing Circle wallet found. Loading wallets...");
           await loadWalletsEnsuringSolana(authSession);
           setAuthStatus("Circle wallet restored.");
@@ -1467,7 +1465,6 @@ function CircleWalletProviderInner({
       clearStoredLoginConfig,
       executeChallengeForSession,
       loadWalletsEnsuringSolana,
-      postW3sAction,
     ]
   );
 
@@ -2205,27 +2202,6 @@ function CircleWalletProviderInner({
 
   const primaryWallet = arcWallet ?? sepoliaWallet ?? solanaWallet ?? wallets[0] ?? null;
 
-  const getDevCredentials = useCallback(() => {
-    const resolvedSession =
-      session && !isPasskeySession(session)
-        ? session
-        : readStoredJson<CircleSession>(SESSION_STORAGE_KEY);
-
-    if (
-      !primaryWallet?.id ||
-      !resolvedSession ||
-      isPasskeySession(resolvedSession)
-    ) {
-      return null;
-    }
-
-    return {
-      token: resolvedSession.userToken,
-      key: resolvedSession.encryptionKey,
-      walletId: primaryWallet.id,
-    };
-  }, [primaryWallet?.id, session]);
-
   const value = useMemo<CircleWalletContextValue>(
     () => ({
       arcWallet,
@@ -2238,7 +2214,6 @@ function CircleWalletProviderInner({
       createTransferChallenge,
       createTypedDataChallenge,
       executeChallenge,
-      getDevCredentials,
       getWalletBalances,
       hasPendingEmailOtp,
       isAuthenticating,
@@ -2275,7 +2250,6 @@ function CircleWalletProviderInner({
       createTransferChallenge,
       createTypedDataChallenge,
       executeChallenge,
-      getDevCredentials,
       getWalletBalances,
       hasPendingEmailOtp,
       isAuthenticating,

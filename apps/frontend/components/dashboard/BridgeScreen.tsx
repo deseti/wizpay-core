@@ -713,6 +713,7 @@ export function BridgeScreen() {
     createTransferChallenge,
     executeChallenge,
     getWalletBalances,
+    userEmail,
   } = useCircleWallet();
   const { toast } = useToast();
   const restoredTransferRef = useRef(false);
@@ -1291,64 +1292,55 @@ export function BridgeScreen() {
           ? arcWallet
           : sourceChain === "ETH-SEPOLIA"
             ? sepoliaWallet
-            : null;
-      const requiresPersonalDeposit = sourceChain !== "SOLANA-DEVNET";
+            : solanaWallet;
 
-      if (requiresPersonalDeposit) {
-        if (!userSourceWallet?.id) {
-          throw new Error(`Personal ${sourceOption.label} wallet not connected.`);
-        }
-
-        setIsDepositingToTreasury(true);
-
-        const balances = await getWalletBalances(userSourceWallet.id);
-        const usdcBalance = balances.find(
-          (b) =>
-            b.symbol === "USDC" ||
-            b.tokenAddress?.toLowerCase() === sourceTokenAddress?.toLowerCase()
-        );
-
-        if (!usdcBalance?.tokenId) {
-          throw new Error(
-            `Could not find USDC token in your personal ${sourceOption.label} wallet. Available tokens: ${balances.map((b) => `${b.symbol}=${b.tokenAddress}`).join(", ")}`
-          );
-        }
-
-        if (Number(usdcBalance.amount) < Number(amount)) {
-          throw new Error(
-            `Insufficient personal balance. You only have ${usdcBalance.amount} USDC on ${sourceOption.label}.`
-          );
-        }
-
-        toast({
-          title: "Step 1: Deposit",
-          description: `Please approve the transfer of ${amount} USDC to the treasury wallet.`,
-        });
-
-        const challenge = await createTransferChallenge({
-          walletId: userSourceWallet.id,
-          destinationAddress: transferWallet.walletAddress,
-          amounts: [amount.toString()],
-          feeLevel: "MEDIUM",
-          tokenId: usdcBalance.tokenId,
-        });
-
-        await executeChallenge(challenge.challengeId);
-
-        toast({
-          title: "Step 2: Bridge",
-          description: "Deposit requested. Executing bridge optimistically...",
-        });
-        await new Promise((resolve) => setTimeout(resolve, 2500));
-
-        setIsDepositingToTreasury(false);
-      } else {
-        toast({
-          title: "Bridge from treasury",
-          description:
-            "Solana source mode uses the app treasury wallet balance directly.",
-        });
+      if (!userSourceWallet?.id) {
+        throw new Error(`Personal ${sourceOption.label} wallet not connected.`);
       }
+
+      setIsDepositingToTreasury(true);
+
+      const balances = await getWalletBalances(userSourceWallet.id);
+      const usdcBalance = balances.find(
+        (b) =>
+          b.symbol === "USDC" ||
+          b.tokenAddress?.toLowerCase() === sourceTokenAddress?.toLowerCase()
+      );
+
+      if (!usdcBalance?.tokenId) {
+        throw new Error(
+          `Could not find USDC token in your personal ${sourceOption.label} wallet. Available tokens: ${balances.map((b) => `${b.symbol}=${b.tokenAddress}`).join(", ")}`
+        );
+      }
+
+      if (Number(usdcBalance.amount) < Number(amount)) {
+        throw new Error(
+          `Insufficient personal balance. You only have ${usdcBalance.amount} USDC on ${sourceOption.label}.`
+        );
+      }
+
+      toast({
+        title: "Step 1: Deposit",
+        description: `Approve the transfer of ${amount} USDC from your ${sourceOption.label} wallet to the treasury wallet.`,
+      });
+
+      const challenge = await createTransferChallenge({
+        walletId: userSourceWallet.id,
+        destinationAddress: transferWallet.walletAddress,
+        amounts: [amount.toString()],
+        feeLevel: "MEDIUM",
+        tokenId: usdcBalance.tokenId,
+      });
+
+      await executeChallenge(challenge.challengeId);
+
+      toast({
+        title: "Step 2: Bridge",
+        description: "Deposit confirmed. Executing bridge from the funded treasury wallet...",
+      });
+      await new Promise((resolve) => setTimeout(resolve, 2500));
+
+      setIsDepositingToTreasury(false);
 
       // Treasury initiates the actual bridge
       const queuedTransfer = await createCircleTransfer({
@@ -1360,6 +1352,7 @@ export function BridgeScreen() {
         tokenAddress: destinationTokenAddress,
         walletId: transferWallet.walletId || undefined,
         walletAddress: transferWallet.walletAddress,
+        userEmail: userEmail || undefined,
       });
 
       terminalNoticeRef.current = null;
@@ -1398,8 +1391,9 @@ export function BridgeScreen() {
             Bridge
           </h1>
           <p className="text-sm text-muted-foreground/70">
-            Treasury-assisted Circle CCTP flow for forwarding testnet USDC
-            across Arc, Sepolia, and Solana Devnet.
+            Circle CCTP flow that first asks your personal Circle wallet to
+            fund the source treasury, then forwards testnet USDC across Arc,
+            Sepolia, and Solana Devnet.
           </p>
         </div>
       </div>
@@ -1411,12 +1405,13 @@ export function BridgeScreen() {
             <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary/15 text-primary ring-1 ring-primary/25">
               <Route className="h-4.5 w-4.5" />
             </div>
-            Treasury-Assisted Bridge
+            User-Confirmed Bridge
           </CardTitle>
           <CardDescription>
-            Choose source and destination networks for the treasury wallet flow.
-            Circle burns on the selected source chain, then mints on the selected
-            destination chain.
+            Choose source and destination networks. WizPay will request a
+            Circle wallet approval to move funds from your personal source
+            wallet into the source treasury, then Circle burns on the selected
+            source chain and mints on the selected destination chain.
           </CardDescription>
         </CardHeader>
         <CardContent className="grid gap-6 py-6 lg:grid-cols-[minmax(0,1fr)_19rem]">
@@ -1426,9 +1421,10 @@ export function BridgeScreen() {
                 Treasury model
               </p>
               <p className="mt-2 text-sm text-muted-foreground/80">
-                This bridge uses an app-owned Circle developer-controlled wallet
-                on the selected source network. It is not your personal wallet,
-                and only USDC is supported in this flow.
+                This bridge still uses an app-owned Circle developer-controlled
+                treasury wallet on the selected source network, but it now
+                starts with a Circle popup so you can approve a USDC deposit
+                from your personal source wallet into that treasury wallet.
               </p>
             </div>
 
@@ -1661,8 +1657,9 @@ export function BridgeScreen() {
             </div>
 
             <div className="rounded-2xl border border-border/30 bg-background/35 px-4 py-3 text-sm text-muted-foreground/80">
-              Route: burn from the {sourceOption.label} source treasury wallet,
-              then mint to your destination address on {destinationOption.label}.
+              Route: approve a deposit from your personal {sourceOption.label}{" "}
+              wallet into the source treasury wallet, then burn from treasury
+              and mint to your destination address on {destinationOption.label}.
             </div>
 
             {isSameChainRoute ? (
@@ -1731,10 +1728,10 @@ export function BridgeScreen() {
 
             <div className="space-y-3">
               <div className="rounded-2xl border border-border/30 bg-background/40 px-4 py-3 text-sm text-muted-foreground/80">
-                No Circle wallet popup appears in this flow. The bridge is
-                executed by the selected source treasury wallet on the backend,
-                so your confirmation happens in-app instead of through the Circle
-                wallet signer.
+                A Circle wallet popup appears before the bridge starts so you
+                can approve the deposit from your personal source wallet into
+                the selected source treasury wallet. After that confirmation,
+                the backend treasury wallet executes the bridge.
               </div>
 
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
@@ -2018,12 +2015,13 @@ export function BridgeScreen() {
               CCTP flow
             </CardTitle>
             <CardDescription>
-              The bridge runs through three Circle-controlled stages.
+              The bridge runs through three Circle-controlled stages after your
+              personal wallet deposit is approved.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-2 text-sm text-muted-foreground/80">
-            <p>1. Burn USDC on the source chain treasury wallet.</p>
-            <p>2. Wait for Circle attestation.</p>
+            <p>1. Approve a deposit from your personal source wallet to the treasury wallet.</p>
+            <p>2. Burn USDC on the source chain treasury wallet and wait for Circle attestation.</p>
             <p>3. Mint USDC on the destination chain for the wallet you entered.</p>
           </CardContent>
         </Card>
@@ -2056,9 +2054,10 @@ export function BridgeScreen() {
             <DialogHeader className="space-y-2">
               <DialogTitle className="text-xl">Review bridge transfer</DialogTitle>
               <DialogDescription>
-                This bridge uses the selected source treasury wallet on the
-                backend, so no Circle wallet signature popup will appear from
-                your personal wallet.
+                This bridge will first open Circle Wallet so you can approve a
+                deposit from your personal {sourceOption.label} wallet into the
+                selected source treasury wallet. After that deposit is confirmed,
+                the backend treasury wallet completes the bridge.
               </DialogDescription>
             </DialogHeader>
 

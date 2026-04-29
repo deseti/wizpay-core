@@ -88,6 +88,8 @@ interface CreateCircleTransferParams {
   walletAddress?: string;
   blockchain?: CircleTransferBlockchain;
   sourceBlockchain?: CircleTransferBlockchain;
+  userEmail?: string;
+  userId?: string;
 }
 
 interface BackendTaskLog {
@@ -198,6 +200,8 @@ export async function createCircleTransfer(
           walletAddress: params.walletAddress,
           blockchain: params.blockchain,
           sourceBlockchain: params.sourceBlockchain,
+          userEmail: params.userEmail,
+          userId: params.userId,
         },
       }),
     });

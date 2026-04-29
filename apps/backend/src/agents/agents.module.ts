@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { AdaptersModule } from '../adapters/adapters.module';
+import { WalletModule } from '../modules/wallet/wallet.module';
 import { QueueModule } from '../queue/queue.module';
 import { TaskModule } from '../task/task.module';
 import { AgentRouterService } from './agent-router.service';
@@ -12,7 +13,7 @@ import { PayrollValidationService } from './payroll/payroll-validation.service';
 import { SwapAgent } from './swap.agent';
 
 @Module({
-  imports: [AdaptersModule, TaskModule, QueueModule],
+  imports: [AdaptersModule, TaskModule, QueueModule, WalletModule],
   providers: [
     PayrollAgent,
     PayrollBatchService,

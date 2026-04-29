@@ -10,6 +10,10 @@ import {
   normalizeBridgeChain,
   normalizeChainTxId,
 } from '../common/multichain';
+import {
+  type SupportedUserWalletBlockchain,
+  WalletService,
+} from '../modules/wallet/wallet.service';
 
 @Injectable()
 export class BridgeAgent implements TaskAgent {
@@ -18,10 +22,13 @@ export class BridgeAgent implements TaskAgent {
   constructor(
     private readonly configService: ConfigService,
     private readonly taskService: TaskService,
+    private readonly walletService: WalletService,
   ) {}
 
   async execute(task: TaskDetails): Promise<AgentExecutionResult> {
-    const bridgePayload = this.normalizeBridgePayload(task.payload);
+    const bridgePayload = await this.resolveBridgePayload(
+      this.normalizeBridgePayload(task.payload),
+    );
 
     if (!bridgePayload.destinationAddress || !bridgePayload.amount) {
       throw new Error(
@@ -218,7 +225,78 @@ export class BridgeAgent implements TaskAgent {
       walletAddress: this.readString(payload, 'walletAddress'),
       blockchain: this.readString(payload, 'blockchain'),
       sourceBlockchain: this.readString(payload, 'sourceBlockchain'),
+      userEmail: this.readString(payload, 'userEmail'),
+      userId: this.readString(payload, 'userId'),
     };
+  }
+
+  private async resolveBridgePayload(
+    payload: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const destinationAddress = this.readString(payload, 'destinationAddress');
+
+    if (destinationAddress) {
+      return payload;
+    }
+
+    const userId = this.resolveWalletUserId(payload);
+    const blockchain = this.normalizeWalletBlockchain(
+      this.readString(payload, 'blockchain'),
+    );
+
+    if (!userId || !blockchain) {
+      return payload;
+    }
+
+    const storedWallet = await this.walletService.getStoredWalletByBlockchain(
+      userId,
+      blockchain,
+    );
+
+    if (!storedWallet?.address) {
+      return payload;
+    }
+
+    return {
+      ...payload,
+      destinationAddress: storedWallet.address,
+    };
+  }
+
+  private resolveWalletUserId(payload: Record<string, unknown>) {
+    const explicitUserId = this.readString(payload, 'userId');
+
+    if (explicitUserId) {
+      return explicitUserId;
+    }
+
+    const userEmail = this.readString(payload, 'userEmail');
+
+    if (!userEmail) {
+      return null;
+    }
+
+    return this.walletService.resolveUserId({ email: userEmail });
+  }
+
+  private normalizeWalletBlockchain(
+    blockchain: string | null,
+  ): SupportedUserWalletBlockchain | null {
+    if (!blockchain) {
+      return null;
+    }
+
+    switch (blockchain.trim().toUpperCase()) {
+      case 'ARC-TESTNET':
+        return 'ARC-TESTNET';
+      case 'ETH-SEPOLIA':
+        return 'ETH-SEPOLIA';
+      case 'SOLANA-DEVNET':
+      case 'SOL-DEVNET':
+        return 'SOLANA-DEVNET';
+      default:
+        return null;
+    }
   }
 
   private readString(

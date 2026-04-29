@@ -87,3 +87,20 @@ model TaskTransaction {
   @@index([txId])
   @@index([taskId, status])
 }
+
+model UserWallet {
+  id          String   @id @default(uuid()) @db.Uuid
+  userId      String
+  userEmail   String?
+  chain       String
+  blockchain  String
+  walletId    String   @unique
+  address     String
+  walletSetId String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([userId])
+  @@index([userId, chain])
+  @@unique([userId, blockchain])
+}

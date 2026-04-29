@@ -799,11 +799,24 @@ function createBridgeRuntime() {
 function createBridgeAdapter(config: CircleBridgeConfig) {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { createCircleWalletsAdapter } = require("@circle-fin/adapter-circle-wallets") as typeof import("@circle-fin/adapter-circle-wallets");
-  return createCircleWalletsAdapter({
+  const baseAdapter = createCircleWalletsAdapter({
     apiKey: config.circleApiKey,
     entitySecret: config.circleEntitySecret,
     baseUrl: config.circleWalletsBaseUrl,
   });
+  const originalWaitForTransaction = baseAdapter.waitForTransaction.bind(baseAdapter);
+
+  baseAdapter.waitForTransaction = ((txHash, waitConfig, chain) =>
+    originalWaitForTransaction(
+      txHash,
+      {
+        ...waitConfig,
+        timeout: waitConfig?.timeout ?? getBridgeTransactionWaitTimeoutMs(),
+      },
+      chain,
+    )) as typeof baseAdapter.waitForTransaction;
+
+  return baseAdapter;
 }
 
 

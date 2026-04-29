@@ -25,7 +25,15 @@ function truncateAddress(address: string) {
 }
 
 export function DashboardHeader() {
-  const { login, logout, loginMethodLabel, userEmail } = useCircleWallet();
+  const {
+    arcWallet,
+    login,
+    logout,
+    loginMethodLabel,
+    sepoliaWallet,
+    solanaWallet,
+    userEmail,
+  } = useCircleWallet();
   const {
     activeWalletAddress,
     activeWalletChainId,
@@ -39,9 +47,17 @@ export function DashboardHeader() {
     walletMode,
   } = useHybridWallet();
   const [menuOpen, setMenuOpen] = useState(false);
-  const [copiedAddress, setCopiedAddress] = useState<"wallet" | null>(null);
+  const [copiedAddress, setCopiedAddress] = useState<string | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const { toast } = useToast();
+  const circleWalletEntries = [
+    { id: "arc", label: "Arc Testnet", address: arcWallet?.address },
+    { id: "sepolia", label: "Ethereum Sepolia", address: sepoliaWallet?.address },
+    { id: "solana", label: "Solana Devnet", address: solanaWallet?.address },
+  ].filter(
+    (wallet): wallet is { id: string; label: string; address: string } =>
+      typeof wallet.address === "string" && Boolean(wallet.address)
+  );
 
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
@@ -54,16 +70,22 @@ export function DashboardHeader() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  async function copyAddress(address: string) {
+  async function copyAddress(
+    address: string,
+    copiedKey = "wallet",
+    label = activeWalletLabel,
+    description?: string
+  ) {
     try {
       await navigator.clipboard.writeText(address);
-      setCopiedAddress("wallet");
+      setCopiedAddress(copiedKey);
       toast({
-        title: `${activeWalletLabel} address copied`,
+        title: `${label} address copied`,
         description:
-          walletMode === "circle"
-            ? "Use this address for Arc balances, Circle approvals, and WizPay transactions."
-            : "Use this address when you want incoming funds to land in your external wallet.",
+          description ||
+          (walletMode === "circle"
+            ? "Use the address that matches the chain you want to fund or receive on."
+            : "Use this address when you want incoming funds to land in your external wallet."),
       });
       window.setTimeout(() => setCopiedAddress(null), 2000);
     } catch (error) {
@@ -131,7 +153,13 @@ export function DashboardHeader() {
               <div className="flex items-center gap-1.5 rounded-2xl border border-border/40 bg-card/50 p-1 backdrop-blur-md shadow-lg shadow-black/10">
                 {activeWalletAddress ? (
                   <button
-                    onClick={() => void copyAddress(activeWalletAddress)}
+                    onClick={() =>
+                      void copyAddress(
+                        activeWalletAddress,
+                        "active",
+                        activeWalletLabel
+                      )
+                    }
                     className="flex items-center gap-1.5 rounded-xl px-2.5 py-2 font-mono text-[11px] text-foreground/75 transition-all hover:bg-primary/10 hover:text-primary active:scale-95 sm:text-xs"
                     title="Copy active wallet address"
                   >
@@ -141,7 +169,7 @@ export function DashboardHeader() {
                     <span className="inline min-[400px]:hidden">
                       {truncateAddress(activeWalletAddress)}
                     </span>
-                    {copiedAddress === "wallet" ? (
+                    {copiedAddress === "active" ? (
                       <Check className="h-3 w-3 text-emerald-400" />
                     ) : (
                       <Copy className="h-3 w-3 text-muted-foreground" />
@@ -186,23 +214,69 @@ export function DashboardHeader() {
                       {activeWalletAddress ? (
                         <div className="border-b border-border/30 px-3 py-3">
                           <button
-                            onClick={() => void copyAddress(activeWalletAddress)}
+                            onClick={() =>
+                              void copyAddress(
+                                activeWalletAddress,
+                                "active",
+                                activeWalletLabel
+                              )
+                            }
                             className="flex w-full items-center justify-between rounded-xl border border-border/30 bg-background/40 px-3 py-2 text-left transition-all hover:border-primary/20 hover:bg-primary/10"
                           >
                             <div>
                               <p className="text-[10px] uppercase tracking-[0.2em] text-muted-foreground/60">
-                                App Wallet (Circle)
+                                Active App Wallet
                               </p>
                               <p className="font-mono text-xs text-foreground/80">
                                 {truncateAddress(activeWalletAddress)}
                               </p>
                             </div>
-                            {copiedAddress === "wallet" ? (
+                            {copiedAddress === "active" ? (
                               <Check className="h-3.5 w-3.5 text-emerald-400" />
                             ) : (
                               <Copy className="h-3.5 w-3.5 text-muted-foreground" />
                             )}
                           </button>
+                        </div>
+                      ) : null}
+
+                      {circleWalletEntries.length > 0 ? (
+                        <div className="border-b border-border/30 px-3 py-3">
+                          <p className="mb-2 px-1 text-[10px] uppercase tracking-[0.2em] text-muted-foreground/60">
+                            Available Circle Addresses
+                          </p>
+                          <div className="space-y-2">
+                            {circleWalletEntries.map((wallet) => (
+                              <button
+                                key={wallet.id}
+                                onClick={() =>
+                                  void copyAddress(
+                                    wallet.address,
+                                    wallet.id,
+                                    wallet.label,
+                                    wallet.id === "solana"
+                                      ? "Use this Solana Devnet address for Solana faucets and Solana bridge destinations."
+                                      : `Use this ${wallet.label} address when you need funds on that chain.`
+                                  )
+                                }
+                                className="flex w-full items-center justify-between rounded-xl border border-border/30 bg-background/35 px-3 py-2 text-left transition-all hover:border-primary/20 hover:bg-primary/10"
+                              >
+                                <div>
+                                  <p className="text-[10px] uppercase tracking-[0.2em] text-muted-foreground/60">
+                                    {wallet.label}
+                                  </p>
+                                  <p className="font-mono text-xs text-foreground/80">
+                                    {truncateAddress(wallet.address)}
+                                  </p>
+                                </div>
+                                {copiedAddress === wallet.id ? (
+                                  <Check className="h-3.5 w-3.5 text-emerald-400" />
+                                ) : (
+                                  <Copy className="h-3.5 w-3.5 text-muted-foreground" />
+                                )}
+                              </button>
+                            ))}
+                          </div>
                         </div>
                       ) : null}
 

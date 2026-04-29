@@ -5,6 +5,7 @@ import { AgentsModule } from './agents/agents.module';
 import { AppConfigModule } from './config/app-config.module';
 import { DatabaseModule } from './database/database.module';
 import { IntegrationsModule } from './integrations/integrations.module';
+import { WalletModule } from './modules/wallet/wallet.module';
 import { OrchestratorModule } from './orchestrator/orchestrator.module';
 import { QueueModule } from './queue/queue.module';
 import { TaskModule } from './task/task.module';
@@ -20,6 +21,7 @@ import { TaskModule } from './task/task.module';
     QueueModule,
     OrchestratorModule,
     TreasuryModule,
+    WalletModule,
   ],
 })
 export class AppModule {}

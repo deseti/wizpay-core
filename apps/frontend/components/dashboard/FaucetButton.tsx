@@ -3,6 +3,7 @@
 import type { ReactNode } from "react";
 import { useState } from "react";
 import { Droplet, Copy, Check } from "lucide-react";
+import { useCircleWallet } from "@/components/providers/CircleWalletProvider";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
 import { useSmartWalletAddress } from "@/hooks/useSmartWalletAddress";
@@ -16,21 +17,48 @@ interface FaucetButtonProps {
 }
 
 export function FaucetButton({ walletActions }: FaucetButtonProps) {
+  const { arcWallet, sepoliaWallet, solanaWallet } = useCircleWallet();
   const {
     smartWalletAddress,
     isLoadingSmartWalletAddress,
+    walletLabel,
   } = useSmartWalletAddress();
   const { toast } = useToast();
-  const [copiedAddress, setCopiedAddress] = useState<"wallet" | null>(null);
+  const [copiedAddress, setCopiedAddress] = useState<string | null>(null);
+  const availableWallets = [
+    { id: "arc", label: "Arc Testnet", address: arcWallet?.address },
+    { id: "sepolia", label: "Ethereum Sepolia", address: sepoliaWallet?.address },
+    { id: "solana", label: "Solana Devnet", address: solanaWallet?.address },
+  ].filter(
+    (wallet): wallet is { id: string; label: string; address: string } =>
+      typeof wallet.address === "string" && Boolean(wallet.address)
+  );
+  const fallbackWallet =
+    availableWallets.length === 0 && smartWalletAddress
+      ? [
+          {
+            id: "wallet",
+            label: walletLabel,
+            address: smartWalletAddress,
+          },
+        ]
+      : [];
+  const walletEntries = [...availableWallets, ...fallbackWallet];
 
-  async function copyAddress(address: string) {
+  async function copyAddress(
+    address: string,
+    walletId: string,
+    walletLabelText: string
+  ) {
     try {
       await navigator.clipboard.writeText(address);
-      setCopiedAddress("wallet");
+      setCopiedAddress(walletId);
       toast({
-        title: "Circle wallet address copied",
+        title: `${walletLabelText} copied`,
         description:
-          "Use this address for Arc Testnet balances and upcoming Circle challenge-based actions.",
+          walletId === "solana"
+            ? "Use this Solana Devnet address for Solana faucets and Solana bridge destinations."
+            : `Use this ${walletLabelText} address when you need funds on that chain.`,
       });
       window.setTimeout(() => setCopiedAddress(null), 2000);
     } catch (error) {
@@ -49,32 +77,45 @@ export function FaucetButton({ walletActions }: FaucetButtonProps) {
         </div>
       ) : null}
 
-      {smartWalletAddress && (
+      {walletEntries.length > 0 && (
         <div className="space-y-1.5">
           <p className="px-1 text-[10px] font-semibold text-muted-foreground/50 uppercase tracking-[0.2em]">
-            Circle Wallet
+            Circle Wallets
           </p>
-          <button
-            onClick={() => void copyAddress(smartWalletAddress)}
-            className="flex w-full items-center justify-between rounded-xl border border-border/40 bg-background/30 px-3 py-2.5 text-sm font-mono text-foreground/75 transition-all hover:bg-primary/8 hover:text-primary hover:border-primary/20 active:scale-[0.98]"
-          >
-            {truncateAddress(smartWalletAddress)}
-            {copiedAddress === "wallet" ? (
-              <Check className="h-4 w-4 text-emerald-400" />
-            ) : (
-              <Copy className="h-4 w-4 text-muted-foreground/50" />
-            )}
-          </button>
+          <div className="space-y-2">
+            {walletEntries.map((wallet) => (
+              <button
+                key={wallet.id}
+                onClick={() =>
+                  void copyAddress(wallet.address, wallet.id, wallet.label)
+                }
+                className="flex w-full items-center justify-between rounded-xl border border-border/40 bg-background/30 px-3 py-2.5 text-left text-sm font-mono text-foreground/75 transition-all hover:bg-primary/8 hover:text-primary hover:border-primary/20 active:scale-[0.98]"
+              >
+                <div>
+                  <p className="text-[10px] uppercase tracking-[0.2em] text-muted-foreground/55">
+                    {wallet.label}
+                  </p>
+                  <p>{truncateAddress(wallet.address)}</p>
+                </div>
+                {copiedAddress === wallet.id ? (
+                  <Check className="h-4 w-4 text-emerald-400" />
+                ) : (
+                  <Copy className="h-4 w-4 text-muted-foreground/50" />
+                )}
+              </button>
+            ))}
+          </div>
           <p className="px-1 text-[11px] text-muted-foreground/60 leading-relaxed">
-            Fund this Circle user wallet with testnet assets before running payroll,
-            swap, or bridge flows as they move to Circle execution.
+            Copy the address that matches the chain you want to fund. Use the
+            Solana Devnet address when you need Solana-side test funds or a
+            Solana bridge destination.
           </p>
           {walletActions ? <div className="pt-1">{walletActions}</div> : null}
         </div>
       )}
 
       <div className="space-y-1.5">
-        {smartWalletAddress && (
+        {walletEntries.length > 0 && (
           <p className="px-1 text-[10px] font-semibold text-muted-foreground/50 uppercase tracking-[0.2em]">
             Circle Faucet
           </p>
