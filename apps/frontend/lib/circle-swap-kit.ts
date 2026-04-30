@@ -82,7 +82,7 @@ export async function estimateArcSwap(params: {
   slippageBps: number;
   kitKey: string;
 }): Promise<SwapEstimate> {
-  return swapKit.estimate(buildSwapParams(params));
+  return swapKit.estimate(buildSwapParams(params) as any);
 }
 
 export async function executeArcSwap(params: {
@@ -93,5 +93,5 @@ export async function executeArcSwap(params: {
   slippageBps: number;
   kitKey: string;
 }): Promise<SwapResult> {
-  return swapKit.swap(buildSwapParams(params));
+  return swapKit.swap(buildSwapParams(params) as any);
 }

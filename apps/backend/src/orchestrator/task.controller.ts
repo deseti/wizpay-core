@@ -73,7 +73,10 @@ export class TaskController {
   @Post('fx/execute')
   async executeFx(@Body() payload: Record<string, unknown>) {
     return {
-      data: await this.orchestratorService.handleTask(TaskType.FX, payload ?? {}),
+      data: await this.orchestratorService.handleTask(
+        TaskType.FX,
+        payload ?? {},
+      ),
     };
   }
 
@@ -131,6 +134,12 @@ export class TaskController {
   @Post()
   @UsePipes(
     new ValidationPipe({
+      exceptionFactory: (errors) =>
+        new BadRequestException({
+          code: 'VALIDATION_FAILED',
+          errors: flattenValidationErrors(errors),
+          message: 'Request validation failed',
+        }),
       whitelist: true,
       forbidNonWhitelisted: true,
       transform: true,
@@ -186,4 +195,32 @@ export class TaskController {
       data: await this.taskService.getTaskById(id),
     };
   }
+}
+
+function flattenValidationErrors(
+  errors: Array<{
+    children?: unknown[];
+    constraints?: Record<string, string>;
+    property: string;
+  }>,
+  parentPath = '',
+): Array<{ field: string; messages: string[] }> {
+  return errors.flatMap((error) => {
+    const field = parentPath
+      ? `${parentPath}.${error.property}`
+      : error.property;
+    const messages = Object.values(error.constraints ?? {});
+    const children = Array.isArray(error.children)
+      ? flattenValidationErrors(
+          error.children as Array<{
+            children?: unknown[];
+            constraints?: Record<string, string>;
+            property: string;
+          }>,
+          field,
+        )
+      : [];
+
+    return [...(messages.length > 0 ? [{ field, messages }] : []), ...children];
+  });
 }

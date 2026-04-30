@@ -46,7 +46,7 @@ export class QueueService implements OnModuleDestroy {
       attempts: 3,
       backoff: {
         type: 'exponential',
-        delay: 1000, // 1 s → 2 s → 4 s
+        delay: jobData.taskType === 'bridge' ? 5000 : 1000,
       },
       removeOnComplete: 100,
       removeOnFail: 500,

@@ -109,13 +109,6 @@ interface BackendTaskRecord {
   updatedAt: string;
 }
 
-interface ApiErrorPayload {
-  error?: string;
-  code?: string;
-  details?: unknown;
-  data?: unknown;
-}
-
 export class TransferApiError extends Error {
   constructor(
     message: string,
@@ -128,78 +121,85 @@ export class TransferApiError extends Error {
   }
 }
 
-async function apiFetch<T>(url: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(url, {
-    headers: { "Content-Type": "application/json" },
-    ...options,
-  });
-  const payload = (await response.json().catch(() => ({}))) as ApiErrorPayload;
-
-  if (!response.ok) {
-    throw new TransferApiError(
-      payload.error || `API error ${response.status}`,
-      response.status,
-      payload.code,
-      payload.details
-    );
-  }
-
-  return (payload.data as T | undefined) ?? (payload as T);
-}
-
 export async function getCircleTransferWallet(
   params: GetCircleTransferWalletParams = {}
 ): Promise<CircleTransferWallet> {
   const searchParams = new URLSearchParams();
 
-  if (params.walletId) {
-    searchParams.set("walletId", params.walletId);
-  }
-
-  if (params.walletAddress) {
-    searchParams.set("walletAddress", params.walletAddress);
-  }
-
   if (params.blockchain) {
     searchParams.set("blockchain", params.blockchain);
   }
 
-  if (params.tokenAddress) {
-    searchParams.set("tokenAddress", params.tokenAddress);
+  const query = searchParams.toString();
+  const url = query ? `/treasury/wallet?${query}` : "/treasury/wallet";
+
+  const data = await backendFetch<{
+    walletId?: string;
+    walletSetId?: string;
+    walletAddress?: string;
+    blockchain: string;
+    balance?: { amount: string; symbol: string } | null;
+  }>(url);
+
+  if (!data || !data.walletAddress) {
+    throw new TransferApiError("Treasury wallet not found", 404, "CIRCLE_WALLET_NOT_FOUND");
   }
 
-  const query = searchParams.toString();
-  const url = query ? `/api/transfers/wallet?${query}` : "/api/transfers/wallet";
-
-  return apiFetch<CircleTransferWallet>(url);
+  return {
+    walletSetId: data.walletSetId || null,
+    walletId: data.walletId || null,
+    walletAddress: data.walletAddress,
+    blockchain: data.blockchain as CircleTransferBlockchain,
+    tokenAddress: params.tokenAddress || "",
+    balance: data.balance ? {
+      amount: data.balance.amount,
+      symbol: data.balance.symbol,
+      tokenAddress: params.tokenAddress || "",
+      updatedAt: new Date().toISOString()
+    } : null,
+  };
 }
 
 export async function bootstrapCircleTransferWallet(
   params: BootstrapCircleTransferWalletParams = {}
 ): Promise<CircleTransferWallet> {
-  return apiFetch<CircleTransferWallet>("/api/transfers/wallet/bootstrap", {
-    method: "POST",
-    body: JSON.stringify(params),
-  });
+  // Mock bootstrap since treasury is configured via env in the backend
+  return getCircleTransferWallet({ blockchain: params.blockchain });
 }
+
 
 export async function createCircleTransfer(
   params: CreateCircleTransferParams
 ): Promise<CircleTransfer> {
   try {
+    const sourceBlockchain =
+      params.sourceBlockchain ?? getSourceBlockchain(params.blockchain ?? "ARC-TESTNET");
+    const destinationBlockchain = params.blockchain ?? "ARC-TESTNET";
+    const destinationAddress = normalizeBridgeAddress(
+      params.destinationAddress,
+      destinationBlockchain
+    );
+    const walletAddress = params.walletAddress
+      ? normalizeBridgeAddress(params.walletAddress, sourceBlockchain)
+      : undefined;
+
     const task = await backendFetch<BackendTaskRecord>("/tasks", {
       method: "POST",
       body: JSON.stringify({
         type: "bridge",
         payload: {
-          destinationAddress: params.destinationAddress,
-          amount: params.amount,
+          amount: String(params.amount),
+          blockchain: destinationBlockchain,
+          destinationAddress,
+          destinationBlockchain,
+          destinationChain: destinationBlockchain,
           referenceId: params.referenceId,
           tokenAddress: params.tokenAddress,
+          token: "USDC",
           walletId: params.walletId,
-          walletAddress: params.walletAddress,
-          blockchain: params.blockchain,
-          sourceBlockchain: params.sourceBlockchain,
+          walletAddress,
+          sourceBlockchain,
+          sourceChain: sourceBlockchain,
           userEmail: params.userEmail,
           userId: params.userId,
         },
@@ -235,7 +235,7 @@ function mapBackendTaskToTransfer(task: BackendTaskRecord): CircleTransfer {
 
   return {
     id: transfer?.id ?? task.id,
-    transferId: transfer?.transferId ?? task.id,
+    transferId: task.id,
     status,
     rawStatus,
     txHash: transfer?.txHash ?? null,
@@ -251,12 +251,12 @@ function mapBackendTaskToTransfer(task: BackendTaskRecord): CircleTransfer {
       readString(executionPayload, "walletAddress") ??
       readString(payload, "walletAddress") ??
       null,
-    sourceChain: transfer?.sourceChain ?? readBlockchain(transfer, "sourceBlockchain"),
+    sourceChain: transfer?.sourceChain ?? readBlockchain(transfer, "sourceBlockchain") ?? undefined,
     sourceBlockchain:
       readBlockchain(transfer, "sourceBlockchain") ??
       readBlockchain(payload, "sourceBlockchain") ??
       getSourceBlockchain(readBlockchain(payload, "blockchain") ?? "ARC-TESTNET"),
-    destinationChain: transfer?.destinationChain ?? readBlockchain(transfer, "blockchain"),
+    destinationChain: transfer?.destinationChain ?? readBlockchain(transfer, "blockchain") ?? undefined,
     destinationAddress:
       transfer?.destinationAddress ?? readString(payload, "destinationAddress") ?? null,
     amount: transfer?.amount ?? readString(payload, "amount") ?? "0",
@@ -470,6 +470,13 @@ function getSourceBlockchain(
   }
   // ETH-SEPOLIA and SOLANA-DEVNET both bridge from Arc Testnet
   return "ARC-TESTNET";
+}
+
+function normalizeBridgeAddress(
+  address: string,
+  blockchain: CircleTransferBlockchain
+): string {
+  return blockchain === "SOLANA-DEVNET" ? address.trim() : address.trim().toLowerCase();
 }
 
 function mapBackendErrorToTransferError(error: unknown): TransferApiError {

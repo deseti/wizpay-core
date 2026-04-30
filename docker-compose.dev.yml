@@ -15,5 +15,5 @@ services:
     environment:
       NODE_ENV: development
     volumes:
-      - ./apps/backend-legacy:/app
+      - ./apps/backend:/app
       - /app/node_modules

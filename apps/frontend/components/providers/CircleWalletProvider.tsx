@@ -11,18 +11,8 @@ import {
 } from "react";
 import { deleteCookie, getCookie, setCookie } from "cookies-next";
 import { SocialLoginProvider } from "@circle-fin/w3s-pw-web-sdk/dist/src/types";
-import { Fingerprint, LogIn, Mail, ShieldCheck, Wallet } from "lucide-react";
 import type { Address, Hex } from "viem";
 
-import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
 import {
   clearStoredPasskeyCredential,
   createPasskeyRuntimeSet,
@@ -45,845 +35,63 @@ import {
   initializeBackendWallets,
   syncBackendWallets,
 } from "@/lib/backend-wallets";
-
-type LoginMethod = "google" | "email" | "passkey";
-
-type W3SLoginMethod = Extract<LoginMethod, "google" | "email">;
-
-type CircleUserWallet = {
-  id: string;
-  address: string;
-  blockchain: string;
-  accountType?: string;
-  [key: string]: unknown;
-};
-
-type CircleW3SSession = {
-  authMethod: W3SLoginMethod;
-  email: string | null;
-  encryptionKey: string;
-  refreshToken?: string;
-  userToken: string;
-};
-
-type CirclePasskeySession = {
-  authMethod: "passkey";
-  email: null;
-  passkeyUsername: string | null;
-};
-
-type CircleSession = CircleW3SSession | CirclePasskeySession;
-
-type CircleChallengeHandle = {
-  challengeId: string;
-  raw: Record<string, unknown>;
-};
-
-type CirclePasskeyChallenge =
-  | {
-      callData: Hex;
-      contractAddress: Address;
-      kind: "contract";
-      referenceId: string | null;
-      walletId: string;
-    }
-  | {
-      kind: "typed-data";
-      typedDataJson: string;
-      walletId: string;
-    };
-
-type CircleWalletTokenBalance = {
-  amount: string;
-  raw: Record<string, unknown>;
-  symbol: string | null;
-  tokenAddress: string | null;
-  tokenId: string | null;
-  updatedAt: string | null;
-};
-
-type StoredLoginConfig = {
-  email?: string | null;
-  loginConfigs: Record<string, unknown>;
-  loginMethod: W3SLoginMethod;
-};
-
-type GoogleOAuthDiagnostics = {
-  audience: string | null;
-  clientIdMatches: boolean | null;
-  configuredClientId: string | null;
-  hasDeviceEncryptionKey: boolean;
-  hasDeviceToken: boolean;
-  nonceMatches: boolean | null;
-  provider: string | null;
-  redirectUri: string | null;
-  stateMatches: boolean | null;
-};
-
-type W3SSdkInstance = {
-  execute: (
-    challengeId: string,
-    callback: (error?: unknown, result?: unknown) => void
-  ) => void;
-  getDeviceId: () => Promise<string>;
-  performLogin: (provider: unknown) => void;
-  setAuthentication: (auth: {
-    encryptionKey: string;
-    userToken: string;
-  }) => void;
-  updateConfigs: (config: Record<string, unknown>) => void;
-  verifyOtp: () => void;
-};
-
-type W3SSdkModule = {
-  W3SSdk?: new (
-    config: Record<string, unknown>,
-    onLoginComplete: (error: unknown, result: unknown) => void
-  ) => W3SSdkInstance;
-};
-
-type W3SLoginCompleteResult = {
-  encryptionKey: string;
-  refreshToken?: string;
-  userToken: string;
-};
-
-type CircleWalletContextValue = {
-  arcWallet: CircleUserWallet | null;
-  authMethod: LoginMethod | null;
-  authError: string | null;
-  authStatus: string | null;
-  authenticated: boolean;
-  closeLogin: () => void;
-  createContractExecutionChallenge: (
-    payload: Record<string, unknown>
-  ) => Promise<CircleChallengeHandle>;
-  createTransferChallenge: (
-    payload: Record<string, unknown>
-  ) => Promise<CircleChallengeHandle>;
-  createTypedDataChallenge: (
-    payload: Record<string, unknown>
-  ) => Promise<CircleChallengeHandle>;
-  executeChallenge: (challengeId: string) => Promise<unknown>;
-  getWalletBalances: (walletId: string) => Promise<CircleWalletTokenBalance[]>;
-  hasPendingEmailOtp: boolean;
-  isAuthenticating: boolean;
-  login: () => void;
-  loginMethodLabel: string;
-  logout: () => void;
-  primaryWallet: CircleUserWallet | null;
-  ready: boolean;
-  refreshWallets: () => Promise<void>;
-  requestEmailOtp: (email: string) => Promise<void>;
-  requestGoogleLogin: () => Promise<void>;
-  requestPasskeyLogin: () => Promise<void>;
-  requestPasskeyRegistration: (username: string) => Promise<void>;
-  sepoliaWallet: CircleUserWallet | null;
-  solanaWallet: CircleUserWallet | null;
-  userEmail: string | null;
-  verifyEmailOtp: () => void;
-  wallets: CircleUserWallet[];
-};
-
-const CIRCLE_APP_ID = process.env.NEXT_PUBLIC_CIRCLE_APP_ID ?? "";
-const GOOGLE_CLIENT_ID = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID ?? "";
-// Passkey is disabled when the env var is empty — controls both UI and logic.
-const PASSKEY_ENABLED = Boolean(process.env.NEXT_PUBLIC_CIRCLE_PASSKEY_CLIENT_KEY?.trim());
-const PASSKEY_CONFIG = getCirclePasskeyConfig();
-const APP_ID_COOKIE_KEY = "wizpay.circle.app-id";
-const DEVICE_ID_STORAGE_KEY = "wizpay.circle.device-id";
-const DEVICE_ENCRYPTION_KEY_COOKIE_KEY = "deviceEncryptionKey";
-const DEVICE_TOKEN_COOKIE_KEY = "deviceToken";
-const GOOGLE_CLIENT_ID_COOKIE_KEY = "google.clientId";
-const LOGIN_CONFIG_STORAGE_KEY = "wizpay.circle.login-config";
-const LOGIN_COOKIE_OPTIONS = {
-  path: "/",
-  sameSite: "lax" as const,
-};
-const OAUTH_NONCE_COOKIE_KEY = "wizpay.circle.oauth.nonce";
-const OAUTH_NONCE_FALLBACK_STORAGE_KEY = "wizpay.circle.oauth.backup.nonce";
-const OAUTH_PROVIDER_COOKIE_KEY = "wizpay.circle.oauth.provider";
-const OAUTH_PROVIDER_FALLBACK_STORAGE_KEY = "wizpay.circle.oauth.backup.provider";
-const OAUTH_STATE_COOKIE_KEY = "wizpay.circle.oauth.state";
-const OAUTH_STATE_FALLBACK_STORAGE_KEY = "wizpay.circle.oauth.backup.state";
-const SESSION_STORAGE_KEY = "wizpay.circle.session";
-const SOCIAL_LOGIN_PROVIDER_STORAGE_KEY = "socialLoginProvider";
-const SOCIAL_LOGIN_STATE_STORAGE_KEY = "state";
-const SOCIAL_LOGIN_NONCE_STORAGE_KEY = "nonce";
-const SUPPORTED_WALLET_CHAINS = new Set([
-  "ARC-TESTNET",
-  "ETH-SEPOLIA",
-  "SOLANA-DEVNET",
-]);
-const INVALID_DEVICE_ERROR_CODES = new Set([155113, 155137, 155143, 155144, 155145]);
-const OAUTH_RECOVERY_ERROR_CODES = new Set([155114, 155140]);
-
-const CircleWalletContext = createContext<CircleWalletContextValue | null>(null);
-
-function getGoogleOAuthErrorMessage(diagnostics: GoogleOAuthDiagnostics | null) {
-  if (!diagnostics) {
-    return "Circle failed to validate the Google OAuth response. In Circle's Web SDK this can mean the Google Client ID does not match, the OAuth redirect URI is not allowed for http://localhost:3000, or the saved OAuth state/nonce from a previous redirect became stale. Retry after the app clears the old OAuth session.";
-  }
-
-  if (diagnostics.provider !== "GOOGLE") {
-    return "Circle returned from Google, but the saved OAuth provider marker was missing from browser storage when the callback loaded. This browser likely lost the pre-login OAuth session before Circle could verify it.";
-  }
-
-  if (diagnostics.stateMatches === false) {
-    return "Circle rejected the Google redirect because the OAuth state returned by Google no longer matches the state saved in this browser. This usually means the pre-login browser state was replaced before the redirect completed.";
-  }
-
-  if (diagnostics.nonceMatches === false) {
-    return "Circle rejected the Google redirect because the ID token nonce returned by Google does not match the nonce saved before redirect. That means this browser no longer has the same OAuth session that started the login.";
-  }
-
-  if (!diagnostics.hasDeviceToken || !diagnostics.hasDeviceEncryptionKey) {
-    return "Google redirect returned correctly, but the stored Circle device verification config was missing when the app came back from Google. Retry once so the app can recreate the Circle login config before redirecting again.";
-  }
-
-  if (diagnostics.clientIdMatches === false) {
-    const audienceLabel = diagnostics.audience ?? "a different Google OAuth client";
-    const configuredLabel =
-      diagnostics.configuredClientId ?? "the configured NEXT_PUBLIC_GOOGLE_CLIENT_ID";
-
-    return `Google returned an ID token for ${audienceLabel}, but this app is configured for ${configuredLabel}.`;
-  }
-
-  return "Google redirect passed the browser-side state, nonce, and client ID checks, but Circle still rejected the token. That usually means the Google client ID is not enabled on the same Circle User-Controlled Wallet app as NEXT_PUBLIC_CIRCLE_APP_ID in Circle Console.";
-}
-
-function getErrorMessage(
-  error: unknown,
-  googleOAuthDiagnostics: GoogleOAuthDiagnostics | null = null
-) {
-  const directMessage =
-    getNestedString(error, ["message"]) ??
-    getNestedString(error, ["error", "message"]) ??
-    getNestedString(error, ["data", "message"]);
-  const directCode =
-    (isRecord(error) && typeof error.code === "number" ? error.code : null) ??
-    (isRecord(error) && isRecord(error.error) && typeof error.error.code === "number"
-      ? error.error.code
-      : null) ??
-    (isRecord(error) && isRecord(error.data) && typeof error.data.code === "number"
-      ? error.data.code
-      : null);
-
-  if (error instanceof Error && error.message) {
-    return error.message;
-  }
-
-  if (typeof error === "string") {
-    return error;
-  }
-
-  if (directCode === 155114) {
-    return "Circle app ID does not match this wallet app. Verify NEXT_PUBLIC_CIRCLE_APP_ID comes from the same User-Controlled Wallet app in Circle Console.";
-  }
-
-  if (directCode === 155140) {
-    return getGoogleOAuthErrorMessage(googleOAuthDiagnostics);
-  }
-
-  if (directCode === 155706) {
-    return "Circle verification iframe did not respond. Refresh the page, allow third-party cookies for localhost and pw-auth.circle.com, then retry.";
-  }
-
-  if (INVALID_DEVICE_ERROR_CODES.has(directCode ?? -1)) {
-    return "Circle rejected the cached device session. Refreshing the device registration and retrying should fix it.";
-  }
-
-  if (directMessage) {
-    return directCode ? `Circle error ${directCode}: ${directMessage}` : directMessage;
-  }
-
-  return "Circle wallet request failed.";
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
-
-function isW3SLoginCompleteResult(
-  value: unknown
-): value is W3SLoginCompleteResult {
-  return (
-    isRecord(value) &&
-    typeof value.encryptionKey === "string" &&
-    typeof value.userToken === "string" &&
-    (typeof value.refreshToken === "string" ||
-      typeof value.refreshToken === "undefined")
-  );
-}
-
-function isPasskeySession(
-  value: CircleSession | null | undefined
-): value is CirclePasskeySession {
-  return value?.authMethod === "passkey";
-}
-
-function isHexValue(
-  value: unknown,
-  expectedBytes?: number
-): value is `0x${string}` {
-  if (typeof value !== "string") {
-    return false;
-  }
-
-  const sizePattern = expectedBytes ? `{${expectedBytes * 2}}` : "*";
-  return new RegExp(`^0x[a-fA-F0-9]${sizePattern}$`).test(value);
-}
-
-function createLocalChallengeId(prefix: string) {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-    return `${prefix}:${crypto.randomUUID()}`;
-  }
-
-  return `${prefix}:${Math.random().toString(36).slice(2)}:${Date.now().toString(36)}`;
-}
-
-function getNestedString(source: unknown, path: string[]) {
-  let current: unknown = source;
-
-  for (const key of path) {
-    if (!isRecord(current) || typeof current[key] === "undefined") {
-      return null;
-    }
-
-    current = current[key];
-  }
-
-  return typeof current === "string" && current ? current : null;
-}
-
-function decodeJwtPayload(token: string | null) {
-  if (typeof window === "undefined" || !token) {
-    return null;
-  }
-
-  const [, payloadSegment] = token.split(".");
-
-  if (!payloadSegment) {
-    return null;
-  }
-
-  try {
-    const normalized = payloadSegment.replace(/-/g, "+").replace(/_/g, "/");
-    const padded = normalized.padEnd(
-      normalized.length + ((4 - (normalized.length % 4)) % 4),
-      "="
-    );
-
-    return JSON.parse(window.atob(padded)) as Record<string, unknown>;
-  } catch {
-    return null;
-  }
-}
-
-function getGoogleAudienceInfo(
-  audience: unknown,
-  configuredClientId: string | null
-) {
-  if (typeof audience === "string") {
-    return {
-      audience,
-      matches: configuredClientId ? audience === configuredClientId : null,
-    };
-  }
-
-  if (Array.isArray(audience)) {
-    const stringAudiences = audience.filter(
-      (value): value is string => typeof value === "string" && Boolean(value)
-    );
-
-    return {
-      audience: stringAudiences[0] ?? null,
-      matches: configuredClientId ? stringAudiences.includes(configuredClientId) : null,
-    };
-  }
-
-  return {
-    audience: null,
-    matches: null,
-  };
-}
-
-function getGoogleOAuthDiagnostics(
-  storedLoginConfig: StoredLoginConfig | null
-): GoogleOAuthDiagnostics | null {
-  if (typeof window === "undefined" || !window.location.hash.includes("id_token=")) {
-    return null;
-  }
-
-  const hashParams = new URLSearchParams(window.location.hash.slice(1));
-  const tokenPayload = decodeJwtPayload(hashParams.get("id_token"));
-  const loginConfigs = isRecord(storedLoginConfig?.loginConfigs)
-    ? storedLoginConfig.loginConfigs
-    : null;
-  const googleConfig = loginConfigs && isRecord(loginConfigs.google) ? loginConfigs.google : null;
-  const configuredClientId =
-    typeof googleConfig?.clientId === "string" && googleConfig.clientId
-      ? googleConfig.clientId
-      : GOOGLE_CLIENT_ID || null;
-  const { audience, matches } = getGoogleAudienceInfo(
-    tokenPayload?.aud,
-    configuredClientId
-  );
-  const oauthBackup = readCircleOAuthBackup();
-  const inferredProvider =
-    oauthBackup.provider ||
-    (window.location.hash.includes("id_token=") && configuredClientId ? SocialLoginProvider.GOOGLE : null);
-  const returnedState = hashParams.get("state");
-  const storedState =
-    readStorageString(window.localStorage, SOCIAL_LOGIN_STATE_STORAGE_KEY) ||
-    oauthBackup.state ||
-    null;
-  const returnedNonce =
-    tokenPayload && typeof tokenPayload.nonce === "string" ? tokenPayload.nonce : null;
-  const storedNonce =
-    readStorageString(window.localStorage, SOCIAL_LOGIN_NONCE_STORAGE_KEY) ||
-    oauthBackup.nonce ||
-    null;
-
-  return {
-    audience,
-    clientIdMatches: matches,
-    configuredClientId,
-    hasDeviceEncryptionKey:
-      typeof loginConfigs?.deviceEncryptionKey === "string" &&
-      Boolean(loginConfigs.deviceEncryptionKey),
-    hasDeviceToken:
-      typeof loginConfigs?.deviceToken === "string" && Boolean(loginConfigs.deviceToken),
-    nonceMatches:
-      storedNonce && returnedNonce
-        ? storedNonce === returnedNonce
-        : storedNonce || returnedNonce
-          ? false
-          : null,
-    provider:
-      readStorageString(window.localStorage, SOCIAL_LOGIN_PROVIDER_STORAGE_KEY) ||
-      inferredProvider ||
-      null,
-    redirectUri:
-      typeof googleConfig?.redirectUri === "string" && googleConfig.redirectUri
-        ? googleConfig.redirectUri
-        : window.location.origin,
-    stateMatches:
-      storedState && returnedState
-        ? storedState === returnedState
-        : storedState || returnedState
-          ? false
-          : null,
-  };
-}
-
-function extractChallengeId(payload: Record<string, unknown>) {
-  return (
-    getNestedString(payload, ["challengeId"]) ??
-    getNestedString(payload, ["challenge", "id"]) ??
-    getNestedString(payload, ["challenge", "challengeId"]) ??
-    getNestedString(payload, ["data", "challengeId"]) ??
-    getNestedString(payload, ["data", "challenge", "id"])
-  );
-}
-
-function normalizeCircleWalletTokenBalance(
-  payload: unknown
-): CircleWalletTokenBalance | null {
-  const record = isRecord(payload) ? payload : null;
-
-  if (!record || typeof record.amount !== "string" || !record.amount) {
-    return null;
-  }
-
-  const token = isRecord(record.token) ? record.token : null;
-
-  return {
-    amount: record.amount,
-    raw: record,
-    symbol:
-      typeof token?.symbol === "string" && token.symbol ? token.symbol : null,
-    tokenAddress:
-      typeof token?.tokenAddress === "string" && token.tokenAddress
-        ? token.tokenAddress
-        : null,
-    tokenId: typeof token?.id === "string" && token.id ? token.id : null,
-    updatedAt:
-      typeof record.updateDate === "string" && record.updateDate
-        ? record.updateDate
-        : typeof record.updatedAt === "string" && record.updatedAt
-          ? record.updatedAt
-          : null,
-  };
-}
-
-function readStoredJson<T>(key: string) {
-  if (typeof window === "undefined") {
-    return null;
-  }
-
-  const rawValue = window.localStorage.getItem(key);
-
-  if (!rawValue) {
-    return null;
-  }
-
-  try {
-    return JSON.parse(rawValue) as T;
-  } catch {
-    return null;
-  }
-}
-
-function writeStoredJson(key: string, value: unknown) {
-  if (typeof window === "undefined") {
-    return;
-  }
-
-  window.localStorage.setItem(key, JSON.stringify(value));
-}
-
-function removeStoredValue(key: string) {
-  if (typeof window === "undefined") {
-    return;
-  }
-
-  window.localStorage.removeItem(key);
-}
-
-function readStorageString(storage: Storage | undefined, key: string) {
-  try {
-    const value = storage?.getItem(key);
-    return typeof value === "string" ? value.trim() : "";
-  } catch {
-    return "";
-  }
-}
-
-function writeStorageValue(storage: Storage | undefined, key: string, value: string) {
-  try {
-    storage?.setItem(key, value);
-  } catch {
-    // Ignore storage write failures and continue with other fallbacks.
-  }
-}
-
-function removeStorageValue(storage: Storage | undefined, key: string) {
-  try {
-    storage?.removeItem(key);
-  } catch {
-    // Ignore storage cleanup failures.
-  }
-}
-
-function readCookieString(key: string) {
-  if (typeof window === "undefined") {
-    return "";
-  }
-
-  const value = getCookie(key);
-
-  if (typeof value === "string") {
-    return value;
-  }
-
-  return value ? String(value) : "";
-}
-
-function readCircleOAuthBackup() {
-  if (typeof window === "undefined") {
-    return {
-      nonce: "",
-      provider: "",
-      state: "",
-    };
-  }
-
-  return {
-    nonce:
-      readStorageString(window.sessionStorage, OAUTH_NONCE_FALLBACK_STORAGE_KEY) ||
-      readStorageString(window.localStorage, OAUTH_NONCE_FALLBACK_STORAGE_KEY) ||
-      readCookieString(OAUTH_NONCE_COOKIE_KEY),
-    provider:
-      readStorageString(window.sessionStorage, OAUTH_PROVIDER_FALLBACK_STORAGE_KEY) ||
-      readStorageString(window.localStorage, OAUTH_PROVIDER_FALLBACK_STORAGE_KEY) ||
-      readCookieString(OAUTH_PROVIDER_COOKIE_KEY),
-    state:
-      readStorageString(window.sessionStorage, OAUTH_STATE_FALLBACK_STORAGE_KEY) ||
-      readStorageString(window.localStorage, OAUTH_STATE_FALLBACK_STORAGE_KEY) ||
-      readCookieString(OAUTH_STATE_COOKIE_KEY),
-  };
-}
-
-function getRestoredCircleAppId() {
-  return readCookieString(APP_ID_COOKIE_KEY) || CIRCLE_APP_ID;
-}
-
-function buildGoogleLoginConfigs({
-  deviceEncryptionKey,
-  deviceToken,
-  googleClientId,
-}: {
-  deviceEncryptionKey: string;
-  deviceToken: string;
-  googleClientId: string;
-}) {
-  return {
-    deviceToken,
-    deviceEncryptionKey,
-    google: {
-      clientId: googleClientId,
-      redirectUri: typeof window !== "undefined" ? window.location.origin : "",
-      selectAccountPrompt: true,
-    },
-  };
-}
-
-function createOAuthRedirectValue() {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-    return crypto.randomUUID();
-  }
-
-  return `${Math.random().toString(36).slice(2)}-${Date.now().toString(36)}`;
-}
-
-function buildGoogleOAuthRedirectUrl({
-  clientId,
-  nonce,
-  redirectUri,
-  selectAccountPrompt,
-  state,
-}: {
-  clientId: string;
-  nonce: string;
-  redirectUri: string;
-  selectAccountPrompt: boolean;
-  state: string;
-}) {
-  const scope = encodeURIComponent(
-    "openid https://www.googleapis.com/auth/userinfo.profile https://www.googleapis.com/auth/userinfo.email"
-  );
-  const responseType = encodeURIComponent("id_token token");
-
-  return `https://accounts.google.com/o/oauth2/v2/auth?client_id=${clientId}&redirect_uri=${encodeURIComponent(
-    redirectUri
-  )}&scope=${scope}&state=${state}&response_type=${responseType}&nonce=${nonce}&prompt=${
-    selectAccountPrompt ? "select_account" : "none"
-  }`;
-}
-
-function readGoogleLoginConfigFromCookies(): StoredLoginConfig | null {
-  const googleClientId = readCookieString(GOOGLE_CLIENT_ID_COOKIE_KEY) || GOOGLE_CLIENT_ID;
-  const deviceToken = readCookieString(DEVICE_TOKEN_COOKIE_KEY);
-  const deviceEncryptionKey = readCookieString(DEVICE_ENCRYPTION_KEY_COOKIE_KEY);
-
-  if (!googleClientId || !deviceToken || !deviceEncryptionKey) {
-    return null;
-  }
-
-  return {
-    loginMethod: "google",
-    loginConfigs: buildGoogleLoginConfigs({
-      deviceEncryptionKey,
-      deviceToken,
-      googleClientId,
-    }),
-  };
-}
-
-function persistGoogleLoginCookies({
-  appId,
-  deviceEncryptionKey,
-  deviceToken,
-  googleClientId,
-}: {
-  appId: string;
-  deviceEncryptionKey: string;
-  deviceToken: string;
-  googleClientId: string;
-}) {
-  if (typeof window === "undefined") {
-    return;
-  }
-
-  setCookie(APP_ID_COOKIE_KEY, appId, LOGIN_COOKIE_OPTIONS);
-  setCookie(GOOGLE_CLIENT_ID_COOKIE_KEY, googleClientId, LOGIN_COOKIE_OPTIONS);
-  setCookie(DEVICE_TOKEN_COOKIE_KEY, deviceToken, LOGIN_COOKIE_OPTIONS);
-  setCookie(
-    DEVICE_ENCRYPTION_KEY_COOKIE_KEY,
-    deviceEncryptionKey,
-    LOGIN_COOKIE_OPTIONS
-  );
-}
-
-function persistCircleOAuthCookies({
-  nonce,
-  provider,
-  state,
-}: {
-  nonce?: string;
-  provider: string;
-  state: string;
-}) {
-  if (typeof window === "undefined") {
-    return;
-  }
-
-  setCookie(OAUTH_PROVIDER_COOKIE_KEY, provider, LOGIN_COOKIE_OPTIONS);
-  setCookie(OAUTH_STATE_COOKIE_KEY, state, LOGIN_COOKIE_OPTIONS);
-  setCookie(OAUTH_NONCE_COOKIE_KEY, nonce ?? "", LOGIN_COOKIE_OPTIONS);
-}
-
-function persistCircleOAuthBackups({
-  nonce,
-  provider,
-  state,
-}: {
-  nonce?: string;
-  provider: string;
-  state: string;
-}) {
-  if (typeof window === "undefined") {
-    return;
-  }
-
-  writeStorageValue(
-    window.sessionStorage,
-    OAUTH_PROVIDER_FALLBACK_STORAGE_KEY,
-    provider
-  );
-  writeStorageValue(
-    window.sessionStorage,
-    OAUTH_STATE_FALLBACK_STORAGE_KEY,
-    state
-  );
-  writeStorageValue(
-    window.sessionStorage,
-    OAUTH_NONCE_FALLBACK_STORAGE_KEY,
-    nonce ?? ""
-  );
-  writeStorageValue(
-    window.localStorage,
-    OAUTH_PROVIDER_FALLBACK_STORAGE_KEY,
-    provider
-  );
-  writeStorageValue(
-    window.localStorage,
-    OAUTH_STATE_FALLBACK_STORAGE_KEY,
-    state
-  );
-  writeStorageValue(
-    window.localStorage,
-    OAUTH_NONCE_FALLBACK_STORAGE_KEY,
-    nonce ?? ""
-  );
-  persistCircleOAuthCookies({ nonce, provider, state });
-}
-
-function clearCircleOAuthCookies() {
-  if (typeof window === "undefined") {
-    return;
-  }
-
-  deleteCookie(OAUTH_PROVIDER_COOKIE_KEY, LOGIN_COOKIE_OPTIONS);
-  deleteCookie(OAUTH_STATE_COOKIE_KEY, LOGIN_COOKIE_OPTIONS);
-  deleteCookie(OAUTH_NONCE_COOKIE_KEY, LOGIN_COOKIE_OPTIONS);
-}
-
-function clearCircleOAuthBackups() {
-  if (typeof window === "undefined") {
-    return;
-  }
-
-  removeStorageValue(
-    window.sessionStorage,
-    OAUTH_PROVIDER_FALLBACK_STORAGE_KEY
-  );
-  removeStorageValue(window.sessionStorage, OAUTH_STATE_FALLBACK_STORAGE_KEY);
-  removeStorageValue(window.sessionStorage, OAUTH_NONCE_FALLBACK_STORAGE_KEY);
-  removeStorageValue(
-    window.localStorage,
-    OAUTH_PROVIDER_FALLBACK_STORAGE_KEY
-  );
-  removeStorageValue(window.localStorage, OAUTH_STATE_FALLBACK_STORAGE_KEY);
-  removeStorageValue(window.localStorage, OAUTH_NONCE_FALLBACK_STORAGE_KEY);
-  clearCircleOAuthCookies();
-}
-
-function persistCircleOAuthState({
-  nonce,
-  provider,
-  state,
-}: {
-  nonce?: string;
-  provider: string;
-  state: string;
-}) {
-  if (typeof window === "undefined") {
-    return;
-  }
-
-  window.localStorage.setItem(SOCIAL_LOGIN_PROVIDER_STORAGE_KEY, provider);
-  window.localStorage.setItem(SOCIAL_LOGIN_STATE_STORAGE_KEY, state);
-  window.localStorage.setItem(SOCIAL_LOGIN_NONCE_STORAGE_KEY, nonce ?? "");
-  persistCircleOAuthBackups({ nonce, provider, state });
-}
-
-function restoreCircleOAuthStateFromCookies() {
-  if (typeof window === "undefined") {
-    return false;
-  }
-
-  const hasOAuthCallbackHash =
-    window.location.hash.includes("state=") ||
-    window.location.hash.includes("id_token=") ||
-    window.location.hash.includes("access_token=");
-
-  if (!hasOAuthCallbackHash) {
-    return false;
-  }
-
-  const { nonce, provider, state } = readCircleOAuthBackup();
-  const inferredProvider =
-    provider ||
-    (window.location.hash.includes("id_token=") && readGoogleLoginConfigFromCookies()
-      ? SocialLoginProvider.GOOGLE
-      : "");
-
-  if (!inferredProvider || !state) {
-    return false;
-  }
-
-  window.localStorage.setItem(SOCIAL_LOGIN_PROVIDER_STORAGE_KEY, inferredProvider);
-  window.localStorage.setItem(SOCIAL_LOGIN_STATE_STORAGE_KEY, state);
-
-  if (window.location.hash.includes("id_token=") && nonce) {
-    window.localStorage.setItem(SOCIAL_LOGIN_NONCE_STORAGE_KEY, nonce);
-  }
-
-  persistCircleOAuthBackups({ nonce, provider: inferredProvider, state });
-
-  return true;
-}
-
-function clearGoogleLoginCookies() {
-  if (typeof window === "undefined") {
-    return;
-  }
-
-  deleteCookie(APP_ID_COOKIE_KEY, LOGIN_COOKIE_OPTIONS);
-  deleteCookie(GOOGLE_CLIENT_ID_COOKIE_KEY, LOGIN_COOKIE_OPTIONS);
-  deleteCookie(DEVICE_TOKEN_COOKIE_KEY, LOGIN_COOKIE_OPTIONS);
-  deleteCookie(DEVICE_ENCRYPTION_KEY_COOKIE_KEY, LOGIN_COOKIE_OPTIONS);
-}
-
-function clearCircleOAuthState() {
-  removeStoredValue(SOCIAL_LOGIN_PROVIDER_STORAGE_KEY);
-  removeStoredValue(SOCIAL_LOGIN_STATE_STORAGE_KEY);
-  removeStoredValue(SOCIAL_LOGIN_NONCE_STORAGE_KEY);
-  clearCircleOAuthBackups();
-}
-
+import { buildBackendUrl, resolveBackendBaseUrl } from "@/lib/backend-api";
+
+import { LoginModal } from "./circle/LoginModal";
+import type {
+  LoginMethod,
+  W3SLoginMethod,
+  CircleUserWallet,
+  CircleW3SSession,
+  CirclePasskeySession,
+  CircleSession,
+  CircleChallengeHandle,
+  CirclePasskeyChallenge,
+  CircleWalletTokenBalance,
+  StoredLoginConfig,
+  GoogleOAuthDiagnostics,
+  W3SSdkInstance,
+  W3SSdkModule,
+  W3SLoginCompleteResult,
+  CircleWalletContextValue,
+} from "@/services/circle-auth.service";
+import {
+  CIRCLE_APP_ID,
+  GOOGLE_CLIENT_ID,
+  PASSKEY_ENABLED,
+  PASSKEY_CONFIG,
+  INVALID_DEVICE_ERROR_CODES,
+  OAUTH_RECOVERY_ERROR_CODES,
+  getGoogleOAuthErrorMessage,
+  getErrorMessage,
+  isRecord,
+  isW3SLoginCompleteResult,
+  isPasskeySession,
+  createLocalChallengeId,
+  extractChallengeId,
+  normalizeCircleWalletTokenBalance,
+  readStoredJson,
+  writeStoredJson,
+  removeStoredValue,
+  readCircleOAuthBackup,
+  getRestoredCircleAppId,
+  buildGoogleLoginConfigs,
+  readGoogleLoginConfigFromCookies,
+  persistGoogleLoginCookies,
+  restoreCircleOAuthStateFromCookies,
+  clearGoogleLoginCookies,
+  clearCircleOAuthState,
+  clearCircleOAuthBackups,
+  DEVICE_ID_STORAGE_KEY,
+  SESSION_STORAGE_KEY,
+  LOGIN_CONFIG_STORAGE_KEY,
+  SUPPORTED_WALLET_CHAINS,
+  isHexValue,
+  getGoogleOAuthDiagnostics,
+} from "@/services/circle-auth.service";
+
+export const CircleWalletContext =
+  createContext<CircleWalletContextValue | null>(null);
 export function CircleWalletProvider({
   children,
 }: {
@@ -895,7 +103,7 @@ export function CircleWalletProvider({
   if (!CIRCLE_APP_ID) {
     console.warn(
       "[CircleWalletProvider] NEXT_PUBLIC_CIRCLE_APP_ID is not set. " +
-      "Auth is disabled. Set it in .env and rebuild the Docker image."
+        "Auth is disabled. Set it in .env and rebuild the Docker image.",
     );
     return (
       <CircleWalletContext.Provider value={DISABLED_CONTEXT_VALUE}>
@@ -910,13 +118,23 @@ export function CircleWalletProvider({
 const DISABLED_CONTEXT_VALUE: CircleWalletContextValue = {
   arcWallet: null,
   authMethod: null,
-  authError: "Circle App ID is not configured. Set NEXT_PUBLIC_CIRCLE_APP_ID and rebuild.",
+  authError:
+    "Circle App ID is not configured. Set NEXT_PUBLIC_CIRCLE_APP_ID and rebuild.",
   authStatus: null,
   authenticated: false,
   closeLogin: () => {},
-  createContractExecutionChallenge: async () => { throw new Error("Auth not configured."); },
-  createTypedDataChallenge: async () => { throw new Error("Auth not configured."); },
-  executeChallenge: async () => { throw new Error("Auth not configured."); },
+  createContractExecutionChallenge: async () => {
+    throw new Error("Auth not configured.");
+  },
+  createTypedDataChallenge: async () => {
+    throw new Error("Auth not configured.");
+  },
+  createTransferChallenge: async () => {
+    throw new Error("Auth not configured.");
+  },
+  executeChallenge: async () => {
+    throw new Error("Auth not configured.");
+  },
   getWalletBalances: async () => [],
   hasPendingEmailOtp: false,
   isAuthenticating: false,
@@ -937,6 +155,62 @@ const DISABLED_CONTEXT_VALUE: CircleWalletContextValue = {
   wallets: [],
 };
 
+function buildW3sUserActionParams(
+  payload: Record<string, unknown>,
+  userToken: string,
+) {
+  const normalized: Record<string, unknown> = {
+    ...payload,
+    userToken,
+  };
+
+  if (typeof normalized.walletId === "string") {
+    normalized.walletId = normalized.walletId.trim();
+  }
+
+  if (typeof normalized.contractAddress === "string") {
+    normalized.contractAddress = normalized.contractAddress
+      .trim()
+      .toLowerCase();
+  }
+
+  if (typeof normalized.destinationAddress === "string") {
+    const destAddr = normalized.destinationAddress.trim();
+    normalized.destinationAddress = destAddr.startsWith("0x") ? destAddr.toLowerCase() : destAddr;
+  }
+
+  if (Array.isArray(normalized.amounts)) {
+    normalized.amounts = normalized.amounts.map((amount) => String(amount));
+  }
+
+  if (typeof normalized.amount === "number") {
+    normalized.amount = String(normalized.amount);
+  }
+
+  if (typeof normalized.blockchain === "string") {
+    normalized.blockchain = normalized.blockchain
+      .trim()
+      .toUpperCase()
+      .replace(/_/g, "-");
+  }
+
+  if (typeof normalized.sourceChain === "string") {
+    normalized.sourceChain = normalized.sourceChain
+      .trim()
+      .toUpperCase()
+      .replace(/_/g, "-");
+  }
+
+  if (typeof normalized.destinationChain === "string") {
+    normalized.destinationChain = normalized.destinationChain
+      .trim()
+      .toUpperCase()
+      .replace(/_/g, "-");
+  }
+
+  return normalized;
+}
+
 function CircleWalletProviderInner({
   children,
 }: {
@@ -947,10 +221,10 @@ function CircleWalletProviderInner({
   const googleOAuthDiagnosticsRef = useRef<GoogleOAuthDiagnostics | null>(null);
   const authRequestInFlightRef = useRef(false);
   const passkeyChallengeStoreRef = useRef(
-    new Map<string, CirclePasskeyChallenge>()
+    new Map<string, CirclePasskeyChallenge>(),
   );
   const passkeyRuntimeByWalletIdRef = useRef(
-    new Map<string, PasskeyChainRuntime>()
+    new Map<string, PasskeyChainRuntime>(),
   );
 
   const [arcWallet, setArcWallet] = useState<CircleUserWallet | null>(null);
@@ -964,8 +238,12 @@ function CircleWalletProviderInner({
     string | null
   >(null);
   const [ready, setReady] = useState(false);
-  const [sepoliaWallet, setSepoliaWallet] = useState<CircleUserWallet | null>(null);
-  const [solanaWallet, setSolanaWallet] = useState<CircleUserWallet | null>(null);
+  const [sepoliaWallet, setSepoliaWallet] = useState<CircleUserWallet | null>(
+    null,
+  );
+  const [solanaWallet, setSolanaWallet] = useState<CircleUserWallet | null>(
+    null,
+  );
   const [session, setSession] = useState<CircleSession | null>(null);
   const [wallets, setWallets] = useState<CircleUserWallet[]>([]);
 
@@ -977,8 +255,12 @@ function CircleWalletProviderInner({
   const handleAuthFailure = useCallback(
     (error: unknown) => {
       const code =
-        (isRecord(error) && typeof error.code === "number" ? error.code : null) ??
-        (isRecord(error) && isRecord(error.error) && typeof error.error.code === "number"
+        (isRecord(error) && typeof error.code === "number"
+          ? error.code
+          : null) ??
+        (isRecord(error) &&
+        isRecord(error.error) &&
+        typeof error.error.code === "number"
           ? error.error.code
           : null) ??
         null;
@@ -997,7 +279,7 @@ function CircleWalletProviderInner({
       setAuthError(getErrorMessage(error, googleOAuthDiagnosticsRef.current));
       setAuthStatus(null);
     },
-    [resetDeviceId]
+    [resetDeviceId],
   );
 
   const ensureDeviceId = useCallback(async () => {
@@ -1055,7 +337,7 @@ function CircleWalletProviderInner({
         clearGoogleLoginCookies();
       }
     },
-    []
+    [],
   );
 
   const storeLoginConfig = useCallback((value: StoredLoginConfig) => {
@@ -1064,20 +346,26 @@ function CircleWalletProviderInner({
     setHasPendingEmailOtp(value.loginMethod === "email");
   }, []);
 
-  const applyPasskeyRuntimeSet = useCallback((runtimeSet: PasskeyRuntimeSet | null) => {
-    passkeyRuntimeByWalletIdRef.current = runtimeSet?.byWalletId ?? new Map();
+  const applyPasskeyRuntimeSet = useCallback(
+    (runtimeSet: PasskeyRuntimeSet | null) => {
+      passkeyRuntimeByWalletIdRef.current = runtimeSet?.byWalletId ?? new Map();
 
-    const nextWallets = (runtimeSet?.wallets ?? []) as CircleUserWallet[];
+      const nextWallets = (runtimeSet?.wallets ?? []) as CircleUserWallet[];
 
-    setWallets(nextWallets);
-    setArcWallet((runtimeSet?.arc?.wallet as CircleUserWallet | null) ?? null);
-    setSepoliaWallet(
-      (runtimeSet?.sepolia?.wallet as CircleUserWallet | null) ?? null
-    );
-    setSolanaWallet(
-      nextWallets.find((wallet) => wallet.blockchain === "SOLANA-DEVNET") ?? null
-    );
-  }, []);
+      setWallets(nextWallets);
+      setArcWallet(
+        (runtimeSet?.arc?.wallet as CircleUserWallet | null) ?? null,
+      );
+      setSepoliaWallet(
+        (runtimeSet?.sepolia?.wallet as CircleUserWallet | null) ?? null,
+      );
+      setSolanaWallet(
+        nextWallets.find((wallet) => wallet.blockchain === "SOLANA-DEVNET") ??
+          null,
+      );
+    },
+    [],
+  );
 
   const resetPasskeyRuntimeState = useCallback(() => {
     passkeyChallengeStoreRef.current.clear();
@@ -1102,7 +390,7 @@ function CircleWalletProviderInner({
 
       if (!nextCredential) {
         throw new Error(
-          "No stored passkey credential was found. Sign in with Passkey again."
+          "No stored passkey credential was found. Sign in with Passkey again.",
         );
       }
 
@@ -1116,7 +404,7 @@ function CircleWalletProviderInner({
 
       return runtimeSet;
     },
-    [applyPasskeyRuntimeSet]
+    [applyPasskeyRuntimeSet],
   );
 
   const finalizePasskeyAuthentication = useCallback(
@@ -1150,7 +438,7 @@ function CircleWalletProviderInner({
       setAuthStatus("Circle passkey wallet ready.");
       setIsLoginOpen(false);
     },
-    [clearStoredLoginConfig, initializePasskeyWallets, persistSession]
+    [clearStoredLoginConfig, initializePasskeyWallets, persistSession],
   );
 
   const executePasskeyChallenge = useCallback(async (challengeId: string) => {
@@ -1161,7 +449,7 @@ function CircleWalletProviderInner({
     }
 
     const runtime = passkeyRuntimeByWalletIdRef.current.get(
-      pendingChallenge.walletId
+      pendingChallenge.walletId,
     );
 
     if (!runtime) {
@@ -1212,19 +500,22 @@ function CircleWalletProviderInner({
     ((authSession: CircleW3SSession) => Promise<void>) | null
   >(null);
   const ensuredSolanaByUserTokenRef = useRef(new Set<string>());
-  const persistSessionRef = useRef<((nextSession: CircleSession | null) => void) | null>(
-    null
-  );
+  const persistSessionRef = useRef<
+    ((nextSession: CircleSession | null) => void) | null
+  >(null);
 
   const postW3sAction = useCallback(
     async (action: string, params: Record<string, unknown> = {}) => {
-      const response = await fetch("/api/w3s", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
+      const response = await fetch(
+        buildBackendUrl("/w3s/action", resolveBackendBaseUrl()),
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ action, ...params }),
         },
-        body: JSON.stringify({ action, ...params }),
-      });
+      );
 
       const payload = (await response.json().catch(() => ({}))) as {
         code?: number;
@@ -1245,8 +536,12 @@ function CircleWalletProviderInner({
             ? `Circle rate limit reached while running ${action}.${retryAfterSeconds ? ` Retry in about ${retryAfterSeconds}s.` : " Retry in a few seconds."}`
             : `Circle action failed: ${action}`;
         const nextError = new Error(
-          payload.error || payload.message || fallbackMessage
-        ) as Error & { code?: number; retryAfterMs?: number | null; status?: number };
+          payload.error || payload.message || fallbackMessage,
+        ) as Error & {
+          code?: number;
+          retryAfterMs?: number | null;
+          status?: number;
+        };
         nextError.code = payload.code;
         nextError.retryAfterMs = payload.retryAfterMs;
         nextError.status = response.status;
@@ -1255,7 +550,7 @@ function CircleWalletProviderInner({
 
       return payload;
     },
-    []
+    [],
   );
 
   const loadWallets = useCallback(
@@ -1267,7 +562,7 @@ function CircleWalletProviderInner({
 
         if (!storedCredential) {
           throw new Error(
-            "Your saved passkey session is incomplete. Sign in with Passkey again."
+            "Your saved passkey session is incomplete. Sign in with Passkey again.",
           );
         }
 
@@ -1276,11 +571,13 @@ function CircleWalletProviderInner({
           username: activeSession.passkeyUsername,
         });
 
-        return (passkeyRuntimeByWalletIdRef.current.size > 0
-          ? Array.from(passkeyRuntimeByWalletIdRef.current.values()).map(
-              (runtime) => runtime.wallet as CircleUserWallet
-            )
-          : []) as CircleUserWallet[];
+        return (
+          passkeyRuntimeByWalletIdRef.current.size > 0
+            ? Array.from(passkeyRuntimeByWalletIdRef.current.values()).map(
+                (runtime) => runtime.wallet as CircleUserWallet,
+              )
+            : []
+        ) as CircleUserWallet[];
       }
 
       const userToken = activeSession?.userToken;
@@ -1300,23 +597,26 @@ function CircleWalletProviderInner({
       });
 
       const nextWallets = syncedWallets.filter((wallet) =>
-        SUPPORTED_WALLET_CHAINS.has(wallet.blockchain)
+        SUPPORTED_WALLET_CHAINS.has(wallet.blockchain),
       );
 
       setWallets(nextWallets);
       setArcWallet(
-        nextWallets.find((wallet) => wallet.blockchain === "ARC-TESTNET") ?? null
+        nextWallets.find((wallet) => wallet.blockchain === "ARC-TESTNET") ??
+          null,
       );
       setSepoliaWallet(
-        nextWallets.find((wallet) => wallet.blockchain === "ETH-SEPOLIA") ?? null
+        nextWallets.find((wallet) => wallet.blockchain === "ETH-SEPOLIA") ??
+          null,
       );
       setSolanaWallet(
-        nextWallets.find((wallet) => wallet.blockchain === "SOLANA-DEVNET") ?? null
+        nextWallets.find((wallet) => wallet.blockchain === "SOLANA-DEVNET") ??
+          null,
       );
 
       return nextWallets;
     },
-    [initializePasskeyWallets, resetPasskeyRuntimeState, session]
+    [initializePasskeyWallets, resetPasskeyRuntimeState, session],
   );
 
   const executeChallengeForSession = useCallback(
@@ -1347,7 +647,7 @@ function CircleWalletProviderInner({
         });
       });
     },
-    [executePasskeyChallenge]
+    [executePasskeyChallenge],
   );
 
   const loadWalletsEnsuringSolana = useCallback(
@@ -1358,7 +658,9 @@ function CircleWalletProviderInner({
         return existingWallets;
       }
 
-      if (existingWallets.some((wallet) => wallet.blockchain === "SOLANA-DEVNET")) {
+      if (
+        existingWallets.some((wallet) => wallet.blockchain === "SOLANA-DEVNET")
+      ) {
         ensuredSolanaByUserTokenRef.current.add(authSession.userToken);
         return existingWallets;
       }
@@ -1408,11 +710,14 @@ function CircleWalletProviderInner({
 
         return updatedWallets;
       } catch (error) {
-        console.warn("[CircleWalletProvider] Failed to auto-create Solana user wallet", error);
+        console.warn(
+          "[CircleWalletProvider] Failed to auto-create Solana user wallet",
+          error,
+        );
         return existingWallets;
       }
     },
-    [executeChallengeForSession, loadWallets]
+    [executeChallengeForSession, loadWallets],
   );
 
   const initializeAndLoadWallets = useCallback(
@@ -1428,7 +733,9 @@ function CircleWalletProviderInner({
         });
 
         if (payload.challengeId) {
-          setAuthStatus("Circle wallet challenge ready. Confirm it to finish setup.");
+          setAuthStatus(
+            "Circle wallet challenge ready. Confirm it to finish setup.",
+          );
           await executeChallengeForSession(payload.challengeId, authSession);
           await new Promise((resolve) => {
             window.setTimeout(resolve, 1500);
@@ -1465,7 +772,7 @@ function CircleWalletProviderInner({
       clearStoredLoginConfig,
       executeChallengeForSession,
       loadWalletsEnsuringSolana,
-    ]
+    ],
   );
 
   const executeChallenge = useCallback(
@@ -1476,7 +783,7 @@ function CircleWalletProviderInner({
 
       return executeChallengeForSession(challengeId, session);
     },
-    [executeChallengeForSession, session]
+    [executeChallengeForSession, session],
   );
 
   const createContractExecutionChallenge = useCallback(
@@ -1495,7 +802,7 @@ function CircleWalletProviderInner({
 
         if (!walletId || !contractAddress || !callData) {
           throw new Error(
-            "Passkey execution payload is missing the target wallet, contract, or calldata."
+            "Passkey execution payload is missing the target wallet, contract, or calldata.",
           );
         }
 
@@ -1506,7 +813,9 @@ function CircleWalletProviderInner({
           contractAddress,
           kind: "contract",
           referenceId:
-            typeof payload.refId === "string" && payload.refId ? payload.refId : null,
+            typeof payload.refId === "string" && payload.refId
+              ? payload.refId
+              : null,
           walletId,
         });
 
@@ -1515,7 +824,9 @@ function CircleWalletProviderInner({
           raw: {
             challengeId,
             transactionId:
-              typeof payload.refId === "string" && payload.refId ? payload.refId : null,
+              typeof payload.refId === "string" && payload.refId
+                ? payload.refId
+                : null,
             walletId,
           },
         };
@@ -1526,8 +837,7 @@ function CircleWalletProviderInner({
       }
 
       const response = await postW3sAction("createContractExecutionChallenge", {
-        userToken: session.userToken,
-        payload,
+        ...buildW3sUserActionParams(payload, session.userToken),
       });
 
       if (!isRecord(response)) {
@@ -1545,7 +855,7 @@ function CircleWalletProviderInner({
         raw: response,
       };
     },
-    [postW3sAction, session]
+    [postW3sAction, session],
   );
 
   const createTransferChallenge = useCallback(
@@ -1555,8 +865,7 @@ function CircleWalletProviderInner({
       }
 
       const response = await postW3sAction("createTransferChallenge", {
-        userToken: session.userToken,
-        payload,
+        ...buildW3sUserActionParams(payload, session.userToken),
       });
 
       if (!isRecord(response)) {
@@ -1574,7 +883,7 @@ function CircleWalletProviderInner({
         raw: response,
       };
     },
-    [postW3sAction, session]
+    [postW3sAction, session],
   );
 
   const createTypedDataChallenge = useCallback(
@@ -1585,11 +894,13 @@ function CircleWalletProviderInner({
             ? payload.walletId
             : null;
         const typedDataJson =
-          typeof payload.data === "string" && payload.data ? payload.data : null;
+          typeof payload.data === "string" && payload.data
+            ? payload.data
+            : null;
 
         if (!walletId || !typedDataJson) {
           throw new Error(
-            "Passkey typed-data payload is missing the target wallet or payload."
+            "Passkey typed-data payload is missing the target wallet or payload.",
           );
         }
 
@@ -1615,12 +926,13 @@ function CircleWalletProviderInner({
       }
 
       const response = await postW3sAction("createTypedDataChallenge", {
-        userToken: session.userToken,
-        payload,
+        ...buildW3sUserActionParams(payload, session.userToken),
       });
 
       if (!isRecord(response)) {
-        throw new Error("Circle did not return a valid sign challenge response.");
+        throw new Error(
+          "Circle did not return a valid sign challenge response.",
+        );
       }
 
       const challengeId = extractChallengeId(response);
@@ -1634,7 +946,7 @@ function CircleWalletProviderInner({
         raw: response,
       };
     },
-    [postW3sAction, session]
+    [postW3sAction, session],
   );
 
   const getWalletBalances = useCallback(
@@ -1647,7 +959,10 @@ function CircleWalletProviderInner({
         }
 
         const _passkeyBalances = await getPasskeyTokenBalances(runtime);
-        return _passkeyBalances.map(pb => ({ ...pb, tokenId: null })) as CircleWalletTokenBalance[];
+        return _passkeyBalances.map((pb) => ({
+          ...pb,
+          tokenId: null,
+        })) as CircleWalletTokenBalance[];
       }
 
       if (!session || isPasskeySession(session) || !session.userToken) {
@@ -1665,15 +980,17 @@ function CircleWalletProviderInner({
 
       return response.tokenBalances
         .map((balance) => normalizeCircleWalletTokenBalance(balance))
-        .filter((balance): balance is CircleWalletTokenBalance => balance !== null);
+        .filter(
+          (balance): balance is CircleWalletTokenBalance => balance !== null,
+        );
     },
-    [postW3sAction, session]
+    [postW3sAction, session],
   );
 
   useEffect(() => {
     const storedSession = readStoredJson<CircleSession>(SESSION_STORAGE_KEY);
     const storedLoginConfig = readStoredJson<StoredLoginConfig>(
-      LOGIN_CONFIG_STORAGE_KEY
+      LOGIN_CONFIG_STORAGE_KEY,
     );
 
     if (storedSession) {
@@ -1707,9 +1024,12 @@ function CircleWalletProviderInner({
 
     async function initializeSdk() {
       try {
-        const sdkModule = (await import(
-          "@circle-fin/w3s-pw-web-sdk"
-        )) as unknown as W3SSdkModule;
+        console.log(
+          "[CircleWalletProvider] SDK init — URL:",
+          window.location.href,
+        );
+        const sdkModule =
+          (await import("@circle-fin/w3s-pw-web-sdk")) as unknown as W3SSdkModule;
 
         if (!sdkModule.W3SSdk) {
           throw new Error("Circle Web SDK did not expose W3SSdk.");
@@ -1730,7 +1050,8 @@ function CircleWalletProviderInner({
           }
         }
 
-        googleOAuthDiagnosticsRef.current = getGoogleOAuthDiagnostics(restoredLoginConfig);
+        googleOAuthDiagnosticsRef.current =
+          getGoogleOAuthDiagnostics(restoredLoginConfig);
 
         const initialConfig: Record<string, unknown> = {
           appSettings: { appId: getRestoredCircleAppId() },
@@ -1748,7 +1069,8 @@ function CircleWalletProviderInner({
           if (error || !isW3SLoginCompleteResult(result)) {
             setIsAuthenticating(false);
             handleAuthFailureRef.current?.(
-              error ?? new Error("Circle login did not return a valid auth payload.")
+              error ??
+                new Error("Circle login did not return a valid auth payload."),
             );
             return;
           }
@@ -1806,9 +1128,10 @@ function CircleWalletProviderInner({
 
         if (!cancelled) {
           setAuthError((current) =>
-            current === "Circle device ID is still loading. Try again in a moment."
+            current ===
+            "Circle device ID is still loading. Try again in a moment."
               ? null
-              : current
+              : current,
           );
         }
       } catch (error) {
@@ -1825,15 +1148,15 @@ function CircleWalletProviderInner({
           ) {
             console.error(
               "[CircleWalletProvider] createDeviceToken failed. " +
-              "Check that CIRCLE_API_KEY is set in root .env and the Docker " +
-              "container was restarted. Also verify http://localhost:3000 is " +
-              "listed in Circle Console → Allowed Origins.",
-              error
+                "Check that CIRCLE_API_KEY is set in root .env and the Docker " +
+                "container was restarted. Also verify http://localhost:3000 is " +
+                "listed in Circle Console → Allowed Origins.",
+              error,
             );
             setAuthError(
               "Authentication initialization failed. " +
-              "The server CIRCLE_API_KEY may be missing or the Circle App ID may not " +
-              "allow localhost:3000. Check server logs and Circle Console."
+                "The server CIRCLE_API_KEY may be missing or the Circle App ID may not " +
+                "allow localhost:3000. Check server logs and Circle Console.",
             );
           } else {
             handleAuthFailure(error);
@@ -1850,7 +1173,8 @@ function CircleWalletProviderInner({
   }, [deviceId, ensureDeviceId, handleAuthFailure, ready]);
 
   useEffect(() => {
-    if (!session) {
+    const activeSession = session;
+    if (!activeSession) {
       return;
     }
 
@@ -1858,10 +1182,10 @@ function CircleWalletProviderInner({
 
     async function hydrateWallets() {
       try {
-        if (isPasskeySession(session)) {
-          await loadWallets(session);
+        if (isPasskeySession(activeSession)) {
+          await loadWallets(activeSession);
         } else {
-          await loadWalletsEnsuringSolana(session);
+          await loadWalletsEnsuringSolana(activeSession as CircleSession);
         }
       } catch (error) {
         if (!cancelled) {
@@ -1922,7 +1246,7 @@ function CircleWalletProviderInner({
 
         const result = await registerWithPasskey(
           normalizedUsername,
-          PASSKEY_CONFIG
+          PASSKEY_CONFIG,
         );
 
         setAuthStatus("Preparing your Circle passkey wallet...");
@@ -1938,7 +1262,11 @@ function CircleWalletProviderInner({
         setIsAuthenticating(false);
       }
     },
-    [finalizePasskeyAuthentication, handleAuthFailure, resetPasskeyRuntimeState]
+    [
+      finalizePasskeyAuthentication,
+      handleAuthFailure,
+      resetPasskeyRuntimeState,
+    ],
   );
 
   const requestPasskeyLogin = useCallback(async () => {
@@ -1975,19 +1303,23 @@ function CircleWalletProviderInner({
       authRequestInFlightRef.current = false;
       setIsAuthenticating(false);
     }
-  }, [finalizePasskeyAuthentication, handleAuthFailure, resetPasskeyRuntimeState]);
+  }, [
+    finalizePasskeyAuthentication,
+    handleAuthFailure,
+    resetPasskeyRuntimeState,
+  ]);
 
   const requestGoogleLogin = useCallback(async () => {
     if (!CIRCLE_APP_ID) {
       setAuthError(
-        "NEXT_PUBLIC_CIRCLE_APP_ID is missing. Configure Circle Wallets before signing in."
+        "NEXT_PUBLIC_CIRCLE_APP_ID is missing. Configure Circle Wallets before signing in.",
       );
       return;
     }
 
     if (!GOOGLE_CLIENT_ID) {
       setAuthError(
-        "NEXT_PUBLIC_GOOGLE_CLIENT_ID is missing. Add your Circle-linked Google client ID first."
+        "NEXT_PUBLIC_GOOGLE_CLIENT_ID is missing. Add your Circle-linked Google client ID first.",
       );
       return;
     }
@@ -2022,12 +1354,22 @@ function CircleWalletProviderInner({
         setAuthStatus("Reusing Circle device registration...");
       } else {
         const resolvedDeviceId = await ensureDeviceId();
+
+        setAuthStatus("Creating Circle device token...");
+
         const payload = (await postW3sAction("createDeviceToken", {
           deviceId: resolvedDeviceId,
         })) as {
           deviceEncryptionKey: string;
           deviceToken: string;
         };
+
+        if (!payload.deviceEncryptionKey || !payload.deviceToken) {
+          throw new Error(
+            "Circle did not return device credentials. " +
+              "Check that CIRCLE_API_KEY is set on the backend.",
+          );
+        }
 
         loginConfigs = buildGoogleLoginConfigs({
           deviceEncryptionKey: payload.deviceEncryptionKey,
@@ -2048,53 +1390,35 @@ function CircleWalletProviderInner({
         loginConfigs,
       });
 
-      const googleConfig =
-        isRecord(loginConfigs.google) && typeof loginConfigs.google.clientId === "string"
-          ? loginConfigs.google
-          : null;
-      const redirectUri =
-        typeof googleConfig?.redirectUri === "string" && googleConfig.redirectUri
-          ? googleConfig.redirectUri
-          : window.location.origin;
-      const googleClientId =
-        typeof googleConfig?.clientId === "string" && googleConfig.clientId
-          ? googleConfig.clientId
-          : GOOGLE_CLIENT_ID;
-      const oauthState = createOAuthRedirectValue();
-      const oauthNonce = createOAuthRedirectValue();
-
-      persistCircleOAuthState({
-        nonce: oauthNonce,
-        provider: SocialLoginProvider.GOOGLE,
-        state: oauthState,
-      });
-
       sdk.updateConfigs({
         appSettings: { appId: CIRCLE_APP_ID },
         loginConfigs,
       });
 
       setAuthStatus("Redirecting to Google...");
-      window.location.assign(
-        buildGoogleOAuthRedirectUrl({
-          clientId: googleClientId,
-          nonce: oauthNonce,
-          redirectUri,
-          selectAccountPrompt: googleConfig?.selectAccountPrompt === true,
-          state: oauthState,
-        })
-      );
+
+      // Let the SDK handle OAuth URL generation, state/nonce persistence,
+      // and the redirect. The SDK's saveOAuthInfo writes 'socialLoginProvider',
+      // 'state', and 'nonce' to localStorage, and its checkSocialLoginState
+      // reads them back on return. Manual management causes mismatches.
+      await sdk.performLogin(SocialLoginProvider.GOOGLE);
     } catch (error) {
       setIsAuthenticating(false);
       handleAuthFailure(error);
     }
-  }, [ensureDeviceId, handleAuthFailure, postW3sAction, storeLoginConfig]);
+  }, [
+    clearStoredLoginConfig,
+    ensureDeviceId,
+    handleAuthFailure,
+    postW3sAction,
+    storeLoginConfig,
+  ]);
 
   const requestEmailOtp = useCallback(
     async (email: string) => {
       if (!CIRCLE_APP_ID) {
         setAuthError(
-          "NEXT_PUBLIC_CIRCLE_APP_ID is missing. Configure Circle Wallets before signing in."
+          "NEXT_PUBLIC_CIRCLE_APP_ID is missing. Configure Circle Wallets before signing in.",
         );
         return;
       }
@@ -2154,7 +1478,9 @@ function CircleWalletProviderInner({
           email: normalizedEmail,
         });
 
-        setAuthStatus("OTP sent. Open the Circle OTP window to verify your email.");
+        setAuthStatus(
+          "OTP sent. Open the Circle OTP window to verify your email.",
+        );
       } catch (error) {
         handleAuthFailure(error);
       } finally {
@@ -2162,7 +1488,7 @@ function CircleWalletProviderInner({
         setIsAuthenticating(false);
       }
     },
-    [ensureDeviceId, handleAuthFailure, postW3sAction, storeLoginConfig]
+    [ensureDeviceId, handleAuthFailure, postW3sAction, storeLoginConfig],
   );
 
   const verifyEmailOtp = useCallback(() => {
@@ -2200,7 +1526,8 @@ function CircleWalletProviderInner({
     setWallets([]);
   }, [clearPasskeyState, clearStoredLoginConfig, persistSession]);
 
-  const primaryWallet = arcWallet ?? sepoliaWallet ?? solanaWallet ?? wallets[0] ?? null;
+  const primaryWallet =
+    arcWallet ?? sepoliaWallet ?? solanaWallet ?? wallets[0] ?? null;
 
   const value = useMemo<CircleWalletContextValue>(
     () => ({
@@ -2225,7 +1552,7 @@ function CircleWalletProviderInner({
             ? "Email"
             : session?.authMethod === "passkey"
               ? "Passkey"
-            : "Circle",
+              : "Circle",
       logout,
       primaryWallet,
       ready,
@@ -2266,13 +1593,13 @@ function CircleWalletProviderInner({
       session,
       verifyEmailOtp,
       wallets,
-    ]
+    ],
   );
 
   return (
     <CircleWalletContext.Provider value={value}>
       {children}
-      <CircleWalletLoginDialog
+      <LoginModal
         authError={authError}
         authStatus={authStatus}
         canUseGoogle={Boolean(CIRCLE_APP_ID && GOOGLE_CLIENT_ID)}
@@ -2293,222 +1620,13 @@ function CircleWalletProviderInner({
   );
 }
 
-function CircleWalletLoginDialog({
-  authError,
-  authStatus,
-  canUseGoogle,
-  canUsePasskey,
-  hasPendingEmailOtp,
-  isDeviceReady,
-  isAuthenticating,
-  isOpen,
-  onClose,
-  onRequestEmailOtp,
-  onRequestGoogleLogin,
-  onRequestPasskeyLogin,
-  onRequestPasskeyRegistration,
-  onVerifyEmailOtp,
-  passkeyUnavailableReason,
-}: {
-  authError: string | null;
-  authStatus: string | null;
-  canUseGoogle: boolean;
-  canUsePasskey: boolean;
-  hasPendingEmailOtp: boolean;
-  isDeviceReady: boolean;
-  isAuthenticating: boolean;
-  isOpen: boolean;
-  onClose: () => void;
-  onRequestEmailOtp: (email: string) => Promise<void>;
-  onRequestGoogleLogin: () => Promise<void>;
-  onRequestPasskeyLogin: () => Promise<void>;
-  onRequestPasskeyRegistration: (username: string) => Promise<void>;
-  onVerifyEmailOtp: () => void;
-  passkeyUnavailableReason: string | null;
-}) {
-  const [email, setEmail] = useState("");
-  const [passkeyUsername, setPasskeyUsername] = useState("");
-
-  return (
-    <Dialog
-      open={isOpen}
-      onOpenChange={(open) => {
-        if (!open) {
-          setEmail("");
-          setPasskeyUsername("");
-          onClose();
-        }
-      }}
-    >
-      <DialogContent className="border-border/40 bg-background/95 sm:max-w-lg">
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2 text-xl">
-            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary/15 text-primary ring-1 ring-primary/25">
-              <Wallet className="h-4.5 w-4.5" />
-            </div>
-            Connect Circle Wallet
-          </DialogTitle>
-          <DialogDescription>
-            {canUsePasskey
-              ? "Sign in with Circle using passkeys, Google, or email OTP."
-              : "Sign in with Circle using Google or email OTP."}
-          </DialogDescription>
-        </DialogHeader>
-
-        <div className="space-y-5">
-          {/* Passkey section — only rendered when NEXT_PUBLIC_CIRCLE_PASSKEY_CLIENT_KEY is set */}
-          {canUsePasskey && (
-          <div className="rounded-2xl border border-border/40 bg-card/40 p-4">
-            <div className="mb-3 flex items-center gap-2">
-              <Fingerprint className="h-4 w-4 text-primary" />
-              <p className="text-sm font-semibold">Passkey</p>
-            </div>
-            <p className="text-sm text-muted-foreground/70">
-              Use a platform passkey on desktop or mobile Chrome to register a new
-              Circle session or restore an existing one.
-            </p>
-            <div className="mt-4 space-y-3">
-              <Input
-                autoCapitalize="none"
-                autoCorrect="off"
-                onChange={(event) => setPasskeyUsername(event.target.value)}
-                placeholder="Choose a passkey username"
-                value={passkeyUsername}
-              />
-              <div className="grid gap-2 sm:grid-cols-2">
-                <Button
-                  disabled={
-                    Boolean(passkeyUnavailableReason) ||
-                    isAuthenticating ||
-                    !passkeyUsername.trim()
-                  }
-                  variant="outline"
-                  onClick={() => {
-                    void onRequestPasskeyRegistration(passkeyUsername);
-                  }}
-                >
-                  Create Passkey
-                </Button>
-                <Button
-                  disabled={Boolean(passkeyUnavailableReason) || isAuthenticating}
-                  onClick={() => {
-                    void onRequestPasskeyLogin();
-                  }}
-                >
-                  Sign in with Passkey
-                </Button>
-              </div>
-            </div>
-            {passkeyUnavailableReason ? (
-              <p className="mt-2 text-xs text-muted-foreground/60">
-                {passkeyUnavailableReason}
-              </p>
-            ) : (
-              <p className="mt-2 text-xs text-muted-foreground/60">
-                Works on desktop and Chrome for Android when the app is opened over
-                HTTPS on app.wizpay.xyz.
-              </p>
-            )}
-          </div>
-          )}
-
-          <div className="rounded-2xl border border-border/40 bg-card/40 p-4">
-            <div className="mb-3 flex items-center gap-2">
-              <LogIn className="h-4 w-4 text-primary" />
-              <p className="text-sm font-semibold">Google social login</p>
-            </div>
-            <p className="text-sm text-muted-foreground/70">
-              Use the Circle-configured Google OAuth flow to restore the same user wallet.
-            </p>
-            <Button
-              className="mt-4 w-full"
-              disabled={!canUseGoogle || isAuthenticating || !isDeviceReady}
-              onClick={() => {
-                void onRequestGoogleLogin();
-              }}
-            >
-              Continue with Google
-            </Button>
-            {!canUseGoogle ? (
-              <p className="mt-2 text-xs text-muted-foreground/60">
-                Add NEXT_PUBLIC_GOOGLE_CLIENT_ID to enable Google sign-in.
-              </p>
-            ) : !isDeviceReady ? (
-              <p className="mt-2 text-xs text-muted-foreground/60">
-                Circle device is initializing. Login buttons will enable automatically.
-              </p>
-            ) : null}
-          </div>
-
-          <div className="rounded-2xl border border-border/40 bg-card/40 p-4">
-            <div className="mb-3 flex items-center gap-2">
-              <Mail className="h-4 w-4 text-primary" />
-              <p className="text-sm font-semibold">Email OTP</p>
-            </div>
-            <div className="space-y-3">
-              <Input
-                autoComplete="email"
-                onChange={(event) => setEmail(event.target.value)}
-                placeholder="you@example.com"
-                type="email"
-                value={email}
-              />
-              <div className="grid gap-2 sm:grid-cols-2">
-                <Button
-                  disabled={isAuthenticating || !email.trim() || !isDeviceReady}
-                  variant="outline"
-                  onClick={() => {
-                    void onRequestEmailOtp(email);
-                  }}
-                >
-                  Send OTP
-                </Button>
-                <Button
-                  disabled={!hasPendingEmailOtp || isAuthenticating}
-                  onClick={onVerifyEmailOtp}
-                >
-                  Verify OTP
-                </Button>
-              </div>
-            </div>
-          </div>
-
-          <div className="rounded-2xl border border-border/40 bg-primary/5 p-4">
-            <div className="flex items-start gap-3">
-              <div className="mt-0.5 flex h-8 w-8 items-center justify-center rounded-full bg-primary/15 text-primary">
-                <ShieldCheck className="h-4 w-4" />
-              </div>
-              <div className="space-y-1">
-                <p className="text-sm font-semibold">Circle manages the wallet session</p>
-                <p className="text-sm text-muted-foreground/70">
-                  Sign-in creates or restores your Circle user wallet on Arc Testnet and Ethereum Sepolia.
-                </p>
-              </div>
-            </div>
-          </div>
-
-          {authStatus ? (
-            <div className="rounded-xl border border-border/40 bg-background/50 px-3 py-2.5 text-sm text-muted-foreground">
-              {authStatus}
-            </div>
-          ) : null}
-
-          {authError ? (
-            <div className="rounded-xl border border-destructive/30 bg-destructive/5 px-3 py-2.5 text-sm text-destructive">
-              {authError}
-            </div>
-          ) : null}
-        </div>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
 export function useCircleWallet() {
   const value = useContext(CircleWalletContext);
 
   if (!value) {
-    throw new Error("useCircleWallet must be used inside CircleWalletProvider.");
+    throw new Error(
+      "useCircleWallet must be used inside CircleWalletProvider.",
+    );
   }
 
   return value;

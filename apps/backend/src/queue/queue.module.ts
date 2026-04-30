@@ -1,5 +1,6 @@
 import { forwardRef, Module } from '@nestjs/common';
 import { AdaptersModule } from '../adapters/adapters.module';
+import { DatabaseModule } from '../database/database.module';
 import { IntegrationsModule } from '../integrations/integrations.module';
 import { OrchestratorModule } from '../orchestrator/orchestrator.module';
 import { TaskModule } from '../task/task.module';
@@ -16,6 +17,7 @@ import { TxPollWorker } from './workers/tx-poll.worker';
 
 @Module({
   imports: [
+    DatabaseModule,
     TaskModule,
     IntegrationsModule,
     AdaptersModule,

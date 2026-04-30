@@ -30,11 +30,9 @@ export class OrchestratorService {
       throw new BadRequestException(`Unsupported task type ${type}`);
     }
 
-    // Enrich bridge payloads with canonical chain identifiers so metadata is
-    // always queryable without re-parsing the raw blockchain string.
     const enrichedPayload =
       type === TaskType.BRIDGE
-        ? this.enrichBridgePayload(payload)
+        ? this.normalizeBridgePayload(payload)
         : payload;
 
     const task = await this.taskService.createTask(type, enrichedPayload);
@@ -194,27 +192,159 @@ export class OrchestratorService {
     return this.agentRouterService.execute(taskType, task);
   }
 
-  /**
-   * Enrich a bridge payload with canonical chain identifiers.
-   * Adds `destinationChain` and (when inferrable) `sourceChain` so that
-   * these values are stored in task metadata at creation time, enabling
-   * chain-aware worker routing in Phase 3 without re-parsing raw strings.
-   */
-  private enrichBridgePayload(payload: TaskPayload): TaskPayload {
-    const blockchain =
-      typeof payload.blockchain === 'string' ? payload.blockchain : null;
-    const sourceBlockchain =
-      typeof payload.sourceBlockchain === 'string'
-        ? payload.sourceBlockchain
-        : null;
-
-    const destinationChain = normalizeBridgeChain(blockchain);
+  private normalizeBridgePayload(payload: TaskPayload): TaskPayload {
+    const sourceBlockchain = this.readChain(
+      payload,
+      'sourceBlockchain',
+      'sourceChain',
+    );
+    const destinationBlockchain = this.readChain(
+      payload,
+      'destinationBlockchain',
+      'destinationChain',
+      'blockchain',
+    );
     const sourceChain = normalizeBridgeChain(sourceBlockchain);
+    const destinationChain = normalizeBridgeChain(destinationBlockchain);
+    const token = this.readString(payload, 'token') ?? 'USDC';
+    const amount = this.readString(payload, 'amount');
+    const walletId = this.readString(payload, 'walletId');
+    const walletAddress = this.readString(payload, 'walletAddress');
+    const destinationAddress = this.readString(payload, 'destinationAddress');
+
+    const missing = [
+      !sourceBlockchain ? 'sourceChain' : null,
+      !destinationBlockchain ? 'destinationChain' : null,
+      !amount ? 'amount' : null,
+      !walletId ? 'walletId' : null,
+      !walletAddress ? 'walletAddress' : null,
+      !destinationAddress ? 'destinationAddress' : null,
+    ].filter((field): field is string => Boolean(field));
+
+    if (missing.length > 0) {
+      throw new BadRequestException({
+        code: 'BRIDGE_VALIDATION_FAILED',
+        error: `Missing required bridge field(s): ${missing.join(', ')}`,
+        details: { missing },
+      });
+    }
+
+    if (!sourceChain || !destinationChain) {
+      throw new BadRequestException({
+        code: 'BRIDGE_CHAIN_UNSUPPORTED',
+        error:
+          'Bridge supports ARC-TESTNET, ETH-SEPOLIA, and SOLANA-DEVNET only.',
+        details: { destinationBlockchain, sourceBlockchain },
+      });
+    }
+
+    if (sourceBlockchain === destinationBlockchain) {
+      throw new BadRequestException({
+        code: 'BRIDGE_SAME_CHAIN',
+        error: 'Bridge source and destination chains must be different.',
+      });
+    }
+
+    if (token.trim().toUpperCase() !== 'USDC') {
+      throw new BadRequestException({
+        code: 'BRIDGE_USDC_ONLY',
+        error: 'Bridge currently supports USDC only.',
+      });
+    }
+
+    if (Number(amount) <= 0 || !Number.isFinite(Number(amount))) {
+      throw new BadRequestException({
+        code: 'BRIDGE_INVALID_AMOUNT',
+        error: 'Bridge amount must be a positive string.',
+      });
+    }
+
+    const requiredSourceBlockchain = sourceBlockchain;
+    const requiredDestinationBlockchain = destinationBlockchain;
+    const requiredDestinationAddress = destinationAddress;
+    const requiredWalletAddress = walletAddress;
+
+    if (
+      !requiredSourceBlockchain ||
+      !requiredDestinationBlockchain ||
+      !requiredDestinationAddress ||
+      !requiredWalletAddress
+    ) {
+      throw new BadRequestException({
+        code: 'BRIDGE_VALIDATION_FAILED',
+        error:
+          'Bridge requires sourceChain, destinationChain, destinationAddress, and walletAddress.',
+      });
+    }
+
+    const normalizedDestinationAddress = this.normalizeBridgeAddress(
+      requiredDestinationAddress,
+      requiredDestinationBlockchain,
+    );
+    const normalizedWalletAddress = this.normalizeBridgeAddress(
+      requiredWalletAddress,
+      requiredSourceBlockchain,
+    );
 
     return {
       ...payload,
-      ...(destinationChain ? { destinationChain } : {}),
-      ...(sourceChain ? { sourceChain } : {}),
+      amount: String(amount),
+      blockchain: requiredDestinationBlockchain,
+      destinationAddress: normalizedDestinationAddress,
+      destinationBlockchain: requiredDestinationBlockchain,
+      destinationChain,
+      sourceBlockchain: requiredSourceBlockchain,
+      sourceChain,
+      token: 'USDC',
+      walletAddress: normalizedWalletAddress,
+      walletId,
     };
+  }
+
+  private readChain(payload: TaskPayload, ...keys: string[]): string | null {
+    for (const key of keys) {
+      const value = this.readString(payload, key);
+
+      if (value) {
+        return value.toUpperCase().replace(/_/g, '-');
+      }
+    }
+
+    return null;
+  }
+
+  private readString(payload: TaskPayload, key: string): string | null {
+    const value = payload[key];
+
+    if (typeof value === 'number') {
+      return String(value);
+    }
+
+    if (typeof value !== 'string') {
+      return null;
+    }
+
+    const trimmed = value.trim();
+    return trimmed ? trimmed : null;
+  }
+
+  private normalizeBridgeAddress(address: string, blockchain: string): string {
+    return blockchain === 'SOLANA-DEVNET' ? address : address.toLowerCase();
+  }
+
+  async updateTaskState(taskId: string, state: string, result?: any) {
+    const statusMap: Record<string, TaskStatus> = {
+      'in_progress': TaskStatus.IN_PROGRESS,
+      'executed': TaskStatus.EXECUTED,
+      'failed': TaskStatus.FAILED,
+    };
+    
+    const taskStatus = statusMap[state] || TaskStatus.ASSIGNED;
+    
+    await this.taskService.updateStatus(taskId, taskStatus, {
+      step: `task.${state}`,
+      message: `Task state updated to ${state}`,
+      result,
+    });
   }
 }

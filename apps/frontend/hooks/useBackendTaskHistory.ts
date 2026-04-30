@@ -73,18 +73,19 @@ function isChainTxId(value: unknown): value is string {
 }
 
 function resolveTaskTxHash(task: BackendTask): string | null {
-  const nt = task.result?.execution?.normalizedTransfer as NormalizedBridgeTransfer | undefined;
+  const result = task.result as any;
+  const nt = result?.execution?.normalizedTransfer as NormalizedBridgeTransfer | undefined;
 
   const candidates = [
     nt?.txId,
     nt?.txIdMint,
     nt?.txIdBurn,
     task.units[0]?.txHash,
-    task.result?.txHash,
-    task.result?.execution?.txHash,
-    task.result?.execution?.transfer?.txHash,
-    task.result?.execution?.transfer?.txHashMint,
-    task.result?.execution?.transfer?.txHashBurn,
+    result?.txHash,
+    result?.execution?.txHash,
+    result?.execution?.transfer?.txHash,
+    result?.execution?.transfer?.txHashMint,
+    result?.execution?.transfer?.txHashBurn,
   ];
 
   for (const candidate of candidates) {
@@ -127,7 +128,7 @@ export function backendTaskToHistoryItem(
 
   const bridgeTransfer =
     task.type === "bridge"
-      ? (task.result?.execution?.normalizedTransfer as NormalizedBridgeTransfer | undefined)
+      ? ((task.result as any)?.execution?.normalizedTransfer as NormalizedBridgeTransfer | undefined)
       : undefined;
 
   return {

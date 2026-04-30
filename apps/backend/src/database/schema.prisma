@@ -104,3 +104,13 @@ model UserWallet {
   @@index([userId, chain])
   @@unique([userId, blockchain])
 }
+
+model BridgeTransaction {
+  id            String   @id @default(uuid())
+  taskId        String   @unique
+  status        String
+  payload       Json
+  result        Json?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}

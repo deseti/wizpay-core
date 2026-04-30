@@ -6,6 +6,7 @@
   "private": true,
   "license": "UNLICENSED",
   "scripts": {
+    "prebuild": "rm -f tsconfig.build.tsbuildinfo",
     "build": "nest build",
     "prisma:generate": "prisma generate --schema src/database/schema.prisma",
     "prisma:push": "prisma db push --schema src/database/schema.prisma",
@@ -22,6 +23,8 @@
     "test:e2e": "jest --config ./test/jest-e2e.json"
   },
   "dependencies": {
+    "@circle-fin/adapter-circle-wallets": "^1.2.7",
+    "@circle-fin/bridge-kit": "^1.8.3",
     "@circle-fin/developer-controlled-wallets": "^10.3.0",
     "@nestjs/common": "^11.0.1",
     "@nestjs/config": "^4.0.4",

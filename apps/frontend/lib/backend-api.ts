@@ -53,17 +53,18 @@ export async function backendFetch<T>(
   return payload.data as T;
 }
 
-function resolveBackendBaseUrl(): string {
+export function resolveBackendBaseUrl(): string {
   return (
     process.env.NEXT_PUBLIC_API_URL ||
     process.env.NEXT_PUBLIC_BACKEND_API_BASE_URL ||
+    process.env.NEXT_PUBLIC_BACKEND_URL ||
     process.env.BACKEND_API_BASE_URL ||
     process.env.API_URL ||
     DEFAULT_API_BASE_URL
   );
 }
 
-function buildBackendUrl(path: string, baseUrl: string): string {
+export function buildBackendUrl(path: string, baseUrl: string): string {
   const normalizedBaseUrl = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`;
 
   return new URL(path.replace(/^\//, ""), normalizedBaseUrl).toString();

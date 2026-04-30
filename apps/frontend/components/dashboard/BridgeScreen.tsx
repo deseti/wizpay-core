@@ -775,9 +775,11 @@ export function BridgeScreen() {
   const isSameChainRoute = sourceChain === destinationChain;
   const requestedAmount = Number(amount || "0");
   const walletBalanceAmount = Number(transferWallet?.balance?.amount || "0");
+  const walletBalanceKnown = transferWallet?.balance != null;
   const treasuryWalletEmpty =
-    Number.isFinite(walletBalanceAmount) && walletBalanceAmount <= 0;
+    walletBalanceKnown && Number.isFinite(walletBalanceAmount) && walletBalanceAmount <= 0;
   const hasSufficientWalletBalance =
+    !walletBalanceKnown ||
     !Number.isFinite(requestedAmount) ||
     requestedAmount <= 0 ||
     walletBalanceAmount >= requestedAmount;
@@ -792,6 +794,8 @@ export function BridgeScreen() {
     Boolean(transferWallet) &&
     hasSufficientWalletBalance &&
     !isTransferActive;
+
+
   const orderedSteps = useMemo(
     () =>
       transfer
@@ -868,6 +872,12 @@ export function BridgeScreen() {
 
     // Don't restore stale terminal transfers - clear them instead
     if (storedTransfer.status === "settled" || storedTransfer.status === "failed") {
+      clearStoredActiveTransfer();
+      return;
+    }
+
+    // Don't restore transfers that have a tx hash as their transferId (not a valid task UUID)
+    if (storedTransfer.transferId.startsWith("0x")) {
       clearStoredActiveTransfer();
       return;
     }
@@ -1215,6 +1225,7 @@ export function BridgeScreen() {
   }
 
   function openBridgeReview() {
+
     if (isTransferActive) {
       setErrorMessage(
         "A bridge is already running. You can leave this page and come back later while tracking continues in the background."
@@ -1738,7 +1749,6 @@ export function BridgeScreen() {
                 <Button
                   onClick={openBridgeReview}
                   disabled={
-                    !canSubmit ||
                     isSubmitting ||
                     isWalletLoading ||
                     isWalletBootstrapping

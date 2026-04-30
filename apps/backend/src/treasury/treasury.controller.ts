@@ -1,4 +1,4 @@
-import { Controller, Post } from '@nestjs/common';
+import { Controller, Post, Get, Query } from '@nestjs/common';
 import { TreasuryService } from './treasury.service';
 
 @Controller('treasury')
@@ -9,9 +9,20 @@ export class TreasuryController {
   async initTreasury() {
     const result = await this.treasuryService.initializeTreasury();
     return {
-      success: true,
-      walletSetId: result.walletSetId,
-      walletId: result.walletId
+      data: {
+        success: true,
+        walletSetId: result.walletSetId,
+        walletId: result.walletId
+      }
+    };
+  }
+
+  @Get('wallet')
+  async getTreasuryWallet(@Query('blockchain') blockchain: string) {
+    const wallet = await this.treasuryService.getTreasuryWallet(blockchain);
+    return {
+      data: wallet
     };
   }
 }
+

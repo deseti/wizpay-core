@@ -1,110 +1,69 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import { NormalizedBridgeStep, NormalizedBridgeTransfer, TaskDetails } from '../task/task.types';
+import { CircleBridgeService } from '../adapters/circle/circle-bridge.service';
+import { normalizeChainTxId } from '../common/multichain';
 import { TaskService } from '../task/task.service';
 import { AgentExecutionResult, TaskAgent } from './agent.interface';
-import {
-  type CanonicalBridgeChain,
-  isEvmAddress,
-  isSolanaAddress,
-  normalizeBridgeChain,
-  normalizeChainTxId,
-} from '../common/multichain';
-import {
-  type SupportedUserWalletBlockchain,
-  WalletService,
-} from '../modules/wallet/wallet.service';
+import { TaskDetails } from '../task/task.types';
 
 @Injectable()
 export class BridgeAgent implements TaskAgent {
   private readonly logger = new Logger(BridgeAgent.name);
 
   constructor(
-    private readonly configService: ConfigService,
+    private readonly circleBridgeService: CircleBridgeService,
     private readonly taskService: TaskService,
-    private readonly walletService: WalletService,
   ) {}
 
   async execute(task: TaskDetails): Promise<AgentExecutionResult> {
-    const bridgePayload = await this.resolveBridgePayload(
-      this.normalizeBridgePayload(task.payload),
-    );
-
-    if (!bridgePayload.destinationAddress || !bridgePayload.amount) {
-      throw new Error(
-        'Bridge payload is missing destinationAddress or amount.',
-      );
-    }
-
-    const destinationChain = normalizeBridgeChain(bridgePayload.blockchain);
-
-    if (
-      destinationChain === 'solana_devnet' &&
-      !isSolanaAddress(bridgePayload.destinationAddress)
-    ) {
-      throw new Error(
-        'Bridge payload destinationAddress must be a valid Solana base58 address for Solana Devnet.',
-      );
-    }
-
-    if (
-      destinationChain !== 'solana_devnet' &&
-      !isEvmAddress(bridgePayload.destinationAddress)
-    ) {
-      throw new Error(
-        'Bridge payload destinationAddress must be a valid EVM address for Arc/Ethereum bridge routes.',
-      );
-    }
+    const payload = this.normalizePayload(task);
 
     await this.taskService.logStep(
       task.id,
       'bridge.submitting',
-      task.status,
-      'Submitting bridge transfer via Circle API gateway.',
-    );
-
-    const createdTransfer = await this.createTransfer(bridgePayload);
-    const transferId = this.readString(createdTransfer, 'transferId');
-
-    if (!transferId) {
-      throw new Error('Bridge API did not return transferId.');
-    }
-
-    await this.taskService.logStep(
-      task.id,
-      'bridge.submitted',
-      task.status,
-      `Bridge transfer submitted (transferId=${transferId}).`,
+      'in_progress',
+      `Submitting bridge ${payload.amount} ${payload.token} from ${payload.sourceBlockchain} to ${payload.destinationBlockchain}.`,
       {
         context: {
-          transferId,
+          destinationAddress: payload.destinationAddress,
+          referenceId: payload.referenceId,
+          sourceWalletAddress: payload.walletAddress,
+          walletId: payload.walletId,
         },
       },
     );
 
-    const finalTransfer = await this.pollUntilTerminal(
-      task.id,
-      transferId,
-      normalizeBridgeChain(this.readString(bridgePayload, 'sourceBlockchain')),
-    );
-    const rawStatus = this.readString(finalTransfer, 'status') ?? 'unknown';
+    const transfer = await this.circleBridgeService.initiateBridge({
+      amount: payload.amount,
+      destinationAddress: payload.destinationAddress,
+      destinationBlockchain: payload.destinationBlockchain,
+      referenceId: payload.referenceId,
+      sourceBlockchain: payload.sourceBlockchain,
+      sourceWalletAddress: payload.walletAddress,
+      taskId: task.id,
+      token: payload.token,
+      walletId: payload.walletId,
+    });
 
-    if (rawStatus !== 'settled') {
-      const reason = this.readString(finalTransfer, 'errorReason');
+    const failedStep = transfer.steps.find((step) => step.state === 'error');
+
+    if (transfer.status === 'failed') {
       throw new Error(
-        reason || `Bridge transfer ended with non-settled status: ${rawStatus}`,
+        failedStep?.errorMessage ||
+          `Bridge ${transfer.transferId} failed during Circle execution.`,
       );
     }
 
     await this.taskService.logStep(
       task.id,
       'bridge.completed',
-      task.status,
-      `Bridge transfer settled (transferId=${transferId}).`,
+      'in_progress',
+      `Bridge ${transfer.transferId} completed.`,
       {
         context: {
-          transferId,
-          status: rawStatus,
+          provider: transfer.provider,
+          transferId: transfer.transferId,
+          txHashBurn: transfer.txHashBurn,
+          txHashMint: transfer.txHashMint,
         },
       },
     );
@@ -112,200 +71,66 @@ export class BridgeAgent implements TaskAgent {
     return {
       agent: 'bridge',
       execution: {
-        adapter: 'circle',
-        operation: 'bridge_transfer',
+        adapter: 'circle-bridge-kit',
+        operation: 'cctp_bridge',
+        payload,
+        transfer,
+        normalizedTransfer: {
+          destinationChain: payload.destinationChain,
+          sourceChain: payload.sourceChain,
+          status: transfer.status,
+          steps: transfer.steps.map((step) => ({
+            chain: null,
+            explorerUrl: step.explorerUrl,
+            id: step.id,
+            name: step.name,
+            state: step.state,
+            txId: normalizeChainTxId(step.txHash),
+          })),
+          transferId: transfer.transferId,
+          txId: normalizeChainTxId(transfer.txHash),
+          txIdBurn: normalizeChainTxId(transfer.txHashBurn),
+          txIdMint: normalizeChainTxId(transfer.txHashMint),
+        },
         taskId: task.id,
-        payload: bridgePayload,
-        transfer: finalTransfer,
-        normalizedTransfer: this.normalizeTransferForResult(finalTransfer),
       },
     };
   }
 
-  private async pollUntilTerminal(
-    taskId: string,
-    transferId: string,
-    sourceChain: CanonicalBridgeChain | null,
-  ): Promise<Record<string, unknown>> {
-    const maxAttempts = this.getMaxPollAttempts(sourceChain);
-    const pollDelayMs = this.getPollDelayMs();
-    let previousStage: string | null = null;
-    let previousStatus: string | null = null;
-
-    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-      const transfer = await this.getTransferStatus(transferId);
-      const status = this.readString(transfer, 'status') ?? 'unknown';
-      const stage = this.readString(transfer, 'stage');
-      previousStatus = status;
-
-      if (stage && stage !== previousStage) {
-        previousStage = stage;
-        await this.taskService.logStep(
-          taskId,
-          'bridge.stage_changed',
-          'in_progress',
-          `Bridge stage changed to ${stage}.`,
-          {
-            context: {
-              attempt,
-              stage,
-              status,
-              transferId,
-            },
-          },
-        );
-      }
-
-      if (status === 'settled' || status === 'failed') {
-        return transfer;
-      }
-
-      if (attempt < maxAttempts) {
-        await this.waitFor(pollDelayMs);
-      }
-    }
-
-    this.logger.error(
-      `Bridge transfer polling timed out (transferId=${transferId}, sourceChain=${sourceChain ?? 'unknown'}, lastStage=${previousStage ?? 'unknown'}, lastStatus=${previousStatus ?? 'unknown'}).`,
-    );
-    throw new Error(
-      'Bridge transfer polling timed out before Circle reported a terminal status.',
-    );
-  }
-
-  private async createTransfer(
-    payload: Record<string, unknown>,
-  ): Promise<Record<string, unknown>> {
-    return this.fetchTransferApi('/api/transfers', {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    });
-  }
-
-  private async getTransferStatus(
-    transferId: string,
-  ): Promise<Record<string, unknown>> {
-    return this.fetchTransferApi(`/api/transfers/${encodeURIComponent(transferId)}`);
-  }
-
-  private async fetchTransferApi(
-    path: string,
-    init?: RequestInit,
-  ): Promise<Record<string, unknown>> {
-    const response = await fetch(this.getFrontendApiUrl(path), {
-      ...init,
-      headers: {
-        'Content-Type': 'application/json',
-        ...(init?.headers ?? {}),
-      },
-    });
-
-    const payload = (await response.json().catch(() => ({}))) as
-      | Record<string, unknown>
-      | null;
-
-    if (!response.ok) {
-      const message = this.readString(payload ?? {}, 'error');
-      throw new Error(message || `Bridge API request failed (${response.status}).`);
-    }
-
-    const data = payload && 'data' in payload ? payload.data : payload;
-
-    if (!data || typeof data !== 'object') {
-      throw new Error('Bridge API returned an empty payload.');
-    }
-
-    return data as Record<string, unknown>;
-  }
-
-  private normalizeBridgePayload(
-    payload: Record<string, unknown> | null,
-  ): Record<string, unknown> {
-    if (!payload || typeof payload !== 'object') {
-      return {};
-    }
+  private normalizePayload(task: TaskDetails) {
+    const payload = task.payload ?? {};
 
     return {
-      destinationAddress: this.readString(payload, 'destinationAddress'),
-      amount: this.readString(payload, 'amount'),
-      referenceId: this.readString(payload, 'referenceId'),
-      tokenAddress: this.readString(payload, 'tokenAddress'),
-      walletId: this.readString(payload, 'walletId'),
-      walletAddress: this.readString(payload, 'walletAddress'),
-      blockchain: this.readString(payload, 'blockchain'),
-      sourceBlockchain: this.readString(payload, 'sourceBlockchain'),
-      userEmail: this.readString(payload, 'userEmail'),
-      userId: this.readString(payload, 'userId'),
+      amount: this.readRequiredString(payload, 'amount'),
+      destinationAddress: this.readRequiredString(payload, 'destinationAddress'),
+      destinationBlockchain:
+        this.readString(payload, 'destinationBlockchain') ??
+        this.readRequiredString(payload, 'blockchain'),
+      destinationChain: this.readString(payload, 'destinationChain'),
+      referenceId:
+        this.readString(payload, 'referenceId') ?? `BRIDGE-${task.id}`,
+      sourceBlockchain:
+        this.readString(payload, 'sourceBlockchain') ??
+        this.readRequiredString(payload, 'sourceChain'),
+      sourceChain: this.readString(payload, 'sourceChain'),
+      token: this.readString(payload, 'token') ?? 'USDC',
+      walletAddress: this.readRequiredString(payload, 'walletAddress'),
+      walletId: this.readRequiredString(payload, 'walletId'),
     };
   }
 
-  private async resolveBridgePayload(
-    payload: Record<string, unknown>,
-  ): Promise<Record<string, unknown>> {
-    const destinationAddress = this.readString(payload, 'destinationAddress');
+  private readRequiredString(
+    source: Record<string, unknown>,
+    key: string,
+  ): string {
+    const value = this.readString(source, key);
 
-    if (destinationAddress) {
-      return payload;
+    if (!value) {
+      this.logger.error(`Bridge payload missing ${key}.`);
+      throw new Error(`Bridge payload missing required field: ${key}`);
     }
 
-    const userId = this.resolveWalletUserId(payload);
-    const blockchain = this.normalizeWalletBlockchain(
-      this.readString(payload, 'blockchain'),
-    );
-
-    if (!userId || !blockchain) {
-      return payload;
-    }
-
-    const storedWallet = await this.walletService.getStoredWalletByBlockchain(
-      userId,
-      blockchain,
-    );
-
-    if (!storedWallet?.address) {
-      return payload;
-    }
-
-    return {
-      ...payload,
-      destinationAddress: storedWallet.address,
-    };
-  }
-
-  private resolveWalletUserId(payload: Record<string, unknown>) {
-    const explicitUserId = this.readString(payload, 'userId');
-
-    if (explicitUserId) {
-      return explicitUserId;
-    }
-
-    const userEmail = this.readString(payload, 'userEmail');
-
-    if (!userEmail) {
-      return null;
-    }
-
-    return this.walletService.resolveUserId({ email: userEmail });
-  }
-
-  private normalizeWalletBlockchain(
-    blockchain: string | null,
-  ): SupportedUserWalletBlockchain | null {
-    if (!blockchain) {
-      return null;
-    }
-
-    switch (blockchain.trim().toUpperCase()) {
-      case 'ARC-TESTNET':
-        return 'ARC-TESTNET';
-      case 'ETH-SEPOLIA':
-        return 'ETH-SEPOLIA';
-      case 'SOLANA-DEVNET':
-      case 'SOL-DEVNET':
-        return 'SOLANA-DEVNET';
-      default:
-        return null;
-    }
+    return value;
   }
 
   private readString(
@@ -320,141 +145,5 @@ export class BridgeAgent implements TaskAgent {
 
     const trimmed = value.trim();
     return trimmed ? trimmed : null;
-  }
-
-  private normalizeTransferForResult(transfer: Record<string, unknown>): NormalizedBridgeTransfer {
-    const sourceChain = normalizeBridgeChain(
-      this.readString(transfer, 'sourceBlockchain') ??
-        this.readString(transfer, 'sourceChain'),
-    );
-    const destinationChain = normalizeBridgeChain(
-      this.readString(transfer, 'blockchain') ??
-        this.readString(transfer, 'destinationChain'),
-    );
-
-    const stepsRaw = Array.isArray(transfer.steps) ? transfer.steps : [];
-    const normalizedSteps = stepsRaw
-      .map((step, index) => {
-        if (!step || typeof step !== 'object') {
-          return null;
-        }
-
-        const stepRecord = step as Record<string, unknown>;
-        const stepName =
-          this.readString(stepRecord, 'name') ??
-          this.readString(stepRecord, 'id') ??
-          `step_${index + 1}`;
-        const explorerUrl = this.readString(stepRecord, 'explorerUrl');
-        const stepTxId = normalizeChainTxId(this.readString(stepRecord, 'txHash'));
-
-        return {
-          id: this.readString(stepRecord, 'id') ?? `step_${index + 1}`,
-          name: stepName,
-          state: this.readString(stepRecord, 'state') ?? 'unknown',
-          chain: this.inferStepChain(
-            stepName,
-            explorerUrl,
-            sourceChain,
-            destinationChain,
-          ),
-          txId: stepTxId,
-          explorerUrl,
-        };
-      })
-      .filter((step) => step !== null) as NormalizedBridgeStep[];
-
-    return {
-      transferId: this.readString(transfer, 'transferId'),
-      status: this.readString(transfer, 'status') ?? 'unknown',
-      sourceChain,
-      destinationChain,
-      txId: normalizeChainTxId(this.readString(transfer, 'txHash')),
-      txIdBurn: normalizeChainTxId(this.readString(transfer, 'txHashBurn')),
-      txIdMint: normalizeChainTxId(this.readString(transfer, 'txHashMint')),
-      steps: normalizedSteps,
-    };
-  }
-
-  private inferStepChain(
-    stepName: string,
-    explorerUrl: string | null,
-    sourceChain: CanonicalBridgeChain | null,
-    destinationChain: CanonicalBridgeChain | null,
-  ): CanonicalBridgeChain | null {
-    const lowerName = stepName.toLowerCase();
-    const lowerExplorer = explorerUrl?.toLowerCase() ?? '';
-
-    if (lowerExplorer.includes('solscan.io')) {
-      return 'solana_devnet';
-    }
-
-    if (lowerExplorer.includes('arcscan.app')) {
-      return 'arc_testnet';
-    }
-
-    if (lowerExplorer.includes('etherscan.io')) {
-      return 'eth_sepolia';
-    }
-
-    if (lowerName.includes('burn')) {
-      return sourceChain;
-    }
-
-    if (lowerName.includes('mint')) {
-      return destinationChain;
-    }
-
-    if (lowerName.includes('solana')) {
-      return 'solana_devnet';
-    }
-
-    if (lowerName.includes('arc')) {
-      return 'arc_testnet';
-    }
-
-    if (lowerName.includes('sepolia') || lowerName.includes('ethereum')) {
-      return 'eth_sepolia';
-    }
-
-    return null;
-  }
-
-  private getFrontendApiUrl(path: string): string {
-    const baseUrl =
-      this.configService.get<string>('FRONTEND_API_BASE_URL') ||
-      this.configService.get<string>('FRONTEND_APP_URL') ||
-      'http://frontend:3000';
-
-    return new URL(path, baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`).toString();
-  }
-
-  private getPollDelayMs(): number {
-    const configured = Number.parseInt(
-      this.configService.get<string>('BRIDGE_POLL_INTERVAL_MS') ?? '4000',
-      10,
-    );
-
-    return Number.isFinite(configured) && configured > 0 ? configured : 4000;
-  }
-
-  private getMaxPollAttempts(sourceChain: CanonicalBridgeChain | null): number {
-    const configured = Number.parseInt(
-      this.configService.get<string>('BRIDGE_MAX_POLL_ATTEMPTS') ?? '',
-      10,
-    );
-
-    if (Number.isFinite(configured) && configured > 0) {
-      return configured;
-    }
-
-    // Sepolia-source bridges regularly take longer than the original 6 minute
-    // polling window, so give them the full 30 minute bridge tracking TTL.
-    return sourceChain === 'eth_sepolia' ? 450 : 90;
-  }
-
-  private waitFor(ms: number): Promise<void> {
-    return new Promise((resolve) => {
-      setTimeout(resolve, ms);
-    });
   }
 }

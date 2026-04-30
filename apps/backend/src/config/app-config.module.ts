@@ -14,7 +14,23 @@ function resolveEnvFilePath(): string | undefined {
   ];
 
   for (const candidate of candidates) {
-    if (fs.existsSync(candidate)) {
+    if (!fs.existsSync(candidate)) {
+      continue;
+    }
+
+    // Skip empty files — an empty .env shadows the real one
+    const stat = fs.statSync(candidate);
+    if (stat.size === 0) {
+      continue;
+    }
+
+    // Also skip files that are only whitespace/comments (no actual key=value)
+    const content = fs.readFileSync(candidate, 'utf-8');
+    const hasValues = content
+      .split('\n')
+      .some((line) => /^\s*[A-Z_][A-Z0-9_]*\s*=/.test(line));
+
+    if (hasValues) {
       return candidate;
     }
   }

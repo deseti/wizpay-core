@@ -19,12 +19,13 @@ export class BridgeProcessor {
     try {
       const result = await this.orchestratorService.executeTask(taskId);
 
-      this.logger.log(`[job:${job.id}] Bridge job completed — taskId=${taskId}`);
+      this.logger.log(
+        `[job:${job.id}] Bridge job completed — taskId=${taskId}`,
+      );
 
       return result;
     } catch (error) {
-      const message =
-        error instanceof Error ? error.message : 'Unknown error';
+      const message = error instanceof Error ? error.message : 'Unknown error';
 
       this.logger.error(
         `[job:${job.id}] Bridge job failed — taskId=${taskId} error="${message}"`,

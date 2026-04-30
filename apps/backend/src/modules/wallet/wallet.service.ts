@@ -4,7 +4,7 @@ import {
   Logger,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { PrismaService } from '../../database/prisma.service';
 
 export type WalletProvisionChain = 'EVM' | 'SOLANA';
@@ -231,21 +231,21 @@ export class WalletService {
       return explicitUserId;
     }
 
+    const tokenUserId = this.readStableUserIdFromToken(input.userToken);
+
+    if (tokenUserId) {
+      return tokenUserId;
+    }
+
     const email = this.normalizeOptionalEmail(input.email);
 
     if (email) {
       return `circle:email:${email}`;
     }
 
-    const userToken = this.normalizeOptionalValue(input.userToken);
-
-    if (!userToken) {
-      throw new BadRequestException(
-        'Wallet provisioning requires a stable userId, email, or userToken.',
-      );
-    }
-
-    return `circle:user:${createHash('sha256').update(userToken).digest('hex')}`;
+    throw new BadRequestException(
+      'Wallet provisioning requires the stable Circle userId returned by login.',
+    );
   }
 
   private async listUpstreamWallets(
@@ -312,45 +312,79 @@ export class WalletService {
     const persistedWallets: PersistedUserWallet[] = [];
 
     for (const wallet of input.wallets) {
-      const existingWallet = await this.prisma.userWallet.findUnique({
-        where: {
-          userId_blockchain: {
-            blockchain: wallet.blockchain,
-            userId: input.userId,
+      try {
+        const existingByWalletId = await this.prisma.userWallet.findUnique({
+          where: {
+            walletId: wallet.id,
           },
-        },
-      });
+        });
 
-      const storedWallet = await this.prisma.userWallet.upsert({
-        where: {
-          userId_blockchain: {
-            blockchain: wallet.blockchain,
-            userId: input.userId,
+        if (existingByWalletId) {
+          const storedWallet = await this.prisma.userWallet.update({
+            where: {
+              walletId: wallet.id,
+            },
+            data: {
+              address: wallet.address,
+              blockchain: wallet.blockchain,
+              chain: WALLET_CHAIN_BY_BLOCKCHAIN[wallet.blockchain],
+              userEmail: input.userEmail,
+              userId: input.userId,
+              walletSetId: wallet.walletSetId,
+            },
+          });
+
+          persistedWallets.push(this.toPersistedWallet(storedWallet));
+          continue;
+        }
+
+        const existingByUserId = await this.prisma.userWallet.findUnique({
+          where: {
+            userId_blockchain: {
+              userId: input.userId,
+              blockchain: wallet.blockchain,
+            },
           },
-        },
-        update: {
-          address: wallet.address,
-          chain: WALLET_CHAIN_BY_BLOCKCHAIN[wallet.blockchain],
-          userEmail: input.userEmail,
-          walletId: wallet.id,
-          walletSetId: wallet.walletSetId,
-        },
-        create: {
-          address: wallet.address,
-          blockchain: wallet.blockchain,
-          chain: WALLET_CHAIN_BY_BLOCKCHAIN[wallet.blockchain],
-          userEmail: input.userEmail,
-          userId: input.userId,
-          walletId: wallet.id,
-          walletSetId: wallet.walletSetId,
-        },
-      });
+        });
 
-      if (!existingWallet && wallet.blockchain === 'SOLANA-DEVNET') {
-        void this.airdropSolanaDevnet(wallet.address);
+        let storedWallet;
+        if (existingByUserId) {
+          storedWallet = await this.prisma.userWallet.update({
+            where: {
+              userId_blockchain: {
+                userId: input.userId,
+                blockchain: wallet.blockchain,
+              },
+            },
+            data: {
+              address: wallet.address,
+              walletId: wallet.id,
+              userEmail: input.userEmail,
+              walletSetId: wallet.walletSetId,
+            },
+          });
+        } else {
+          storedWallet = await this.prisma.userWallet.create({
+            data: {
+              address: wallet.address,
+              blockchain: wallet.blockchain,
+              chain: WALLET_CHAIN_BY_BLOCKCHAIN[wallet.blockchain],
+              userEmail: input.userEmail,
+              userId: input.userId,
+              walletId: wallet.id,
+              walletSetId: wallet.walletSetId,
+            },
+          });
+
+          if (wallet.blockchain === 'SOLANA-DEVNET') {
+            void this.airdropSolanaDevnet(wallet.address);
+          }
+        }
+
+        persistedWallets.push(this.toPersistedWallet(storedWallet));
+      } catch (error) {
+        this.handleWalletPersistenceError(error, wallet.id);
       }
-
-      persistedWallets.push(this.toPersistedWallet(storedWallet));
     }
 
     return persistedWallets;
@@ -472,6 +506,63 @@ export class WalletService {
 
     const trimmed = value.trim();
     return trimmed ? trimmed : null;
+  }
+
+  private readStableUserIdFromToken(userToken: string | null | undefined) {
+    const token = this.normalizeOptionalValue(userToken);
+
+    if (!token) {
+      return null;
+    }
+
+    const [, encodedPayload] = token.split('.');
+
+    if (!encodedPayload) {
+      return null;
+    }
+
+    try {
+      const payload = JSON.parse(
+        Buffer.from(this.toBase64(encodedPayload), 'base64').toString('utf8'),
+      ) as Record<string, unknown>;
+      const candidate =
+        this.readString(payload, 'userID') ||
+        this.readString(payload, 'userId') ||
+        this.readString(payload, 'user_id') ||
+        this.readString(payload, 'sub');
+
+      return candidate ? `circle:user:${candidate}` : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private toBase64(value: string) {
+    const normalized = value.replace(/-/g, '+').replace(/_/g, '/');
+    const paddingLength = (4 - (normalized.length % 4)) % 4;
+
+    return normalized + '='.repeat(paddingLength);
+  }
+
+  private handleWalletPersistenceError(
+    error: unknown,
+    walletId: string,
+  ): never {
+    if (
+      error &&
+      typeof error === 'object' &&
+      'code' in error &&
+      error.code === 'P2002'
+    ) {
+      throw new WalletProvisionError(
+        'Circle wallet is already stored for another user session.',
+        409,
+        'WALLET_ALREADY_EXISTS',
+        { walletId },
+      );
+    }
+
+    throw error;
   }
 
   private readString(source: Record<string, unknown>, key: string) {

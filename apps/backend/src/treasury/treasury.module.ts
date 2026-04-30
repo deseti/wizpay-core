@@ -1,11 +1,12 @@
 import { Module } from '@nestjs/common';
 import { TreasuryController } from './treasury.controller';
 import { TreasuryService } from './treasury.service';
-import { CircleAdapter } from '../adapters/circle/circle.adapter';
+import { AdaptersModule } from '../adapters/adapters.module';
 
 @Module({
+  imports: [AdaptersModule],
   controllers: [TreasuryController],
-  providers: [TreasuryService, CircleAdapter],
+  providers: [TreasuryService],
   exports: [TreasuryService]
 })
 export class TreasuryModule {}
