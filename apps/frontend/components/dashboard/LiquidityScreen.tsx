@@ -11,7 +11,6 @@ import {
   MessageCircle,
   Sparkles,
 } from "lucide-react";
-import { usePublicClient } from "wagmi";
 
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
@@ -69,7 +68,6 @@ export function LiquidityScreen() {
   const [txHash, setTxHash] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  const publicClient = usePublicClient();
   const tokenRecord = TOKEN_OPTIONS.find((t) => t.symbol === selectedToken);
   const tokenAddress = TOKEN_ADDRESSES[selectedToken];
 
@@ -98,12 +96,6 @@ export function LiquidityScreen() {
     setAmountStr("");
   }, []);
 
-  const waitForTx = async (hash: string) => {
-    if (publicClient && isTransactionHash(hash)) {
-      await publicClient.waitForTransactionReceipt({ hash });
-    }
-  };
-
   const handleDeposit = async () => {
     let taskId: string | null = null;
     let unitId: string | null = null;
@@ -121,26 +113,26 @@ export function LiquidityScreen() {
 
       if (needsDepositApproval) {
         setStep("approving");
-        const approveHash = await approveToken(amountBn);
-        await waitForTx(approveHash);
-        await refetchAll();
+        await approveToken(amountBn);
+        void refetchAll().catch(() => undefined);
       }
       setStep("executing");
       const hash = await addLiquidity(amountBn);
       txHashResult = hash;
       setTxHash(hash);
-      await waitForTx(hash);
-      await refetchAll();
+      setStep("success");
+
+      void refetchAll().catch(() => undefined);
 
       // Report success to backend
       if (taskId && unitId) {
-        await reportLiquidityResult(taskId, unitId, {
+        void reportLiquidityResult(taskId, unitId, {
           status: "SUCCESS",
           txHash: isTransactionHash(txHashResult) ? txHashResult : undefined,
+        }).catch((error) => {
+          console.warn("[LiquidityScreen] Failed to report add-liquidity success", error);
         });
       }
-
-      setStep("success");
     } catch (error) {
       console.error("Deposit failed:", error);
       const msg = getErrorMessage(error);
@@ -176,26 +168,26 @@ export function LiquidityScreen() {
 
       if (needsWithdrawApproval) {
         setStep("approving");
-        const approveHash = await approveLpToken(amountBn);
-        await waitForTx(approveHash);
-        await refetchAll();
+        await approveLpToken(amountBn);
+        void refetchAll().catch(() => undefined);
       }
       setStep("executing");
       const hash = await removeLiquidity(amountBn);
       txHashResult = hash;
       setTxHash(hash);
-      await waitForTx(hash);
-      await refetchAll();
+      setStep("success");
+
+      void refetchAll().catch(() => undefined);
 
       // Report success to backend
       if (taskId && unitId) {
-        await reportLiquidityResult(taskId, unitId, {
+        void reportLiquidityResult(taskId, unitId, {
           status: "SUCCESS",
           txHash: isTransactionHash(txHashResult) ? txHashResult : undefined,
+        }).catch((error) => {
+          console.warn("[LiquidityScreen] Failed to report remove-liquidity success", error);
         });
       }
-
-      setStep("success");
     } catch (error) {
       console.error("Withdraw failed:", error);
       const msg = getErrorMessage(error);

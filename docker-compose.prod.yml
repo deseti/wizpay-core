@@ -1,0 +1,49 @@
+# ============================================================================
+# Docker Compose — Production overrides
+# ============================================================================
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up --build -d
+#
+# This file adds:
+#   - Nginx reverse proxy with SSL support
+#   - Landing page served as static files
+#   - Production-safe port exposure
+# ============================================================================
+
+services:
+  # ── Nginx reverse proxy ─────────────────────────────────────────────────
+  # Routes traffic to frontend (:3000) and backend (:4000) behind a single
+  # domain. SSL termination happens here.
+  #
+  # To use SSL, mount your certificates:
+  #   volumes:
+  #     - /etc/letsencrypt:/etc/letsencrypt:ro
+  #
+  # And update nginx.conf to listen on 443 with ssl.
+  nginx:
+    image: nginx:alpine
+    container_name: wizpay-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./apps/landing/dist:/usr/share/nginx/landing:ro
+    depends_on:
+      frontend:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - wizpay-network
+
+  # ── Override: hide raw ports from public ─────────────────────────────────
+  frontend:
+    ports:
+      - "127.0.0.1:3000:3000"
+
+  backend:
+    ports:
+      - "127.0.0.1:4000:4000"

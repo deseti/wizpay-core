@@ -8,11 +8,13 @@ services:
         condition: service_started
     environment:
       PORT: 4000
-      NODE_ENV: ${NODE_ENV:-development}
-      DATABASE_URL: postgresql://wizpay:wizpay@postgres:5432/wizpay
+      NODE_ENV: ${NODE_ENV:-production}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-wizpay}:${POSTGRES_PASSWORD:-wizpay}@postgres:5432/${POSTGRES_DB:-wizpay}
       REDIS_HOST: redis
       REDIS_PORT: 6379
       DOCKER: "true"
+      # ── CORS ─────────────────────────────────────────────────────────────
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
       # ── Circle API ────────────────────────────────────────────────────────
       CIRCLE_API_KEY: ${CIRCLE_API_KEY}
       CIRCLE_BASE_URL: ${CIRCLE_BASE_URL}
@@ -34,6 +36,13 @@ services:
       WIZPAY_BRIDGE_EXTERNAL_ENABLED: ${WIZPAY_BRIDGE_EXTERNAL_ENABLED:-false}
     ports:
       - "4000:4000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:4000/ || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
     networks:
       - wizpay-network
 
@@ -41,7 +50,8 @@ services:
     image: redis:7-alpine
     container_name: wizpay-redis
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
+    restart: unless-stopped
     networks:
       - wizpay-network
 
@@ -97,6 +107,13 @@ services:
       UPSTASH_REDIS_REST_TOKEN: ${UPSTASH_REDIS_REST_TOKEN}
     ports:
       - "3000:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/ || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 45s
+    restart: unless-stopped
     networks:
       - wizpay-network
 
@@ -104,16 +121,16 @@ services:
     image: postgres:15
     restart: always
     environment:
-      POSTGRES_USER: wizpay
-      POSTGRES_PASSWORD: wizpay
-      POSTGRES_DB: wizpay
+      POSTGRES_USER: ${POSTGRES_USER:-wizpay}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-wizpay}
+      POSTGRES_DB: ${POSTGRES_DB:-wizpay}
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U wizpay -d wizpay"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-wizpay} -d ${POSTGRES_DB:-wizpay}"]
       interval: 5s
       timeout: 5s
       retries: 10
     ports:
-      - "5432:5432"
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-15432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     networks:
