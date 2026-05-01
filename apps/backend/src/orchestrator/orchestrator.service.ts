@@ -9,6 +9,11 @@ import { QueueService } from '../queue/queue.service';
 import { TaskService } from '../task/task.service';
 import { normalizeBridgeChain } from '../common/multichain';
 
+type BridgeExecutionMode = 'app_treasury' | 'external_signer';
+type BridgeSourceAccountType = 'app_treasury_wallet' | 'external_wallet';
+
+const BRIDGE_EXTERNAL_ENABLED_ENV = 'WIZPAY_BRIDGE_EXTERNAL_ENABLED';
+
 @Injectable()
 export class OrchestratorService {
   private readonly logger = new Logger(OrchestratorService.name);
@@ -193,6 +198,25 @@ export class OrchestratorService {
   }
 
   private normalizeBridgePayload(payload: TaskPayload): TaskPayload {
+    const bridgeExecutionMode = this.readBridgeExecutionMode(payload);
+    const sourceAccountType = this.readBridgeSourceAccountType(
+      payload,
+      bridgeExecutionMode,
+    );
+    const bridgeExternalEnabled = this.isBridgeExternalEnabled();
+
+    if (bridgeExecutionMode === 'external_signer' && !bridgeExternalEnabled) {
+      throw new BadRequestException({
+        code: 'BRIDGE_EXTERNAL_DISABLED',
+        error:
+          'External wallet bridge is currently disabled by server feature flag.',
+        details: {
+          bridgeExecutionMode,
+          env: BRIDGE_EXTERNAL_ENABLED_ENV,
+        },
+      });
+    }
+
     const sourceBlockchain = this.readChain(
       payload,
       'sourceBlockchain',
@@ -286,10 +310,16 @@ export class OrchestratorService {
       requiredSourceBlockchain,
     );
 
+    this.logger.log(
+      `[bridge] mode=${bridgeExecutionMode} source_account=${sourceAccountType} external_enabled=${bridgeExternalEnabled} source=${requiredSourceBlockchain} destination=${requiredDestinationBlockchain}`,
+    );
+
     return {
       ...payload,
       amount: String(amount),
       blockchain: requiredDestinationBlockchain,
+      bridgeExecutionMode,
+      sourceAccountType,
       destinationAddress: normalizedDestinationAddress,
       destinationBlockchain: requiredDestinationBlockchain,
       destinationChain,
@@ -299,6 +329,63 @@ export class OrchestratorService {
       walletAddress: normalizedWalletAddress,
       walletId,
     };
+  }
+
+  private readBridgeExecutionMode(payload: TaskPayload): BridgeExecutionMode {
+    const mode = this.readString(payload, 'bridgeExecutionMode');
+
+    if (!mode || mode === 'app_treasury') {
+      return 'app_treasury';
+    }
+
+    if (mode === 'external_signer') {
+      return 'external_signer';
+    }
+
+    throw new BadRequestException({
+      code: 'BRIDGE_EXECUTION_MODE_INVALID',
+      error:
+        'bridgeExecutionMode must be either "app_treasury" or "external_signer".',
+      details: {
+        bridgeExecutionMode: mode,
+      },
+    });
+  }
+
+  private readBridgeSourceAccountType(
+    payload: TaskPayload,
+    bridgeExecutionMode: BridgeExecutionMode,
+  ): BridgeSourceAccountType {
+    const value = this.readString(payload, 'sourceAccountType');
+
+    if (!value) {
+      return bridgeExecutionMode === 'external_signer'
+        ? 'external_wallet'
+        : 'app_treasury_wallet';
+    }
+
+    if (value === 'app_treasury_wallet' || value === 'external_wallet') {
+      return value;
+    }
+
+    throw new BadRequestException({
+      code: 'BRIDGE_SOURCE_ACCOUNT_TYPE_INVALID',
+      error:
+        'sourceAccountType must be either "app_treasury_wallet" or "external_wallet".',
+      details: {
+        sourceAccountType: value,
+      },
+    });
+  }
+
+  private isBridgeExternalEnabled() {
+    const value = process.env[BRIDGE_EXTERNAL_ENABLED_ENV];
+
+    if (!value) {
+      return false;
+    }
+
+    return ['1', 'true', 'yes', 'on'].includes(value.trim().toLowerCase());
   }
 
   private readChain(payload: TaskPayload, ...keys: string[]): string | null {

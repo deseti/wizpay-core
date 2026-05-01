@@ -3,6 +3,9 @@ import { CircleClient } from './circle.client';
 
 const ETH_SEPOLIA_RPC_URL = 'https://ethereum-sepolia-rpc.publicnode.com';
 const ARC_TESTNET_RPC_URL = 'https://rpc.testnet.arc.network/';
+const SOLANA_DEVNET_RPC_URL = 'https://api.devnet.solana.com';
+const SOLANA_MIN_FEE_BALANCE_LAMPORTS = 0.01 * 1_000_000_000; // 0.01 SOL
+const SOLANA_TOP_UP_TARGET_LAMPORTS = 0.05 * 1_000_000_000; // 0.05 SOL
 
 type SupportedBridgeBlockchain = 'ETH-SEPOLIA' | 'ARC-TESTNET' | 'SOLANA-DEVNET';
 
@@ -75,10 +78,12 @@ export class CircleBridgeService {
     input: InitiateBridgeInput,
   ): Promise<BridgeExecutionResult> {
     const normalized = this.normalizeInput(input);
+    await this.ensureSolanaSourceFeeBalance(normalized);
 
     const client = await this.circleClient.getBridgeClient();
     const adapter = this.skipBridgeKitBalancePrechecks(
       await this.circleClient.getBridgeAdapter(),
+      normalized.sourceBlockchain,
     );
     const sourceChain = await this.resolveBridgeChain(
       normalized.sourceBlockchain,
@@ -459,7 +464,10 @@ export class CircleBridgeService {
     };
   }
 
-  private skipBridgeKitBalancePrechecks(adapter: any) {
+  private skipBridgeKitBalancePrechecks(
+    adapter: any,
+    sourceBlockchain: SupportedBridgeBlockchain,
+  ) {
     const prepareAction =
       typeof adapter?.prepareAction === 'function'
         ? adapter.prepareAction.bind(adapter)
@@ -479,6 +487,10 @@ export class CircleBridgeService {
       get(target, property, receiver) {
         if (property === 'prepareAction') {
           return async (action: string, params: unknown, context: unknown) => {
+            if (sourceBlockchain === 'SOLANA-DEVNET') {
+              return prepareAction(action, params, context);
+            }
+
             if (action === 'native.balanceOf' || action === 'usdc.balanceOf') {
               return {
                 execute: async () => 2n ** 255n,
@@ -531,13 +543,65 @@ export class CircleBridgeService {
           };
         }
 
-        if (property !== 'prepareAction') {
-          return Reflect.get(target, property, receiver);
-        }
-
         return Reflect.get(target, property, receiver);
       },
     });
+  }
+
+  private async ensureSolanaSourceFeeBalance(input: NormalizedBridgeInput) {
+    if (input.sourceBlockchain !== 'SOLANA-DEVNET') {
+      return;
+    }
+
+    try {
+      const { Connection, PublicKey } = await import('@solana/web3.js');
+      const connection = new Connection(SOLANA_DEVNET_RPC_URL, 'confirmed');
+      const wallet = new PublicKey(input.sourceWalletAddress);
+
+      const currentLamports = await connection.getBalance(wallet, 'confirmed');
+      if (currentLamports >= SOLANA_MIN_FEE_BALANCE_LAMPORTS) {
+        return;
+      }
+
+      const airdropLamports = Math.max(
+        Math.floor(SOLANA_TOP_UP_TARGET_LAMPORTS - currentLamports),
+        0,
+      );
+      if (airdropLamports <= 0) {
+        return;
+      }
+
+      this.logger.warn(
+        `Solana source wallet ${input.sourceWalletAddress} has low SOL balance (${currentLamports} lamports). Requesting devnet airdrop of ${airdropLamports} lamports before bridge.`,
+      );
+
+      const signature = await connection.requestAirdrop(wallet, airdropLamports);
+      const latestBlockhash = await connection.getLatestBlockhash('confirmed');
+
+      await connection.confirmTransaction(
+        {
+          ...latestBlockhash,
+          signature,
+        },
+        'confirmed',
+      );
+
+      const updatedLamports = await connection.getBalance(wallet, 'confirmed');
+      if (updatedLamports < SOLANA_MIN_FEE_BALANCE_LAMPORTS) {
+        throw new Error(
+          `Low SOL balance after airdrop (${updatedLamports} lamports).`,
+        );
+      }
+
+      this.logger.log(
+        `Solana source wallet ${input.sourceWalletAddress} topped up to ${updatedLamports} lamports.`,
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new BadRequestException(
+        `Solana source treasury wallet needs devnet SOL for transaction fees, and automatic top-up failed (${message}). Fund the wallet with a small SOL amount on devnet, then retry bridge.`,
+      );
+    }
   }
 
   private resolveChainRpcEndpoint(chain: any): string | null {

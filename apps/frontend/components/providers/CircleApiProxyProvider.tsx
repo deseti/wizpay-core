@@ -46,11 +46,18 @@ export function CircleApiProxyProvider({
 }) {
   useEffect(() => {
     const originalFetch = window.fetch.bind(window);
+    let isProxyHealthy = true;
 
     window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
       const targetUrl = resolveRequestUrl(input);
 
       if (!targetUrl || !shouldProxyCircleRequest(targetUrl)) {
+        return originalFetch(input, init);
+      }
+
+      // If the local proxy route was unavailable earlier (404/5xx), keep the
+      // Circle SDK path working by falling back to direct requests.
+      if (!isProxyHealthy) {
         return originalFetch(input, init);
       }
 
@@ -62,19 +69,31 @@ export function CircleApiProxyProvider({
           ? undefined
           : await request.clone().text();
 
-      return originalFetch("/api/circle/proxy", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          url: targetUrl.toString(),
-          method: request.method,
-          headers,
-          body,
-        }),
-        signal: request.signal,
-      });
+      try {
+        const proxiedResponse = await originalFetch("/api/circle/proxy", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            url: targetUrl.toString(),
+            method: request.method,
+            headers,
+            body,
+          }),
+          signal: request.signal,
+        });
+
+        if (proxiedResponse.status === 404 || proxiedResponse.status >= 500) {
+          isProxyHealthy = false;
+          return originalFetch(input, init);
+        }
+
+        return proxiedResponse;
+      } catch {
+        isProxyHealthy = false;
+        return originalFetch(input, init);
+      }
     };
 
     return () => {

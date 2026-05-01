@@ -46,6 +46,8 @@ export interface CircleTransfer {
 }
 
 export type CircleTransferBlockchain = "ARC-TESTNET" | "ETH-SEPOLIA" | "SOLANA-DEVNET";
+export type BridgeExecutionMode = "app_treasury" | "external_signer";
+export type BridgeSourceAccountType = "app_treasury_wallet" | "external_wallet";
 
 export interface CircleTransferWalletBalance {
   amount: string;
@@ -88,6 +90,8 @@ interface CreateCircleTransferParams {
   walletAddress?: string;
   blockchain?: CircleTransferBlockchain;
   sourceBlockchain?: CircleTransferBlockchain;
+  bridgeExecutionMode?: BridgeExecutionMode;
+  sourceAccountType?: BridgeSourceAccountType;
   userEmail?: string;
   userId?: string;
 }
@@ -172,6 +176,12 @@ export async function createCircleTransfer(
   params: CreateCircleTransferParams
 ): Promise<CircleTransfer> {
   try {
+    const bridgeExecutionMode = params.bridgeExecutionMode ?? "app_treasury";
+    const sourceAccountType =
+      params.sourceAccountType ??
+      (bridgeExecutionMode === "external_signer"
+        ? "external_wallet"
+        : "app_treasury_wallet");
     const sourceBlockchain =
       params.sourceBlockchain ?? getSourceBlockchain(params.blockchain ?? "ARC-TESTNET");
     const destinationBlockchain = params.blockchain ?? "ARC-TESTNET";
@@ -193,6 +203,8 @@ export async function createCircleTransfer(
           destinationAddress,
           destinationBlockchain,
           destinationChain: destinationBlockchain,
+          bridgeExecutionMode,
+          sourceAccountType,
           referenceId: params.referenceId,
           tokenAddress: params.tokenAddress,
           token: "USDC",

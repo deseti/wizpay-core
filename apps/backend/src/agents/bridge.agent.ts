@@ -24,6 +24,8 @@ export class BridgeAgent implements TaskAgent {
       `Submitting bridge ${payload.amount} ${payload.token} from ${payload.sourceBlockchain} to ${payload.destinationBlockchain}.`,
       {
         context: {
+          bridgeExecutionMode: payload.bridgeExecutionMode,
+          sourceAccountType: payload.sourceAccountType,
           destinationAddress: payload.destinationAddress,
           referenceId: payload.referenceId,
           sourceWalletAddress: payload.walletAddress,
@@ -31,6 +33,37 @@ export class BridgeAgent implements TaskAgent {
         },
       },
     );
+
+    // External signer: the CCTP bridge is executed client-side by the user's
+    // external wallet.  The backend records the intent but does not call the
+    // Circle Bridge Kit.
+    if (payload.bridgeExecutionMode === 'external_signer') {
+      await this.taskService.logStep(
+        task.id,
+        'bridge.external_signer',
+        'in_progress',
+        `External-signer bridge intent recorded. CCTP execution is client-side.`,
+        {
+          context: {
+            sourceBlockchain: payload.sourceBlockchain,
+            destinationBlockchain: payload.destinationBlockchain,
+            amount: payload.amount,
+          },
+        },
+      );
+
+      return {
+        agent: 'bridge',
+        execution: {
+          adapter: 'external-cctp-v2',
+          operation: 'cctp_bridge_external',
+          bridgeExecutionMode: 'external_signer',
+          sourceAccountType: payload.sourceAccountType,
+          payload,
+          taskId: task.id,
+        },
+      };
+    }
 
     const transfer = await this.circleBridgeService.initiateBridge({
       amount: payload.amount,
@@ -75,6 +108,8 @@ export class BridgeAgent implements TaskAgent {
         operation: 'cctp_bridge',
         payload,
         transfer,
+        bridgeExecutionMode: payload.bridgeExecutionMode,
+        sourceAccountType: payload.sourceAccountType,
         normalizedTransfer: {
           destinationChain: payload.destinationChain,
           sourceChain: payload.sourceChain,
@@ -99,6 +134,9 @@ export class BridgeAgent implements TaskAgent {
 
   private normalizePayload(task: TaskDetails) {
     const payload = task.payload ?? {};
+    const bridgeExecutionMode =
+      this.readString(payload, 'bridgeExecutionMode') ?? 'app_treasury';
+    const isExternalSigner = bridgeExecutionMode === 'external_signer';
 
     return {
       amount: this.readRequiredString(payload, 'amount'),
@@ -113,9 +151,15 @@ export class BridgeAgent implements TaskAgent {
         this.readString(payload, 'sourceBlockchain') ??
         this.readRequiredString(payload, 'sourceChain'),
       sourceChain: this.readString(payload, 'sourceChain'),
+      bridgeExecutionMode,
+      sourceAccountType:
+        this.readString(payload, 'sourceAccountType') ?? 'app_treasury_wallet',
       token: this.readString(payload, 'token') ?? 'USDC',
       walletAddress: this.readRequiredString(payload, 'walletAddress'),
-      walletId: this.readRequiredString(payload, 'walletId'),
+      // walletId is required for app_treasury mode but optional for external_signer
+      walletId: isExternalSigner
+        ? (this.readString(payload, 'walletId') ?? '')
+        : this.readRequiredString(payload, 'walletId'),
     };
   }
 

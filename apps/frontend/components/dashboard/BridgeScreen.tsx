@@ -13,7 +13,12 @@ import {
   Wallet,
 } from "lucide-react";
 
+import { formatUnits, parseUnits } from "viem";
+import type { Address, Hex } from "viem";
+import { usePublicClient, useReadContract, useSwitchChain, useWalletClient } from "wagmi";
+
 import { useCircleWallet } from "@/components/providers/CircleWalletProvider";
+import { useHybridWallet } from "@/components/providers/HybridWalletProvider";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -54,14 +59,54 @@ import {
   type CircleTransferStep,
   type CircleTransferWallet,
 } from "@/lib/transfer-service";
+import {
+  CCTP_ATTESTATION_POLL_INTERVAL_MS,
+  CCTP_DOMAIN_BY_CHAIN,
+  CCTP_ERC20_APPROVE_ABI,
+  CCTP_MIN_FINALITY_FAST,
+  CCTP_MESSAGE_TRANSMITTER_ABI,
+  CCTP_TOKEN_MESSENGER_ABI,
+  CCTP_USDC_DECIMALS,
+  CCTP_V2_MESSAGE_TRANSMITTER,
+  CCTP_V2_TOKEN_MESSENGER,
+  CHAIN_ID_BY_BRIDGE_CHAIN,
+  evmAddressToBytes32,
+  extractMessageBytesFromLogs,
+  getCctpExplorerUrl,
+  pollCctpV2Attestation,
+  ZERO_BYTES32,
+} from "@/lib/cctp";
+import { CHAIN_BY_ID } from "@/lib/wagmi";
+import { ERC20_ABI } from "@/constants/erc20";
 
 const TRANSFER_WALLET_STORAGE_KEY = "wizpay-bridge-transfer-wallets";
 const ACTIVE_TRANSFER_STORAGE_KEY = "wizpay-bridge-active-transfer";
 const BRIDGE_POLL_INTERVAL_MS = 4_000;
 const BRIDGE_LONG_RUNNING_MS = 120_000;
-const BRIDGE_ESTIMATED_TIME_LABEL = "30-90 seconds";
+// Transfers stuck in a non-terminal state longer than this are considered
+// abandoned and will be auto-dismissed on restore or when detected in the UI.
+const BRIDGE_STUCK_TIMEOUT_MS = 15 * 60 * 1_000; // 15 minutes
 const STEP_ORDER = ["burn", "attestation", "mint"] as const;
 const DEFAULT_SOURCE_BLOCKCHAIN: CircleTransferBlockchain = "ETH-SEPOLIA";
+
+function getEstimatedBridgeTimeLabel(
+  sourceBlockchain: CircleTransferBlockchain,
+  isExternalBridge: boolean
+) {
+  if (sourceBlockchain === "ETH-SEPOLIA") {
+    return isExternalBridge ? "10-30 minutes" : "5-15 minutes";
+  }
+
+  if (sourceBlockchain === "ARC-TESTNET") {
+    return "2-8 minutes";
+  }
+
+  if (sourceBlockchain === "SOLANA-DEVNET") {
+    return "2-10 minutes (requires a small SOL fee balance)";
+  }
+
+  return "5-15 minutes";
+}
 
 type BridgeStepId = (typeof STEP_ORDER)[number];
 type StoredTransferWallet = {
@@ -98,6 +143,11 @@ const DESTINATION_OPTIONS: Array<{
 const APP_TREASURY_WALLET_TITLE = "Source Treasury Wallet";
 const APP_TREASURY_WALLET_LABEL = "source treasury wallet";
 const BRIDGE_ASSET_SYMBOL = "USDC";
+const BRIDGE_EXTERNAL_ENABLED = ["1", "true", "yes", "on"].includes(
+  (process.env.NEXT_PUBLIC_WIZPAY_BRIDGE_EXTERNAL_ENABLED ?? "")
+    .trim()
+    .toLowerCase()
+);
 
 const USDC_ADDRESS_BY_CHAIN: Partial<Record<CircleTransferBlockchain, string>> = {
   "ARC-TESTNET": USDC_ADDRESS,
@@ -465,6 +515,20 @@ function getBridgeErrorMessage(
     return "The server is missing Circle treasury wallet credentials. Configure the developer-controlled wallet secrets before retrying this bridge flow.";
   }
 
+  if (
+    message.toLowerCase().includes("solana source treasury wallet needs devnet sol")
+  ) {
+    return "Solana source treasury wallet has insufficient SOL for network fees. Fund it with a small SOL amount on Devnet, then retry.";
+  }
+
+  if (
+    message.includes("InstructionError") &&
+    message.includes("Custom\":1") &&
+    message.toLowerCase().includes("network: devnet")
+  ) {
+    return "Solana source treasury wallet has insufficient SOL for network fees. Fund it with a small SOL amount on Devnet, then retry.";
+  }
+
   if (message.includes("fetch failed")) {
     return "The bridge request could not reach the local app server. Reload the page and retry.";
   }
@@ -715,6 +779,10 @@ export function BridgeScreen() {
     getWalletBalances,
     userEmail,
   } = useCircleWallet();
+  const { activeWalletLabel, walletMode, externalWalletAddress, externalWalletChainId } = useHybridWallet();
+  const { data: externalWalletClient } = useWalletClient();
+  const { switchChainAsync } = useSwitchChain();
+
   const { toast } = useToast();
   const restoredTransferRef = useRef(false);
   const terminalNoticeRef = useRef<string | null>(null);
@@ -773,6 +841,57 @@ export function BridgeScreen() {
   const destinationTokenAddress = USDC_ADDRESS_BY_CHAIN[destinationChain];
   const sourceTokenAddress = USDC_ADDRESS_BY_CHAIN[sourceChain];
   const isSameChainRoute = sourceChain === destinationChain;
+  const bridgeExecutionMode =
+    walletMode === "external" ? "external_signer" : "app_treasury";
+  const sourceAccountType =
+    bridgeExecutionMode === "external_signer"
+      ? "external_wallet"
+      : "app_treasury_wallet";
+  const isExternalBridgeMode = bridgeExecutionMode === "external_signer";
+  const isExternalEvmBridge =
+    isExternalBridgeMode &&
+    BRIDGE_EXTERNAL_ENABLED &&
+    !isSolanaChain(sourceChain) &&
+    !isSolanaChain(destinationChain);
+  const sourceChainId = CHAIN_ID_BY_BRIDGE_CHAIN[sourceChain];
+  const destChainId = CHAIN_ID_BY_BRIDGE_CHAIN[destinationChain];
+  const sourcePublicClient = usePublicClient({ chainId: sourceChainId });
+  const destPublicClient = usePublicClient({ chainId: destChainId });
+  const externalBridgeModeMessage = !BRIDGE_EXTERNAL_ENABLED
+    ? `External wallet bridge is currently disabled. Switch to App Wallet (Circle) to continue.`
+    : isSolanaChain(sourceChain) || isSolanaChain(destinationChain)
+      ? `External wallet bridge does not support Solana routes. Switch to App Wallet (Circle) or select an EVM-only route.`
+      : null;
+  // Read external wallet USDC balance on the source chain for pre-flight checks
+  const externalUsdcAddress =
+    isExternalEvmBridge ? (sourceTokenAddress as Address | undefined) : undefined;
+  const { data: externalUsdcBalanceRaw } = useReadContract({
+    abi: ERC20_ABI,
+    address: externalUsdcAddress,
+    functionName: "balanceOf",
+    args: externalWalletAddress ? [externalWalletAddress] : undefined,
+    chainId: sourceChainId,
+    query: {
+      enabled: Boolean(
+        isExternalEvmBridge && externalWalletAddress && externalUsdcAddress && sourceChainId
+      ),
+      staleTime: 10_000,
+      refetchInterval: 15_000,
+    },
+  });
+  const externalUsdcBalance =
+    typeof externalUsdcBalanceRaw === "bigint"
+      ? Number(formatUnits(externalUsdcBalanceRaw, CCTP_USDC_DECIMALS))
+      : null;
+  const externalUsdcBalanceLabel =
+    externalUsdcBalance !== null
+      ? `${externalUsdcBalance.toLocaleString(undefined, { maximumFractionDigits: 6 })} USDC`
+      : "Loading...";
+  const hasEnoughExternalUsdc =
+    externalUsdcBalance === null ||
+    !isPositiveDecimal(amount) ||
+    externalUsdcBalance >= Number(amount);
+
   const requestedAmount = Number(amount || "0");
   const walletBalanceAmount = Number(transferWallet?.balance?.amount || "0");
   const walletBalanceKnown = transferWallet?.balance != null;
@@ -784,15 +903,44 @@ export function BridgeScreen() {
     requestedAmount <= 0 ||
     walletBalanceAmount >= requestedAmount;
   const isTransferActive = isTrackedTransfer(transfer);
+  const isExternalBridgeTransfer =
+    transfer?.transferId?.startsWith("ext-") ?? false;
+  const estimatedTimeLabel = useMemo(() => {
+    const effectiveSource = transfer?.sourceBlockchain ?? sourceChain;
+    return getEstimatedBridgeTimeLabel(
+      effectiveSource,
+      isExternalBridgeTransfer || isExternalEvmBridge
+    );
+  }, [
+    isExternalBridgeTransfer,
+    isExternalEvmBridge,
+    sourceChain,
+    transfer?.sourceBlockchain,
+  ]);
+  // A non-terminal transfer (not settled) that the user can manually dismiss.
+  const canDismissTransfer =
+    Boolean(transfer) && !isSubmitting && transfer?.status !== "settled";
+  const canRetryExternalAttestation =
+    isExternalBridgeTransfer &&
+    Boolean(transfer?.txHashBurn) &&
+    !isSubmitting &&
+    (transfer?.rawStatus === "burned" ||
+      transfer?.rawStatus === "attesting" ||
+      transfer?.status === "failed");
   const pollTransferFnRef = useRef<(() => Promise<void>) | null>(null);
+  const canSubmitAppWallet =
+    !isExternalBridgeMode && Boolean(transferWallet) && hasSufficientWalletBalance;
+  const canSubmitExternalWallet =
+    isExternalEvmBridge &&
+    Boolean(externalWalletAddress) &&
+    hasEnoughExternalUsdc;
   const canSubmit =
     Boolean(destinationTokenAddress) &&
     Boolean(sourceTokenAddress) &&
     isPositiveDecimal(amount) &&
     !isSameChainRoute &&
     isValidDestinationAddress(destinationAddress, destinationChain) &&
-    Boolean(transferWallet) &&
-    hasSufficientWalletBalance &&
+    (canSubmitAppWallet || canSubmitExternalWallet) &&
     !isTransferActive;
 
 
@@ -829,10 +977,17 @@ export function BridgeScreen() {
   const bridgeXShareUrl = `https://x.com/intent/tweet?text=${encodeURIComponent(
     bridgeShareText
   )}`;
+  const transferAgeMs = transfer
+    ? Date.now() - new Date(transfer.createdAt).getTime()
+    : 0;
+  const isTransferStuck =
+    isTransferActive &&
+    !isExternalBridgeTransfer &&
+    transferAgeMs > BRIDGE_STUCK_TIMEOUT_MS;
   const shouldShowLongRunningMessage = Boolean(
     transfer &&
       isTransferActive &&
-      Date.now() - new Date(transfer.createdAt).getTime() > BRIDGE_LONG_RUNNING_MS
+      transferAgeMs > BRIDGE_LONG_RUNNING_MS
   );
   const longRunningTransferMessage = useMemo(
     () =>
@@ -876,8 +1031,21 @@ export function BridgeScreen() {
       return;
     }
 
-    // Don't restore transfers that have a tx hash as their transferId (not a valid task UUID)
-    if (storedTransfer.transferId.startsWith("0x")) {
+    // Auto-dismiss transfers that are older than the stuck timeout on restore.
+    // This covers the case where the user returns to the page after a long gap
+    // and the transfer has been processing way beyond the expected time window.
+    const storedAgeMs = Date.now() - new Date(storedTransfer.createdAt).getTime();
+    if (storedAgeMs > BRIDGE_STUCK_TIMEOUT_MS) {
+      clearStoredActiveTransfer();
+      return;
+    }
+
+    // Don't restore transfers that have a tx hash or external-wallet prefix as their
+    // transferId — these are not valid backend task UUIDs and cannot be polled.
+    if (
+      storedTransfer.transferId.startsWith("0x") ||
+      storedTransfer.transferId.startsWith("ext-")
+    ) {
       clearStoredActiveTransfer();
       return;
     }
@@ -973,7 +1141,7 @@ export function BridgeScreen() {
   }, [transfer]);
 
   useEffect(() => {
-    if (!transfer?.transferId || !isTransferActive) {
+    if (!transfer?.transferId || !isTransferActive || isExternalBridgeTransfer) {
       setIsPollingTransfer(false);
       setIsReconnectingToTracking(false);
       return;
@@ -1021,6 +1189,22 @@ export function BridgeScreen() {
           }
 
           reconnectingPollCountRef.current += 1;
+          // Auto-dismiss after 15 consecutive CIRCLE_BRIDGE_NOT_FOUND responses
+          // (~1 minute). The backend task is gone and the transfer will never
+          // reach a terminal state via polling, so clear state automatically.
+          if (reconnectingPollCountRef.current >= 15) {
+            reconnectingPollCountRef.current = 0;
+            clearStoredActiveTransfer();
+            setTransfer(null);
+            setIsReconnectingToTracking(false);
+            toast({
+              title: "Transfer tracking lost",
+              description:
+                "The bridge transfer could no longer be tracked. Please check your on-chain history and start a new bridge if needed.",
+              variant: "destructive",
+            });
+            return;
+          }
           setIsReconnectingToTracking(true);
           return;
         }
@@ -1098,6 +1282,16 @@ export function BridgeScreen() {
         void refreshTransferWallet();
       }
     }
+  }
+
+  function dismissTransfer() {
+    clearStoredActiveTransfer();
+    setTransfer(null);
+    setErrorMessage(null);
+    setIsReconnectingToTracking(false);
+    setIsSubmitting(false);
+    setIsDepositingToTreasury(false);
+    reconnectingPollCountRef.current = 0;
   }
 
   async function refreshTransferWallet() {
@@ -1225,6 +1419,36 @@ export function BridgeScreen() {
   }
 
   function openBridgeReview() {
+    // External wallet mode — allow EVM routes, block Solana and disabled flag
+    if (isExternalBridgeMode) {
+      if (externalBridgeModeMessage) {
+        setErrorMessage(externalBridgeModeMessage);
+        return;
+      }
+      // isExternalEvmBridge is true — skip treasury checks
+      if (isTransferActive) {
+        setErrorMessage(
+          "A bridge is already running. You can leave this page and come back later while tracking continues in the background."
+        );
+        return;
+      }
+      if (isSameChainRoute) {
+        setErrorMessage("Source and destination network must be different.");
+        return;
+      }
+      if (
+        !isPositiveDecimal(amount) ||
+        !isValidDestinationAddress(destinationAddress, destinationChain)
+      ) {
+        setErrorMessage(
+          "Enter a valid amount and destination address before starting the bridge."
+        );
+        return;
+      }
+      setErrorMessage(null);
+      setIsReviewDialogOpen(true);
+      return;
+    }
 
     if (isTransferActive) {
       setErrorMessage(
@@ -1274,7 +1498,664 @@ export function BridgeScreen() {
     setIsReviewDialogOpen(true);
   }
 
+  function getExternalBridgeErrorMessage(error: unknown): string {
+    const raw = error instanceof Error ? error.message : String(error ?? "Unknown error");
+    const lower = raw.toLowerCase();
+    // User rejected the transaction in their wallet
+    if (
+      lower.includes("user rejected") ||
+      lower.includes("user denied") ||
+      lower.includes("rejected the request") ||
+      // EIP-1193 error code 4001
+      (error instanceof Object && "code" in error && (error as { code: unknown }).code === 4001)
+    ) {
+      return "Transaction rejected — you cancelled the wallet confirmation. Try again when ready.";
+    }
+    // Insufficient native gas
+    if (
+      lower.includes("insufficient funds") ||
+      lower.includes("insufficient gas") ||
+      lower.includes("gas required exceeds allowance")
+    ) {
+      return "Insufficient gas: your wallet doesn't have enough ETH/native token to pay for this transaction. Top up the wallet and retry.";
+    }
+    // Wrong chain (switch failed or still on wrong chain)
+    if (lower.includes("chain") && (lower.includes("switch") || lower.includes("mismatch"))) {
+      return "Chain switch failed. Please manually switch your wallet to the correct network and try again.";
+    }
+    // Circle attestation timed out (message from pollCctpV2Attestation)
+    if (lower.includes("attestation") && lower.includes("timed out")) {
+      return raw; // already descriptive from pollCctpV2Attestation
+    }
+    return raw;
+  }
+
+  function asHexTxHash(value: string | null | undefined): Hex | null {
+    if (!value) {
+      return null;
+    }
+
+    const trimmed = value.trim();
+    return /^0x[a-fA-F0-9]+$/.test(trimmed) ? (trimmed as Hex) : null;
+  }
+
+  async function retryExternalAttestationAndMint() {
+    if (!transfer || !isExternalBridgeTransfer) {
+      return;
+    }
+
+    const srcChain = transfer.sourceBlockchain;
+    const dstChain = transfer.blockchain;
+    const srcChainId = CHAIN_ID_BY_BRIDGE_CHAIN[srcChain];
+    const dstChainId = CHAIN_ID_BY_BRIDGE_CHAIN[dstChain];
+    const srcCctpDomain = CCTP_DOMAIN_BY_CHAIN[srcChain];
+    const burnTxHash = asHexTxHash(transfer.txHashBurn ?? transfer.txHash);
+
+    if (!srcChainId || !dstChainId || srcCctpDomain === undefined || !burnTxHash) {
+      setErrorMessage(
+        "Cannot resume bridge: missing source/destination chain or burn transaction hash."
+      );
+      return;
+    }
+
+    if (!externalWalletClient) {
+      setErrorMessage("External wallet not connected.");
+      return;
+    }
+
+    const walletAddress = externalWalletClient.account?.address;
+    if (!walletAddress) {
+      setErrorMessage("Could not determine external wallet address.");
+      return;
+    }
+
+    const dstChainDef = CHAIN_BY_ID[dstChainId];
+    if (!dstChainDef) {
+      setErrorMessage("Destination chain configuration not found.");
+      return;
+    }
+
+    setIsSubmitting(true);
+    setErrorMessage(null);
+    setTransfer((prev) =>
+      prev
+        ? {
+            ...prev,
+            status: "processing",
+            rawStatus: "attesting",
+            stage: "attesting",
+            errorReason: null,
+            updatedAt: new Date().toISOString(),
+            steps: prev.steps.map((step) =>
+              step.id === "attestation"
+                ? { ...step, state: "pending", errorMessage: null }
+                : step.id === "mint"
+                  ? { ...step, state: "pending", errorMessage: null }
+                  : step
+            ),
+          }
+        : prev
+    );
+
+    try {
+      toast({
+        title: "Retrying attestation",
+        description: "Polling Circle attestation again for the burn transaction…",
+      });
+
+      const attestationResult = await pollCctpV2Attestation(
+        srcCctpDomain,
+        burnTxHash,
+        (attempt) => {
+          if (attempt > 1 && attempt % 6 === 0) {
+            const elapsed = Math.floor(
+              (attempt * CCTP_ATTESTATION_POLL_INTERVAL_MS) / 1000 / 60
+            );
+            toast({
+              title: "Still waiting for attestation",
+              description: `Circle attestation pending (~${elapsed} min elapsed)…`,
+            });
+          }
+        }
+      );
+
+      setTransfer((prev) =>
+        prev
+          ? {
+              ...prev,
+              rawStatus: "attested",
+              stage: "minting",
+              updatedAt: new Date().toISOString(),
+              steps: prev.steps.map((s) =>
+                s.id === "attestation" ? { ...s, state: "success", errorMessage: null } : s
+              ),
+            }
+          : prev
+      );
+
+      toast({
+        title: "Switching network",
+        description: `Switching wallet to ${getOptionByChain(dstChain).label}…`,
+      });
+      await switchChainAsync({ chainId: dstChainId });
+
+      toast({
+        title: "Mint USDC",
+        description: `Minting ${transfer.amount} USDC on ${getOptionByChain(dstChain).label}…`,
+      });
+
+      const mintTxHash = await externalWalletClient.writeContract({
+        abi: CCTP_MESSAGE_TRANSMITTER_ABI,
+        account: walletAddress,
+        address: CCTP_V2_MESSAGE_TRANSMITTER,
+        args: [attestationResult.message, attestationResult.attestation],
+        chain: dstChainDef,
+        functionName: "receiveMessage",
+      });
+
+      const mintExplorerUrl = getCctpExplorerUrl(dstChain, mintTxHash);
+      setTransfer((prev) =>
+        prev
+          ? {
+              ...prev,
+              txHashMint: mintTxHash,
+              rawStatus: "minting",
+              updatedAt: new Date().toISOString(),
+              steps: prev.steps.map((s) =>
+                s.id === "mint"
+                  ? { ...s, txHash: mintTxHash, explorerUrl: mintExplorerUrl }
+                  : s
+              ),
+            }
+          : prev
+      );
+
+      await destPublicClient!.waitForTransactionReceipt({ hash: mintTxHash });
+
+      setTransfer((prev) =>
+        prev
+          ? {
+              ...prev,
+              stage: "completed",
+              status: "settled",
+              rawStatus: "completed",
+              txHash: mintTxHash,
+              txHashMint: mintTxHash,
+              errorReason: null,
+              updatedAt: new Date().toISOString(),
+              steps: prev.steps.map((s) =>
+                s.id === "mint"
+                  ? {
+                      ...s,
+                      state: "success",
+                      txHash: mintTxHash,
+                      explorerUrl: mintExplorerUrl,
+                      errorMessage: null,
+                    }
+                  : s
+              ),
+            }
+          : prev
+      );
+
+      clearStoredActiveTransfer();
+      setIsSuccessDialogOpen(true);
+      toast({
+        title: "Bridge completed",
+        description: `${transfer.amount} ${tokenSymbol} arrived on ${getOptionByChain(dstChain).label}.`,
+      });
+    } catch (error) {
+      const errMsg = getExternalBridgeErrorMessage(error);
+      const isAttestationTimeout = errMsg.toLowerCase().includes("attestation") && errMsg.toLowerCase().includes("timed out");
+
+      setTransfer((prev) =>
+        prev
+          ? {
+              ...prev,
+              status: isAttestationTimeout ? "processing" : "failed",
+              rawStatus: isAttestationTimeout ? "burned" : "failed",
+              stage: isAttestationTimeout ? "attesting" : "failed",
+              errorReason: isAttestationTimeout ? null : errMsg,
+              updatedAt: new Date().toISOString(),
+              steps: prev.steps.map((s) =>
+                s.id === "attestation" && isAttestationTimeout
+                  ? { ...s, state: "pending", errorMessage: null }
+                  : s.state === "pending"
+                    ? { ...s, state: "error", errorMessage: errMsg }
+                    : s
+              ),
+            }
+          : prev
+      );
+
+      setErrorMessage(
+        isAttestationTimeout
+          ? "Attestation is still pending. Try 'Retry attestation & mint' again in a few minutes."
+          : errMsg
+      );
+      toast({
+        title: isAttestationTimeout ? "Attestation still pending" : "Bridge retry failed",
+        description: isAttestationTimeout
+          ? "Circle has not published the attestation yet."
+          : errMsg,
+        variant: isAttestationTimeout ? undefined : "destructive",
+      });
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
+  async function submitExternalBridge() {
+    const srcChainId = CHAIN_ID_BY_BRIDGE_CHAIN[sourceChain];
+    const dstChainId = CHAIN_ID_BY_BRIDGE_CHAIN[destinationChain];
+
+    if (!srcChainId || !dstChainId) {
+      setErrorMessage(
+        "External wallet bridge only supports EVM chains (Arc Testnet and Ethereum Sepolia)."
+      );
+      return;
+    }
+
+    if (!externalWalletClient) {
+      setErrorMessage(
+        "External wallet not connected. Connect MetaMask or another wallet to continue."
+      );
+      return;
+    }
+
+    const walletAddress = externalWalletClient.account?.address;
+    if (!walletAddress) {
+      setErrorMessage("Could not determine external wallet address.");
+      return;
+    }
+
+    const srcCctpDomain = CCTP_DOMAIN_BY_CHAIN[sourceChain];
+    const dstCctpDomain = CCTP_DOMAIN_BY_CHAIN[destinationChain];
+    if (srcCctpDomain === undefined || dstCctpDomain === undefined) {
+      setErrorMessage("CCTP domain not configured for the selected chain pair.");
+      return;
+    }
+
+    const burnTokenAddress = sourceTokenAddress as Address | undefined;
+    if (!burnTokenAddress) {
+      setErrorMessage("USDC token address not available for the source chain.");
+      return;
+    }
+
+    const srcChainDef = CHAIN_BY_ID[srcChainId];
+    const dstChainDef = CHAIN_BY_ID[dstChainId];
+    if (!srcChainDef || !dstChainDef) {
+      setErrorMessage("Chain configuration not found.");
+      return;
+    }
+
+    const transferId = `ext-${Date.now()}`;
+    const now = new Date().toISOString();
+    const referenceId = `BRIDGE-EXT-${sourceChain}-TO-${destinationChain}-${Date.now()}`;
+    const amountBigInt = parseUnits(amount, CCTP_USDC_DECIMALS);
+    const mintRecipient = evmAddressToBytes32(destinationAddress as Address);
+
+    const initialTransfer: CircleTransfer = {
+      id: transferId,
+      transferId,
+      stage: "burning",
+      status: "processing",
+      rawStatus: "burning",
+      txHash: null,
+      txHashBurn: null,
+      txHashMint: null,
+      sourceAddress: walletAddress,
+      walletId: null,
+      walletAddress,
+      sourceBlockchain: sourceChain,
+      sourceChain,
+      destinationChain,
+      blockchain: destinationChain,
+      destinationAddress,
+      amount,
+      tokenAddress: burnTokenAddress,
+      provider: "CCTP V2 (External Wallet)",
+      referenceId,
+      createdAt: now,
+      updatedAt: now,
+      errorReason: null,
+      steps: [
+        {
+          id: "burn",
+          name: `Burn on ${sourceOption.label}`,
+          state: "pending",
+          txHash: null,
+          explorerUrl: null,
+          errorMessage: null,
+        },
+        {
+          id: "attestation",
+          name: "Waiting for Circle attestation",
+          state: "pending",
+          txHash: null,
+          explorerUrl: null,
+          errorMessage: null,
+        },
+        {
+          id: "mint",
+          name: `Mint on ${destinationOption.label}`,
+          state: "pending",
+          txHash: null,
+          explorerUrl: null,
+          errorMessage: null,
+        },
+      ],
+    };
+
+    setIsSubmitting(true);
+    setErrorMessage(null);
+    setIsReviewDialogOpen(false);
+    setTransfer(initialTransfer);
+
+    let burnTxHash: Hex | null = null;
+    let burnExplorerUrl: string | null = null;
+
+    try {
+      // ── Step 1: Switch to source chain ──
+      toast({
+        title: "Switching network",
+        description: `Switching wallet to ${sourceOption.label}…`,
+      });
+      await switchChainAsync({ chainId: srcChainId });
+
+      // ── Step 2: Approve USDC spend by CCTP TokenMessenger ──
+      toast({
+        title: "Approve USDC",
+        description: `Approve ${amount} USDC for CCTP bridge…`,
+      });
+      const approveTxHash = await externalWalletClient.writeContract({
+        abi: CCTP_ERC20_APPROVE_ABI,
+        account: walletAddress,
+        address: burnTokenAddress,
+        args: [CCTP_V2_TOKEN_MESSENGER, amountBigInt],
+        chain: srcChainDef,
+        functionName: "approve",
+      });
+      await sourcePublicClient!.waitForTransactionReceipt({ hash: approveTxHash });
+
+      // ── Step 3: depositForBurn ──
+      toast({
+        title: "Burn USDC",
+        description: `Burning ${amount} USDC on ${sourceOption.label} via CCTP…`,
+      });
+      burnTxHash = await externalWalletClient.writeContract({
+        abi: CCTP_TOKEN_MESSENGER_ABI,
+        account: walletAddress,
+        address: CCTP_V2_TOKEN_MESSENGER,
+        args: [
+          amountBigInt,
+          dstCctpDomain,
+          mintRecipient,
+          burnTokenAddress,
+          ZERO_BYTES32,
+          0n,
+          CCTP_MIN_FINALITY_FAST,
+        ],
+        chain: srcChainDef,
+        functionName: "depositForBurn",
+      });
+
+      burnExplorerUrl = getCctpExplorerUrl(sourceChain, burnTxHash);
+      setTransfer((prev) =>
+        prev
+          ? {
+              ...prev,
+              txHashBurn: burnTxHash,
+              txHash: burnTxHash,
+              rawStatus: "burning",
+              updatedAt: new Date().toISOString(),
+              steps: prev.steps.map((s) =>
+                s.id === "burn"
+                  ? { ...s, txHash: burnTxHash, explorerUrl: burnExplorerUrl }
+                  : s
+              ),
+            }
+          : prev
+      );
+
+      const burnReceipt = await sourcePublicClient!.waitForTransactionReceipt({
+        hash: burnTxHash,
+      });
+
+      setTransfer((prev) =>
+        prev
+          ? {
+              ...prev,
+              rawStatus: "burned",
+              updatedAt: new Date().toISOString(),
+              steps: prev.steps.map((s) =>
+                s.id === "burn"
+                  ? {
+                      ...s,
+                      state: "success",
+                      txHash: burnTxHash,
+                      explorerUrl: burnExplorerUrl,
+                    }
+                  : s
+              ),
+            }
+          : prev
+      );
+
+      // ── Step 4: Extract CCTP message bytes from receipt logs ──
+      const messageBytes = extractMessageBytesFromLogs(
+        burnReceipt.logs as readonly {
+          address: string;
+          topics: readonly string[];
+          data: string;
+        }[]
+      );
+      if (!messageBytes) {
+        throw new Error(
+          "Could not extract the CCTP message from the burn transaction receipt. " +
+            "The burn succeeded on-chain but attestation cannot proceed automatically."
+        );
+      }
+
+      // ── Step 5: Poll Circle attestation API ──
+      toast({
+        title: "Waiting for attestation",
+        description:
+          "Circle is attesting the burn. This may take a few minutes on testnet…",
+      });
+      const attestationResult = await pollCctpV2Attestation(
+        srcCctpDomain,
+        burnTxHash,
+        (attempt) => {
+          if (attempt > 1 && attempt % 6 === 0) {
+            const elapsed = Math.floor(
+              (attempt * CCTP_ATTESTATION_POLL_INTERVAL_MS) / 1000 / 60
+            );
+            toast({
+              title: "Still waiting for attestation",
+              description: `Circle attestation pending (~${elapsed} min elapsed)…`,
+            });
+          }
+        }
+      );
+
+      setTransfer((prev) =>
+        prev
+          ? {
+              ...prev,
+              rawStatus: "attested",
+              updatedAt: new Date().toISOString(),
+              steps: prev.steps.map((s) =>
+                s.id === "attestation" ? { ...s, state: "success" } : s
+              ),
+            }
+          : prev
+      );
+
+      // ── Step 6: Switch to destination chain ──
+      toast({
+        title: "Switching network",
+        description: `Switching wallet to ${destinationOption.label}…`,
+      });
+      await switchChainAsync({ chainId: dstChainId });
+
+      // ── Step 7: receiveMessage (mint) ──
+      toast({
+        title: "Mint USDC",
+        description: `Minting ${amount} USDC on ${destinationOption.label}…`,
+      });
+      const mintTxHash = await externalWalletClient.writeContract({
+        abi: CCTP_MESSAGE_TRANSMITTER_ABI,
+        account: walletAddress,
+        address: CCTP_V2_MESSAGE_TRANSMITTER,
+        args: [attestationResult.message, attestationResult.attestation],
+        chain: dstChainDef,
+        functionName: "receiveMessage",
+      });
+
+      const mintExplorerUrl = getCctpExplorerUrl(destinationChain, mintTxHash);
+      setTransfer((prev) =>
+        prev
+          ? {
+              ...prev,
+              txHashMint: mintTxHash,
+              rawStatus: "minting",
+              updatedAt: new Date().toISOString(),
+              steps: prev.steps.map((s) =>
+                s.id === "mint"
+                  ? { ...s, txHash: mintTxHash, explorerUrl: mintExplorerUrl }
+                  : s
+              ),
+            }
+          : prev
+      );
+
+      await destPublicClient!.waitForTransactionReceipt({ hash: mintTxHash });
+
+      // ── Complete ──
+      const finalTransfer: CircleTransfer = {
+        ...initialTransfer,
+        stage: "completed",
+        status: "settled",
+        rawStatus: "completed",
+        txHash: mintTxHash,
+        txHashBurn: burnTxHash,
+        txHashMint: mintTxHash,
+        updatedAt: new Date().toISOString(),
+        errorReason: null,
+        steps: [
+          {
+            id: "burn",
+            name: `Burn on ${sourceOption.label}`,
+            state: "success",
+            txHash: burnTxHash,
+            explorerUrl: burnExplorerUrl,
+            errorMessage: null,
+          },
+          {
+            id: "attestation",
+            name: "Circle attestation confirmed",
+            state: "success",
+            txHash: null,
+            explorerUrl: null,
+            errorMessage: null,
+          },
+          {
+            id: "mint",
+            name: `Mint on ${destinationOption.label}`,
+            state: "success",
+            txHash: mintTxHash,
+            explorerUrl: mintExplorerUrl,
+            errorMessage: null,
+          },
+        ],
+      };
+
+      setTransfer(finalTransfer);
+      clearStoredActiveTransfer();
+
+      // Audit log: notify backend so the transfer is traceable in server logs.
+      // bridge.agent handles external_signer gracefully (returns a stub result).
+      try {
+        await createCircleTransfer({
+          sourceBlockchain: sourceChain,
+          blockchain: destinationChain,
+          amount,
+          destinationAddress,
+          tokenAddress: burnTokenAddress,
+          walletId: "",
+          bridgeExecutionMode: "external_signer",
+          sourceAccountType: "external_wallet",
+        });
+      } catch {
+        // Non-fatal — audit log is best-effort. The bridge is already settled.
+      }
+
+      setIsSuccessDialogOpen(true);
+      toast({
+        title: "Bridge completed",
+        description: `${amount} ${tokenSymbol} arrived on ${destinationOption.label}.`,
+      });
+    } catch (error) {
+      const errMsg = getExternalBridgeErrorMessage(error);
+      const isAttestationTimeout =
+        errMsg.toLowerCase().includes("attestation") &&
+        errMsg.toLowerCase().includes("timed out") &&
+        Boolean(burnTxHash);
+
+      setTransfer((prev) =>
+        prev
+          ? {
+              ...prev,
+              status: isAttestationTimeout ? "processing" : "failed",
+              rawStatus: isAttestationTimeout ? "burned" : "failed",
+              stage: isAttestationTimeout ? "attesting" : "failed",
+              errorReason: isAttestationTimeout ? null : errMsg,
+              updatedAt: new Date().toISOString(),
+              steps: prev.steps.map((s) =>
+                s.id === "attestation" && isAttestationTimeout
+                  ? { ...s, state: "pending", errorMessage: null }
+                  : s.state === "pending"
+                  ? { ...s, state: "error", errorMessage: errMsg }
+                  : s
+              ),
+            }
+          : prev
+      );
+      setErrorMessage(
+        isAttestationTimeout
+          ? "Attestation is still pending. Use 'Retry attestation & mint' to continue when Circle publishes it."
+          : errMsg
+      );
+      toast({
+        title: isAttestationTimeout
+          ? "Attestation still pending"
+          : "Bridge transfer failed",
+        description: isAttestationTimeout
+          ? "Burn is confirmed. Retry attestation and mint in a few minutes."
+          : errMsg,
+        variant: isAttestationTimeout ? undefined : "destructive",
+      });
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
   async function submitBridge() {
+    if (isExternalEvmBridge) {
+      await submitExternalBridge();
+      return;
+    }
+
+    if (isExternalBridgeMode) {
+      setErrorMessage(
+        externalBridgeModeMessage ??
+          "External wallet bridge is not available for the selected route."
+      );
+      setIsReviewDialogOpen(false);
+      return;
+    }
+
     if (!transferWallet) {
       setErrorMessage(getTreasurySetupMessage(sourceOption.label));
       setIsReviewDialogOpen(false);
@@ -1358,6 +2239,8 @@ export function BridgeScreen() {
         amount,
         blockchain: destinationChain,
         sourceBlockchain: sourceChain,
+        bridgeExecutionMode,
+        sourceAccountType,
         destinationAddress,
         referenceId,
         tokenAddress: destinationTokenAddress,
@@ -1375,7 +2258,7 @@ export function BridgeScreen() {
       setDestinationAddress(queuedTransfer.destinationAddress || destinationAddress);
       toast({
         title: "Bridge started",
-        description: `Estimated time ${BRIDGE_ESTIMATED_TIME_LABEL}. You can leave this page and come back later while Circle finishes the bridge.`,
+        description: `Estimated time ${estimatedTimeLabel}. You can leave this page and come back later while Circle finishes the bridge.`,
       });
     } catch (error) {
       const message = getBridgeErrorMessage(error, {
@@ -1439,6 +2322,44 @@ export function BridgeScreen() {
               </p>
             </div>
 
+            {isExternalBridgeMode && externalBridgeModeMessage ? (
+              <div className="rounded-2xl border border-amber-500/25 bg-amber-500/5 px-4 py-3 text-sm text-amber-700 dark:text-amber-300">
+                {externalBridgeModeMessage}
+              </div>
+            ) : isExternalEvmBridge ? (
+              <div className="space-y-3">
+                <div className="rounded-2xl border border-primary/25 bg-primary/5 px-4 py-3 text-sm text-primary/90">
+                  External wallet mode: your connected wallet will sign each CCTP V2
+                  step directly (approve → burn → mint). No treasury wallet required.
+                </div>
+                {externalWalletAddress ? (
+                  <div className="rounded-2xl border border-border/40 bg-background/40 p-3 text-sm">
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-muted-foreground/70">Connected wallet</span>
+                      <span className="font-mono text-xs">{shortenAddress(externalWalletAddress)}</span>
+                    </div>
+                    <div className="mt-2 flex items-center justify-between gap-3">
+                      <span className="text-muted-foreground/70">USDC balance ({sourceOption.label})</span>
+                      <span className={`font-mono text-xs ${
+                        !hasEnoughExternalUsdc ? "text-destructive" : ""
+                      }`}>{externalUsdcBalanceLabel}</span>
+                    </div>
+                    {externalWalletChainId && externalWalletChainId !== sourceChainId ? (
+                      <p className="mt-2 text-xs text-amber-600 dark:text-amber-400">
+                        Wallet is on a different chain. It will auto-switch when you start the bridge.
+                      </p>
+                    ) : null}
+                  </div>
+                ) : null}
+                {isPositiveDecimal(amount) && !hasEnoughExternalUsdc ? (
+                  <div className="rounded-2xl border border-destructive/25 bg-destructive/5 px-4 py-3 text-sm text-destructive">
+                    Insufficient USDC: wallet holds {externalUsdcBalanceLabel} on {sourceOption.label},
+                    but {amount} USDC is needed. Fund the wallet before bridging.
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+
             {transfer ? (
               <div className="rounded-2xl border border-primary/20 bg-primary/5 p-4">
                 <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
@@ -1450,25 +2371,38 @@ export function BridgeScreen() {
                       {getTransferHeadline(transfer, currentStep?.name)}
                     </h2>
                     <p className="mt-1 text-sm text-muted-foreground/80">
-                      Estimated time {BRIDGE_ESTIMATED_TIME_LABEL}. You can leave
+                      Estimated time {estimatedTimeLabel}. You can leave
                       this page and tracking will resume when you return.
                     </p>
                   </div>
-                  <div
-                    className={`inline-flex items-center rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-[0.14em] ${getStatusBadgeClass(
-                      transfer
-                    )}`}
-                  >
-                    {isPollingTransfer && isTransferActive ? (
-                      <RefreshCw className="mr-2 h-3.5 w-3.5 animate-spin" />
-                    ) : transfer.status === "settled" ? (
-                      <CheckCircle2 className="mr-2 h-3.5 w-3.5" />
-                    ) : transfer.status === "failed" ? (
-                      <AlertTriangle className="mr-2 h-3.5 w-3.5" />
-                    ) : (
-                      <Clock3 className="mr-2 h-3.5 w-3.5" />
-                    )}
-                    {getTransferStatusLabel(transfer)}
+                  <div className="flex flex-col items-end gap-2">
+                    <div
+                      className={`inline-flex items-center rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-[0.14em] ${getStatusBadgeClass(
+                        transfer
+                      )}`}
+                    >
+                      {isPollingTransfer && isTransferActive ? (
+                        <RefreshCw className="mr-2 h-3.5 w-3.5 animate-spin" />
+                      ) : transfer.status === "settled" ? (
+                        <CheckCircle2 className="mr-2 h-3.5 w-3.5" />
+                      ) : transfer.status === "failed" ? (
+                        <AlertTriangle className="mr-2 h-3.5 w-3.5" />
+                      ) : (
+                        <Clock3 className="mr-2 h-3.5 w-3.5" />
+                      )}
+                      {getTransferStatusLabel(transfer)}
+                    </div>
+                    {canDismissTransfer ? (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-7 px-3 text-xs"
+                        onClick={dismissTransfer}
+                        disabled={isSubmitting}
+                      >
+                        Start new bridge
+                      </Button>
+                    ) : null}
                   </div>
                 </div>
 
@@ -1478,7 +2412,38 @@ export function BridgeScreen() {
                   </div>
                 ) : null}
 
-                {isReconnectingToTracking ? (
+                {isTransferStuck ? (
+                  <div className="mt-4 rounded-2xl border border-destructive/25 bg-destructive/5 p-4">
+                    <p className="text-sm font-semibold text-destructive">
+                      Transfer has been processing for over 15 minutes
+                    </p>
+                    <p className="mt-1 text-sm text-destructive/80">
+                      The Circle bridge did not complete within the expected time.
+                      This is likely a testnet congestion or attestation failure.
+                      You can safely dismiss this and start a new bridge.
+                    </p>
+                    {canRetryExternalAttestation ? (
+                      <Button
+                        size="sm"
+                        className="mt-3"
+                        onClick={() => {
+                          void retryExternalAttestationAndMint();
+                        }}
+                        disabled={isSubmitting}
+                      >
+                        Retry attestation & mint
+                      </Button>
+                    ) : null}
+                    <Button
+                      size="sm"
+                      variant="destructive"
+                      className="mt-3"
+                      onClick={dismissTransfer}
+                    >
+                      Dismiss and start new bridge
+                    </Button>
+                  </div>
+                ) : isReconnectingToTracking ? (
                   <div className="mt-4 rounded-2xl border border-amber-500/25 bg-amber-500/5 px-4 py-3 text-sm text-amber-700 dark:text-amber-300">
                     Reconnecting to tracking... Redis cache was cleared or
                     rotated, so WizPay is retrying from durable bridge history
@@ -1751,7 +2716,8 @@ export function BridgeScreen() {
                   disabled={
                     isSubmitting ||
                     isWalletLoading ||
-                    isWalletBootstrapping
+                    isWalletBootstrapping ||
+                    (isExternalBridgeMode && !isExternalEvmBridge)
                   }
                   className="h-11 px-5"
                 >
@@ -1766,6 +2732,12 @@ export function BridgeScreen() {
                   <p className="text-sm text-muted-foreground/70">
                     A bridge is already running. You can leave this page and come
                     back later while tracking continues.
+                  </p>
+                ) : isExternalBridgeMode && !isExternalEvmBridge ? (
+                  <p className="text-sm text-muted-foreground/70">
+                    External wallet mode is selected. Solana Devnet routes only
+                    work with App Wallet (Circle). Switch wallet mode or use an
+                    EVM route (Arc Testnet ↔ Ethereum Sepolia).
                   </p>
                 ) : null}
               </div>
@@ -2064,10 +3036,9 @@ export function BridgeScreen() {
             <DialogHeader className="space-y-2">
               <DialogTitle className="text-xl">Review bridge transfer</DialogTitle>
               <DialogDescription>
-                This bridge will first open Circle Wallet so you can approve a
-                deposit from your personal {sourceOption.label} wallet into the
-                selected source treasury wallet. After that deposit is confirmed,
-                the backend treasury wallet completes the bridge.
+                {isExternalEvmBridge
+                  ? "Your external wallet will sign 3 transactions: USDC approve, burn (depositForBurn), and mint (receiveMessage) on the destination chain. Keep your wallet extension open."
+                  : "This bridge will first open Circle Wallet so you can approve a deposit from your personal " + sourceOption.label + " wallet into the selected source treasury wallet. After that deposit is confirmed, the backend treasury wallet completes the bridge."}
               </DialogDescription>
             </DialogHeader>
 
@@ -2091,21 +3062,44 @@ export function BridgeScreen() {
                     {destinationAddress || "Unavailable"}
                   </span>
                 </div>
-                <div className="mt-3 flex items-start justify-between gap-3 text-sm">
-                  <span className="text-muted-foreground/70">
-                    Source treasury wallet
-                  </span>
-                  <span className="max-w-[12rem] break-all text-right font-mono font-medium">
-                    {transferWallet?.walletAddress || "Unavailable"}
-                  </span>
-                </div>
+                {isExternalEvmBridge ? (
+                  <div className="mt-3 flex items-start justify-between gap-3 text-sm">
+                    <span className="text-muted-foreground/70">Signing wallet</span>
+                    <span className="max-w-[12rem] break-all text-right font-mono font-medium">
+                      {externalWalletAddress || "Unavailable"}
+                    </span>
+                  </div>
+                ) : (
+                  <div className="mt-3 flex items-start justify-between gap-3 text-sm">
+                    <span className="text-muted-foreground/70">
+                      Source treasury wallet
+                    </span>
+                    <span className="max-w-[12rem] break-all text-right font-mono font-medium">
+                      {transferWallet?.walletAddress || "Unavailable"}
+                    </span>
+                  </div>
+                )}
               </div>
 
-              <div className="rounded-2xl border border-amber-500/25 bg-amber-500/5 px-4 py-3 text-sm text-amber-700 dark:text-amber-300">
-                Circle burn, attestation, and mint can take a while. The progress
-                tracker will keep updating after you submit, and you can leave the
-                page at any time.
-              </div>
+              {isExternalEvmBridge ? (
+                <div className="rounded-2xl border border-primary/20 bg-primary/5 p-3 text-sm">
+                  <p className="font-semibold text-primary/80 mb-2">3 wallet confirmations required</p>
+                  <ol className="space-y-1 text-muted-foreground/80 list-none">
+                    <li>① Approve USDC spend on {sourceOption.label}</li>
+                    <li>② Burn USDC via CCTP V2 on {sourceOption.label}</li>
+                    <li>③ Mint USDC on {destinationOption.label} (auto-switched)</li>
+                  </ol>
+                  <p className="mt-2 text-xs text-muted-foreground/60">
+                    Estimated time: {getEstimatedBridgeTimeLabel(sourceChain, true)} including Circle attestation.
+                  </p>
+                </div>
+              ) : (
+                <div className="rounded-2xl border border-amber-500/25 bg-amber-500/5 px-4 py-3 text-sm text-amber-700 dark:text-amber-300">
+                  Circle burn, attestation, and mint can take a while. The progress
+                  tracker will keep updating after you submit, and you can leave the
+                  page at any time.
+                </div>
+              )}
 
               <div className="flex flex-col gap-3 sm:flex-row">
                 <Button

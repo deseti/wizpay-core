@@ -30,6 +30,8 @@ services:
       CIRCLE_WALLET_ADDRESS_ARC: ${CIRCLE_WALLET_ADDRESS_ARC}
       CIRCLE_WALLET_ADDRESS_SEPOLIA: ${CIRCLE_WALLET_ADDRESS_SEPOLIA}
       CIRCLE_WALLET_ADDRESS_SOLANA: ${CIRCLE_WALLET_ADDRESS_SOLANA}
+      # ── Feature flags ────────────────────────────────────────────────────
+      WIZPAY_BRIDGE_EXTERNAL_ENABLED: ${WIZPAY_BRIDGE_EXTERNAL_ENABLED:-false}
     ports:
       - "4000:4000"
     networks:
@@ -62,6 +64,8 @@ services:
         NEXT_PUBLIC_CIRCLE_PASSKEY_CLIENT_URL: ${NEXT_PUBLIC_CIRCLE_PASSKEY_CLIENT_URL}
         NEXT_PUBLIC_RPC_URL: ${NEXT_PUBLIC_RPC_URL}
         NEXT_PUBLIC_ARC_TESTNET_RPC_URL: ${NEXT_PUBLIC_ARC_TESTNET_RPC_URL}
+        # ── Feature flags (baked into Next.js bundle at build time) ───────────
+        NEXT_PUBLIC_WIZPAY_BRIDGE_EXTERNAL_ENABLED: ${NEXT_PUBLIC_WIZPAY_BRIDGE_EXTERNAL_ENABLED:-false}
     depends_on:
       backend:
         condition: service_started
