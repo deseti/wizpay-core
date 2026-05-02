@@ -2277,7 +2277,11 @@ export function BridgeScreen() {
           walletId: transferWallet.walletId || undefined,
           walletAddress: transferWallet.walletAddress,
           userEmail: userEmail || undefined,
-          walletMode: "PASSKEY",
+          // IMPORTANT:
+          // For treasury bridge execution we must use the existing bridge agent
+          // path (real backend on-chain execution). PASSKEY mode in backend
+          // currently records external_signer intent only.
+          walletMode: "W3S",
         });
 
         terminalNoticeRef.current = null;
