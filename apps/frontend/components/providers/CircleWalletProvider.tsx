@@ -401,8 +401,6 @@ function CircleWalletProviderInner({
     [],
   );
 
-  const initializePasskeyWallets
-
   const initializePasskeyWallets = useCallback(
     async ({
       credential,
@@ -443,8 +441,8 @@ function CircleWalletProviderInner({
           accountType: "EOA",
         } as CircleUserWallet);
       }
-    },
       return runtimeSet;
+    },
     [applyPasskeyRuntimeSet],
   );
 

@@ -1204,18 +1204,18 @@ export function BridgeScreen() {
             clearStoredActiveTransfer();
             setTransfer(null);
             setIsReconnectingToTracking(false);
-            const {
-              arcWallet,
-              sepoliaWallet,
-              solanaWallet,
-              authMethod,
-              createContractExecutionChallenge,
-              createTransferChallenge,
-              executeChallenge,
-              getWalletBalances,
-              savePasskeySolanaAddress,
-              userEmail,
-            } = useCircleWallet();
+            setErrorMessage(
+              "Bridge tracking timed out. The task no longer exists on backend."
+            );
+            return;
+          }
+
+          setIsReconnectingToTracking(true);
+          setErrorMessage(
+            "Bridge belum terdeteksi di backend. Sistem sedang mencoba reconnect status..."
+          );
+          return;
+        }
 
         setIsReconnectingToTracking(false);
         setErrorMessage(
@@ -1344,25 +1344,24 @@ export function BridgeScreen() {
     }
   }
 
+  const copyWalletAddress = useCallback(async (address: string, key: string) => {
+    try {
+      await navigator.clipboard.writeText(address);
+      setCopiedWallet(key);
+      window.setTimeout(() => setCopiedWallet(null), 2000);
+    } catch {
+      // clipboard not available
+    }
+  }, []);
+
+  const handleSavePasskeySolana = useCallback(() => {
+    const trimmed = passkeySolanaInput.trim();
+    if (!trimmed) return;
+    savePasskeySolanaAddress(trimmed);
+    setPasskeySolanaInput("");
+  }, [passkeySolanaInput, savePasskeySolanaAddress]);
+
   async function refreshDestinationWallets() {
-      const copyWalletAddress = useCallback(async (address: string, key: string) => {
-        try {
-          await navigator.clipboard.writeText(address);
-          setCopiedWallet(key);
-          window.setTimeout(() => setCopiedWallet(null), 2000);
-        } catch {
-          // clipboard not available
-        }
-      }, []);
-
-      function handleSavePasskeySolana() {
-        const trimmed = passkeySolanaInput.trim();
-        if (!trimmed) return;
-        savePasskeySolanaAddress(trimmed);
-        setPasskeySolanaInput("");
-      }
-
-      async function refreshDestinationWallets() {
     setIsDestinationWalletsLoading(true);
 
     const chains = DESTINATION_OPTIONS.map((option) => option.id);
@@ -2192,64 +2191,61 @@ export function BridgeScreen() {
 
       try {
         const referenceId = `BRIDGE-${sourceChain}-TO-${destinationChain}-${Date.now()}`;
-        const userSourceWallet =
-          sourceChain === "ARC-TESTNET"
-            ? arcWallet
-            : sourceChain === "ETH-SEPOLIA"
-              ? sepoliaWallet
-              : solanaWallet;
+        const isSepoliaPasskeySource = sourceChain === "ETH-SEPOLIA";
 
-        if (!userSourceWallet?.id) {
-          throw new Error(`Personal ${sourceOption.label} wallet not connected.`);
-        }
+        if (!isSepoliaPasskeySource) {
+          const userSourceWallet =
+            sourceChain === "ARC-TESTNET" ? arcWallet : solanaWallet;
 
-        const balances = await getWalletBalances(userSourceWallet.id);
-        const usdcBalance = balances.find(
-          (b) =>
-            b.symbol === "USDC" ||
-            b.tokenAddress?.toLowerCase() === sourceTokenAddress?.toLowerCase()
-        );
+          if (!userSourceWallet?.id) {
+            throw new Error(`Personal ${sourceOption.label} wallet not connected.`);
+          }
 
-        if (!usdcBalance) {
-          throw new Error(
-            `Could not find USDC token in your personal ${sourceOption.label} wallet. Available tokens: ${balances.map((b) => `${b.symbol}=${b.tokenAddress}`).join(", ")}`
+          const balances = await getWalletBalances(userSourceWallet.id);
+          const usdcBalance = balances.find(
+            (b) =>
+              b.symbol === "USDC" ||
+              b.tokenAddress?.toLowerCase() === sourceTokenAddress?.toLowerCase()
           );
-        }
 
-        if (Number(usdcBalance.amount) < Number(amount)) {
-          throw new Error(
-            `Insufficient personal balance. You only have ${usdcBalance.amount} USDC on ${sourceOption.label}.`
-          );
-        }
+          if (!usdcBalance) {
+            throw new Error(
+              `Could not find USDC token in your personal ${sourceOption.label} wallet. Available tokens: ${balances.map((b) => `${b.symbol}=${b.tokenAddress}`).join(", ")}`
+            );
+          }
 
-        if (!sourceTokenAddress) {
-          throw new Error(
-            `USDC address is not configured for ${sourceOption.label}.`
-          );
-        }
+          if (Number(usdcBalance.amount) < Number(amount)) {
+            throw new Error(
+              `Insufficient personal balance. You only have ${usdcBalance.amount} USDC on ${sourceOption.label}.`
+            );
+          }
 
-        toast({
-          title: "Step 1: Deposit",
-          description: `Approve the transfer of ${amount} USDC from your ${sourceOption.label} wallet to the treasury wallet using passkey.`,
-        });
+          if (!sourceTokenAddress) {
+            throw new Error(`USDC address is not configured for ${sourceOption.label}.`);
+          }
 
-        setIsDepositingToTreasury(true);
+          toast({
+            title: "Step 1: Deposit",
+            description: `Approve the transfer of ${amount} USDC from your ${sourceOption.label} wallet to the treasury wallet using passkey.`,
+          });
 
-        const passkeyTransferCallData = encodeFunctionData({
-          abi: ERC20_ABI,
-          functionName: "transfer",
-          args: [
-            transferWallet.walletAddress as Address,
-            parseUnits(amount.toString(), CCTP_USDC_DECIMALS),
-          ],
-        });
+          setIsDepositingToTreasury(true);
 
-        const challenge = await createContractExecutionChallenge({
-          walletId: userSourceWallet.id,
-          contractAddress: sourceTokenAddress,
-          callData: passkeyTransferCallData,
-          refId: `PASSKEY-DEPOSIT-${referenceId}`,
-        });
+          const passkeyTransferCallData = encodeFunctionData({
+            abi: ERC20_ABI,
+            functionName: "transfer",
+            args: [
+              transferWallet.walletAddress as Address,
+              parseUnits(amount.toString(), CCTP_USDC_DECIMALS),
+            ],
+          });
+
+          const challenge = await createContractExecutionChallenge({
+            walletId: userSourceWallet.id,
+            contractAddress: sourceTokenAddress,
+            callData: passkeyTransferCallData,
+            refId: `PASSKEY-DEPOSIT-${referenceId}`,
+          });
 
           await executeChallenge(challenge.challengeId);
 
@@ -2259,13 +2255,12 @@ export function BridgeScreen() {
           });
 
           await new Promise((resolve) => setTimeout(resolve, 2500));
-
           setIsDepositingToTreasury(false);
         } else {
           // Sepolia passkey source: treasury-direct bridge (no personal wallet deposit).
           toast({
             title: "Bridge",
-            description: `Ethereum Sepolia passkey wallets use treasury-direct bridging. Initiating bridge of ${amount} USDC to ${destinationOption.label}…`,
+            description: `Ethereum Sepolia passkey wallets use treasury-direct bridging. Initiating bridge of ${amount} USDC to ${destinationOption.label}...`,
           });
         }
 
@@ -2342,72 +2337,16 @@ export function BridgeScreen() {
       return;
     }
 
-      try {
-        const referenceId = `BRIDGE-${sourceChain}-TO-${destinationChain}-${Date.now()}`;
+    setIsSubmitting(true);
+    setErrorMessage(null);
+    setIsReviewDialogOpen(false);
+    setIsSuccessDialogOpen(false);
+    reconnectingPollCountRef.current = 0;
+    setIsReconnectingToTracking(false);
 
-        // ETH-SEPOLIA passkey source: Circle modular SDK does NOT support Ethereum Sepolia,
-        // so passkey wallets cannot sign transactions on that chain. Bridge directly from
-        // the treasury's existing Sepolia USDC balance — no personal wallet deposit needed.
-        const isSepoliaPasskeySource = sourceChain === "ETH-SEPOLIA";
+    try {
+      const referenceId = `BRIDGE-${sourceChain}-TO-${destinationChain}-${Date.now()}`;
 
-        if (!isSepoliaPasskeySource) {
-          // ARC-TESTNET source: verify personal wallet balance and do deposit via passkey
-          const userSourceWallet = sourceChain === "ARC-TESTNET" ? arcWallet : solanaWallet;
-
-          if (!userSourceWallet?.id) {
-            throw new Error(`Personal ${sourceOption.label} wallet not connected.`);
-          }
-
-          const balances = await getWalletBalances(userSourceWallet.id);
-          const usdcBalance = balances.find(
-            (b) =>
-              b.symbol === "USDC" ||
-              b.tokenAddress?.toLowerCase() === sourceTokenAddress?.toLowerCase()
-          );
-
-          if (!usdcBalance) {
-            throw new Error(
-              `Could not find USDC token in your personal ${sourceOption.label} wallet. Available tokens: ${balances.map((b) => `${b.symbol}=${b.tokenAddress}`).join(", ")}`
-            );
-          }
-
-          if (Number(usdcBalance.amount) < Number(amount)) {
-            throw new Error(
-              `Insufficient personal balance. You only have ${usdcBalance.amount} USDC on ${sourceOption.label}.`
-            );
-          }
-
-          if (!sourceTokenAddress) {
-            throw new Error(`USDC address is not configured for ${sourceOption.label}.`);
-          }
-
-          toast({
-            title: "Step 1: Deposit",
-            description: `Approve the transfer of ${amount} USDC from your ${sourceOption.label} wallet to the treasury wallet using passkey.`,
-          });
-
-          setIsDepositingToTreasury(true);
-
-          const passkeyTransferCallData = encodeFunctionData({
-            abi: ERC20_ABI,
-            functionName: "transfer",
-            args: [
-              transferWallet.walletAddress as Address,
-              parseUnits(amount.toString(), CCTP_USDC_DECIMALS),
-            ],
-          });
-
-          const challenge = await createContractExecutionChallenge({
-            walletId: userSourceWallet.id,
-            contractAddress: sourceTokenAddress,
-            callData: passkeyTransferCallData,
-            refId: `PASSKEY-DEPOSIT-${referenceId}`,
-          });
-      await new Promise((resolve) => setTimeout(resolve, 2500));
-
-      setIsDepositingToTreasury(false);
-
-      // Treasury initiates the actual bridge
       const queuedTransfer = await createCircleTransfer({
         amount,
         blockchain: destinationChain,
@@ -2420,6 +2359,7 @@ export function BridgeScreen() {
         walletId: transferWallet.walletId || undefined,
         walletAddress: transferWallet.walletAddress,
         userEmail: userEmail || undefined,
+        walletMode: "W3S",
       });
 
       terminalNoticeRef.current = null;
