@@ -1037,13 +1037,13 @@ export function BridgeScreen() {
 
       setIsDepositingToTreasury(true);
 
-      // Circle popup: user confirms the deposit from personal wallet to treasury.
+      // Circle W3S transfer request expects human-readable token amounts
+      // (e.g. "5" USDC), not base units (e.g. "5000000").
       const transferChallenge = await createTransferChallenge({
         walletId: userSourceWallet.id,
         destinationAddress: transferWallet.walletAddress,
         tokenId: usdcBalance.tokenId,
-        // amounts must be in base units (6 decimals for USDC)
-        amounts: [parseUnits(amount.toString(), CCTP_USDC_DECIMALS).toString()],
+        amounts: [amount.toString()],
         feeLevel: "HIGH",
         refId: `W3S-DEPOSIT-${referenceId}`,
       });
