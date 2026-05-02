@@ -104,6 +104,8 @@ export function BridgeScreen() {
   const { data: externalWalletClient } = useWalletClient();
   const { switchChainAsync } = useSwitchChain();
   const { toast } = useToast();
+  const initialSourceBlockchain: CircleTransferBlockchain =
+    authMethod === "passkey" ? "ARC-TESTNET" : DEFAULT_SOURCE_BLOCKCHAIN;
 
   // ── Refs ─────────────────────────────────────────────────────────────────────
   const restoredTransferRef = useRef(false);
@@ -113,11 +115,11 @@ export function BridgeScreen() {
 
   // ── Route state ───────────────────────────────────────────────────────────────
   const [sourceChain, setSourceChain] = useState<CircleTransferBlockchain>(
-    DEFAULT_SOURCE_BLOCKCHAIN
+    initialSourceBlockchain
   );
   const [destinationChain, setDestinationChain] =
     useState<CircleTransferBlockchain>(
-      getDefaultDestinationBlockchain(DEFAULT_SOURCE_BLOCKCHAIN)
+      getDefaultDestinationBlockchain(initialSourceBlockchain)
     );
   const [amount, setAmount] = useState("");
   const [destinationAddress, setDestinationAddress] = useState("");
@@ -169,6 +171,10 @@ export function BridgeScreen() {
   const bridgeExecutionMode =
     walletMode === "external" ? "external_signer" : "app_treasury";
   const isPasskeyWalletSession = authMethod === "passkey";
+  const isPasskeyUnsupportedSource =
+    isPasskeyWalletSession && sourceChain === "ETH-SEPOLIA";
+  const passkeySourceRestrictionMessage =
+    "Passkey cannot use Ethereum Sepolia as source because user balance cannot be debited safely on this route. Use Google/App Wallet or External Wallet (MetaMask) for Sepolia source.";
   const sourceAccountType =
     bridgeExecutionMode === "external_signer"
       ? "external_wallet"
@@ -263,9 +269,15 @@ export function BridgeScreen() {
     Boolean(sourceTokenAddress) &&
     isPositiveDecimal(amount) &&
     !isSameChainRoute &&
+    !isPasskeyUnsupportedSource &&
     isValidDestinationAddress(destinationAddress, destinationChain) &&
     (canSubmitAppWallet || canSubmitExternalWallet) &&
     !isTransferActive;
+
+  const sourceChainOptions = isPasskeyWalletSession
+    ? DESTINATION_OPTIONS.filter((opt) => opt.id !== "ETH-SEPOLIA")
+    : DESTINATION_OPTIONS;
+  const destinationChainOptions = DESTINATION_OPTIONS;
 
   const canRetryExternalAttestation =
     isExternalBridgeTransfer &&
@@ -704,6 +716,11 @@ export function BridgeScreen() {
       return;
     }
 
+    if (isPasskeyUnsupportedSource) {
+      setErrorMessage(passkeySourceRestrictionMessage);
+      return;
+    }
+
     if (!transferWallet) {
       setErrorMessage(getTreasurySetupMessage(sourceOption.label));
       return;
@@ -777,6 +794,12 @@ export function BridgeScreen() {
   async function submitBridge() {
     // ── Passkey flow ────────────────────────────────────────────────────────────
     if (isPasskeyWalletSession) {
+      if (isPasskeyUnsupportedSource) {
+        setErrorMessage(passkeySourceRestrictionMessage);
+        setIsReviewDialogOpen(false);
+        return;
+      }
+
       if (!transferWallet) {
         setErrorMessage(getTreasurySetupMessage(sourceOption.label));
         setIsReviewDialogOpen(false);
@@ -799,86 +822,74 @@ export function BridgeScreen() {
 
       try {
         const referenceId = `BRIDGE-${sourceChain}-TO-${destinationChain}-${Date.now()}`;
-        const isSepoliaPasskeySource = sourceChain === "ETH-SEPOLIA";
+        // Arc/Solana passkey source: personal wallet → treasury deposit via passkey challenge
+        const userSourceWallet =
+          sourceChain === "ARC-TESTNET" ? arcWallet : solanaWallet;
 
-        if (!isSepoliaPasskeySource) {
-          // Arc/Solana passkey source: personal wallet → treasury deposit via passkey challenge
-          const userSourceWallet =
-            sourceChain === "ARC-TESTNET" ? arcWallet : solanaWallet;
-
-          if (!userSourceWallet?.id) {
-            throw new Error(
-              `Personal ${sourceOption.label} wallet not connected.`
-            );
-          }
-
-          const balances = await getWalletBalances(userSourceWallet.id);
-          const usdcBalance = balances.find(
-            (b) =>
-              b.symbol === "USDC" ||
-              b.tokenAddress?.toLowerCase() ===
-                sourceTokenAddress?.toLowerCase()
+        if (!userSourceWallet?.id) {
+          throw new Error(
+            `Personal ${sourceOption.label} wallet not connected.`
           );
-
-          if (!usdcBalance) {
-            throw new Error(
-              `Could not find USDC token in your personal ${sourceOption.label} wallet.`
-            );
-          }
-
-          if (!hasEnoughPersonalUsdc(usdcBalance.amount, amount)) {
-            throw new Error(
-              `Insufficient personal wallet balance on ${sourceOption.label}. Available: ${usdcBalance.amount} USDC, required: ${amount} USDC. Fund your personal Circle wallet (not treasury wallet) and retry.`
-            );
-          }
-
-          if (!sourceTokenAddress) {
-            throw new Error(
-              `USDC address is not configured for ${sourceOption.label}.`
-            );
-          }
-
-          toast({
-            title: "Step 1: Deposit",
-            description: `Approve the transfer of ${amount} USDC from your ${sourceOption.label} wallet to the treasury wallet using passkey.`,
-          });
-
-          setIsDepositingToTreasury(true);
-
-          const passkeyTransferCallData = encodeFunctionData({
-            abi: ERC20_ABI,
-            functionName: "transfer",
-            args: [
-              transferWallet.walletAddress as Address,
-              parseUnits(amount.toString(), CCTP_USDC_DECIMALS),
-            ],
-          });
-
-          const challenge = await createContractExecutionChallenge({
-            walletId: userSourceWallet.id,
-            contractAddress: sourceTokenAddress,
-            callData: passkeyTransferCallData,
-            refId: `PASSKEY-DEPOSIT-${referenceId}`,
-          });
-
-          await executeChallenge(challenge.challengeId);
-
-          toast({
-            title: "Step 2: Bridge",
-            description:
-              "Deposit confirmed. Executing bridge from the funded treasury wallet...",
-          });
-
-          await new Promise((resolve) => setTimeout(resolve, 2500));
-          setIsDepositingToTreasury(false);
-        } else {
-          // Sepolia passkey source: treasury-direct (no popup — Circle modular SDK
-          // does not support Ethereum Sepolia).
-          toast({
-            title: "Bridge",
-            description: `Ethereum Sepolia passkey wallets use treasury-direct bridging. Initiating bridge of ${amount} USDC to ${destinationOption.label}...`,
-          });
         }
+
+        const balances = await getWalletBalances(userSourceWallet.id);
+        const usdcBalance = balances.find(
+          (b) =>
+            b.symbol === "USDC" ||
+            b.tokenAddress?.toLowerCase() === sourceTokenAddress?.toLowerCase()
+        );
+
+        if (!usdcBalance) {
+          throw new Error(
+            `Could not find USDC token in your personal ${sourceOption.label} wallet.`
+          );
+        }
+
+        if (!hasEnoughPersonalUsdc(usdcBalance.amount, amount)) {
+          throw new Error(
+            `Insufficient personal wallet balance on ${sourceOption.label}. Available: ${usdcBalance.amount} USDC, required: ${amount} USDC. Fund your personal Circle wallet (not treasury wallet) and retry.`
+          );
+        }
+
+        if (!sourceTokenAddress) {
+          throw new Error(
+            `USDC address is not configured for ${sourceOption.label}.`
+          );
+        }
+
+        toast({
+          title: "Step 1: Deposit",
+          description: `Approve the transfer of ${amount} USDC from your ${sourceOption.label} wallet to the treasury wallet using passkey.`,
+        });
+
+        setIsDepositingToTreasury(true);
+
+        const passkeyTransferCallData = encodeFunctionData({
+          abi: ERC20_ABI,
+          functionName: "transfer",
+          args: [
+            transferWallet.walletAddress as Address,
+            parseUnits(amount.toString(), CCTP_USDC_DECIMALS),
+          ],
+        });
+
+        const challenge = await createContractExecutionChallenge({
+          walletId: userSourceWallet.id,
+          contractAddress: sourceTokenAddress,
+          callData: passkeyTransferCallData,
+          refId: `PASSKEY-DEPOSIT-${referenceId}`,
+        });
+
+        await executeChallenge(challenge.challengeId);
+
+        toast({
+          title: "Step 2: Bridge",
+          description:
+            "Deposit confirmed. Executing bridge from the funded treasury wallet...",
+        });
+
+        await new Promise((resolve) => setTimeout(resolve, 2500));
+        setIsDepositingToTreasury(false);
 
         // Backend executes the actual bridge.
         const queuedTransfer = await createCircleTransfer({
@@ -1158,12 +1169,9 @@ export function BridgeScreen() {
               <div className="rounded-2xl border border-amber-500/25 bg-amber-500/5 px-4 py-3 text-sm text-amber-700 dark:text-amber-300">
                 {externalBridgeModeMessage}
               </div>
-            ) : isPasskeyWalletSession && sourceChain === "ETH-SEPOLIA" ? (
+            ) : isPasskeyUnsupportedSource ? (
               <div className="rounded-2xl border border-amber-500/25 bg-amber-500/5 px-4 py-3 text-sm text-amber-700 dark:text-amber-300">
-                Passkey on Ethereum Sepolia does not support transaction
-                confirmation popups (Circle modular SDK limitation). For this
-                route, the bridge runs in treasury-direct mode. Passkey popups
-                only appear for Arc Testnet source.
+                {passkeySourceRestrictionMessage}
               </div>
             ) : isExternalEvmBridge ? (
               <div className="space-y-3">
@@ -1280,7 +1288,7 @@ export function BridgeScreen() {
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    {DESTINATION_OPTIONS.filter(
+                    {sourceChainOptions.filter(
                       (opt) => opt.id !== destinationChain
                     ).map((opt) => (
                       <SelectItem key={opt.id} value={opt.id}>
@@ -1313,7 +1321,7 @@ export function BridgeScreen() {
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    {DESTINATION_OPTIONS.filter(
+                    {destinationChainOptions.filter(
                       (opt) => opt.id !== sourceChain
                     ).map((opt) => (
                       <SelectItem key={opt.id} value={opt.id}>
