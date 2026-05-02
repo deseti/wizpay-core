@@ -52,7 +52,7 @@ export class BridgeAgent implements TaskAgent {
         },
       );
 
-      return {
+      return this.serializeBigInt({
         agent: 'bridge',
         execution: {
           adapter: 'external-cctp-v2',
@@ -62,7 +62,7 @@ export class BridgeAgent implements TaskAgent {
           payload,
           taskId: task.id,
         },
-      };
+      });
     }
 
     const transfer = await this.circleBridgeService.initiateBridge({
@@ -101,7 +101,7 @@ export class BridgeAgent implements TaskAgent {
       },
     );
 
-    return {
+    return this.serializeBigInt({
       agent: 'bridge',
       execution: {
         adapter: 'circle-bridge-kit',
@@ -129,7 +129,7 @@ export class BridgeAgent implements TaskAgent {
         },
         taskId: task.id,
       },
-    };
+    });
   }
 
   private normalizePayload(task: TaskDetails) {
@@ -189,5 +189,26 @@ export class BridgeAgent implements TaskAgent {
 
     const trimmed = value.trim();
     return trimmed ? trimmed : null;
+  }
+
+  /**
+   * Recursively convert BigInt values to strings to make the object JSON-serializable.
+   * BullMQ stores job results in Redis as JSON, which doesn't support BigInt natively.
+   */
+  private serializeBigInt(obj: any): any {
+    if (typeof obj === 'bigint') {
+      return obj.toString();
+    }
+    if (Array.isArray(obj)) {
+      return obj.map((item) => this.serializeBigInt(item));
+    }
+    if (obj !== null && typeof obj === 'object') {
+      const result: any = {};
+      for (const [key, value] of Object.entries(obj)) {
+        result[key] = this.serializeBigInt(value);
+      }
+      return result;
+    }
+    return obj;
   }
 }
