@@ -2352,6 +2352,68 @@ export function BridgeScreen() {
     try {
       const referenceId = `BRIDGE-${sourceChain}-TO-${destinationChain}-${Date.now()}`;
 
+      const userSourceWallet =
+        sourceChain === "ARC-TESTNET"
+          ? arcWallet
+          : sourceChain === "ETH-SEPOLIA"
+            ? sepoliaWallet
+            : solanaWallet;
+
+      if (!userSourceWallet?.id) {
+        throw new Error(`Personal ${sourceOption.label} wallet not connected.`);
+      }
+
+      const balances = await getWalletBalances(userSourceWallet.id);
+      const usdcBalance = balances.find(
+        (b) =>
+          b.symbol === "USDC" ||
+          b.tokenAddress?.toLowerCase() === sourceTokenAddress?.toLowerCase()
+      );
+
+      if (!usdcBalance) {
+        throw new Error(
+          `Could not find USDC token in your personal ${sourceOption.label} wallet. Available tokens: ${balances.map((b) => `${b.symbol}=${b.tokenAddress}`).join(", ")}`
+        );
+      }
+
+      if (!usdcBalance.tokenId) {
+        throw new Error(
+          `USDC tokenId for ${sourceOption.label} is missing. Refresh wallet balances and retry.`
+        );
+      }
+
+      if (Number(usdcBalance.amount) < Number(amount)) {
+        throw new Error(
+          `Insufficient personal balance. You only have ${usdcBalance.amount} USDC on ${sourceOption.label}.`
+        );
+      }
+
+      toast({
+        title: "Step 1: Deposit",
+        description: `Approve the transfer of ${amount} USDC from your ${sourceOption.label} wallet to the treasury wallet via Circle popup.`,
+      });
+
+      setIsDepositingToTreasury(true);
+
+      const transferChallenge = await createTransferChallenge({
+        walletId: userSourceWallet.id,
+        destinationAddress: transferWallet.walletAddress,
+        tokenId: usdcBalance.tokenId,
+        amounts: [amount.toString()],
+        refId: `W3S-DEPOSIT-${referenceId}`,
+      });
+
+      await executeChallenge(transferChallenge.challengeId);
+
+      toast({
+        title: "Step 2: Bridge",
+        description:
+          "Deposit confirmed. Executing bridge from the funded treasury wallet...",
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 2500));
+      setIsDepositingToTreasury(false);
+
       const queuedTransfer = await createCircleTransfer({
         amount,
         blockchain: destinationChain,
