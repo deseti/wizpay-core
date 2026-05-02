@@ -180,6 +180,8 @@ export type CircleWalletContextValue = {
   requestPasskeyRegistration: (username: string) => Promise<void>;
   sepoliaWallet: CircleUserWallet | null;
   solanaWallet: CircleUserWallet | null;
+  /** Save a Solana address manually (for passkey users who have no Circle Solana wallet). */
+  savePasskeySolanaAddress: (address: string) => void;
   userEmail: string | null;
   verifyEmailOtp: () => void;
   wallets: CircleUserWallet[];

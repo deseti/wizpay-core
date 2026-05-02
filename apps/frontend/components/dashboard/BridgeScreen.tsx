@@ -1,10 +1,12 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
+  Check,
   CheckCircle2,
   Clock3,
+  Copy,
   Droplet,
   ExternalLink,
   MessageCircle,
@@ -814,6 +816,8 @@ export function BridgeScreen() {
     useState<DestinationWalletMap>({});
   const [isDestinationWalletsLoading, setIsDestinationWalletsLoading] =
     useState(false);
+  const [copiedWallet, setCopiedWallet] = useState<string | null>(null);
+  const [passkeySolanaInput, setPasskeySolanaInput] = useState("");
   const tokenSymbol = BRIDGE_ASSET_SYMBOL;
 
   const sourceOption = useMemo(() => getOptionByChain(sourceChain), [sourceChain]);
@@ -1200,17 +1204,18 @@ export function BridgeScreen() {
             clearStoredActiveTransfer();
             setTransfer(null);
             setIsReconnectingToTracking(false);
-            toast({
-              title: "Transfer tracking lost",
-              description:
-                "The bridge transfer could no longer be tracked. Please check your on-chain history and start a new bridge if needed.",
-              variant: "destructive",
-            });
-            return;
-          }
-          setIsReconnectingToTracking(true);
-          return;
-        }
+            const {
+              arcWallet,
+              sepoliaWallet,
+              solanaWallet,
+              authMethod,
+              createContractExecutionChallenge,
+              createTransferChallenge,
+              executeChallenge,
+              getWalletBalances,
+              savePasskeySolanaAddress,
+              userEmail,
+            } = useCircleWallet();
 
         setIsReconnectingToTracking(false);
         setErrorMessage(
@@ -1340,6 +1345,24 @@ export function BridgeScreen() {
   }
 
   async function refreshDestinationWallets() {
+      const copyWalletAddress = useCallback(async (address: string, key: string) => {
+        try {
+          await navigator.clipboard.writeText(address);
+          setCopiedWallet(key);
+          window.setTimeout(() => setCopiedWallet(null), 2000);
+        } catch {
+          // clipboard not available
+        }
+      }, []);
+
+      function handleSavePasskeySolana() {
+        const trimmed = passkeySolanaInput.trim();
+        if (!trimmed) return;
+        savePasskeySolanaAddress(trimmed);
+        setPasskeySolanaInput("");
+      }
+
+      async function refreshDestinationWallets() {
     setIsDestinationWalletsLoading(true);
 
     const chains = DESTINATION_OPTIONS.map((option) => option.id);
@@ -2228,16 +2251,23 @@ export function BridgeScreen() {
           refId: `PASSKEY-DEPOSIT-${referenceId}`,
         });
 
-        await executeChallenge(challenge.challengeId);
+          await executeChallenge(challenge.challengeId);
 
-        toast({
-          title: "Step 2: Bridge",
-          description: "Deposit confirmed. Executing bridge from the funded treasury wallet...",
-        });
+          toast({
+            title: "Step 2: Bridge",
+            description: "Deposit confirmed. Executing bridge from the funded treasury wallet...",
+          });
 
-        await new Promise((resolve) => setTimeout(resolve, 2500));
+          await new Promise((resolve) => setTimeout(resolve, 2500));
 
-        setIsDepositingToTreasury(false);
+          setIsDepositingToTreasury(false);
+        } else {
+          // Sepolia passkey source: treasury-direct bridge (no personal wallet deposit).
+          toast({
+            title: "Bridge",
+            description: `Ethereum Sepolia passkey wallets use treasury-direct bridging. Initiating bridge of ${amount} USDC to ${destinationOption.label}…`,
+          });
+        }
 
         const queuedTransfer = await createCircleTransfer({
           amount,
@@ -2251,7 +2281,7 @@ export function BridgeScreen() {
           walletId: transferWallet.walletId || undefined,
           walletAddress: transferWallet.walletAddress,
           userEmail: userEmail || undefined,
-          walletMode: "W3S",
+          walletMode: "PASSKEY",
         });
 
         terminalNoticeRef.current = null;
@@ -2312,66 +2342,67 @@ export function BridgeScreen() {
       return;
     }
 
-    setIsSubmitting(true);
-    setErrorMessage(null);
-    setIsReviewDialogOpen(false);
-    setIsSuccessDialogOpen(false);
-    reconnectingPollCountRef.current = 0;
-    setIsReconnectingToTracking(false);
+      try {
+        const referenceId = `BRIDGE-${sourceChain}-TO-${destinationChain}-${Date.now()}`;
 
-    try {
-      const referenceId = `BRIDGE-${sourceChain}-TO-${destinationChain}-${Date.now()}`;
-      const userSourceWallet =
-        sourceChain === "ARC-TESTNET"
-          ? arcWallet
-          : sourceChain === "ETH-SEPOLIA"
-            ? sepoliaWallet
-            : solanaWallet;
+        // ETH-SEPOLIA passkey source: Circle modular SDK does NOT support Ethereum Sepolia,
+        // so passkey wallets cannot sign transactions on that chain. Bridge directly from
+        // the treasury's existing Sepolia USDC balance — no personal wallet deposit needed.
+        const isSepoliaPasskeySource = sourceChain === "ETH-SEPOLIA";
 
-      if (!userSourceWallet?.id) {
-        throw new Error(`Personal ${sourceOption.label} wallet not connected.`);
-      }
+        if (!isSepoliaPasskeySource) {
+          // ARC-TESTNET source: verify personal wallet balance and do deposit via passkey
+          const userSourceWallet = sourceChain === "ARC-TESTNET" ? arcWallet : solanaWallet;
 
-      setIsDepositingToTreasury(true);
+          if (!userSourceWallet?.id) {
+            throw new Error(`Personal ${sourceOption.label} wallet not connected.`);
+          }
 
-      const balances = await getWalletBalances(userSourceWallet.id);
-      const usdcBalance = balances.find(
-        (b) =>
-          b.symbol === "USDC" ||
-          b.tokenAddress?.toLowerCase() === sourceTokenAddress?.toLowerCase()
-      );
+          const balances = await getWalletBalances(userSourceWallet.id);
+          const usdcBalance = balances.find(
+            (b) =>
+              b.symbol === "USDC" ||
+              b.tokenAddress?.toLowerCase() === sourceTokenAddress?.toLowerCase()
+          );
 
-      if (!usdcBalance?.tokenId) {
-        throw new Error(
-          `Could not find USDC token in your personal ${sourceOption.label} wallet. Available tokens: ${balances.map((b) => `${b.symbol}=${b.tokenAddress}`).join(", ")}`
-        );
-      }
+          if (!usdcBalance) {
+            throw new Error(
+              `Could not find USDC token in your personal ${sourceOption.label} wallet. Available tokens: ${balances.map((b) => `${b.symbol}=${b.tokenAddress}`).join(", ")}`
+            );
+          }
 
-      if (Number(usdcBalance.amount) < Number(amount)) {
-        throw new Error(
-          `Insufficient personal balance. You only have ${usdcBalance.amount} USDC on ${sourceOption.label}.`
-        );
-      }
+          if (Number(usdcBalance.amount) < Number(amount)) {
+            throw new Error(
+              `Insufficient personal balance. You only have ${usdcBalance.amount} USDC on ${sourceOption.label}.`
+            );
+          }
 
-      toast({
-        title: "Step 1: Deposit",
-        description: `Approve the transfer of ${amount} USDC from your ${sourceOption.label} wallet to the treasury wallet.`,
-      });
+          if (!sourceTokenAddress) {
+            throw new Error(`USDC address is not configured for ${sourceOption.label}.`);
+          }
 
-      const challenge = await createTransferChallenge({
-        walletId: userSourceWallet.id,
-        destinationAddress: transferWallet.walletAddress,
-        amounts: [amount.toString()],
-        feeLevel: "MEDIUM",
-        tokenId: usdcBalance.tokenId,
-      });
+          toast({
+            title: "Step 1: Deposit",
+            description: `Approve the transfer of ${amount} USDC from your ${sourceOption.label} wallet to the treasury wallet using passkey.`,
+          });
 
-      await executeChallenge(challenge.challengeId);
+          setIsDepositingToTreasury(true);
 
-      toast({
-        title: "Step 2: Bridge",
-        description: "Deposit confirmed. Executing bridge from the funded treasury wallet...",
-      });
+          const passkeyTransferCallData = encodeFunctionData({
+            abi: ERC20_ABI,
+            functionName: "transfer",
+            args: [
+              transferWallet.walletAddress as Address,
+              parseUnits(amount.toString(), CCTP_USDC_DECIMALS),
+            ],
+          });
+
+          const challenge = await createContractExecutionChallenge({
+            walletId: userSourceWallet.id,
+            contractAddress: sourceTokenAddress,
+            callData: passkeyTransferCallData,
+            refId: `PASSKEY-DEPOSIT-${referenceId}`,
+          });
       await new Promise((resolve) => setTimeout(resolve, 2500));
 
       setIsDepositingToTreasury(false);
@@ -2990,52 +3021,95 @@ export function BridgeScreen() {
                 Solana Devnet.
               </p>
               <div className="mt-3 space-y-3 text-sm">
-                <div className="flex items-center gap-3">
-                  <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary/12 text-primary">
-                    <Wallet className="h-4 w-4" />
-                  </div>
-                  <div>
-                    <p className="font-medium">Arc Testnet</p>
-                    <p className="font-mono text-xs text-muted-foreground/70">
-                      {shortenAddress(
-                        arcWallet?.address ||
-                          destinationWallets["ARC-TESTNET"]?.walletAddress
-                      )}
-                    </p>
-                  </div>
-                </div>
-                <div className="flex items-center gap-3">
-                  <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary/12 text-primary">
-                    <Wallet className="h-4 w-4" />
-                  </div>
-                  <div>
-                    <p className="font-medium">Ethereum Sepolia</p>
-                    <p className="font-mono text-xs text-muted-foreground/70">
-                      {shortenAddress(
-                        sepoliaWallet?.address ||
-                          destinationWallets["ETH-SEPOLIA"]?.walletAddress
-                      )}
-                    </p>
-                  </div>
-                </div>
-                <div className="flex items-center gap-3">
-                  <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary/12 text-primary">
-                    <Wallet className="h-4 w-4" />
-                  </div>
-                  <div>
-                    <p className="font-medium">Solana Devnet</p>
-                    <p className="font-mono text-xs text-muted-foreground/70">
-                      {shortenAddress(
-                        solanaWallet?.address ||
-                          destinationWallets["SOLANA-DEVNET"]?.walletAddress
-                      )}
-                    </p>
-                    {isPasskeyWalletSession && !solanaWallet?.address ? (
-                      <p className="text-[11px] text-muted-foreground/70">
-                        Passkey session hanya menyediakan wallet EVM. Isi alamat Solana
-                        tujuan secara manual.
-                      </p>
+                {(
+                  [
+                    {
+                      key: "arc",
+                      label: "Arc Testnet",
+                      address: arcWallet?.address || destinationWallets["ARC-TESTNET"]?.walletAddress,
+                    },
+                    {
+                      key: "sepolia",
+                      label: "Ethereum Sepolia",
+                      address: sepoliaWallet?.address || destinationWallets["ETH-SEPOLIA"]?.walletAddress,
+                    },
+                  ] as const
+                ).map(({ key, label, address }) => (
+                  <div key={key} className="flex items-center gap-3">
+                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary/12 text-primary">
+                      <Wallet className="h-4 w-4" />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="font-medium">{label}</p>
+                      <p className="font-mono text-xs text-muted-foreground/70 truncate">{shortenAddress(address)}</p>
+                    </div>
+                    {address ? (
+                      <button
+                        onClick={() => void copyWalletAddress(address, key)}
+                        className="shrink-0 rounded-lg p-1.5 transition-colors hover:bg-primary/10"
+                        title={`Copy ${label} address`}
+                      >
+                        {copiedWallet === key ? (
+                          <Check className="h-3.5 w-3.5 text-emerald-400" />
+                        ) : (
+                          <Copy className="h-3.5 w-3.5 text-muted-foreground" />
+                        )}
+                      </button>
                     ) : null}
+                  </div>
+                ))}
+
+                {/* Solana Devnet row */}
+                <div className="flex items-start gap-3">
+                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary/12 text-primary">
+                    <Wallet className="h-4 w-4" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="font-medium">Solana Devnet</p>
+                    {solanaWallet?.address ? (
+                      <div className="flex items-center gap-1">
+                        <p className="font-mono text-xs text-muted-foreground/70 truncate">
+                          {shortenAddress(solanaWallet.address)}
+                        </p>
+                        <button
+                          onClick={() => void copyWalletAddress(solanaWallet.address, "solana")}
+                          className="shrink-0 rounded-lg p-1 transition-colors hover:bg-primary/10"
+                          title="Copy Solana address"
+                        >
+                          {copiedWallet === "solana" ? (
+                            <Check className="h-3.5 w-3.5 text-emerald-400" />
+                          ) : (
+                            <Copy className="h-3.5 w-3.5 text-muted-foreground" />
+                          )}
+                        </button>
+                      </div>
+                    ) : isPasskeyWalletSession ? (
+                      <div className="mt-1 space-y-1.5">
+                        <p className="text-[11px] text-muted-foreground/70">
+                          Passkey tidak mendukung Solana. Masukkan alamat Solana Anda untuk menyimpannya.
+                        </p>
+                        <div className="flex gap-1.5">
+                          <Input
+                            value={passkeySolanaInput}
+                            onChange={(e) => setPasskeySolanaInput(e.target.value)}
+                            placeholder="Alamat Solana…"
+                            className="h-7 text-xs font-mono"
+                            onKeyDown={(e) => { if (e.key === "Enter") handleSavePasskeySolana(); }}
+                          />
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={handleSavePasskeySolana}
+                            disabled={!passkeySolanaInput.trim()}
+                            className="h-7 px-2 text-xs"
+                          >
+                            Simpan
+                          </Button>
+                        </div>
+                      </div>
+                    ) : (
+                      <p className="font-mono text-xs text-muted-foreground/70">—</p>
+                    )}
                   </div>
                 </div>
               </div>
