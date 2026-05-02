@@ -5,6 +5,7 @@ import { useState } from "react";
 import { Droplet, Copy, Check } from "lucide-react";
 import { useCircleWallet } from "@/components/providers/CircleWalletProvider";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 import { useSmartWalletAddress } from "@/hooks/useSmartWalletAddress";
 
@@ -17,7 +18,13 @@ interface FaucetButtonProps {
 }
 
 export function FaucetButton({ walletActions }: FaucetButtonProps) {
-  const { arcWallet, sepoliaWallet, solanaWallet } = useCircleWallet();
+  const {
+    arcWallet,
+    sepoliaWallet,
+    solanaWallet,
+    authMethod,
+    savePasskeySolanaAddress,
+  } = useCircleWallet();
   const {
     smartWalletAddress,
     isLoadingSmartWalletAddress,
@@ -25,6 +32,7 @@ export function FaucetButton({ walletActions }: FaucetButtonProps) {
   } = useSmartWalletAddress();
   const { toast } = useToast();
   const [copiedAddress, setCopiedAddress] = useState<string | null>(null);
+  const [passkeySolanaInput, setPasskeySolanaInput] = useState("");
   const availableWallets = [
     { id: "arc", label: "Arc Testnet", address: arcWallet?.address },
     { id: "sepolia", label: "Ethereum Sepolia", address: sepoliaWallet?.address },
@@ -64,6 +72,21 @@ export function FaucetButton({ walletActions }: FaucetButtonProps) {
     } catch (error) {
       console.error(error);
     }
+  }
+
+  function savePasskeySolanaInSidebar() {
+    const trimmed = passkeySolanaInput.trim();
+
+    if (!trimmed) {
+      return;
+    }
+
+    savePasskeySolanaAddress(trimmed);
+    setPasskeySolanaInput("");
+    toast({
+      title: "Solana address saved",
+      description: "Alamat Solana passkey tersimpan dan siap dipakai untuk bridge/faucet.",
+    });
   }
 
   return (
@@ -113,6 +136,40 @@ export function FaucetButton({ walletActions }: FaucetButtonProps) {
           {walletActions ? <div className="pt-1">{walletActions}</div> : null}
         </div>
       )}
+
+      {authMethod === "passkey" && !solanaWallet?.address ? (
+        <div className="space-y-1.5 rounded-xl border border-border/40 bg-background/25 p-2.5">
+          <p className="px-1 text-[10px] font-semibold text-muted-foreground/50 uppercase tracking-[0.2em]">
+            Solana Devnet
+          </p>
+          <p className="px-1 text-[11px] text-muted-foreground/60 leading-relaxed">
+            Login passkey tidak membuat wallet Solana otomatis. Masukkan alamat
+            Solana Anda agar tampil di daftar Circle Wallets.
+          </p>
+          <div className="flex gap-1.5">
+            <Input
+              value={passkeySolanaInput}
+              onChange={(event) => setPasskeySolanaInput(event.target.value)}
+              placeholder="Alamat Solana..."
+              className="h-8 text-xs font-mono"
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  savePasskeySolanaInSidebar();
+                }
+              }}
+            />
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={savePasskeySolanaInSidebar}
+              disabled={!passkeySolanaInput.trim()}
+              className="h-8 px-2 text-xs"
+            >
+              Simpan
+            </Button>
+          </div>
+        </div>
+      ) : null}
 
       <div className="space-y-1.5">
         {walletEntries.length > 0 && (
