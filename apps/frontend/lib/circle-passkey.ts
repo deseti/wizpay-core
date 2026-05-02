@@ -20,7 +20,12 @@ import type { Transport } from "viem";
 import { parsePublicKey } from "webauthn-p256";
 
 import { ERC20_ABI } from "@/constants/erc20";
-import { TOKEN_OPTIONS } from "@/lib/wizpay";
+import {
+  ETHEREUM_SEPOLIA_EURC_ADDRESS,
+  ETHEREUM_SEPOLIA_USDC_ADDRESS,
+  EURC_ADDRESS,
+  USDC_ADDRESS,
+} from "@/constants/addresses";
 import {
   ARC_TESTNET_RPC_URL,
   ETHEREUM_SEPOLIA_RPC_URL,
@@ -86,6 +91,45 @@ export type PasskeyTokenBalance = {
   tokenAddress: string | null;
   updatedAt: string | null;
 };
+
+type PasskeyTokenOption = {
+  symbol: string;
+  decimals: number;
+  address: Address;
+};
+
+function getPasskeyTokenOptionsForBlockchain(
+  blockchain: string,
+): PasskeyTokenOption[] {
+  if (blockchain === "ETH-SEPOLIA") {
+    return [
+      {
+        symbol: "USDC",
+        decimals: 6,
+        address: ETHEREUM_SEPOLIA_USDC_ADDRESS,
+      },
+      {
+        symbol: "EURC",
+        decimals: 6,
+        address: ETHEREUM_SEPOLIA_EURC_ADDRESS,
+      },
+    ];
+  }
+
+  // ARC-TESTNET default
+  return [
+    {
+      symbol: "USDC",
+      decimals: 6,
+      address: USDC_ADDRESS,
+    },
+    {
+      symbol: "EURC",
+      decimals: 6,
+      address: EURC_ADDRESS,
+    },
+  ];
+}
 
 function normalizeOptionalUrl(value: string | undefined) {
   const normalized = value?.trim();
@@ -426,7 +470,11 @@ export async function getPasskeyTokenBalances(
 
   const balances: PasskeyTokenBalance[] = [];
 
-  for (const token of TOKEN_OPTIONS) {
+  const tokenOptions = getPasskeyTokenOptionsForBlockchain(
+    runtime.wallet.blockchain,
+  );
+
+  for (const token of tokenOptions) {
     try {
       const amount = await balanceClient.readContract({
         abi: ERC20_ABI,

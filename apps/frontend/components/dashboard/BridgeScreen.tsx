@@ -13,7 +13,7 @@ import {
   Wallet,
 } from "lucide-react";
 
-import { formatUnits, parseUnits } from "viem";
+import { encodeFunctionData, formatUnits, parseUnits } from "viem";
 import type { Address, Hex } from "viem";
 import { usePublicClient, useReadContract, useSwitchChain, useWalletClient } from "wagmi";
 
@@ -775,6 +775,7 @@ export function BridgeScreen() {
     sepoliaWallet,
     solanaWallet,
     authMethod,
+    createContractExecutionChallenge,
     createTransferChallenge,
     executeChallenge,
     getWalletBalances,
@@ -2145,6 +2146,20 @@ export function BridgeScreen() {
 
   async function submitBridge() {
     if (isPasskeyWalletSession) {
+      if (!transferWallet) {
+        setErrorMessage(getTreasurySetupMessage(sourceOption.label));
+        setIsReviewDialogOpen(false);
+        return;
+      }
+
+      if (transferWallet.blockchain !== sourceChain) {
+        setErrorMessage(
+          `The displayed ${APP_TREASURY_WALLET_LABEL} does not match ${sourceOption.label}. Refresh the treasury wallet and try again.`
+        );
+        setIsReviewDialogOpen(false);
+        return;
+      }
+
       setIsSubmitting(true);
       setErrorMessage(null);
       setIsReviewDialogOpen(false);
@@ -2184,19 +2199,59 @@ export function BridgeScreen() {
           );
         }
 
+        if (!sourceTokenAddress) {
+          throw new Error(
+            `USDC address is not configured for ${sourceOption.label}.`
+          );
+        }
+
+        toast({
+          title: "Step 1: Deposit",
+          description: `Approve the transfer of ${amount} USDC from your ${sourceOption.label} wallet to the treasury wallet using passkey.`,
+        });
+
+        setIsDepositingToTreasury(true);
+
+        const passkeyTransferCallData = encodeFunctionData({
+          abi: ERC20_ABI,
+          functionName: "transfer",
+          args: [
+            transferWallet.walletAddress as Address,
+            parseUnits(amount.toString(), CCTP_USDC_DECIMALS),
+          ],
+        });
+
+        const challenge = await createContractExecutionChallenge({
+          walletId: userSourceWallet.id,
+          contractAddress: sourceTokenAddress,
+          callData: passkeyTransferCallData,
+          refId: `PASSKEY-DEPOSIT-${referenceId}`,
+        });
+
+        await executeChallenge(challenge.challengeId);
+
+        toast({
+          title: "Step 2: Bridge",
+          description: "Deposit confirmed. Executing bridge from the funded treasury wallet...",
+        });
+
+        await new Promise((resolve) => setTimeout(resolve, 2500));
+
+        setIsDepositingToTreasury(false);
+
         const queuedTransfer = await createCircleTransfer({
           amount,
           blockchain: destinationChain,
           sourceBlockchain: sourceChain,
-          bridgeExecutionMode: "external_signer",
-          sourceAccountType: "external_wallet",
+          bridgeExecutionMode: "app_treasury",
+          sourceAccountType: "app_treasury_wallet",
           destinationAddress,
           referenceId,
           tokenAddress: destinationTokenAddress,
-          walletId: userSourceWallet.id || undefined,
-          walletAddress: userSourceWallet.address,
+          walletId: transferWallet.walletId || undefined,
+          walletAddress: transferWallet.walletAddress,
           userEmail: userEmail || undefined,
-          walletMode: "PASSKEY",
+          walletMode: "W3S",
         });
 
         terminalNoticeRef.current = null;
