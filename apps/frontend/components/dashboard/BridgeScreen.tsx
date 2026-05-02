@@ -781,6 +781,7 @@ export function BridgeScreen() {
     createTransferChallenge,
     executeChallenge,
     getWalletBalances,
+    savePasskeySolanaAddress,
     userEmail,
   } = useCircleWallet();
   const { activeWalletLabel, walletMode, externalWalletAddress, externalWalletChainId } = useHybridWallet();
