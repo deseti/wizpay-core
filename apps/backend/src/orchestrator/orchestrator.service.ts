@@ -1,5 +1,5 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
-import { AgentRouterService } from '../agents/agent-router.service';
+import { ExecutionRouterService } from '../execution/execution-router.service';
 import { TaskStatus } from '../task/task-status.enum';
 import { TaskType } from '../task/task-type.enum';
 import { AgentExecutionResult } from '../agents/agent.interface';
@@ -21,7 +21,7 @@ export class OrchestratorService {
   constructor(
     private readonly taskService: TaskService,
     private readonly queueService: QueueService,
-    private readonly agentRouterService: AgentRouterService,
+    private readonly executionRouter: ExecutionRouterService,
   ) {}
 
   // ─────────────────────────────────────────────────────────────────────────────
@@ -188,13 +188,11 @@ export class OrchestratorService {
   // ─────────────────────────────────────────────────────────────────────────────
 
   private async routeToAgent(task: TaskDetails): Promise<AgentExecutionResult> {
-    const taskType = task.type as TaskType;
-
     this.logger.log(
-      `[orchestrator] Routing taskId=${task.id} to agent="${taskType}"`,
+      `[orchestrator] Routing taskId=${task.id} type=${task.type} → execution router`,
     );
 
-    return this.agentRouterService.execute(taskType, task);
+    return this.executionRouter.execute(task);
   }
 
   private normalizeBridgePayload(payload: TaskPayload): TaskPayload {
@@ -236,11 +234,15 @@ export class OrchestratorService {
     const walletAddress = this.readString(payload, 'walletAddress');
     const destinationAddress = this.readString(payload, 'destinationAddress');
 
+    // walletId is optional for passkey wallets — they are not Circle
+    // developer-controlled wallets and do not have a Circle walletId.
+    const isPasskey = this.readString(payload, 'walletMode') === 'PASSKEY';
+
     const missing = [
       !sourceBlockchain ? 'sourceChain' : null,
       !destinationBlockchain ? 'destinationChain' : null,
       !amount ? 'amount' : null,
-      !walletId ? 'walletId' : null,
+      (!walletId && !isPasskey) ? 'walletId' : null,
       !walletAddress ? 'walletAddress' : null,
       !destinationAddress ? 'destinationAddress' : null,
     ].filter((field): field is string => Boolean(field));

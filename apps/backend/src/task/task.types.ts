@@ -1,5 +1,18 @@
 export type TaskPayload = Record<string, unknown>;
 
+/**
+ * Identifies which wallet execution engine should handle a task.
+ *
+ * - W3S      → Circle Wallet-as-a-Service (Google / Email login).
+ *              Uses userToken, tokenId, createTransferChallenge.
+ * - PASSKEY  → Circle modular Account-Abstraction wallet (passkey login).
+ *              No userToken / tokenId. Execution goes through PasskeyEngineService.
+ *
+ * When absent from a task payload the system defaults to "W3S" for full
+ * backward compatibility with every existing task.
+ */
+export type WalletMode = 'W3S' | 'PASSKEY';
+
 export type TaskLogLevel = 'INFO' | 'ERROR';
 
 export type TaskUnitType = 'batch' | 'step';

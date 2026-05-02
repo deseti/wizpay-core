@@ -110,6 +110,56 @@ export class BlockchainService {
     return Number(this.configService.get<string>('CHAIN_ID') || '5042002');
   }
 
+  // ── Multi-chain RPC routing ──────────────────────────────────────
+
+  /**
+   * Resolve the JSON-RPC endpoint for an EVM-compatible chain.
+   * Supported chains: ARC-TESTNET, ETH-SEPOLIA.
+   * Falls back to the default RPC URL for any unrecognised chain.
+   */
+  getChainRpcUrl(chain: string): string {
+    switch (chain.toUpperCase()) {
+      case 'ARC-TESTNET':
+        return (
+          this.configService.get<string>('ARC_RPC_URL') ||
+          this.configService.get<string>('NEXT_PUBLIC_ARC_TESTNET_RPC_URL') ||
+          'https://rpc-testnet.arc.money'
+        );
+      case 'ETH-SEPOLIA':
+        return (
+          this.configService.get<string>('ETH_SEPOLIA_RPC_URL') ||
+          this.configService.get<string>('NEXT_PUBLIC_ETHEREUM_SEPOLIA_RPC_URL') ||
+          'https://rpc.sepolia.org'
+        );
+      default:
+        return this.rpcUrl;
+    }
+  }
+
+  /**
+   * Resolve the Solana JSON-RPC endpoint.
+   */
+  getSolanaRpcUrl(): string {
+    return (
+      this.configService.get<string>('SOLANA_RPC_URL') ||
+      'https://api.devnet.solana.com'
+    );
+  }
+
+  /**
+   * Return the EVM chainId for a given chain name.
+   */
+  getChainIdForChain(chain: string): number {
+    switch (chain.toUpperCase()) {
+      case 'ARC-TESTNET':
+        return 5042002;
+      case 'ETH-SEPOLIA':
+        return 11155111;
+      default:
+        return this.chainId;
+    }
+  }
+
   // ── JSON-RPC helper ──────────────────────────────────────────────
 
   private async rpcCall<T = unknown>(
@@ -138,6 +188,45 @@ export class BlockchainService {
         ? ` (${JSON.stringify(json.error.data)})`
         : '';
       throw new Error(`RPC error: ${json.error.message}${detail}`);
+    }
+
+    return json.result as T;
+  }
+
+  // ── Chain-aware JSON-RPC helper ──────────────────────────────────
+
+  /**
+   * Same as rpcCall but targets a specific chain by name.
+   * Handles EVM chains (ARC-TESTNET, ETH-SEPOLIA) and falls back to default.
+   */
+  private async rpcCallOnChain<T = unknown>(
+    chain: string,
+    method: string,
+    params: unknown[],
+  ): Promise<T> {
+    const url = this.getChainRpcUrl(chain);
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: Date.now(),
+        method,
+        params,
+      }),
+      signal: AbortSignal.timeout(15_000),
+    });
+
+    const json = (await res.json()) as {
+      result?: T;
+      error?: { code: number; message: string; data?: unknown };
+    };
+
+    if (json.error) {
+      const detail = json.error.data
+        ? ` (${JSON.stringify(json.error.data)})`
+        : '';
+      throw new Error(`RPC error [${chain}]: ${json.error.message}${detail}`);
     }
 
     return json.result as T;
@@ -382,5 +471,234 @@ export class BlockchainService {
     throw new Error(
       `Transaction ${txHash} did not confirm within ${maxAttempts} attempts (${(maxAttempts * intervalMs) / 1000}s)`,
     );
+  }
+
+  // ── Chain-specific balance read ──────────────────────────────────
+
+  /**
+   * Read an ERC-20 balance on a specific named chain.
+   * Use this instead of getBalance() when the chain differs from the
+   * default configured RPC.
+   */
+  async getBalanceOnChain(
+    address: string,
+    tokenAddress: string,
+    chain: string,
+  ): Promise<BalanceResult> {
+    this.logger.debug(
+      `getBalanceOnChain — chain=${chain} address=${address} token=${tokenAddress}`,
+    );
+
+    const data = `0x70a08231000000000000000000000000${address.slice(2).toLowerCase()}`;
+
+    const result = await this.rpcCallOnChain<string>(chain, 'eth_call', [
+      { to: tokenAddress, data },
+      'latest',
+    ]);
+
+    return {
+      address,
+      tokenAddress,
+      balance: BigInt(result).toString(),
+    };
+  }
+
+  // ── Chain-specific transaction submission ────────────────────────
+
+  /**
+   * Submit a signed transaction to a specific named EVM chain.
+   *
+   * Identical to sendTransaction() but resolves the RPC endpoint from
+   * the chain name rather than the default env var.  Used by
+   * PasskeyEngineService to target Arc Testnet or Eth Sepolia explicitly.
+   *
+   * Requires BACKEND_PRIVATE_KEY env var (same as sendTransaction).
+   */
+  async sendTransactionOnChain(
+    params: SendTransactionParams,
+    chain: string,
+  ): Promise<TransactionResult> {
+    this.logger.log(
+      `sendTransactionOnChain — chain=${chain} from=${params.fromAddress} to=${params.contractAddress}`,
+    );
+
+    const privateKey = this.configService.get<string>('BACKEND_PRIVATE_KEY');
+    if (!privateKey) {
+      throw new Error(
+        'BACKEND_PRIVATE_KEY is not configured. ' +
+          'Set it in the backend environment to enable server-side signing for passkey execution.',
+      );
+    }
+
+    const calldata = params.data ?? '0x';
+    const chainId = this.getChainIdForChain(chain);
+
+    const nonceHex = await this.rpcCallOnChain<string>(
+      chain,
+      'eth_getTransactionCount',
+      [params.fromAddress, 'pending'],
+    );
+
+    let gasLimit: string;
+    if (params.gasLimit) {
+      gasLimit = params.gasLimit;
+    } else {
+      const estimateParams: SendTransactionParams = { ...params };
+      const gasHex = await this.rpcCallOnChain<string>(
+        chain,
+        'eth_estimateGas',
+        [
+          {
+            from: params.fromAddress,
+            to: params.contractAddress,
+            data: calldata,
+            ...(params.value ? { value: params.value } : {}),
+          },
+        ],
+      );
+      const gas = BigInt(gasHex);
+      const buffered = (gas * 11500n) / 10000n;
+      gasLimit = `0x${buffered.toString(16)}`;
+      void estimateParams; // suppress unused-var warning
+    }
+
+    const gasPriceHex = await this.rpcCallOnChain<string>(
+      chain,
+      'eth_gasPrice',
+      [],
+    );
+
+    const txHash = await this.rpcCallOnChain<string>(
+      chain,
+      'eth_sendTransaction',
+      [
+        {
+          from: params.fromAddress,
+          to: params.contractAddress,
+          data: calldata,
+          gas: gasLimit,
+          gasPrice: gasPriceHex,
+          nonce: nonceHex,
+          value: params.value ?? '0x0',
+          chainId: `0x${chainId.toString(16)}`,
+        },
+      ],
+    );
+
+    this.logger.log(
+      `Transaction submitted on chain=${chain} — txHash=${txHash}`,
+    );
+
+    return { txHash, status: 'pending' };
+  }
+
+  // ── Solana support ───────────────────────────────────────────────
+
+  /**
+   * Query the native SOL balance of a Solana wallet.
+   */
+  async getSolanaBalance(
+    address: string,
+  ): Promise<{ address: string; balance: string }> {
+    this.logger.debug(`getSolanaBalance — address=${address}`);
+
+    const res = await fetch(this.getSolanaRpcUrl(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: Date.now(),
+        method: 'getBalance',
+        params: [address],
+      }),
+      signal: AbortSignal.timeout(15_000),
+    });
+
+    const json = (await res.json()) as {
+      result?: { value: number };
+      error?: { message: string };
+    };
+
+    if (json.error) {
+      throw new Error(`Solana RPC error: ${json.error.message}`);
+    }
+
+    return { address, balance: String(json.result?.value ?? 0) };
+  }
+
+  /**
+   * Broadcast a pre-signed Solana transaction.
+   *
+   * The caller (typically the frontend / passkey engine) is responsible
+   * for building and signing the transaction with the user's passkey.
+   * The backend only relays the already-signed bytes.
+   *
+   * @param encodedTransaction - base64-encoded signed transaction bytes
+   */
+  async broadcastSolanaTransaction(
+    encodedTransaction: string,
+  ): Promise<{ signature: string }> {
+    this.logger.log('broadcastSolanaTransaction — relaying pre-signed tx');
+
+    const res = await fetch(this.getSolanaRpcUrl(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: Date.now(),
+        method: 'sendTransaction',
+        params: [encodedTransaction, { encoding: 'base64' }],
+      }),
+      signal: AbortSignal.timeout(30_000),
+    });
+
+    const json = (await res.json()) as {
+      result?: string;
+      error?: { message: string; data?: unknown };
+    };
+
+    if (json.error) {
+      const detail = json.error.data
+        ? ` — ${JSON.stringify(json.error.data)}`
+        : '';
+      throw new Error(`Solana broadcast error: ${json.error.message}${detail}`);
+    }
+
+    const signature = json.result!;
+    this.logger.log(`Solana transaction broadcast — signature=${signature}`);
+
+    return { signature };
+  }
+
+  /**
+   * Build an unsigned Solana SPL-token (USDC) transfer payload.
+   *
+   * The backend cannot sign Solana transactions on behalf of a passkey
+   * wallet (the private key lives in the user's hardware).  This helper
+   * returns the structured intent so the frontend can construct and sign
+   * the UserOperation / transaction before calling broadcastSolanaTransaction.
+   *
+   * @param from       - sender's base58 public key
+   * @param to         - recipient's base58 public key
+   * @param amount     - human-readable token amount (e.g. "10.5")
+   * @param mintAddress - SPL token mint address (USDC by default on devnet)
+   */
+  buildSolanaSplTransferIntent(
+    from: string,
+    to: string,
+    amount: string,
+    mintAddress?: string,
+  ): Record<string, unknown> {
+    const usdcDevnetMint = 'Gh9ZwEmdLJ8DscKNTkTqPbNwLNNBjuSzaG9Vp2KGtKJr';
+
+    return {
+      type: 'solana_spl_transfer_intent',
+      network: 'SOLANA-DEVNET',
+      from,
+      to,
+      amount,
+      mint: mintAddress ?? usdcDevnetMint,
+      rpcUrl: this.getSolanaRpcUrl(),
+    };
   }
 }
