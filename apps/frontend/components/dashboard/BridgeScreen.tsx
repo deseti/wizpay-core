@@ -2399,7 +2399,8 @@ export function BridgeScreen() {
         walletId: userSourceWallet.id,
         destinationAddress: transferWallet.walletAddress,
         tokenId: usdcBalance.tokenId,
-        amounts: [amount.toString()],
+        // Circle transfer challenge expects token amounts in base units.
+        amounts: [parseUnits(amount.toString(), CCTP_USDC_DECIMALS).toString()],
         refId: `W3S-DEPOSIT-${referenceId}`,
       });
 
@@ -2505,6 +2506,12 @@ export function BridgeScreen() {
             {isExternalBridgeMode && externalBridgeModeMessage ? (
               <div className="rounded-2xl border border-amber-500/25 bg-amber-500/5 px-4 py-3 text-sm text-amber-700 dark:text-amber-300">
                 {externalBridgeModeMessage}
+              </div>
+            ) : isPasskeyWalletSession && sourceChain === "ETH-SEPOLIA" ? (
+              <div className="rounded-2xl border border-amber-500/25 bg-amber-500/5 px-4 py-3 text-sm text-amber-700 dark:text-amber-300">
+                Passkey pada Ethereum Sepolia tidak mendukung popup konfirmasi transaksi
+                (batasan Circle modular SDK). Untuk rute ini, bridge berjalan dalam mode
+                treasury-direct. Popup passkey hanya muncul untuk source Arc Testnet.
               </div>
             ) : isExternalEvmBridge ? (
               <div className="space-y-3">
