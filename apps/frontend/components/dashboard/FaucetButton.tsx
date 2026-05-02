@@ -85,7 +85,7 @@ export function FaucetButton({ walletActions }: FaucetButtonProps) {
     setPasskeySolanaInput("");
     toast({
       title: "Solana address saved",
-      description: "Alamat Solana passkey tersimpan dan siap dipakai untuk bridge/faucet.",
+      description: "Passkey Solana address saved. Use it for bridge destinations and faucets.",
     });
   }
 
@@ -143,14 +143,14 @@ export function FaucetButton({ walletActions }: FaucetButtonProps) {
             Solana Devnet
           </p>
           <p className="px-1 text-[11px] text-muted-foreground/60 leading-relaxed">
-            Login passkey tidak membuat wallet Solana otomatis. Masukkan alamat
-            Solana Anda agar tampil di daftar Circle Wallets.
+            Passkey login does not create a Solana wallet automatically. Enter
+            your Solana address to show it in the Circle Wallets list.
           </p>
           <div className="flex gap-1.5">
             <Input
               value={passkeySolanaInput}
               onChange={(event) => setPasskeySolanaInput(event.target.value)}
-              placeholder="Alamat Solana..."
+              placeholder="Solana address..."
               className="h-8 text-xs font-mono"
               onKeyDown={(event) => {
                 if (event.key === "Enter") {
@@ -165,7 +165,7 @@ export function FaucetButton({ walletActions }: FaucetButtonProps) {
               disabled={!passkeySolanaInput.trim()}
               className="h-8 px-2 text-xs"
             >
-              Simpan
+              Save
             </Button>
           </div>
         </div>
