@@ -774,6 +774,7 @@ export function BridgeScreen() {
     arcWallet,
     sepoliaWallet,
     solanaWallet,
+    authMethod,
     createTransferChallenge,
     executeChallenge,
     getWalletBalances,
@@ -843,6 +844,7 @@ export function BridgeScreen() {
   const isSameChainRoute = sourceChain === destinationChain;
   const bridgeExecutionMode =
     walletMode === "external" ? "external_signer" : "app_treasury";
+  const isPasskeyWalletSession = authMethod === "passkey";
   const sourceAccountType =
     bridgeExecutionMode === "external_signer"
       ? "external_wallet"
@@ -2142,6 +2144,91 @@ export function BridgeScreen() {
   }
 
   async function submitBridge() {
+    if (isPasskeyWalletSession) {
+      setIsSubmitting(true);
+      setErrorMessage(null);
+      setIsReviewDialogOpen(false);
+      setIsSuccessDialogOpen(false);
+      reconnectingPollCountRef.current = 0;
+      setIsReconnectingToTracking(false);
+
+      try {
+        const referenceId = `BRIDGE-${sourceChain}-TO-${destinationChain}-${Date.now()}`;
+        const userSourceWallet =
+          sourceChain === "ARC-TESTNET"
+            ? arcWallet
+            : sourceChain === "ETH-SEPOLIA"
+              ? sepoliaWallet
+              : solanaWallet;
+
+        if (!userSourceWallet?.id) {
+          throw new Error(`Personal ${sourceOption.label} wallet not connected.`);
+        }
+
+        const balances = await getWalletBalances(userSourceWallet.id);
+        const usdcBalance = balances.find(
+          (b) =>
+            b.symbol === "USDC" ||
+            b.tokenAddress?.toLowerCase() === sourceTokenAddress?.toLowerCase()
+        );
+
+        if (!usdcBalance) {
+          throw new Error(
+            `Could not find USDC token in your personal ${sourceOption.label} wallet. Available tokens: ${balances.map((b) => `${b.symbol}=${b.tokenAddress}`).join(", ")}`
+          );
+        }
+
+        if (Number(usdcBalance.amount) < Number(amount)) {
+          throw new Error(
+            `Insufficient personal balance. You only have ${usdcBalance.amount} USDC on ${sourceOption.label}.`
+          );
+        }
+
+        const queuedTransfer = await createCircleTransfer({
+          amount,
+          blockchain: destinationChain,
+          sourceBlockchain: sourceChain,
+          bridgeExecutionMode: "external_signer",
+          sourceAccountType: "external_wallet",
+          destinationAddress,
+          referenceId,
+          tokenAddress: destinationTokenAddress,
+          walletId: userSourceWallet.id || undefined,
+          walletAddress: userSourceWallet.address,
+          userEmail: userEmail || undefined,
+          walletMode: "PASSKEY",
+        });
+
+        terminalNoticeRef.current = null;
+        setTransfer(queuedTransfer);
+        setStoredActiveTransfer(queuedTransfer);
+        setSourceChain(queuedTransfer.sourceBlockchain);
+        setDestinationChain(queuedTransfer.blockchain);
+        setAmount(queuedTransfer.amount);
+        setDestinationAddress(queuedTransfer.destinationAddress || destinationAddress);
+        toast({
+          title: "Bridge started",
+          description: `Passkey bridge started. Estimated time ${estimatedTimeLabel}.`,
+        });
+      } catch (error) {
+        const message = getBridgeErrorMessage(error, {
+          destinationLabel: destinationOption.label,
+          sourceLabel: sourceOption.label,
+        });
+        setErrorMessage(message);
+        toast({
+          title: "Bridge transfer failed",
+          description: message,
+          variant: "destructive",
+        });
+      } finally {
+        setIsSubmitting(false);
+        setIsDepositingToTreasury(false);
+      }
+
+      return;
+    }
+
     if (isExternalEvmBridge) {
       await submitExternalBridge();
       return;
@@ -2888,6 +2975,12 @@ export function BridgeScreen() {
                           destinationWallets["SOLANA-DEVNET"]?.walletAddress
                       )}
                     </p>
+                    {isPasskeyWalletSession && !solanaWallet?.address ? (
+                      <p className="text-[11px] text-muted-foreground/70">
+                        Passkey session hanya menyediakan wallet EVM. Isi alamat Solana
+                        tujuan secara manual.
+                      </p>
+                    ) : null}
                   </div>
                 </div>
               </div>

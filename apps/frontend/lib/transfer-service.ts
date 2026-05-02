@@ -92,6 +92,7 @@ interface CreateCircleTransferParams {
   sourceBlockchain?: CircleTransferBlockchain;
   bridgeExecutionMode?: BridgeExecutionMode;
   sourceAccountType?: BridgeSourceAccountType;
+  walletMode?: "W3S" | "PASSKEY";
   userEmail?: string;
   userId?: string;
 }
@@ -212,6 +213,7 @@ export async function createCircleTransfer(
           walletAddress,
           sourceBlockchain,
           sourceChain: sourceBlockchain,
+          walletMode: params.walletMode,
           userEmail: params.userEmail,
           userId: params.userId,
         },
