@@ -187,6 +187,9 @@ export function getCirclePasskeyConfig(): CirclePasskeyConfig {
     process.env.NEXT_PUBLIC_CIRCLE_PASSKEY_CLIENT_URL?.trim() ||
     DEFAULT_CIRCLE_PASSKEY_CLIENT_URL;
   const defaultArcModularUrl = `${clientUrl}/arcTestnet`;
+  // Sepolia uses the same Circle modular SDK base URL with an ethSepolia path.
+  // This mirrors the Arc default so Sepolia passkey works without extra env var.
+  const defaultSepoliaModularUrl = `${clientUrl}/ethSepolia`;
 
   return {
     arcModularUrl:
@@ -197,9 +200,10 @@ export function getCirclePasskeyConfig(): CirclePasskeyConfig {
     clientUrl,
     rpId:
       process.env.NEXT_PUBLIC_CIRCLE_PASSKEY_RP_ID?.trim() || "app.wizpay.xyz",
-    sepoliaModularUrl: normalizeOptionalUrl(
-      process.env.NEXT_PUBLIC_CIRCLE_PASSKEY_MODULAR_RPC_URL_ETH_SEPOLIA
-    ),
+    sepoliaModularUrl:
+      normalizeOptionalUrl(
+        process.env.NEXT_PUBLIC_CIRCLE_PASSKEY_MODULAR_RPC_URL_ETH_SEPOLIA
+      ) ?? defaultSepoliaModularUrl,
   };
 }
 

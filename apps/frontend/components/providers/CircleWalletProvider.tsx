@@ -359,10 +359,17 @@ function CircleWalletProviderInner({
       setSepoliaWallet(
         (runtimeSet?.sepolia?.wallet as CircleUserWallet | null) ?? null,
       );
-      setSolanaWallet(
+      // Passkey runtimeSet only contains EVM wallets (Arc + Sepolia).
+      // Solana wallet is kept from the previous state if it was already loaded
+      // via the backend; applyPasskeyRuntimeSet intentionally does NOT clear it.
+      const nextSolana =
         nextWallets.find((wallet) => wallet.blockchain === "SOLANA-DEVNET") ??
-          null,
-      );
+        null;
+      if (nextSolana) {
+        setSolanaWallet(nextSolana);
+      }
+      // If nextSolana is null, we leave solanaWallet as-is (may be populated
+      // from a prior syncBackendWallets call or a manual backend fetch).
     },
     [],
   );
@@ -401,6 +408,14 @@ function CircleWalletProviderInner({
       });
 
       applyPasskeyRuntimeSet(runtimeSet);
+
+      // For passkey sessions, Circle AA wallets are EVM-only.
+      // Restore Solana address from localStorage if the user previously
+      // logged in via W3S (Google/email) so the address is visible in the UI.
+      const cachedSolana = readStoredJson<{ address: string; blockchain: string }>("solana_wallet_cache");
+      if (cachedSolana?.address) {
+        setSolanaWallet(cachedSolana as CircleUserWallet);
+      }
 
       return runtimeSet;
     },
@@ -613,6 +628,18 @@ function CircleWalletProviderInner({
         nextWallets.find((wallet) => wallet.blockchain === "SOLANA-DEVNET") ??
           null,
       );
+
+      // Cache Solana wallet address so passkey sessions can show it.
+      const nextSolanaWallet = nextWallets.find(
+        (wallet) => wallet.blockchain === "SOLANA-DEVNET",
+      );
+      if (nextSolanaWallet) {
+        writeStoredJson("solana_wallet_cache", {
+          address: nextSolanaWallet.address,
+          blockchain: nextSolanaWallet.blockchain,
+          id: nextSolanaWallet.id,
+        });
+      }
 
       return nextWallets;
     },
