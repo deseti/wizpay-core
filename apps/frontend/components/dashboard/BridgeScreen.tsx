@@ -745,6 +745,32 @@ export function BridgeScreen() {
     setIsReviewDialogOpen(true);
   }
 
+  function hasEnoughPersonalUsdc(
+    reportedAmount: string,
+    requestedAmount: string
+  ) {
+    const requestedUnits = parseUnits(
+      requestedAmount,
+      CCTP_USDC_DECIMALS
+    );
+    const trimmed = reportedAmount.trim();
+
+    // Circle payloads are not fully consistent between environments:
+    // some return base units, some return human-readable decimals.
+    if (/^\d+$/.test(trimmed)) {
+      const asBaseUnits = BigInt(trimmed) >= requestedUnits;
+      const asHumanUnits =
+        parseUnits(trimmed, CCTP_USDC_DECIMALS) >= requestedUnits;
+      return asBaseUnits || asHumanUnits;
+    }
+
+    try {
+      return parseUnits(trimmed, CCTP_USDC_DECIMALS) >= requestedUnits;
+    } catch {
+      return Number(trimmed) >= Number(requestedAmount);
+    }
+  }
+
   // ── submitBridge ──────────────────────────────────────────────────────────────
   // Frontend only confirms wallet interaction; backend executes the on-chain bridge.
 
@@ -800,9 +826,9 @@ export function BridgeScreen() {
             );
           }
 
-          if (Number(usdcBalance.amount) < Number(amount)) {
+          if (!hasEnoughPersonalUsdc(usdcBalance.amount, amount)) {
             throw new Error(
-              `Insufficient personal balance. You only have ${usdcBalance.amount} USDC on ${sourceOption.label}.`
+              `Insufficient personal wallet balance on ${sourceOption.label}. Available: ${usdcBalance.amount} USDC, required: ${amount} USDC. Fund your personal Circle wallet (not treasury wallet) and retry.`
             );
           }
 
@@ -998,9 +1024,9 @@ export function BridgeScreen() {
         );
       }
 
-      if (Number(usdcBalance.amount) < Number(amount)) {
+      if (!hasEnoughPersonalUsdc(usdcBalance.amount, amount)) {
         throw new Error(
-          `Insufficient personal balance. You only have ${usdcBalance.amount} USDC on ${sourceOption.label}.`
+          `Insufficient personal wallet balance on ${sourceOption.label}. Available: ${usdcBalance.amount} USDC, required: ${amount} USDC. Fund your personal Circle wallet (not treasury wallet) and retry.`
         );
       }
 

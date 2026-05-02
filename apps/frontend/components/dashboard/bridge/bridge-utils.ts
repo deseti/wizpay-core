@@ -300,6 +300,18 @@ export function getBridgeErrorMessage(
     return "The bridge request could not reach the local app server. Reload the page and retry.";
   }
 
+  if (
+    message
+      .toLowerCase()
+      .includes("the asset amount owned by the wallet is insufficient for the transaction")
+  ) {
+    return `Your personal ${labels.sourceLabel} Circle wallet does not have enough USDC for this deposit confirmation. Fund the personal source wallet and retry. This error is not about treasury wallet balance.`;
+  }
+
+  if (message.toLowerCase().includes("apolloerror: forbidden")) {
+    return "Circle rejected this request (Forbidden). Your session may be stale or your wallet challenge no longer valid. Re-login with Google and retry.";
+  }
+
   return message;
 }
 
