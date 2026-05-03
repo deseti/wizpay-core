@@ -1,23 +1,41 @@
 {
-  "name": "WizPay Docs",
-  "theme": "mint",
-  "navigation": [
-    {
-      "group": "Getting Started",
-      "pages": [
-        "introduction",
-        "how-it-works",
-        "architecture",
-        "execution-flow"
-      ]
-    },
-    {
-      "group": "System",
-      "pages": [
-        "task-system",
-        "wallet-modes",
-        "api-overview"
-      ]
-    }
-  ]
+  "$schema": "https://mintlify.com/docs.json",
+  "theme": "maple",
+  "name": "WizPay",
+  "colors": {
+    "primary": "#6C5CE7",
+    "light": "#A29BFE",
+    "dark": "#6C5CE7"
+  },
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Getting Started",
+            "pages": [
+              "introduction",
+              "how-it-works"
+            ]
+          },
+          {
+            "group": "System Design",
+            "pages": [
+              "architecture",
+              "execution-flow",
+              "task-system"
+            ]
+          },
+          {
+            "group": "Reference",
+            "pages": [
+              "wallet-modes",
+              "api-overview"
+            ]
+          }
+        ]
+      }
+    ]
+  }
 }
