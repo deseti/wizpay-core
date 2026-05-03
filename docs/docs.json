@@ -1,5 +1,6 @@
 {
   "name": "WizPay Docs",
+  "theme": "mint",
   "navigation": [
     {
       "group": "Getting Started",
