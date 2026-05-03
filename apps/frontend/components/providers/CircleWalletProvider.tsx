@@ -38,6 +38,12 @@ import {
 import { buildBackendUrl, resolveBackendBaseUrl } from "@/lib/backend-api";
 
 import { LoginModal } from "./circle/LoginModal";
+import { usePasskeyAuth } from "./circle/usePasskeyAuth";
+import { useGoogleAuth } from "./circle/useGoogleAuth";
+import { useEmailAuth } from "./circle/useEmailAuth";
+import { useWalletLoader } from "./circle/useWalletLoader";
+import { useChallengeActions } from "./circle/useChallengeActions";
+import { useSdkInitializer } from "./circle/useSdkInitializer";
 import type {
   LoginMethod,
   W3SLoginMethod,
@@ -155,62 +161,6 @@ const DISABLED_CONTEXT_VALUE: CircleWalletContextValue = {
   verifyEmailOtp: () => {},
   wallets: [],
 };
-
-function buildW3sUserActionParams(
-  payload: Record<string, unknown>,
-  userToken: string,
-) {
-  const normalized: Record<string, unknown> = {
-    ...payload,
-    userToken,
-  };
-
-  if (typeof normalized.walletId === "string") {
-    normalized.walletId = normalized.walletId.trim();
-  }
-
-  if (typeof normalized.contractAddress === "string") {
-    normalized.contractAddress = normalized.contractAddress
-      .trim()
-      .toLowerCase();
-  }
-
-  if (typeof normalized.destinationAddress === "string") {
-    const destAddr = normalized.destinationAddress.trim();
-    normalized.destinationAddress = destAddr.startsWith("0x") ? destAddr.toLowerCase() : destAddr;
-  }
-
-  if (Array.isArray(normalized.amounts)) {
-    normalized.amounts = normalized.amounts.map((amount) => String(amount));
-  }
-
-  if (typeof normalized.amount === "number") {
-    normalized.amount = String(normalized.amount);
-  }
-
-  if (typeof normalized.blockchain === "string") {
-    normalized.blockchain = normalized.blockchain
-      .trim()
-      .toUpperCase()
-      .replace(/_/g, "-");
-  }
-
-  if (typeof normalized.sourceChain === "string") {
-    normalized.sourceChain = normalized.sourceChain
-      .trim()
-      .toUpperCase()
-      .replace(/_/g, "-");
-  }
-
-  if (typeof normalized.destinationChain === "string") {
-    normalized.destinationChain = normalized.destinationChain
-      .trim()
-      .toUpperCase()
-      .replace(/_/g, "-");
-  }
-
-  return normalized;
-}
 
 function CircleWalletProviderInner({
   children,
@@ -534,694 +484,63 @@ function CircleWalletProviderInner({
     }
   }, []);
 
-  const handleAuthFailureRef = useRef<((error: unknown) => void) | null>(null);
-  const initializeAndLoadWalletsRef = useRef<
-    ((authSession: CircleW3SSession) => Promise<void>) | null
-  >(null);
-  const ensuredSolanaByUserTokenRef = useRef(new Set<string>());
-  const persistSessionRef = useRef<
-    ((nextSession: CircleSession | null) => void) | null
-  >(null);
-
-  const postW3sAction = useCallback(
-    async (action: string, params: Record<string, unknown> = {}) => {
-      const response = await fetch(
-        buildBackendUrl("/w3s/action", resolveBackendBaseUrl()),
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({ action, ...params }),
-        },
-      );
-
-      const payload = (await response.json().catch(() => ({}))) as {
-        code?: number;
-        error?: string;
-        message?: string;
-        retryAfterMs?: number | null;
-        status?: number;
-        [key: string]: unknown;
-      };
-
-      if (!response.ok) {
-        const retryAfterSeconds =
-          typeof payload.retryAfterMs === "number"
-            ? Math.max(1, Math.ceil(payload.retryAfterMs / 1000))
-            : null;
-        const fallbackMessage =
-          response.status === 429
-            ? `Circle rate limit reached while running ${action}.${retryAfterSeconds ? ` Retry in about ${retryAfterSeconds}s.` : " Retry in a few seconds."}`
-            : `Circle action failed: ${action}`;
-        const nextError = new Error(
-          payload.error || payload.message || fallbackMessage,
-        ) as Error & {
-          code?: number;
-          retryAfterMs?: number | null;
-          status?: number;
-        };
-        nextError.code = payload.code;
-        nextError.retryAfterMs = payload.retryAfterMs;
-        nextError.status = response.status;
-        throw nextError;
-      }
-
-      return payload;
-    },
-    [],
-  );
-
-  const loadWallets = useCallback(
-    async (authSessionOverride?: CircleSession | null) => {
-      const activeSession = authSessionOverride ?? session;
-
-      if (isPasskeySession(activeSession)) {
-        const storedCredential = readStoredPasskeyCredential();
-
-        if (!storedCredential) {
-          throw new Error(
-            "Your saved passkey session is incomplete. Sign in with Passkey again.",
-          );
-        }
-
-        await initializePasskeyWallets({
-          credential: storedCredential,
-          username: activeSession.passkeyUsername,
-        });
-
-        return (
-          passkeyRuntimeByWalletIdRef.current.size > 0
-            ? Array.from(passkeyRuntimeByWalletIdRef.current.values()).map(
-                (runtime) => runtime.wallet as CircleUserWallet,
-              )
-            : []
-        ) as CircleUserWallet[];
-      }
-
-      const userToken = activeSession?.userToken;
-
-      if (!userToken) {
-        setWallets([]);
-        setArcWallet(null);
-        setSepoliaWallet(null);
-        setSolanaWallet(null);
-        resetPasskeyRuntimeState();
-        return [] as CircleUserWallet[];
-      }
-
-      const { wallets: syncedWallets } = await syncBackendWallets({
-        email: activeSession.email,
-        userToken,
-      });
-
-      const nextWallets = syncedWallets.filter((wallet) =>
-        SUPPORTED_WALLET_CHAINS.has(wallet.blockchain),
-      );
-
-      setWallets(nextWallets);
-      setArcWallet(
-        nextWallets.find((wallet) => wallet.blockchain === "ARC-TESTNET") ??
-          null,
-      );
-      setSepoliaWallet(
-        nextWallets.find((wallet) => wallet.blockchain === "ETH-SEPOLIA") ??
-          null,
-      );
-      setSolanaWallet(
-        nextWallets.find((wallet) => wallet.blockchain === "SOLANA-DEVNET") ??
-          null,
-      );
-
-      // Cache Solana wallet address so passkey sessions can show it.
-      const nextSolanaWallet = nextWallets.find(
-        (wallet) => wallet.blockchain === "SOLANA-DEVNET",
-      );
-      if (nextSolanaWallet) {
-        writeStoredJson("solana_wallet_cache", {
-          address: nextSolanaWallet.address,
-          blockchain: nextSolanaWallet.blockchain,
-          id: nextSolanaWallet.id,
-        });
-      }
-
-      return nextWallets;
-    },
-    [initializePasskeyWallets, resetPasskeyRuntimeState, session],
-  );
-
-  const executeChallengeForSession = useCallback(
-    async (challengeId: string, authSession: CircleSession) => {
-      if (isPasskeySession(authSession)) {
-        return executePasskeyChallenge(challengeId);
-      }
-
-      const sdk = sdkRef.current;
-
-      if (!sdk) {
-        throw new Error("Circle Web SDK is not ready yet.");
-      }
-
-      sdk.setAuthentication({
-        userToken: authSession.userToken,
-        encryptionKey: authSession.encryptionKey,
-      });
-
-      return new Promise<unknown>((resolve, reject) => {
-        sdk.execute(challengeId, (error, result) => {
-          if (error) {
-            reject(new Error(getErrorMessage(error)));
-            return;
-          }
-
-          resolve(result);
-        });
-      });
-    },
-    [executePasskeyChallenge],
-  );
-
-  const loadWalletsEnsuringSolana = useCallback(
-    async (authSession: CircleSession) => {
-      const existingWallets = await loadWallets(authSession);
-
-      if (isPasskeySession(authSession)) {
-        return existingWallets;
-      }
-
-      if (
-        existingWallets.some((wallet) => wallet.blockchain === "SOLANA-DEVNET")
-      ) {
-        ensuredSolanaByUserTokenRef.current.add(authSession.userToken);
-        return existingWallets;
-      }
-
-      if (ensuredSolanaByUserTokenRef.current.has(authSession.userToken)) {
-        return existingWallets;
-      }
-
-      try {
-        setAuthStatus("Creating your Solana Devnet user wallet...");
-
-        const response = await ensureBackendWallet({
-          chain: "SOLANA",
-          email: authSession.email,
-          userToken: authSession.userToken,
-        });
-
-        if (!response.requiresUserApproval) {
-          if (response.wallet) {
-            ensuredSolanaByUserTokenRef.current.add(authSession.userToken);
-            return loadWallets(authSession);
-          }
-
-          return existingWallets;
-        }
-
-        const challengeId = response.challengeId;
-
-        if (!challengeId) {
-          return existingWallets;
-        }
-
-        setAuthStatus("Confirming Solana wallet challenge...");
-        await executeChallengeForSession(challengeId, authSession);
-        await new Promise((resolve) => {
-          window.setTimeout(resolve, 1500);
-        });
-
-        setAuthStatus("Loading Circle wallets...");
-        const updatedWallets = await loadWallets(authSession);
-
-        if (
-          updatedWallets.some((wallet) => wallet.blockchain === "SOLANA-DEVNET")
-        ) {
-          ensuredSolanaByUserTokenRef.current.add(authSession.userToken);
-        }
-
-        return updatedWallets;
-      } catch (error) {
-        console.warn(
-          "[CircleWalletProvider] Failed to auto-create Solana user wallet",
-          error,
-        );
-        return existingWallets;
-      }
-    },
-    [executeChallengeForSession, loadWallets],
-  );
-
-  const initializeAndLoadWallets = useCallback(
-    async (authSession: CircleW3SSession) => {
-      setIsAuthenticating(true);
-      setAuthError(null);
-      setAuthStatus("Initializing your Circle wallet...");
-
-      try {
-        const payload = await initializeBackendWallets({
-          email: authSession.email,
-          userToken: authSession.userToken,
-        });
-
-        if (payload.challengeId) {
-          setAuthStatus(
-            "Circle wallet challenge ready. Confirm it to finish setup.",
-          );
-          await executeChallengeForSession(payload.challengeId, authSession);
-          await new Promise((resolve) => {
-            window.setTimeout(resolve, 1500);
-          });
-        }
-
-        setAuthStatus("Loading Circle wallets...");
-        await loadWalletsEnsuringSolana(authSession);
-        setAuthStatus("Circle wallet ready.");
-        setIsLoginOpen(false);
-        clearCircleOAuthBackups();
-        clearStoredLoginConfig({ preserveGoogleCookies: true });
-      } catch (error) {
-        const code = (error as Error & { code?: number | string }).code;
-
-        if (code === 155106 || code === "155106") {
-          setAuthStatus("Existing Circle wallet found. Loading wallets...");
-          await loadWalletsEnsuringSolana(authSession);
-          setAuthStatus("Circle wallet restored.");
-          setIsLoginOpen(false);
-          clearCircleOAuthBackups();
-          clearStoredLoginConfig({ preserveGoogleCookies: true });
-          setIsAuthenticating(false);
-          return;
-        }
-
-        setAuthError(getErrorMessage(error));
-      } finally {
-        authRequestInFlightRef.current = false;
-        setIsAuthenticating(false);
-      }
-    },
-    [
-      clearStoredLoginConfig,
-      executeChallengeForSession,
-      loadWalletsEnsuringSolana,
-    ],
-  );
-
-  const executeChallenge = useCallback(
-    async (challengeId: string) => {
-      if (!session) {
-        throw new Error("Circle session is not available.");
-      }
-
-      return executeChallengeForSession(challengeId, session);
-    },
-    [executeChallengeForSession, session],
-  );
-
-  const createContractExecutionChallenge = useCallback(
-    async (payload: Record<string, unknown>) => {
-      if (isPasskeySession(session)) {
-        const walletId =
-          typeof payload.walletId === "string" && payload.walletId
-            ? payload.walletId
-            : null;
-        const contractAddress = isHexValue(payload.contractAddress, 20)
-          ? (payload.contractAddress as Address)
-          : null;
-        const callData = isHexValue(payload.callData)
-          ? (payload.callData as Hex)
-          : null;
-
-        if (!walletId || !contractAddress || !callData) {
-          throw new Error(
-            "Passkey execution payload is missing the target wallet, contract, or calldata.",
-          );
-        }
-
-        const challengeId = createLocalChallengeId("passkey-contract");
-
-        passkeyChallengeStoreRef.current.set(challengeId, {
-          callData,
-          contractAddress,
-          kind: "contract",
-          referenceId:
-            typeof payload.refId === "string" && payload.refId
-              ? payload.refId
-              : null,
-          walletId,
-        });
-
-        return {
-          challengeId,
-          raw: {
-            challengeId,
-            transactionId:
-              typeof payload.refId === "string" && payload.refId
-                ? payload.refId
-                : null,
-            walletId,
-          },
-        };
-      }
-
-      if (!session || isPasskeySession(session) || !session.userToken) {
-        throw new Error("Circle session is not available.");
-      }
-
-      const response = await postW3sAction("createContractExecutionChallenge", {
-        ...buildW3sUserActionParams(payload, session.userToken),
-      });
-
-      if (!isRecord(response)) {
-        throw new Error("Circle did not return a valid challenge response.");
-      }
-
-      const challengeId = extractChallengeId(response);
-
-      if (!challengeId) {
-        throw new Error("Circle did not return a challenge identifier.");
-      }
-
-      return {
-        challengeId,
-        raw: response,
-      };
-    },
-    [postW3sAction, session],
-  );
-
-  const createTransferChallenge = useCallback(
-    async (payload: Record<string, unknown>) => {
-      if (!session || isPasskeySession(session) || !session.userToken) {
-        throw new Error("Circle session is not available.");
-      }
-
-      const response = await postW3sAction("createTransferChallenge", {
-        ...buildW3sUserActionParams(payload, session.userToken),
-      });
-
-      if (!isRecord(response)) {
-        throw new Error("Circle did not return a valid challenge response.");
-      }
-
-      const challengeId = extractChallengeId(response);
-
-      if (!challengeId) {
-        throw new Error("Circle did not return a challenge identifier.");
-      }
-
-      return {
-        challengeId,
-        raw: response,
-      };
-    },
-    [postW3sAction, session],
-  );
-
-  const createTypedDataChallenge = useCallback(
-    async (payload: Record<string, unknown>) => {
-      if (isPasskeySession(session)) {
-        const walletId =
-          typeof payload.walletId === "string" && payload.walletId
-            ? payload.walletId
-            : null;
-        const typedDataJson =
-          typeof payload.data === "string" && payload.data
-            ? payload.data
-            : null;
-
-        if (!walletId || !typedDataJson) {
-          throw new Error(
-            "Passkey typed-data payload is missing the target wallet or payload.",
-          );
-        }
-
-        const challengeId = createLocalChallengeId("passkey-typed-data");
-
-        passkeyChallengeStoreRef.current.set(challengeId, {
-          kind: "typed-data",
-          typedDataJson,
-          walletId,
-        });
-
-        return {
-          challengeId,
-          raw: {
-            challengeId,
-            walletId,
-          },
-        };
-      }
-
-      if (!session || isPasskeySession(session) || !session.userToken) {
-        throw new Error("Circle session is not available.");
-      }
-
-      const response = await postW3sAction("createTypedDataChallenge", {
-        ...buildW3sUserActionParams(payload, session.userToken),
-      });
-
-      if (!isRecord(response)) {
-        throw new Error(
-          "Circle did not return a valid sign challenge response.",
-        );
-      }
-
-      const challengeId = extractChallengeId(response);
-
-      if (!challengeId) {
-        throw new Error("Circle did not return a sign challenge identifier.");
-      }
-
-      return {
-        challengeId,
-        raw: response,
-      };
-    },
-    [postW3sAction, session],
-  );
-
-  const getWalletBalances = useCallback(
-    async (walletId: string): Promise<CircleWalletTokenBalance[]> => {
-      if (isPasskeySession(session)) {
-        const runtime = passkeyRuntimeByWalletIdRef.current.get(walletId);
-
-        if (!runtime) {
-          throw new Error("Passkey wallet session is not ready.");
-        }
-
-        const _passkeyBalances = await getPasskeyTokenBalances(runtime);
-        return _passkeyBalances.map((pb) => ({
-          ...pb,
-          tokenId: null,
-        })) as CircleWalletTokenBalance[];
-      }
-
-      if (!session || isPasskeySession(session) || !session.userToken) {
-        throw new Error("Circle session is not available.");
-      }
-
-      const response = await postW3sAction("getWalletBalances", {
-        userToken: session.userToken,
-        walletId,
-      });
-
-      if (!isRecord(response) || !Array.isArray(response.tokenBalances)) {
-        return [];
-      }
-
-      return response.tokenBalances
-        .map((balance) => normalizeCircleWalletTokenBalance(balance))
-        .filter(
-          (balance): balance is CircleWalletTokenBalance => balance !== null,
-        );
-    },
-    [postW3sAction, session],
-  );
-
-  useEffect(() => {
-    const storedSession = readStoredJson<CircleSession>(SESSION_STORAGE_KEY);
-    const storedLoginConfig = readStoredJson<StoredLoginConfig>(
-      LOGIN_CONFIG_STORAGE_KEY,
-    );
-
-    if (storedSession) {
-      setSession(storedSession);
-    }
-
-    if (storedLoginConfig) {
-      loginConfigRef.current = storedLoginConfig;
-      setHasPendingEmailOtp(storedLoginConfig.loginMethod === "email");
-    }
-  }, []);
-
-  useEffect(() => {
-    setPasskeyUnavailableReason(getPasskeySupportError(PASSKEY_CONFIG));
-  }, []);
-
-  useEffect(() => {
-    handleAuthFailureRef.current = handleAuthFailure;
-  }, [handleAuthFailure]);
-
-  useEffect(() => {
-    initializeAndLoadWalletsRef.current = initializeAndLoadWallets;
-  }, [initializeAndLoadWallets]);
-
-  useEffect(() => {
-    persistSessionRef.current = persistSession;
-  }, [persistSession]);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    async function initializeSdk() {
-      try {
-        console.log(
-          "[CircleWalletProvider] SDK init — URL:",
-          window.location.href,
-        );
-        const sdkModule =
-          (await import("@circle-fin/w3s-pw-web-sdk")) as unknown as W3SSdkModule;
-
-        if (!sdkModule.W3SSdk) {
-          throw new Error("Circle Web SDK did not expose W3SSdk.");
-        }
-
-        restoreCircleOAuthStateFromCookies();
-
-        const restoredLoginConfig =
-          loginConfigRef.current ??
-          readStoredJson<StoredLoginConfig>(LOGIN_CONFIG_STORAGE_KEY) ??
-          readGoogleLoginConfigFromCookies();
-
-        if (restoredLoginConfig) {
-          loginConfigRef.current = restoredLoginConfig;
-
-          if (!cancelled) {
-            setHasPendingEmailOtp(restoredLoginConfig.loginMethod === "email");
-          }
-        }
-
-        googleOAuthDiagnosticsRef.current =
-          getGoogleOAuthDiagnostics(restoredLoginConfig);
-
-        const initialConfig: Record<string, unknown> = {
-          appSettings: { appId: getRestoredCircleAppId() },
-        };
-
-        if (restoredLoginConfig?.loginConfigs) {
-          initialConfig.loginConfigs = restoredLoginConfig.loginConfigs;
-        }
-
-        const sdk = new sdkModule.W3SSdk(initialConfig, (error, result) => {
-          if (cancelled) {
-            return;
-          }
-
-          if (error || !isW3SLoginCompleteResult(result)) {
-            setIsAuthenticating(false);
-            handleAuthFailureRef.current?.(
-              error ??
-                new Error("Circle login did not return a valid auth payload."),
-            );
-            return;
-          }
-
-          googleOAuthDiagnosticsRef.current = null;
-
-          const storedLoginConfigForCallback = loginConfigRef.current;
-          const nextSession: CircleSession = {
-            authMethod: storedLoginConfigForCallback?.loginMethod ?? "google",
-            email: storedLoginConfigForCallback?.email ?? null,
-            encryptionKey: result.encryptionKey,
-            refreshToken: result.refreshToken,
-            userToken: result.userToken,
-          };
-
-          setSession(nextSession);
-          persistSessionRef.current?.(nextSession);
-
-          if (initializeAndLoadWalletsRef.current) {
-            void initializeAndLoadWalletsRef.current(nextSession);
-          }
-        });
-
-        sdkRef.current = sdk;
-
-        if (!cancelled) {
-          setReady(true);
-          setAuthStatus(null);
-        }
-      } catch (error) {
-        if (!cancelled) {
-          setReady(true);
-          handleAuthFailureRef.current?.(error);
-        }
-      }
-    }
-
-    void initializeSdk();
-
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!ready || deviceId) {
-      return;
-    }
-
-    let cancelled = false;
-
-    async function fetchDeviceId() {
-      try {
-        await ensureDeviceId();
-
-        if (!cancelled) {
-          setAuthError((current) =>
-            current ===
-            "Circle device ID is still loading. Try again in a moment."
-              ? null
-              : current,
-          );
-        }
-      } catch (error) {
-        if (!cancelled) {
-          const message =
-            error instanceof Error ? error.message : "Unknown error";
-
-          // Surface a clear, actionable message when the server-side API key
-          // is missing — this is the most common Docker misconfiguration.
-          if (
-            message.includes("CIRCLE_API_KEY") ||
-            message.includes("createDeviceToken") ||
-            message.includes("Circle action failed")
-          ) {
-            console.error(
-              "[CircleWalletProvider] createDeviceToken failed. " +
-                "Check that CIRCLE_API_KEY is set in root .env and the Docker " +
-                "container was restarted. Also verify http://localhost:3000 is " +
-                "listed in Circle Console → Allowed Origins.",
-              error,
-            );
-            setAuthError(
-              "Authentication initialization failed. " +
-                "The server CIRCLE_API_KEY may be missing or the Circle App ID may not " +
-                "allow localhost:3000. Check server logs and Circle Console.",
-            );
-          } else {
-            handleAuthFailure(error);
-          }
-        }
-      }
-    }
-
-    void fetchDeviceId();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [deviceId, ensureDeviceId, handleAuthFailure, ready]);
+  const {
+    postW3sAction,
+    loadWallets,
+    executeChallengeForSession,
+    loadWalletsEnsuringSolana,
+    initializeAndLoadWallets,
+  } = useWalletLoader({
+    session,
+    sdkRef,
+    executePasskeyChallenge,
+    initializePasskeyWallets,
+    resetPasskeyRuntimeState,
+    passkeyRuntimeByWalletIdRef,
+    setWallets,
+    setArcWallet,
+    setSepoliaWallet,
+    setSolanaWallet,
+    setAuthError,
+    setAuthStatus,
+    setIsAuthenticating,
+    setIsLoginOpen,
+    clearStoredLoginConfig,
+    authRequestInFlightRef,
+  });
+
+  const {
+    executeChallenge,
+    createContractExecutionChallenge,
+    createTransferChallenge,
+    createTypedDataChallenge,
+    getWalletBalances,
+  } = useChallengeActions({
+    session,
+    postW3sAction,
+    executeChallengeForSession,
+    passkeyChallengeStoreRef,
+    passkeyRuntimeByWalletIdRef,
+  });
+
+  useSdkInitializer({
+    sdkRef,
+    loginConfigRef,
+    googleOAuthDiagnosticsRef,
+    handleAuthFailure,
+    initializeAndLoadWallets,
+    persistSession,
+    setHasPendingEmailOtp,
+    setIsAuthenticating,
+    setPasskeyUnavailableReason,
+    setReady,
+    setAuthError,
+    setAuthStatus,
+    setSession,
+    ready,
+    deviceId,
+    ensureDeviceId,
+  });
 
   useEffect(() => {
     const activeSession = session;
@@ -1268,298 +587,42 @@ function CircleWalletProviderInner({
     wallets.length,
   ]);
 
-  const requestPasskeyRegistration = useCallback(
-    async (username: string) => {
-      const normalizedUsername = username.trim();
-      const supportError = getPasskeySupportError(PASSKEY_CONFIG);
-
-      if (supportError) {
-        setAuthError(supportError);
-        return;
-      }
-
-      if (!normalizedUsername) {
-        setAuthError("Enter a username before creating a passkey.");
-        return;
-      }
-
-      if (authRequestInFlightRef.current) {
-        return;
-      }
-
-      authRequestInFlightRef.current = true;
-      setAuthError(null);
-      setAuthStatus("Creating your Circle passkey...");
-      setIsAuthenticating(true);
-
-      try {
-        resetPasskeyRuntimeState();
-
-        const result = await registerWithPasskey(
-          normalizedUsername,
-          PASSKEY_CONFIG,
-        );
-
-        setAuthStatus("Preparing your Circle passkey wallet...");
-        await finalizePasskeyAuthentication({
-          credential: result.credential,
-          username: normalizedUsername,
-        });
-      } catch (error) {
-        resetPasskeyRuntimeState();
-        handleAuthFailure(error);
-      } finally {
-        authRequestInFlightRef.current = false;
-        setIsAuthenticating(false);
-      }
-    },
-    [
-      finalizePasskeyAuthentication,
-      handleAuthFailure,
-      resetPasskeyRuntimeState,
-    ],
-  );
-
-  const requestPasskeyLogin = useCallback(async () => {
-    const supportError = getPasskeySupportError(PASSKEY_CONFIG);
-
-    if (supportError) {
-      setAuthError(supportError);
-      return;
-    }
-
-    if (authRequestInFlightRef.current) {
-      return;
-    }
-
-    authRequestInFlightRef.current = true;
-    setAuthError(null);
-    setAuthStatus("Opening your passkey prompt...");
-    setIsAuthenticating(true);
-
-    try {
-      resetPasskeyRuntimeState();
-
-      const credential = await loginWithPasskey(PASSKEY_CONFIG);
-
-      setAuthStatus("Restoring your Circle passkey wallet...");
-      await finalizePasskeyAuthentication({
-        credential,
-        username: readStoredPasskeyUsername(),
-      });
-    } catch (error) {
-      resetPasskeyRuntimeState();
-      handleAuthFailure(error);
-    } finally {
-      authRequestInFlightRef.current = false;
-      setIsAuthenticating(false);
-    }
-  }, [
-    finalizePasskeyAuthentication,
-    handleAuthFailure,
+  const { requestPasskeyLogin, requestPasskeyRegistration } = usePasskeyAuth({
+    authRequestInFlightRef,
+    setAuthError,
+    setAuthStatus,
+    setIsAuthenticating,
     resetPasskeyRuntimeState,
-  ]);
-
-  const requestGoogleLogin = useCallback(async () => {
-    if (!CIRCLE_APP_ID) {
-      setAuthError(
-        "NEXT_PUBLIC_CIRCLE_APP_ID is missing. Configure Circle Wallets before signing in.",
-      );
-      return;
-    }
-
-    if (!GOOGLE_CLIENT_ID) {
-      setAuthError(
-        "NEXT_PUBLIC_GOOGLE_CLIENT_ID is missing. Add your Circle-linked Google client ID first.",
-      );
-      return;
-    }
-
-    const sdk = sdkRef.current;
-
-    if (!sdk) {
-      setAuthError("Circle Web SDK is not ready yet.");
-      return;
-    }
-
-    if (authRequestInFlightRef.current) {
-      return;
-    }
-
-    authRequestInFlightRef.current = true;
-
-    setAuthError(null);
-    setAuthStatus("Preparing Google sign-in...");
-    setIsAuthenticating(true);
-
-    try {
-      googleOAuthDiagnosticsRef.current = null;
-      clearCircleOAuthState();
-      clearStoredLoginConfig({ preserveGoogleCookies: true });
-
-      const cachedGoogleLoginConfig = readGoogleLoginConfigFromCookies();
-      let loginConfigs: Record<string, unknown>;
-
-      if (cachedGoogleLoginConfig) {
-        loginConfigs = cachedGoogleLoginConfig.loginConfigs;
-        setAuthStatus("Reusing Circle device registration...");
-      } else {
-        const resolvedDeviceId = await ensureDeviceId();
-
-        setAuthStatus("Creating Circle device token...");
-
-        const payload = (await postW3sAction("createDeviceToken", {
-          deviceId: resolvedDeviceId,
-        })) as {
-          deviceEncryptionKey: string;
-          deviceToken: string;
-        };
-
-        if (!payload.deviceEncryptionKey || !payload.deviceToken) {
-          throw new Error(
-            "Circle did not return device credentials. " +
-              "Check that CIRCLE_API_KEY is set on the backend.",
-          );
-        }
-
-        loginConfigs = buildGoogleLoginConfigs({
-          deviceEncryptionKey: payload.deviceEncryptionKey,
-          deviceToken: payload.deviceToken,
-          googleClientId: GOOGLE_CLIENT_ID,
-        });
-
-        persistGoogleLoginCookies({
-          appId: CIRCLE_APP_ID,
-          deviceEncryptionKey: payload.deviceEncryptionKey,
-          deviceToken: payload.deviceToken,
-          googleClientId: GOOGLE_CLIENT_ID,
-        });
-      }
-
-      storeLoginConfig({
-        loginMethod: "google",
-        loginConfigs,
-      });
-
-      sdk.updateConfigs({
-        appSettings: { appId: CIRCLE_APP_ID },
-        loginConfigs,
-      });
-
-      setAuthStatus("Redirecting to Google...");
-
-      // Let the SDK handle OAuth URL generation, state/nonce persistence,
-      // and the redirect. The SDK's saveOAuthInfo writes 'socialLoginProvider',
-      // 'state', and 'nonce' to localStorage, and its checkSocialLoginState
-      // reads them back on return. Manual management causes mismatches.
-      await sdk.performLogin(SocialLoginProvider.GOOGLE);
-    } catch (error) {
-      setIsAuthenticating(false);
-      handleAuthFailure(error);
-    }
-  }, [
-    clearStoredLoginConfig,
-    ensureDeviceId,
     handleAuthFailure,
+    finalizePasskeyAuthentication,
+  });
+
+  const { requestGoogleLogin } = useGoogleAuth({
+    authRequestInFlightRef,
+    sdkRef,
+    googleOAuthDiagnosticsRef,
+    setAuthError,
+    setAuthStatus,
+    setIsAuthenticating,
+    handleAuthFailure,
+    ensureDeviceId,
     postW3sAction,
     storeLoginConfig,
-  ]);
+    clearStoredLoginConfig,
+  });
 
-  const requestEmailOtp = useCallback(
-    async (email: string) => {
-      if (!CIRCLE_APP_ID) {
-        setAuthError(
-          "NEXT_PUBLIC_CIRCLE_APP_ID is missing. Configure Circle Wallets before signing in.",
-        );
-        return;
-      }
-
-      const normalizedEmail = email.trim();
-
-      if (!normalizedEmail) {
-        setAuthError("Enter your email address first.");
-        return;
-      }
-
-      const sdk = sdkRef.current;
-
-      if (!sdk) {
-        setAuthError("Circle Web SDK is not ready yet.");
-        return;
-      }
-
-      if (authRequestInFlightRef.current) {
-        return;
-      }
-
-      authRequestInFlightRef.current = true;
-
-      setAuthError(null);
-      setAuthStatus("Requesting Circle email OTP...");
-      setIsAuthenticating(true);
-
-      try {
-        const resolvedDeviceId = await ensureDeviceId();
-        const payload = (await postW3sAction("requestEmailOtp", {
-          deviceId: resolvedDeviceId,
-          email: normalizedEmail,
-        })) as {
-          deviceEncryptionKey: string;
-          deviceToken: string;
-          otpToken: string;
-        };
-
-        const loginConfigs = {
-          deviceToken: payload.deviceToken,
-          deviceEncryptionKey: payload.deviceEncryptionKey,
-          otpToken: payload.otpToken,
-          email: {
-            email: normalizedEmail,
-          },
-        };
-
-        sdk.updateConfigs({
-          appSettings: { appId: CIRCLE_APP_ID },
-          loginConfigs,
-        });
-
-        storeLoginConfig({
-          loginMethod: "email",
-          loginConfigs,
-          email: normalizedEmail,
-        });
-
-        setAuthStatus(
-          "OTP sent. Open the Circle OTP window to verify your email.",
-        );
-      } catch (error) {
-        handleAuthFailure(error);
-      } finally {
-        authRequestInFlightRef.current = false;
-        setIsAuthenticating(false);
-      }
-    },
-    [ensureDeviceId, handleAuthFailure, postW3sAction, storeLoginConfig],
-  );
-
-  const verifyEmailOtp = useCallback(() => {
-    const sdk = sdkRef.current;
-
-    if (!sdk) {
-      setAuthError("Circle Web SDK is not ready yet.");
-      return;
-    }
-
-    if (!hasPendingEmailOtp) {
-      setAuthError("Request an email OTP before verifying it.");
-      return;
-    }
-
-    setAuthError(null);
-    setAuthStatus("Opening Circle email verification window...");
-    setIsAuthenticating(true);
-    sdk.verifyOtp();
-  }, [hasPendingEmailOtp]);
+  const { requestEmailOtp, verifyEmailOtp } = useEmailAuth({
+    authRequestInFlightRef,
+    sdkRef,
+    setAuthError,
+    setAuthStatus,
+    setIsAuthenticating,
+    hasPendingEmailOtp,
+    handleAuthFailure,
+    ensureDeviceId,
+    postW3sAction,
+    storeLoginConfig,
+  });
 
   const logout = useCallback(() => {
     clearCircleOAuthState();
@@ -1614,23 +677,10 @@ function CircleWalletProviderInner({
       requestGoogleLogin,
       requestPasskeyLogin,
       requestPasskeyRegistration,
-      sepoliaWallet,
-      solanaWallet,
-      userEmail: session?.email ?? null,
-      verifyEmailOtp,
-      wallets,
       savePasskeySolanaAddress,
       sepoliaWallet,
       solanaWallet,
       userEmail: session?.email ?? null,
-      verifyEmailOtp,
-      wallets,
-      requestPasskeyLogin,
-      requestPasskeyRegistration,
-      savePasskeySolanaAddress,
-      sepoliaWallet,
-      solanaWallet,
-      session,
       verifyEmailOtp,
       wallets,
     }),

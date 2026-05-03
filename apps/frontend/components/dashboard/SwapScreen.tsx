@@ -12,6 +12,7 @@ import {
 import { usePublicClient, useReadContract } from "wagmi";
 
 import { useActionGuard } from "@/hooks/useActionGuard";
+import { useDialogState } from "@/hooks/useDialogState";
 import { Button } from "@/components/ui/button";
 import { useTransactionExecutor } from "@/hooks/useTransactionExecutor";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -95,7 +96,7 @@ export function SwapScreen() {
   const [amountIn, setAmountIn] = useState("");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [swapStep, setSwapStep] = useState<"idle" | "approving" | "swapping">("idle");
-  const [isSuccessDialogOpen, setIsSuccessDialogOpen] = useState(false);
+  const { isOpen: isSuccessDialogOpen, setIsOpen: setIsSuccessDialogOpen } = useDialogState();
   const [successState, setSuccessState] = useState<SwapSuccessState | null>(null);
   const isApproving = swapStep === "approving";
   const isSwapping = swapStep === "swapping";

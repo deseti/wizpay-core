@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createHash, randomBytes } from 'crypto';
+import { SolanaService } from './solana.service';
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -95,7 +96,10 @@ function encodeERC20Approve(spender: string, amount: bigint): string {
 export class BlockchainService {
   private readonly logger = new Logger(BlockchainService.name);
 
-  constructor(private readonly configService: ConfigService) {}
+  constructor(
+    private readonly configService: ConfigService,
+    private readonly solanaService: SolanaService,
+  ) {}
 
   private get rpcUrl(): string {
     return (
@@ -140,10 +144,7 @@ export class BlockchainService {
    * Resolve the Solana JSON-RPC endpoint.
    */
   getSolanaRpcUrl(): string {
-    return (
-      this.configService.get<string>('SOLANA_RPC_URL') ||
-      'https://api.devnet.solana.com'
-    );
+    return this.solanaService.getSolanaRpcUrl();
   }
 
   /**
@@ -592,7 +593,7 @@ export class BlockchainService {
     return { txHash, status: 'pending' };
   }
 
-  // ── Solana support ───────────────────────────────────────────────
+  // ── Solana support (delegated to SolanaService) ──────────────────
 
   /**
    * Query the native SOL balance of a Solana wallet.
@@ -600,30 +601,7 @@ export class BlockchainService {
   async getSolanaBalance(
     address: string,
   ): Promise<{ address: string; balance: string }> {
-    this.logger.debug(`getSolanaBalance — address=${address}`);
-
-    const res = await fetch(this.getSolanaRpcUrl(), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        jsonrpc: '2.0',
-        id: Date.now(),
-        method: 'getBalance',
-        params: [address],
-      }),
-      signal: AbortSignal.timeout(15_000),
-    });
-
-    const json = (await res.json()) as {
-      result?: { value: number };
-      error?: { message: string };
-    };
-
-    if (json.error) {
-      throw new Error(`Solana RPC error: ${json.error.message}`);
-    }
-
-    return { address, balance: String(json.result?.value ?? 0) };
+    return this.solanaService.getSolanaBalance(address);
   }
 
   /**
@@ -638,36 +616,7 @@ export class BlockchainService {
   async broadcastSolanaTransaction(
     encodedTransaction: string,
   ): Promise<{ signature: string }> {
-    this.logger.log('broadcastSolanaTransaction — relaying pre-signed tx');
-
-    const res = await fetch(this.getSolanaRpcUrl(), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        jsonrpc: '2.0',
-        id: Date.now(),
-        method: 'sendTransaction',
-        params: [encodedTransaction, { encoding: 'base64' }],
-      }),
-      signal: AbortSignal.timeout(30_000),
-    });
-
-    const json = (await res.json()) as {
-      result?: string;
-      error?: { message: string; data?: unknown };
-    };
-
-    if (json.error) {
-      const detail = json.error.data
-        ? ` — ${JSON.stringify(json.error.data)}`
-        : '';
-      throw new Error(`Solana broadcast error: ${json.error.message}${detail}`);
-    }
-
-    const signature = json.result!;
-    this.logger.log(`Solana transaction broadcast — signature=${signature}`);
-
-    return { signature };
+    return this.solanaService.broadcastSolanaTransaction(encodedTransaction);
   }
 
   /**
@@ -689,16 +638,6 @@ export class BlockchainService {
     amount: string,
     mintAddress?: string,
   ): Record<string, unknown> {
-    const usdcDevnetMint = 'Gh9ZwEmdLJ8DscKNTkTqPbNwLNNBjuSzaG9Vp2KGtKJr';
-
-    return {
-      type: 'solana_spl_transfer_intent',
-      network: 'SOLANA-DEVNET',
-      from,
-      to,
-      amount,
-      mint: mintAddress ?? usdcDevnetMint,
-      rpcUrl: this.getSolanaRpcUrl(),
-    };
+    return this.solanaService.buildSolanaSplTransferIntent(from, to, amount, mintAddress);
   }
 }

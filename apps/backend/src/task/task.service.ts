@@ -8,10 +8,9 @@ import {
 import { PayrollBatchService } from '../agents/payroll/payroll-batch.service';
 import { PayrollValidationService } from '../agents/payroll/payroll-validation.service';
 import { TaskType } from './task-type.enum';
-import { Prisma, Task, TaskLog, TaskTransaction, TaskUnit } from '@prisma/client';
+import { Prisma, Task } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
 import { TaskStatus } from './task-status.enum';
-import { normalizeChainTxId } from '../common/multichain';
 import {
   AppendTransactionInput,
   CreateLiquidityTaskResult,
@@ -26,15 +25,12 @@ import {
   TaskTransactionRecord,
   TaskUnitRecord,
   TaskUnitStatus,
-  TxStatus,
   UpdateTransactionInput,
 } from './task.types';
-
-type TaskWithRelations = Task & {
-  logs: TaskLog[];
-  units: TaskUnit[];
-  transactions: TaskTransaction[];
-};
+import { TaskLogService } from './task-log.service';
+import { TaskTransactionService } from './task-transaction.service';
+import { TaskMapperService, TaskWithRelations } from './task-mapper.service';
+import { TaskUnitService } from './task-unit.service';
 
 const ALLOWED_TRANSITIONS: Record<TaskStatus, readonly TaskStatus[]> = {
   [TaskStatus.CREATED]: [TaskStatus.ASSIGNED, TaskStatus.FAILED],
@@ -56,6 +52,10 @@ const ALLOWED_TRANSITIONS: Record<TaskStatus, readonly TaskStatus[]> = {
 export class TaskService {
   constructor(
     private readonly prisma: PrismaService,
+    private readonly taskLogService: TaskLogService,
+    private readonly taskTransactionService: TaskTransactionService,
+    private readonly taskMapper: TaskMapperService,
+    private readonly taskUnitService: TaskUnitService,
     @Inject(forwardRef(() => PayrollValidationService))
     private readonly validationService: PayrollValidationService,
     @Inject(forwardRef(() => PayrollBatchService))
@@ -400,29 +400,7 @@ export class TaskService {
       context?: TaskPayload;
     },
   ): Promise<TaskLogRecord> {
-    const log = await this.prisma.taskLog.create({
-      data: {
-        taskId,
-        level: options?.level ?? 'INFO',
-        step,
-        status,
-        message,
-        ...(options?.context
-          ? { context: options.context as Prisma.InputJsonValue }
-          : {}),
-      },
-    });
-
-    return {
-      id: log.id,
-      taskId: log.taskId,
-      level: log.level as TaskLogLevel,
-      step: log.step,
-      status: log.status,
-      message: log.message,
-      context: log.context ? this.mapJsonObject(log.context) : null,
-      createdAt: log.createdAt,
-    };
+    return this.taskLogService.logStep(taskId, step, status, message, options);
   }
 
   async reportUnit(
@@ -430,103 +408,7 @@ export class TaskService {
     unitId: string,
     result: ReportTaskUnitInput,
   ): Promise<ReportTaskUnitResult> {
-    return this.prisma.$transaction(async (tx) => {
-      const normalizedTxHash =
-        result.txHash === undefined
-          ? undefined
-          : normalizeChainTxId(result.txHash);
-
-      const unit = await tx.taskUnit.findFirst({
-        where: { id: unitId, taskId },
-      });
-
-      if (!unit) {
-        throw new NotFoundException(
-          `Task unit ${unitId} for task ${taskId} not found`,
-        );
-      }
-
-      if (unit.status !== 'PENDING') {
-        const task = await this.getTaskDetailsInTransaction(tx, taskId);
-        return {
-          task,
-          unit: this.mapUnit(unit),
-          nextUnit: this.findNextPendingUnit(task),
-        };
-      }
-
-      const updatedUnit = await tx.taskUnit.update({
-        where: { id: unit.id },
-        data: {
-          status: result.status,
-          ...(normalizedTxHash !== undefined ? { txHash: normalizedTxHash } : {}),
-          ...(result.error !== undefined ? { error: result.error } : {}),
-        },
-      });
-
-      const task = await tx.task.findUniqueOrThrow({
-        where: { id: taskId },
-      });
-
-      const updatedTask = await tx.task.update({
-        where: { id: taskId },
-        data: {
-          completedUnits:
-            result.status === 'SUCCESS'
-              ? { increment: 1 }
-              : undefined,
-          failedUnits:
-            result.status === 'FAILED'
-              ? { increment: 1 }
-              : undefined,
-        },
-      });
-
-      const nextStatus = this.recomputeTaskStatus({
-        ...task,
-        completedUnits:
-          result.status === 'SUCCESS'
-            ? task.completedUnits + 1
-            : task.completedUnits,
-        failedUnits:
-          result.status === 'FAILED'
-            ? task.failedUnits + 1
-            : task.failedUnits,
-      });
-
-      await tx.task.update({
-        where: { id: taskId },
-        data: { status: nextStatus },
-      });
-
-      await tx.taskLog.create({
-        data: {
-          taskId,
-          level: result.status === 'FAILED' ? 'ERROR' : 'INFO',
-          step: 'unit.reported',
-          status: nextStatus,
-          message:
-            result.status === 'SUCCESS'
-              ? `Unit ${updatedUnit.index + 1} reported success`
-              : `Unit ${updatedUnit.index + 1} reported failure`,
-          context: {
-            error: result.error ?? null,
-            txHash: normalizedTxHash ?? null,
-            unitId: updatedUnit.id,
-            unitIndex: updatedUnit.index,
-            unitStatus: result.status,
-          } as Prisma.InputJsonValue,
-        },
-      });
-
-      const fullTask = await this.getTaskDetailsInTransaction(tx, taskId);
-
-      return {
-        task: fullTask,
-        unit: this.mapUnit(updatedUnit),
-        nextUnit: this.findNextPendingUnit(fullTask),
-      };
-    });
+    return this.taskUnitService.reportUnit(taskId, unitId, result);
   }
 
   recomputeTaskStatus(task: {
@@ -534,15 +416,7 @@ export class TaskService {
     completedUnits: number;
     failedUnits: number;
   }): TaskStatus {
-    if (task.failedUnits > 0) {
-      return TaskStatus.REVIEW;
-    }
-
-    if (task.totalUnits > 0 && task.completedUnits === task.totalUnits) {
-      return TaskStatus.EXECUTED;
-    }
-
-    return TaskStatus.IN_PROGRESS;
+    return this.taskUnitService.recomputeTaskStatus(task);
   }
 
   // ════════════════════════════════════════════════════════════════════
@@ -556,19 +430,7 @@ export class TaskService {
   async appendTransaction(
     input: AppendTransactionInput,
   ): Promise<TaskTransactionRecord> {
-    const tx = await this.prisma.taskTransaction.create({
-      data: {
-        taskId: input.taskId,
-        txId: input.txId,
-        recipient: input.recipient,
-        amount: input.amount,
-        currency: input.currency,
-        batchIndex: input.batchIndex,
-        status: 'pending',
-      },
-    });
-
-    return this.mapTransaction(tx);
+    return this.taskTransactionService.appendTransaction(input);
   }
 
   /**
@@ -579,29 +441,7 @@ export class TaskService {
     txId: string,
     update: UpdateTransactionInput,
   ): Promise<TaskTransactionRecord> {
-    const existing = await this.prisma.taskTransaction.findFirst({
-      where: { txId },
-    });
-
-    if (!existing) {
-      throw new NotFoundException(`Transaction ${txId} not found`);
-    }
-
-    const tx = await this.prisma.taskTransaction.update({
-      where: { id: existing.id },
-      data: {
-        status: update.status,
-        ...(update.txHash !== undefined ? { txHash: update.txHash } : {}),
-        ...(update.errorReason !== undefined
-          ? { errorReason: update.errorReason }
-          : {}),
-        ...(update.pollAttempts !== undefined
-          ? { pollAttempts: update.pollAttempts }
-          : {}),
-      },
-    });
-
-    return this.mapTransaction(tx);
+    return this.taskTransactionService.updateTransaction(txId, update);
   }
 
   /**
@@ -610,12 +450,7 @@ export class TaskService {
   async getTaskTransactions(
     taskId: string,
   ): Promise<TaskTransactionRecord[]> {
-    const txs = await this.prisma.taskTransaction.findMany({
-      where: { taskId },
-      orderBy: [{ batchIndex: 'asc' }, { createdAt: 'asc' }],
-    });
-
-    return txs.map((tx) => this.mapTransaction(tx));
+    return this.taskTransactionService.getTaskTransactions(taskId);
   }
 
   /**
@@ -630,27 +465,7 @@ export class TaskService {
     allTerminal: boolean;
     txHashes: string[];
   }> {
-    const txs = await this.prisma.taskTransaction.findMany({
-      where: { taskId },
-      select: { status: true, txHash: true },
-    });
-
-    const total = txs.length;
-    const completed = txs.filter((tx) => tx.status === 'completed').length;
-    const failed = txs.filter((tx) => tx.status === 'failed').length;
-    const pending = total - completed - failed;
-    const txHashes = txs
-      .filter((tx) => tx.txHash != null)
-      .map((tx) => tx.txHash as string);
-
-    return {
-      total,
-      completed,
-      failed,
-      pending,
-      allTerminal: pending === 0 && total > 0,
-      txHashes,
-    };
+    return this.taskTransactionService.getTransactionAggregation(taskId);
   }
 
   // ════════════════════════════════════════════════════════════════════
@@ -732,12 +547,7 @@ export class TaskService {
   }
 
   async hasLogStep(taskId: string, step: string): Promise<boolean> {
-    const existingLog = await this.prisma.taskLog.findFirst({
-      where: { taskId, step },
-      select: { id: true },
-    });
-
-    return existingLog != null;
+    return this.taskLogService.hasLogStep(taskId, step);
   }
 
   private ensureTransition(currentStatus: TaskStatus, nextStatus: TaskStatus) {
@@ -749,104 +559,7 @@ export class TaskService {
   }
 
   private mapTask(task: TaskWithRelations): TaskDetails {
-    return {
-      id: task.id,
-      type: task.type,
-      status: task.status,
-      totalUnits: task.totalUnits,
-      completedUnits: task.completedUnits,
-      failedUnits: task.failedUnits,
-      metadata: task.metadata ? this.mapJsonObject(task.metadata) : null,
-      payload: this.mapJsonObject(task.payload),
-      result: task.result ? this.mapJsonObject(task.result) : null,
-      createdAt: task.createdAt,
-      updatedAt: task.updatedAt,
-      logs: task.logs.map((log) => ({
-        id: log.id,
-        taskId: log.taskId,
-        level: log.level as TaskLogLevel,
-        step: log.step,
-        status: log.status,
-        message: log.message,
-        context: log.context ? this.mapJsonObject(log.context) : null,
-        createdAt: log.createdAt,
-      })),
-      units: task.units.map((unit) => this.mapUnit(unit)),
-      transactions: task.transactions.map((tx) => this.mapTransaction(tx)),
-    };
-  }
-
-  private async getTaskDetailsInTransaction(
-    tx: Prisma.TransactionClient,
-    taskId: string,
-  ): Promise<TaskDetails> {
-    const task = await tx.task.findUniqueOrThrow({
-      where: { id: taskId },
-      include: {
-        logs: {
-          orderBy: { createdAt: 'asc' },
-        },
-        units: {
-          orderBy: [{ index: 'asc' }, { createdAt: 'asc' }],
-        },
-        transactions: {
-          orderBy: [{ batchIndex: 'asc' }, { createdAt: 'asc' }],
-        },
-      },
-    });
-
-    return this.mapTask(task);
-  }
-
-  private mapUnit(unit: TaskUnit): TaskUnitRecord {
-    return {
-      id: unit.id,
-      taskId: unit.taskId,
-      type: unit.type as TaskUnitRecord['type'],
-      index: unit.index,
-      status: unit.status as TaskUnitStatus,
-      txHash: unit.txHash,
-      error: unit.error,
-      payload: this.mapJsonObject(unit.payload),
-      createdAt: unit.createdAt,
-      updatedAt: unit.updatedAt,
-    };
-  }
-
-  private mapTransaction(tx: TaskTransaction): TaskTransactionRecord {
-    return {
-      id: tx.id,
-      taskId: tx.taskId,
-      txId: tx.txId,
-      recipient: tx.recipient,
-      amount: tx.amount,
-      currency: tx.currency,
-      status: tx.status as TxStatus,
-      txHash: tx.txHash,
-      errorReason: tx.errorReason,
-      batchIndex: tx.batchIndex,
-      pollAttempts: tx.pollAttempts,
-      createdAt: tx.createdAt,
-      updatedAt: tx.updatedAt,
-    };
-  }
-
-  private findNextPendingUnit(
-    task: TaskDetails,
-  ): Pick<TaskUnitRecord, 'id' | 'index' | 'payload' | 'status' | 'type'> | null {
-    const nextUnit = task.units.find((unit) => unit.status === 'PENDING');
-
-    if (!nextUnit) {
-      return null;
-    }
-
-    return {
-      id: nextUnit.id,
-      index: nextUnit.index,
-      payload: nextUnit.payload,
-      status: nextUnit.status,
-      type: nextUnit.type,
-    };
+    return this.taskMapper.mapTask(task);
   }
 
   private normalizeReferenceId(referenceId: unknown) {
@@ -872,10 +585,6 @@ export class TaskService {
   }
 
   private mapJsonObject(value: Prisma.JsonValue): TaskPayload {
-    if (value && typeof value === 'object' && !Array.isArray(value)) {
-      return value as TaskPayload;
-    }
-
-    return { value };
+    return this.taskMapper.mapJsonObject(value);
   }
 }
