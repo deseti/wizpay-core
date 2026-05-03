@@ -172,9 +172,10 @@ export function BridgeScreen() {
     walletMode === "external" ? "external_signer" : "app_treasury";
   const isPasskeyWalletSession = authMethod === "passkey";
   const isPasskeyUnsupportedSource =
-    isPasskeyWalletSession && sourceChain === "ETH-SEPOLIA";
+    isPasskeyWalletSession &&
+    (sourceChain === "SOLANA-DEVNET" || sourceChain === "ETH-SEPOLIA");
   const passkeySourceRestrictionMessage =
-    "Passkey cannot use Ethereum Sepolia as source because user balance cannot be debited safely on this route. Use Google/App Wallet or External Wallet (MetaMask) for Sepolia source.";
+    "Passkey wallet can only use Arc as source. Use Google login, Email, OTP, or External Wallet (MetaMask) for Solana and Ethereum Sepolia source.";
   const sourceAccountType =
     bridgeExecutionMode === "external_signer"
       ? "external_wallet"
@@ -275,7 +276,7 @@ export function BridgeScreen() {
     !isTransferActive;
 
   const sourceChainOptions = isPasskeyWalletSession
-    ? DESTINATION_OPTIONS.filter((opt) => opt.id !== "ETH-SEPOLIA")
+    ? DESTINATION_OPTIONS.filter((opt) => opt.id === "ARC-TESTNET")
     : DESTINATION_OPTIONS;
   const destinationChainOptions = DESTINATION_OPTIONS;
 
