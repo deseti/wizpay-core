@@ -1,4 +1,4 @@
-# WizPay — Introduction
+# WizPay Introduction
 
 ## What WizPay Is
 
