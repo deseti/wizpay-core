@@ -9,9 +9,11 @@ async function bootstrap() {
 
   // ── CORS ─────────────────────────────────────────────────────────────
   // Read allowed origins from CORS_ORIGINS env var (comma-separated).
-  // Falls back to http://localhost:3000 for local development.
+  // Falls back to localhost:3000 and localhost:3001 for local development.
   // Example: CORS_ORIGINS=https://wizpay.example.com,http://localhost:3000
-  const corsOrigins = (process.env.CORS_ORIGINS || 'http://localhost:3000')
+  const corsOrigins = (
+    process.env.CORS_ORIGINS || 'http://localhost:3000,http://localhost:3001'
+  )
     .split(',')
     .map((origin) => origin.trim())
     .filter(Boolean);
