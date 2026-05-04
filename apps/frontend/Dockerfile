@@ -1,11 +1,28 @@
+# syntax=docker/dockerfile:1.7
+
 FROM node:20-alpine AS builder
 
 WORKDIR /app
 
-ENV NEXT_TELEMETRY_DISABLED=1
+ENV NEXT_TELEMETRY_DISABLED=1 \
+		npm_config_fetch_retries=5 \
+		npm_config_fetch_retry_factor=2 \
+		npm_config_fetch_retry_mintimeout=20000 \
+		npm_config_fetch_retry_maxtimeout=120000 \
+		npm_config_fetch_timeout=300000
 
 COPY package.json package-lock.json ./
-RUN npm install --legacy-peer-deps
+RUN --mount=type=cache,target=/root/.npm \
+		attempt=1; \
+		until npm install --legacy-peer-deps --no-audit --no-fund --prefer-offline; do \
+			if [ "$attempt" -ge 3 ]; then \
+				echo "npm install failed after $attempt attempts"; \
+				exit 1; \
+			fi; \
+			echo "npm install failed on attempt $attempt, retrying..."; \
+			attempt=$((attempt + 1)); \
+			npm cache verify || true; \
+		done
 
 COPY . .
 

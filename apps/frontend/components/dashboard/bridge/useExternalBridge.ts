@@ -42,6 +42,11 @@ import {
   retryExternalCrossChainBridge,
   submitExternalCrossChainBridge,
 } from "./external/externalBridgeCrossChain";
+import { createExternalEvmWalletAdapter } from "./external/externalBridgeAdapters";
+import {
+  getExternalBridgeAppKit,
+  getExternalBridgeAppKitChain,
+} from "./external/externalBridgeAppKit";
 import {
   classifyExternalBridgeRoute,
   isExternalCrossChainRoute,
@@ -125,6 +130,76 @@ export function asHexTxHash(value: string | null | undefined): Hex | null {
   if (!value) return null;
   const trimmed = value.trim();
   return /^0x[a-fA-F0-9]+$/.test(trimmed) ? (trimmed as Hex) : null;
+}
+
+async function resolveExternalEvmBurnMaxFee(params: {
+  amount: string;
+  sourceChain: CircleTransferBlockchain;
+  destinationChain: CircleTransferBlockchain;
+  destinationAddress: string;
+  externalWalletClient: WalletClient;
+  sourcePublicClient: PublicClient | undefined;
+  destPublicClient: PublicClient | undefined;
+}) {
+  const {
+    amount,
+    sourceChain,
+    destinationChain,
+    destinationAddress,
+    externalWalletClient,
+    sourcePublicClient,
+    destPublicClient,
+  } = params;
+
+  // Sepolia burns are noticeably slower in free/full-finality mode.
+  // Estimate Circle's provider fee so this route stays on the FAST lane.
+  if (sourceChain !== "ETH-SEPOLIA") {
+    return 0n;
+  }
+
+  try {
+    const publicClientsByChainId = {
+      ...(sourcePublicClient?.chain?.id
+        ? { [sourcePublicClient.chain.id]: sourcePublicClient }
+        : {}),
+      ...(destPublicClient?.chain?.id
+        ? { [destPublicClient.chain.id]: destPublicClient }
+        : {}),
+    };
+
+    const adapter = createExternalEvmWalletAdapter({
+      walletClient: externalWalletClient,
+      publicClientsByChainId,
+    });
+    const appKit = getExternalBridgeAppKit();
+    const estimate = await appKit.estimateBridge({
+      from: {
+        adapter,
+        chain: getExternalBridgeAppKitChain(sourceChain),
+      },
+      to: {
+        adapter,
+        chain: getExternalBridgeAppKitChain(destinationChain),
+        recipientAddress: destinationAddress,
+      },
+      amount,
+      token: "USDC",
+      config: {
+        transferSpeed: "FAST",
+      },
+    });
+
+    const providerFee = estimate.fees.find(
+      (fee) => fee.type === "provider" && fee.token === "USDC"
+    );
+
+    return providerFee?.amount
+      ? parseUnits(providerFee.amount, CCTP_USDC_DECIMALS)
+      : 0n;
+  } catch {
+    // Keep the existing slow/free behavior if fee estimation fails.
+    return 0n;
+  }
 }
 
 // ─── retryExternalAttestationAndMint ─────────────────────────────────────────
@@ -458,6 +533,15 @@ export async function submitExternalBridge(
   const referenceId = `BRIDGE-EXT-${sourceChain}-TO-${destinationChain}-${Date.now()}`;
   const amountBigInt = parseUnits(amount, CCTP_USDC_DECIMALS);
   const mintRecipient = evmAddressToBytes32(destinationAddress as Address);
+  const burnMaxFee = await resolveExternalEvmBurnMaxFee({
+    amount,
+    sourceChain,
+    destinationChain,
+    destinationAddress,
+    externalWalletClient,
+    sourcePublicClient,
+    destPublicClient,
+  });
 
   const initialTransfer: CircleTransfer = {
     id: transferId,
@@ -548,7 +632,7 @@ export async function submitExternalBridge(
         mintRecipient,
         burnTokenAddress,
         ZERO_BYTES32,
-        0n,
+        burnMaxFee,
         CCTP_MIN_FINALITY_FAST,
       ],
       chain: srcChainDef,
