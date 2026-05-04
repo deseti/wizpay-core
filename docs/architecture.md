@@ -1,138 +1,154 @@
-# Architecture
-
-## Overview
-
-WizPay is a monorepo with three applications and one shared package:
-
-```
-wizpay/
-├── apps/
-│   ├── backend/          # NestJS — orchestration, agents, adapters, queue
-│   ├── frontend/         # Next.js — UI, wallet session, task polling
-│   └── landing/          # Landing page
-├── packages/
-│   └── contracts/        # Smart contract ABIs and deployment artifacts
-├── docker-compose.yml    # PostgreSQL, Redis, backend, frontend, nginx
-└── nginx.conf            # Reverse proxy configuration
-```
-
+---
+title: "System Architecture"
+description: "Component topology, responsibilities, and trust boundaries."
 ---
 
-## Backend Modules
+# System Architecture
 
-### Orchestrator (`src/orchestrator/`)
-Central coordination layer. `OrchestratorService` exposes two methods:
-- `handleTask()` — Called by HTTP controller. Creates task, enqueues to BullMQ.
-- `executeTask()` — Called by workers only. Routes to agent via ExecutionRouter.
+WizPay is a monorepo containing a NestJS backend, a Next.js frontend, and shared contract artifacts. All payment logic — validation, queuing, execution, settlement — lives in the backend.
 
-### Task (`src/task/`)
-State machine and persistence layer. Services:
-- `TaskService` — CRUD, status transitions, transaction tracking delegation
-- `TaskUnitService` — Unit reporting, task status recomputation
-- `TaskTransactionService` — On-chain tx record tracking
-- `TaskLogService` — Append-only audit log
-
-### Execution (`src/execution/`)
-Wallet-mode routing:
-- `ExecutionRouterService` — Checks `walletMode` (W3S vs PASSKEY), dispatches accordingly
-- `PasskeyEngineService` — Handles bridge intents, EVM payroll, Solana unsigned intents, swap prep
-
-### Agents (`src/agents/`)
-Domain-specific execution logic:
-- `AgentRouterService` — Switch dispatch to the correct agent by TaskType
-- `PayrollAgent` — Batch transfers via Circle, enqueues poll jobs
-- `BridgeAgent` — CCTP bridge via Circle Bridge Kit or external signer intent
-- `SwapAgent` — Token swap execution
-- `FxAgent` — USDC ↔ EURC trades, polls until settled
-- `LiquidityAgent` — Add/remove liquidity
-
-### Adapters (`src/adapters/`)
-External service integrations:
-- `CircleService` — Circle W3S API (wallets, transfers, FX trades)
-- `CircleBridgeService` — Circle CCTP Bridge Kit
-- `BlockchainService` — EVM chain interactions via viem
-- `SolanaService` — Solana interactions via @solana/web3.js
-- `DexService` — DEX swap preparation
-
-### Queue (`src/queue/`)
-BullMQ job management:
-- `QueueService` — Enqueue-only (never processes jobs)
-- Workers: `PayrollWorker`, `SwapWorker`, `BridgeWorker`, `TxPollWorker`
-- Processors: `PayrollProcessor`, `SwapProcessor`, `BridgeProcessor`, `TxPollProcessor`
-- `TransactionPollerService` — Polls Circle tx status, finalizes async tasks
-
-### Treasury (`src/treasury/`)
-- `TreasuryController` — `POST /treasury/init`, `GET /treasury/wallet`
-- `TreasuryService` — Circle wallet set provisioning
-
-### Wallet (`src/modules/wallet/`)
-- `WalletController` — `POST /wallets/initialize`, `/sync`, `/ensure`
-- `WalletService` — Per-user Circle wallet provisioning
-- `W3sAuthService` — Circle W3S session management
-
-### Integrations (`src/integrations/`)
-- `TelegramService` — Task status notifications
-
----
-
-## Component Flow
+## Component Topology
 
 ```
-Frontend ──HTTP──▶ TaskController ──▶ OrchestratorService
-                                           │
-                              ┌────────────┼────────────┐
-                              ▼            ▼            ▼
-                        TaskService   QueueService   ExecutionRouter
-                        (state mgmt)  (enqueue)      (wallet mode)
-                                           │              │
-                                     BullMQ Redis    ┌────┴─────┐
-                                           │         ▼          ▼
-                                      Workers    AgentRouter  PasskeyEngine
-                                           │         │
-                                      Processors     ▼
-                                           │      Agents
-                                           ▼         │
-                                    executeTask()    ▼
-                                                  Adapters
-                                              (Circle, viem, Solana)
+┌─────────────────────────────────────────────────────────────────────┐
+│                          Frontend (Next.js)                        │
+│  Composes payloads · Polls task status · Manages wallet sessions   │
+└────────────────────────────┬────────────────────────────────────────┘
+                             │ HTTP
+┌────────────────────────────▼────────────────────────────────────────┐
+│                     TaskController (/tasks/*)                       │
+├─────────────────────────────────────────────────────────────────────┤
+│                       OrchestratorService                           │
+│  handleTask() ─── creates task, enqueues to BullMQ                 │
+│  executeTask() ── called by workers, routes to agent               │
+├──────────────┬──────────────┬───────────────────────────────────────┤
+│  TaskService │ QueueService │ ExecutionRouterService                │
+│  (state)     │ (enqueue)    │ (W3S vs PASSKEY dispatch)            │
+├──────────────┴──────┬───────┴───────────────────────────────────────┤
+│                     │ BullMQ (Redis)                                │
+│    ┌────────────────▼─────────────────┐                            │
+│    │ Workers (payroll/swap/bridge/    │                            │
+│    │          tx_poll)                │                            │
+│    └────────────────┬─────────────────┘                            │
+│                     │                                              │
+│    ┌────────────────▼─────────────────┐                            │
+│    │ Agents                           │                            │
+│    │ PayrollAgent · BridgeAgent       │                            │
+│    │ SwapAgent · FxAgent · Liquidity  │                            │
+│    └────────────────┬─────────────────┘                            │
+│                     │                                              │
+│    ┌────────────────▼─────────────────┐                            │
+│    │ Adapters                         │                            │
+│    │ CircleService · BlockchainSvc    │                            │
+│    │ SolanaService · DexService       │                            │
+│    │ CircleBridgeService              │                            │
+│    └──────────────────────────────────┘                            │
+├─────────────────────────────────────────────────────────────────────┤
+│                    PostgreSQL (Prisma ORM)                          │
+│  Task · TaskUnit · TaskTransaction · TaskLog                       │
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
----
+## Component Responsibilities
 
-## Frontend Role
+### Frontend (Next.js)
 
-The frontend is a **UI-only layer**:
 - Composes payment payloads from user input
 - Calls backend HTTP endpoints to create tasks
-- Polls `GET /tasks/:id` for progress
-- Manages wallet sessions (W3S user token / passkey)
-- In Passkey mode: signs and broadcasts transactions client-side
+- Polls `GET /tasks/:id` for progress and renders status
+- Manages wallet sessions (W3S userToken / passkey)
+- In PASSKEY mode: signs and broadcasts transactions client-side
 
-The frontend **never**: constructs raw blockchain transactions in W3S mode, calls Circle APIs directly, or manages task state.
+The frontend **never** constructs raw blockchain transactions in W3S mode, calls Circle APIs directly, or manages task state.
 
----
+### Orchestrator
 
-## Data Flow
+- `OrchestratorService.handleTask()` — HTTP entry point. Creates task, sets status to `assigned`, enqueues to BullMQ.
+- `OrchestratorService.executeTask()` — Worker entry point. Idempotency guard → status to `in_progress` → route to agent → finalize.
+- Bridge payload normalization and validation happen here.
+
+### Task Module
+
+| Service | Responsibility |
+|---|---|
+| `TaskService` | CRUD facade, status transitions, delegation to sub-services |
+| `TaskUnitService` | Unit reporting, task status recomputation |
+| `TaskTransactionService` | Transaction record CRUD, terminal-state aggregation |
+| `TaskLogService` | Append-only audit log, duplicate step detection |
+| `TaskMapperService` | Prisma model → domain object mapping |
+
+### Execution Layer
+
+- `ExecutionRouterService` — Reads `walletMode` from task payload. Routes to `AgentRouterService` (W3S) or `PasskeyEngineService` (PASSKEY).
+- `PasskeyEngineService` — Handles bridge intents, EVM payroll via treasury key, Solana unsigned intents, swap preparation.
+
+### Agents
+
+Each agent implements the `TaskAgent` interface:
+
+```typescript
+interface TaskAgent {
+  execute(task: TaskDetails): Promise<AgentExecutionResult>;
+}
+```
+
+| Agent | Operation | Settlement |
+|---|---|---|
+| `PayrollAgent` | Batch ERC-20/SPL transfers via Circle | Async (tx_poll) |
+| `BridgeAgent` | CCTP burn+mint via Circle Bridge Kit | Sync |
+| `SwapAgent` | Token swap | Sync |
+| `FxAgent` | USDC ↔ EURC trade via Circle, polls until settled | Sync |
+| `LiquidityAgent` | Add/remove liquidity | Sync |
+
+### Adapters
+
+| Adapter | Target | Protocol |
+|---|---|---|
+| `CircleService` | Circle W3S API | REST (wallets, transfers, FX trades) |
+| `CircleBridgeService` | Circle CCTP Bridge Kit | SDK |
+| `BlockchainService` | EVM chains | viem (ARC-TESTNET, ETH-SEPOLIA) |
+| `SolanaService` | Solana | @solana/web3.js (SOLANA-DEVNET) |
+| `DexService` | DEX protocols | Chain-agnostic swap prep |
+
+### Queue
+
+| Queue | Worker | Concurrency | Purpose |
+|---|---|---|---|
+| `payroll` | `PayrollWorker` | 5 | Payroll batch execution |
+| `swap` | `SwapWorker` | 1 | Swap, FX, Liquidity |
+| `bridge` | `BridgeWorker` | 1 | CCTP bridge execution |
+| `tx_poll` | `TxPollWorker` | 1 | Transaction status polling |
+
+## Trust Boundaries
 
 ```
-User Input → HTTP POST /tasks/* → TaskController → OrchestratorService
-  → TaskService.createTask() → PostgreSQL
-  → QueueService.enqueueTask() → Redis (BullMQ)
-  → Worker → Processor → OrchestratorService.executeTask()
-  → ExecutionRouter → Agent/Engine → Adapter → On-chain
-  → TaskService.updateStatus() → PostgreSQL
-  → Frontend polls GET /tasks/:id → renders result
+┌──────────────────────────────────────────────────┐
+│ UNTRUSTED                                        │
+│  Frontend (user input, wallet sessions)          │
+├──────────────────────────────────────────────────┤
+│ TRUSTED (backend perimeter)                      │
+│  TaskController — validates via class-validator   │
+│  OrchestratorService — enforces state machine     │
+│  Agents — execute with backend credentials        │
+├──────────────────────────────────────────────────┤
+│ EXTERNAL (third-party)                           │
+│  Circle API — wallet ops, transfers, bridges     │
+│  EVM RPCs — transaction submission               │
+│  Solana RPC — transaction submission             │
+└──────────────────────────────────────────────────┘
 ```
 
----
+- All user input crosses the trust boundary at `TaskController` and is validated before reaching the orchestrator.
+- Backend signing keys (Circle entity secret, `BACKEND_PRIVATE_KEY`) never leave the backend process.
+- In PASSKEY mode, the backend has no signing authority over the user's wallet. The trust model shifts — the backend produces unsigned intents, the client signs.
 
 ## Infrastructure
 
-| Component | Technology | Purpose |
-|-----------|-----------|---------|
-| Backend | NestJS | Application server |
-| Frontend | Next.js | UI |
-| Database | PostgreSQL | Task persistence (Prisma ORM) |
-| Queue | Redis | BullMQ job store |
+| Component | Technology | Deployment |
+|---|---|---|
+| Backend | NestJS | Docker container |
+| Frontend | Next.js | Docker container |
+| Database | PostgreSQL | Docker container |
+| Queue | Redis | Docker container |
 | Reverse Proxy | Nginx | Routes `/api` → backend, `/` → frontend |
-| Containerization | Docker Compose | Service orchestration |
+| Orchestration | Docker Compose | All services in `docker-compose.yml` |

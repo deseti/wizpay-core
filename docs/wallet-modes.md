@@ -1,129 +1,99 @@
+---
+title: "Wallet Modes"
+description: "Signing models: custodial W3S and client-controlled passkey."
+---
+
 # Wallet Modes
 
-WizPay supports two wallet execution modes. The mode determines how transactions are signed and submitted on-chain.
-
----
+WizPay supports two signing models. The mode determines **who holds the signing key** and **where transaction construction happens**.
 
 ## Mode Selection
 
-The wallet mode is specified in the task payload as `walletMode`. The `ExecutionRouterService` reads this field and dispatches execution accordingly:
+The wallet mode is read from `task.payload.walletMode` by `ExecutionRouterService`:
 
 ```typescript
-// ExecutionRouterService.resolveWalletMode()
-if (raw === 'PASSKEY') return 'PASSKEY';
-return 'W3S';  // default for absent, null, or "W3S"
+if (walletMode === 'PASSKEY') → PasskeyEngineService
+else → AgentRouterService  // default: W3S
 ```
 
-When `walletMode` is absent (which is the case for all tasks created before the field was introduced), the system defaults to `W3S`. This ensures full backward compatibility.
+When `walletMode` is absent (all tasks created before the field was introduced), the system defaults to `W3S`. Zero breaking changes.
 
----
+## W3S (Custodial)
 
-## W3S Mode (Circle Developer-Controlled Wallets)
+Circle Wallet-as-a-Service. The backend has signing authority.
 
-### How It Works
+**Signing model:**
+- Backend holds a Circle API key and entity secret.
+- The entity secret allows the backend to sign transactions on behalf of developer-controlled wallets.
+- The user does not approve individual transactions.
 
-W3S wallets are managed entirely by Circle's Wallet-as-a-Service API. The backend holds an API key and an entity secret that allows it to sign and submit transactions without user interaction at execution time.
+**Flow:**
+1. User authenticates (Google/Email) → receives Circle `userToken` + `encryptionKey`.
+2. Frontend sends `userToken` to backend with each wallet operation.
+3. Agent calls `CircleService.transfer()` → Circle signs and submits on-chain.
 
-**Authentication flow:**
-1. User logs in (Google/Email) and receives a Circle `userToken` + `encryptionKey`
-2. Frontend sends `userToken` to the backend with wallet operations
-3. Backend uses `CircleService` to provision wallet sets, create wallets, and execute transfers
+**Characteristics:**
+- Backend signs. No client-side signing.
+- `userToken` required for wallet identification.
+- `walletId` required per operation.
+- Supports EVM (ARC-TESTNET, ETH-SEPOLIA) and Solana (SOLANA-DEVNET).
 
-**Execution flow (e.g., Payroll):**
-1. `ExecutionRouterService` dispatches to `AgentRouterService`
-2. `AgentRouterService` dispatches to `PayrollAgent`
-3. `PayrollAgent` calls `CircleService.transfer()` for each recipient
-4. Circle API signs the transaction using the developer-controlled wallet
-5. Transaction is submitted to the blockchain by Circle's infrastructure
-
-### Key Characteristics
-
-- **Backend signs** — The backend has authority to sign transactions via Circle's entity secret
-- **No client-side signing** — The user does not need to approve each transaction individually
-- **Session required** — A valid `userToken` from Circle is needed for wallet identification
-- **Wallet provisioning** — Wallets are created via `WalletService.initializeWallets()` and `getOrCreateWallet()`
-- **Supported chains** — EVM (ARC-TESTNET, ETH-SEPOLIA) and Solana (SOLANA-DEVNET)
-
-### Wallet Endpoints (W3S)
+**Wallet provisioning endpoints:**
 
 | Endpoint | Purpose |
-|----------|---------|
-| `POST /wallets/initialize` | Create wallet set and wallets for a user |
+|---|---|
+| `POST /wallets/initialize` | Create wallet set + wallets for a user |
 | `POST /wallets/sync` | Sync existing wallets from Circle |
-| `POST /wallets/ensure` | Get or create a wallet for a specific chain (EVM/SOLANA) |
+| `POST /wallets/ensure` | Get or create wallet for a chain (EVM/SOLANA) |
 
-### When Used
+## PASSKEY (Client-Controlled)
 
-- Default mode for all tasks
-- Used when the organization controls the wallets (e.g., corporate payroll from a company treasury)
-- Used when the user authenticates via Google/Email through Circle's W3S flow
+Circle modular Account Abstraction wallet. The **user** holds the signing key.
 
----
+**Signing model:**
+- User authenticates with a WebAuthn passkey (biometric or hardware key).
+- The backend has **no signing authority** over the user's wallet.
+- For operations requiring the user's signature, the backend returns unsigned intents.
 
-## Passkey Mode (Account Abstraction / Client Execution)
+**Per-operation behavior:**
 
-### How It Works
+| Operation | Backend Action | Client Action |
+|---|---|---|
+| **Bridge** | Records CCTP intent, returns parameters | User signs and submits burn tx via AA wallet |
+| **Payroll (EVM)** | Submits ERC-20 transfers from backend treasury (`BACKEND_PRIVATE_KEY`) | None — treasury pre-funded by company |
+| **Payroll (Solana)** | Builds unsigned SPL transfer intents | User signs and broadcasts each intent |
+| **Swap** | Prepares swap payload via `DexService` | User submits via AA wallet |
 
-Passkey wallets use Circle's modular Account Abstraction (AA) infrastructure. The user authenticates with a WebAuthn passkey (biometric or hardware key). The wallet is controlled by the user's passkey — the backend has no signing authority.
-
-**Execution flow:**
-1. `ExecutionRouterService` dispatches to `PasskeyEngineService`
-2. `PasskeyEngineService` handles execution differently per task type:
-
-#### Bridge (Passkey)
-- Backend records a CCTP bridge **intent** (does not execute the bridge)
-- Returns all parameters needed for CCTP burn+mint to the frontend
-- Frontend submits the CCTP transactions using the user's passkey-controlled AA wallet
-- Result shape matches the W3S bridge flow, so frontend polling logic works unchanged
-
-#### Payroll — EVM (Passkey)
-- Backend submits ERC-20 transfers **from the backend treasury wallet** (using `BACKEND_PRIVATE_KEY`)
-- Assumption: the company pre-funds the backend treasury, which distributes to recipients
-- Individual transfer results (txHash, success/failure) are tracked and returned
-
-#### Payroll — Solana (Passkey)
-- Passkey AA wallets are **EVM-only** — they cannot sign Solana transactions
-- Backend builds unsigned SPL transfer intents
-- Returns the intents to the frontend for client-side signing via the user's Solana wallet
-- Frontend must call `broadcastSolanaTransaction()` for each intent
-
-#### Swap (Passkey)
-- Backend prepares swap execution payload via `DexService.prepareSwapExecution()`
-- Returns the payload to the frontend for client-side submission
-
-### Key Characteristics
-
-- **No Circle userToken/tokenId** — Passkey wallets do not use W3S session credentials
-- **Client-side signing** — For bridge and Solana operations, the user must sign transactions
-- **Backend treasury signing** — For EVM payroll, the backend signs using its private key
-- **EVM-only AA** — Passkey AA wallets support ARC-TESTNET and ETH-SEPOLIA only
-- **No `walletId` required** — Passkey wallets are not Circle developer-controlled, so no Circle walletId is needed
-
-### When Used
-
-- Used when the user authenticates with a passkey (biometric/hardware key)
-- Used when the user wants direct control over their wallet
-- Used for external wallet bridge operations (`bridgeExecutionMode: "external_signer"`)
-
----
+**Characteristics:**
+- No Circle `userToken`, `tokenId`, or W3S session credentials.
+- No `walletId` required.
+- Passkey AA wallets are **EVM-only** (ARC-TESTNET, ETH-SEPOLIA).
+- Solana operations require client-side signing.
 
 ## Comparison
 
-| Aspect | W3S | Passkey |
-|--------|-----|---------|
-| Signing authority | Backend (via Circle entity secret) | User (via passkey) or backend treasury key |
-| User interaction at execution | None | Depends on operation |
+| Aspect | W3S | PASSKEY |
+|---|---|---|
+| Key holder | Backend (Circle entity secret) | User (passkey) |
+| Client signing | Never | Bridge, Solana payroll, swap |
 | Circle session | Required (`userToken`) | Not used |
-| walletId | Required | Not required |
-| Supported chains | EVM + Solana | EVM (AA) + Solana (client-sign) |
+| `walletId` | Required | Not required |
+| Chains | EVM + Solana | EVM (AA) + Solana (client-sign) |
 | Bridge execution | Backend calls Circle Bridge Kit | Frontend executes CCTP directly |
-| Payroll execution | Circle `transfer()` API | Backend treasury (EVM) or unsigned intents (Solana) |
-| Default | Yes | No (must be explicitly set) |
+| Payroll execution | `CircleService.transfer()` | Treasury key (EVM) / unsigned intents (Solana) |
+| Default | Yes | Must be explicitly set |
 
----
+## Isolation
 
-## Architectural Notes
+The `ExecutionRouterService` is the **only** component aware of wallet modes.
 
-- The `ExecutionRouterService` is the **only** place where wallet mode routing occurs. Agents and the orchestrator are unaware of wallet modes.
-- Adding a new wallet mode requires: (1) extending the `WalletMode` type union in `task.types.ts`, (2) adding a case in `ExecutionRouterService`.
-- The W3S agent pipeline (`AgentRouterService` → Agents) is completely untouched when a PASSKEY task is processed, and vice versa.
+- Agents do not check `walletMode`. They receive tasks through the router and execute.
+- The orchestrator does not check `walletMode`. It calls the execution router.
+- Workers do not check `walletMode`. They call the orchestrator.
+
+Adding a new wallet mode requires:
+1. Extend the `WalletMode` type union in `task.types.ts`.
+2. Add a case in `ExecutionRouterService.resolveWalletMode()`.
+3. Implement the engine service.
+
+No changes to agents, orchestrator, or workers.

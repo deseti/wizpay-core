@@ -2,6 +2,7 @@
   "$schema": "https://mintlify.com/docs.json",
   "theme": "maple",
   "name": "WizPay",
+  "favicon": "/favicon.ico",
   "colors": {
     "primary": "#6C5CE7",
     "light": "#A29BFE",
@@ -13,14 +14,14 @@
         "tab": "Documentation",
         "groups": [
           {
-            "group": "Getting Started",
+            "group": "Overview",
             "pages": [
               "introduction",
               "how-it-works"
             ]
           },
           {
-            "group": "System Design",
+            "group": "Architecture",
             "pages": [
               "architecture",
               "execution-flow",

@@ -1,173 +1,209 @@
+---
+title: "Execution Flow"
+description: "Step-by-step request lifecycle from payload ingestion to on-chain settlement."
+---
+
 # Execution Flow
 
-This document describes the task lifecycle, synchronous vs asynchronous execution patterns, and queue/worker behavior.
+Every request follows the same pipeline: **Payload → Validation → Queue → Execution → Settlement**.
 
----
+## Step-by-Step
 
-## Task Lifecycle
+### 1. Payload Ingestion
 
-Every task progresses through a state machine with strict transition rules.
+The frontend submits a structured payload to one of the task endpoints:
 
-### Status Values
+| Endpoint | Task Type | Purpose |
+|---|---|---|
+| `POST /tasks` | Any | Generic task creation (bridge, generic) |
+| `POST /tasks/payroll/init` | Payroll | Validate + batch before execution |
+| `POST /tasks/swap/init` | Swap | Create swap task |
+| `POST /tasks/liquidity/init` | Liquidity | Create liquidity task |
+| `POST /tasks/fx/execute` | FX | Execute FX trade |
 
-| Status | Description |
-|--------|-------------|
-| `created` | Task record exists in PostgreSQL. No processing has begun. |
-| `assigned` | Task has been routed to a queue. Waiting for a worker to pick it up. |
-| `in_progress` | Worker has picked up the job. Agent is executing. |
-| `review` | At least one unit has failed. Requires manual review or automatic resolution. |
-| `approved` | Review completed (if applicable). Ready for finalization. |
-| `executed` | All units completed successfully. Terminal state. |
-| `partial` | Some units succeeded, some failed. Terminal state. |
-| `failed` | Task-level failure. Terminal state. |
+### 2. Validation
 
-### Allowed Transitions
+`TaskController` validates the request body using `class-validator` (whitelist mode, strict). Type-specific validation:
 
-```
-created     → assigned, failed
-assigned    → in_progress, failed
-in_progress → review, executed, partial, failed
-review      → approved, failed
-approved    → executed, failed
-executed    → (terminal)
-partial     → (terminal)
-failed      → (terminal)
-```
+- **Payroll** — `PayrollValidationService` checks recipient addresses, amounts, token compatibility. Invalid entries reject the entire payload.
+- **Bridge** — `OrchestratorService.normalizeBridgePayload()` validates chains, addresses, amounts. Rejects same-chain bridges, non-USDC tokens, and invalid execution modes.
+- **Swap** — Requires `tokenIn`, `tokenOut`, `amountIn`, `recipient`.
 
-These transitions are enforced by `TaskService.ensureTransition()`. Any attempt to perform an invalid transition throws a `BadRequestException`.
+### 3. Task Creation
 
-### Typical Happy Path
+`TaskService` inserts a `Task` row with status `created`:
 
 ```
-created → assigned → in_progress → executed
-```
-
-### Payroll with Failures
-
-```
-created → assigned → in_progress → review → (manual) → approved → executed
-```
-Or if failures are unrecoverable:
-```
-created → assigned → in_progress → partial
-```
-
----
-
-## Sync vs Async Execution
-
-The orchestrator uses two finalization strategies determined by task type.
-
-### Synchronous Tasks (Swap, Bridge, FX, Liquidity)
-
-The agent blocks until the operation completes (or fails). The orchestrator marks the task as `executed` or throws, which triggers `failed`.
-
-```
-OrchestratorService.executeTask()
-  ├── updateStatus(IN_PROGRESS)
-  ├── routeToAgent(task) ← blocks until complete
-  ├── updateStatus(EXECUTED)
-  └── return result
-```
-
-For FX tasks specifically, the `FxAgent` polls `CircleService.getTradeStatus()` in a loop (up to 60 attempts, 3s interval by default) until the trade reaches `settled` or `failed`.
-
-### Asynchronous Tasks (Payroll)
-
-The agent submits all transfers and immediately returns. Transaction results are polled separately.
-
-```
-OrchestratorService.executeTask()
-  ├── updateStatus(IN_PROGRESS)
-  ├── routeToAgent(task) ← submits transfers, enqueues poll jobs, returns
-  ├── logStep("task.submissions_complete", IN_PROGRESS)
-  └── task stays IN_PROGRESS
-```
-
-Finalization happens later via the `tx_poll` queue:
-
-```
-TransactionPollerService
-  ├── polls Circle API for each submitted tx
-  ├── updates TaskTransaction records
-  ├── when all tx terminal → checks aggregation
-  │   ├── all completed → updateStatus(EXECUTED)
-  │   ├── all failed → updateStatus(FAILED)
-  │   └── mixed → updateStatus(PARTIAL)
-```
-
----
-
-## Queue and Worker Behavior
-
-### Queue Architecture
-
-WizPay uses BullMQ backed by Redis. Four queues exist:
-
-| Queue | Consumers | Purpose |
-|-------|-----------|---------|
-| `payroll` | `PayrollWorker` (concurrency=5) | Payroll batch execution |
-| `swap` | `SwapWorker` | Swap, FX, and Liquidity execution |
-| `bridge` | `BridgeWorker` | CCTP bridge execution |
-| `tx_poll` | `TxPollWorker` | Transaction status polling |
-
-### Worker Lifecycle
-
-Each worker is a NestJS `@Injectable()` that implements `OnModuleInit` and `OnModuleDestroy`:
-
-1. **Startup** (`onModuleInit`) — Creates a BullMQ `Worker` instance connected to Redis, registers event handlers for `error`, `failed`, `completed`.
-2. **Processing** — Worker calls its associated `Processor` class, which delegates to `OrchestratorService.executeTask()`.
-3. **Shutdown** (`onModuleDestroy`) — Calls `worker.close()` for graceful drain.
-
-### Job Configuration
-
-Task execution jobs:
-- **Attempts:** 3
-- **Backoff:** Exponential, 1s base (5s for bridge)
-- **Cleanup:** `removeOnComplete: 100`, `removeOnFail: 500`
-
-Transaction poll jobs:
-- **Attempts:** 1 (poller manages its own re-enqueue logic)
-- **Delay:** 2s initial, then increasing based on attempt count
-- **Cleanup:** `removeOnComplete: 200`, `removeOnFail: 500`
-
-### Idempotency
-
-`OrchestratorService.executeTask()` includes an idempotency guard:
-
-```typescript
-if (task.status !== TaskStatus.ASSIGNED) {
-  // Skip — already processed or in progress
-  return null;
+Task {
+  id:             uuid (auto)
+  type:           "payroll" | "swap" | "bridge" | "liquidity" | "fx"
+  status:         "created"
+  totalUnits:     N
+  completedUnits: 0
+  failedUnits:    0
+  metadata:       { normalized parameters }
+  payload:        { raw input }
 }
 ```
 
-This makes worker retries safe. If BullMQ retries a job that already executed, the idempotency check short-circuits without re-executing.
+For payroll, `TaskUnit` records are created atomically in a Prisma `$transaction`.
 
-### Error Handling in Workers
+### 4. Queue Dispatch
 
-When an agent throws:
-1. Orchestrator catches the error
-2. Task is marked `failed` (best-effort — if status update also fails, a log entry is written instead)
-3. Error is re-thrown to BullMQ so the job is registered as failed and the retry policy applies
-
-Worker event handlers log permanent failures separately from transient retries.
-
-### Transaction Polling Flow
-
-For async tasks (payroll), each submitted transfer gets a poll job:
+`OrchestratorService.handleTask()` transitions the task to `assigned` and enqueues a job:
 
 ```
-PayrollAgent
-  ├── CircleService.transfer(recipient)
-  ├── TaskService.appendTransaction(txId)
-  └── QueueService.enqueueTransactionPoll({ taskId, txId, attempt: 0 })
+QueueService.enqueueTask(route, {
+  taskId, taskType, agentKey, payload
+})
 ```
 
-The `TransactionPollerService` processes each poll job:
+Queue routing is deterministic:
 
-1. Fetch tx status from Circle API
-2. If `completed` → update TaskTransaction status, check if all terminal → finalize task
-3. If `failed` → update TaskTransaction, log error, check finalization
-4. If still `pending` → increment attempt counter, re-enqueue with delay
-5. If max attempts exceeded → mark tx as failed, check finalization
+| Task Type | Queue | Backoff |
+|---|---|---|
+| `payroll` | `payroll` | 1s exponential |
+| `swap` | `swap` | 1s exponential |
+| `bridge` | `bridge` | 5s exponential |
+| `liquidity` | `swap` | 1s exponential |
+| `fx` | `swap` | 1s exponential |
+
+All jobs: 3 attempts, `removeOnComplete: 100`, `removeOnFail: 500`.
+
+### 5. Worker Pickup
+
+A BullMQ `Worker` picks the job and calls its `Processor`:
+
+```
+Worker.process(job) → Processor.process(job) → OrchestratorService.executeTask(taskId)
+```
+
+### 6. Idempotency Guard
+
+`executeTask()` checks current status:
+
+```typescript
+if (task.status !== TaskStatus.ASSIGNED) {
+  return null; // skip — already processed
+}
+```
+
+This makes BullMQ retries safe. Re-processing an already-completed task is a no-op.
+
+### 7. Agent Execution
+
+The orchestrator routes through two layers:
+
+1. `ExecutionRouterService` — checks `walletMode`:
+   - `W3S` (default) → `AgentRouterService`
+   - `PASSKEY` → `PasskeyEngineService`
+
+2. `AgentRouterService` — dispatches to the type-specific agent.
+
+The agent executes the domain operation and returns an `AgentExecutionResult`.
+
+### 8. Settlement
+
+**Sync path** (swap, bridge, FX, liquidity):
+
+```
+Agent returns → OrchestratorService marks task EXECUTED
+```
+
+**Async path** (payroll):
+
+```
+Agent submits transfers → enqueues tx_poll jobs → returns
+Task stays IN_PROGRESS
+TransactionPollerService polls each tx → finalizes when all terminal
+```
+
+Finalization logic:
+
+| Condition | Final Status |
+|---|---|
+| All `completed` | `executed` |
+| All `failed` | `failed` |
+| Mixed | `partial` |
+
+---
+
+## End-to-End Example: Payroll
+
+A company pays 50 employees in USDC on ARC-TESTNET.
+
+**1. Init** — Frontend calls `POST /tasks/payroll/init` with 50 recipients.
+
+**2. Validation** — Backend validates all addresses and amounts. Splits into 2 batches of 25.
+
+**3. Task Created** — Task with `totalUnits: 2`, two `TaskUnit` records (index 0, 1).
+
+**4. Confirm** — Frontend calls `POST /tasks` with the full payload. Task transitions: `created → assigned → enqueued`.
+
+**5. Worker** — `PayrollWorker` picks the job. Orchestrator marks `in_progress`.
+
+**6. Agent** — `PayrollAgent` iterates batch 0 (25 recipients):
+  - For each: `CircleService.transfer()` → `TaskService.appendTransaction()` → `QueueService.enqueueTransactionPoll()`
+  - Then batch 1 (25 recipients): same flow.
+  - Agent returns. Task stays `in_progress`.
+
+**7. Polling** — `TxPollWorker` processes 50 poll jobs over the next 30–120 seconds:
+  - Each job calls Circle API for tx status.
+  - `completed` → update `TaskTransaction`, check if all terminal.
+  - Still pending → re-enqueue with delay.
+
+**8. Finalization** — When all 50 transactions reach terminal state:
+  - 50/50 completed → task status: `executed`
+  - 48 completed, 2 failed → task status: `partial`
+
+**9. Frontend** — Polls `GET /tasks/:id`. Renders final status with per-recipient tx hashes.
+
+---
+
+## Failure Scenario: Bridge Timeout
+
+A user bridges 100 USDC from ETH-SEPOLIA to SOLANA-DEVNET.
+
+**1.** `POST /tasks` with `type: "bridge"`. Task created, assigned, enqueued to `bridge` queue.
+
+**2.** `BridgeWorker` picks the job. `BridgeAgent` calls `CircleBridgeService.initiateBridge()`.
+
+**3.** The CCTP burn transaction is submitted to Sepolia. Sepolia requires 65-block confirmation (~13 minutes).
+
+**4.** The Bridge Kit's internal timeout (configured at 600s) expires before confirmation completes.
+
+**5.** `CircleBridgeService` throws. The error propagates:
+```
+BridgeAgent.execute() throws
+  → OrchestratorService catches
+    → TaskService.updateStatus(taskId, FAILED)
+    → Re-throws to BullMQ
+```
+
+**6.** BullMQ applies retry policy: attempt 2 with 5s backoff, then attempt 3 with 25s backoff.
+
+**7.** If all 3 attempts fail, the job is permanently failed. Task remains `failed`.
+
+**8.** The idempotency guard prevents double-execution: if attempt 2 somehow reaches a task already marked `in_progress`, it is skipped.
+
+---
+
+## Design Tradeoffs
+
+### Why async settlement for payroll but not for bridge?
+
+**Payroll** involves N independent transfers. Each transfer is a separate on-chain transaction with its own confirmation timeline. Blocking the worker for all N confirmations would hold the queue slot for minutes. Instead, the agent submits all transfers rapidly and delegates confirmation to the `tx_poll` queue. This keeps worker concurrency high.
+
+**Bridge** is a single multi-step operation (burn → attest → mint). The Bridge Kit manages the step progression internally. There is no benefit to splitting it into separate poll jobs — the entire operation either succeeds or fails as a unit. Sync execution simplifies the result contract.
+
+### Why an idempotency guard instead of BullMQ's built-in deduplication?
+
+BullMQ's `jobId`-based deduplication prevents duplicate *enqueue*, but does not prevent duplicate *execution* after a crash-restart. If a worker crashes after marking a task `in_progress` but before completing execution, BullMQ retries the job. The idempotency guard (check `status === ASSIGNED`) ensures the task is not re-executed if it has already progressed past the assignment phase.
+
+### Why route through OrchestratorService instead of calling agents directly from workers?
+
+Centralized execution ensures:
+- Every task passes through the same idempotency guard
+- Every status transition is logged
+- Error handling is uniform (best-effort status update + re-throw)
+- Adding new wallet modes requires changes in `ExecutionRouterService` only — not in every worker
