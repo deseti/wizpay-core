@@ -9,6 +9,7 @@ import { WagmiProvider } from "wagmi";
 import { CircleApiProxyProvider } from "@/components/providers/CircleApiProxyProvider";
 import { CircleWalletProvider } from "@/components/providers/CircleWalletProvider";
 import { HybridWalletProvider } from "@/components/providers/HybridWalletProvider";
+import { SolanaWalletProvider } from "@/components/providers/SolanaWalletProvider";
 import { arcTestnet, config } from "@/lib/wagmi";
 
 export function Providers({ children }: { children: React.ReactNode }) {
@@ -34,9 +35,11 @@ export function Providers({ children }: { children: React.ReactNode }) {
           theme={midnightTheme()}
         >
           <CircleWalletProvider>
-            <HybridWalletProvider>
-              <CircleApiProxyProvider>{children}</CircleApiProxyProvider>
-            </HybridWalletProvider>
+            <SolanaWalletProvider>
+              <HybridWalletProvider>
+                <CircleApiProxyProvider>{children}</CircleApiProxyProvider>
+              </HybridWalletProvider>
+            </SolanaWalletProvider>
           </CircleWalletProvider>
         </RainbowKitProvider>
       </WagmiProvider>

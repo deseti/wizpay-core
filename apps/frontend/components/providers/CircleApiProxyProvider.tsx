@@ -7,6 +7,11 @@ const PROXIED_HOSTS = new Set([
   "iris-api.circle.com",
   "iris-api-sandbox.circle.com",
 ]);
+const CIRCLE_API_PROXY_ENABLED = ["1", "true", "yes", "on"].includes(
+  (process.env.NEXT_PUBLIC_CIRCLE_API_PROXY_ENABLED ?? "")
+    .trim()
+    .toLowerCase()
+);
 
 function resolveRequestUrl(input: RequestInfo | URL): URL | null {
   try {
@@ -45,6 +50,10 @@ export function CircleApiProxyProvider({
   children: React.ReactNode;
 }) {
   useEffect(() => {
+    if (!CIRCLE_API_PROXY_ENABLED) {
+      return;
+    }
+
     const originalFetch = window.fetch.bind(window);
     let isProxyHealthy = true;
 

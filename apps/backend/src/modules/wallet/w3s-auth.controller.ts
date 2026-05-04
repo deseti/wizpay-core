@@ -26,8 +26,6 @@ export class W3sAuthController {
 
   @Post('action')
   async dispatchAction(@Body() body: W3sActionBody) {
-    console.log('W3S REQUEST:', JSON.stringify(body, null, 2));
-
     const action = typeof body.action === 'string' ? body.action.trim() : '';
 
     if (!action) {

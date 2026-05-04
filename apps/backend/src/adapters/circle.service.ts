@@ -165,10 +165,10 @@ export class CircleService {
       `CircleService init — ` +
       `baseUrl=${this.baseUrl} ` +
       `blockchain=${this.blockchain} ` +
-      `CIRCLE_API_KEY=${apiKey ? apiKey.slice(0, 4) + '...[' + apiKey.length + ']' : 'MISSING'} ` +
-      `CIRCLE_ENTITY_SECRET=${entitySecret ? entitySecret.slice(0, 4) + '...[' + entitySecret.length + ']' : 'MISSING'} ` +
-      `CIRCLE_WALLET_ID_ARC=${arcWalletId ?? 'MISSING'} ` +
-      `CIRCLE_WALLET_ID_SEPOLIA=${sepoliaWalletId ?? 'MISSING'}`,
+      `apiKeyConfigured=${apiKey ? 'yes' : 'no'} ` +
+      `entitySecretConfigured=${entitySecret ? 'yes' : 'no'} ` +
+      `arcWalletConfigured=${arcWalletId ? 'yes' : 'no'} ` +
+      `sepoliaWalletConfigured=${sepoliaWalletId ? 'yes' : 'no'}`,
     );
   }
 

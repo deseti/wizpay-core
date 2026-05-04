@@ -5,7 +5,7 @@ description: "Component topology, responsibilities, and trust boundaries."
 
 # System Architecture
 
-WizPay is a monorepo containing a NestJS backend, a Next.js frontend, and shared contract artifacts. All payment logic — validation, queuing, execution, settlement — lives in the backend.
+WizPay is a monorepo containing a NestJS backend, a Next.js frontend, and shared contract artifacts. Validation, queuing, task state, and backend-signed execution live in the backend. The main exception is the external-wallet bridge path, where the browser signs and submits the bridge while the backend remains responsible for validation and audit logging.
 
 ## Component Topology
 
@@ -13,6 +13,7 @@ WizPay is a monorepo containing a NestJS backend, a Next.js frontend, and shared
 ┌─────────────────────────────────────────────────────────────────────┐
 │                          Frontend (Next.js)                        │
 │  Composes payloads · Polls task status · Manages wallet sessions   │
+│  Executes external-wallet bridge flows in the browser              │
 └────────────────────────────┬────────────────────────────────────────┘
                              │ HTTP
 ┌────────────────────────────▼────────────────────────────────────────┐
@@ -58,8 +59,9 @@ WizPay is a monorepo containing a NestJS backend, a Next.js frontend, and shared
 - Polls `GET /tasks/:id` for progress and renders status
 - Manages wallet sessions (W3S userToken / passkey)
 - In PASSKEY mode: signs and broadcasts transactions client-side
+- For external-wallet bridge routes: executes the CCTP/AppKit burn, attestation, and mint flow in the browser
 
-The frontend **never** constructs raw blockchain transactions in W3S mode, calls Circle APIs directly, or manages task state.
+In W3S mode, the frontend **never** constructs raw blockchain transactions or manages task state. The external-wallet bridge path is the explicit exception: it uses public Circle bridge APIs from the browser and only sends a best-effort audit task to the backend.
 
 ### Orchestrator
 
@@ -141,6 +143,7 @@ interface TaskAgent {
 - All user input crosses the trust boundary at `TaskController` and is validated before reaching the orchestrator.
 - Backend signing keys (Circle entity secret, `BACKEND_PRIVATE_KEY`) never leave the backend process.
 - In PASSKEY mode, the backend has no signing authority over the user's wallet. The trust model shifts — the backend produces unsigned intents, the client signs.
+- In external-wallet bridge mode, the backend also has no signing authority. It validates the submitted bridge metadata, records the audit trail, and leaves the burn/mint execution to the connected browser wallet.
 
 ## Infrastructure
 

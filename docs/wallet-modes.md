@@ -83,6 +83,16 @@ Circle modular Account Abstraction wallet. The **user** holds the signing key.
 | Payroll execution | `CircleService.transfer()` | Treasury key (EVM) / unsigned intents (Solana) |
 | Default | Yes | Must be explicitly set |
 
+## External Signer Bridge
+
+External browser wallets are not a third `walletMode`. They are a bridge execution mode used when the source wallet is a connected EVM wallet or an injected Solana wallet.
+
+- The browser executes the burn, attestation, and mint flow with public Circle bridge tooling.
+- The backend still accepts a best-effort `POST /tasks` audit record for traceability.
+- These audit tasks require `walletAddress` but do not require `walletId`.
+- Solana support is provider-agnostic: any compatible injected Solana wallet can be used, not just Phantom.
+- `NEXT_PUBLIC_CIRCLE_API_PROXY_ENABLED=true` enables the same-origin `/api/circle/proxy` fallback when the deployed Next.js runtime serves that route. When the flag is unset, bridge clients use direct Circle API requests only.
+
 ## Isolation
 
 The `ExecutionRouterService` is the **only** component aware of wallet modes.

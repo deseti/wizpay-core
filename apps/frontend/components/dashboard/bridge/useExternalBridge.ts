@@ -3,9 +3,9 @@
 /**
  * useExternalBridge
  *
- * Handles bridge execution for users connected via an external Web3 wallet
- * (MetaMask, etc.). The frontend signs CCTP V2 transactions directly:
- *   approve → depositForBurn → poll attestation → receiveMessage
+ * Handles bridge execution for users connected via external wallets.
+ * EVM↔EVM uses the existing viem flow, while EVM↔Solana routes are routed
+ * through modular app-kit adapters so browser wallets sign each step.
  *
  * The backend is NOT involved in the on-chain execution here, but we send
  * an audit-log call to createCircleTransfer at the end so the transfer is
@@ -36,6 +36,16 @@ import {
   ZERO_BYTES32,
 } from "@/lib/cctp";
 import { CHAIN_BY_ID } from "@/lib/wagmi";
+import type { InjectedSolanaWalletProvider } from "@/components/providers/SolanaWalletProvider";
+
+import {
+  retryExternalCrossChainBridge,
+  submitExternalCrossChainBridge,
+} from "./external/externalBridgeCrossChain";
+import {
+  classifyExternalBridgeRoute,
+  isExternalCrossChainRoute,
+} from "./external/externalBridgeRoute";
 import { getOptionByChain } from "./bridge-utils";
 
 // ─── Context type ─────────────────────────────────────────────────────────────
@@ -53,6 +63,9 @@ export interface ExternalBridgeContext {
   externalWalletChainId: number | undefined;
   sourcePublicClient: PublicClient | undefined;
   destPublicClient: PublicClient | undefined;
+  solanaWalletProvider?: InjectedSolanaWalletProvider | null;
+  solanaWalletAddress?: string | null;
+  connectSolanaWallet?: () => Promise<string>;
   switchChainAsync: (params: { chainId: number }) => Promise<unknown>;
   setTransfer: React.Dispatch<React.SetStateAction<CircleTransfer | null>>;
   setIsSubmitting: React.Dispatch<React.SetStateAction<boolean>>;
@@ -136,6 +149,18 @@ export async function retryExternalAttestationAndMint(
 
   const srcChain = transfer.sourceBlockchain;
   const dstChain = transfer.blockchain;
+  const routeKind = classifyExternalBridgeRoute(srcChain, dstChain);
+
+  if (isExternalCrossChainRoute(routeKind)) {
+    await retryExternalCrossChainBridge(ctx);
+    return;
+  }
+
+  if (routeKind === "solana-to-solana") {
+    setErrorMessage("External wallet bridge does not support Solana to Solana routes.");
+    return;
+  }
+
   const srcChainId = CHAIN_ID_BY_BRIDGE_CHAIN[srcChain];
   const dstChainId = CHAIN_ID_BY_BRIDGE_CHAIN[dstChain];
   const srcCctpDomain = CCTP_DOMAIN_BY_CHAIN[srcChain];
@@ -367,6 +392,23 @@ export async function submitExternalBridge(
     toast,
     tokenSymbol,
   } = ctx;
+
+  const routeKind = classifyExternalBridgeRoute(
+    sourceChain,
+    destinationChain
+  );
+
+  if (isExternalCrossChainRoute(routeKind)) {
+    await submitExternalCrossChainBridge(ctx, clearStoredActiveTransfer);
+    return;
+  }
+
+  if (routeKind === "solana-to-solana") {
+    setErrorMessage(
+      "External wallet bridge does not support Solana to Solana routes. Choose an EVM destination or switch to App Wallet mode."
+    );
+    return;
+  }
 
   const srcChainId = CHAIN_ID_BY_BRIDGE_CHAIN[sourceChain];
   const dstChainId = CHAIN_ID_BY_BRIDGE_CHAIN[destinationChain];
@@ -682,6 +724,7 @@ export async function submitExternalBridge(
 
     // Audit log: notify backend so the transfer is traceable in server logs.
     // bridge.agent handles external_signer gracefully (returns a stub result).
+    const auditWalletAddress = finalTransfer.walletAddress ?? walletAddress;
     try {
       await createCircleTransfer({
         sourceBlockchain: sourceChain,
@@ -689,7 +732,7 @@ export async function submitExternalBridge(
         amount,
         destinationAddress,
         tokenAddress: burnTokenAddress,
-        walletId: "",
+        walletAddress: auditWalletAddress,
         bridgeExecutionMode: "external_signer",
         sourceAccountType: "external_wallet",
       });

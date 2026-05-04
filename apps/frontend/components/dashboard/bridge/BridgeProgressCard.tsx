@@ -175,7 +175,7 @@ export function BridgeProgressCard({
               onClick={onRetryAttestation}
               disabled={isSubmitting}
             >
-              Retry attestation &amp; mint
+              Retry attestation and destination mint
             </Button>
           ) : null}
           <Button

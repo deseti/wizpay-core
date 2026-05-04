@@ -25,13 +25,17 @@ interface BridgeReviewDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   isSubmitting: boolean;
+  isExternalBridgeMode: boolean;
   isExternalEvmBridge: boolean;
+  externalBridgeRouteKind: "evm-to-evm" | "evm-to-solana" | "solana-to-evm" | "solana-to-solana";
   sourceOption: { id: CircleTransferBlockchain; label: string };
   destinationOption: { id: CircleTransferBlockchain; label: string };
   amount: string;
   destinationAddress: string;
   transferWalletAddress: string | undefined;
   externalWalletAddress: string | undefined;
+  solanaWalletAddress: string | null;
+  solanaWalletLabel: string;
   onSubmit: () => void;
 }
 
@@ -39,16 +43,28 @@ export function BridgeReviewDialog({
   open,
   onOpenChange,
   isSubmitting,
+  isExternalBridgeMode,
   isExternalEvmBridge,
+  externalBridgeRouteKind,
   sourceOption,
   destinationOption,
   amount,
   destinationAddress,
   transferWalletAddress,
   externalWalletAddress,
+  solanaWalletAddress,
+  solanaWalletLabel,
   onSubmit,
 }: BridgeReviewDialogProps) {
   const tokenSymbol = BRIDGE_ASSET_SYMBOL;
+  const externalDescription =
+    externalBridgeRouteKind === "evm-to-solana"
+      ? "Your EVM wallet signs the approval and burn, then your Solana wallet signs the destination mint. Keep both wallet extensions open until the route completes."
+      : externalBridgeRouteKind === "solana-to-evm"
+        ? "Your Solana wallet signs the burn, then your EVM wallet signs the destination mint. Keep both wallet extensions open until the route completes."
+        : externalBridgeRouteKind === "solana-to-solana"
+          ? "External wallet mode does not support Solana to Solana bridges yet."
+          : "Your external EVM wallet will sign 3 transactions: USDC approve, burn, and destination mint. Keep your wallet extension open until the route completes.";
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -61,8 +77,8 @@ export function BridgeReviewDialog({
           <DialogHeader className="space-y-2">
             <DialogTitle className="text-xl">Review bridge transfer</DialogTitle>
             <DialogDescription>
-              {isExternalEvmBridge
-                ? "Your external wallet will sign 3 transactions: USDC approve, burn (depositForBurn), and mint (receiveMessage) on the destination chain. Keep your wallet extension open."
+              {isExternalBridgeMode
+                ? externalDescription
                 : `This bridge will first open Circle Wallet so you can approve a deposit from your personal ${sourceOption.label} wallet into the selected source treasury wallet. After that deposit is confirmed, the backend treasury wallet completes the bridge.`}
             </DialogDescription>
           </DialogHeader>
@@ -87,9 +103,9 @@ export function BridgeReviewDialog({
                   {destinationAddress || "Unavailable"}
                 </span>
               </div>
-              {isExternalEvmBridge ? (
+              {isExternalBridgeMode ? (
                 <div className="mt-3 flex items-start justify-between gap-3 text-sm">
-                  <span className="text-muted-foreground/70">Signing wallet</span>
+                  <span className="text-muted-foreground/70">EVM wallet</span>
                   <span className="max-w-[12rem] break-all text-right font-mono font-medium">
                     {externalWalletAddress || "Unavailable"}
                   </span>
@@ -104,17 +120,44 @@ export function BridgeReviewDialog({
                   </span>
                 </div>
               )}
+              {isExternalBridgeMode &&
+              (externalBridgeRouteKind === "evm-to-solana" ||
+                externalBridgeRouteKind === "solana-to-evm") ? (
+                <div className="mt-3 flex items-start justify-between gap-3 text-sm">
+                  <span className="text-muted-foreground/70">{solanaWalletLabel}</span>
+                  <span className="max-w-[12rem] break-all text-right font-mono font-medium">
+                    {solanaWalletAddress || "Unavailable"}
+                  </span>
+                </div>
+              ) : null}
             </div>
 
-            {isExternalEvmBridge ? (
+            {isExternalBridgeMode ? (
               <div className="rounded-2xl border border-primary/20 bg-primary/5 p-3 text-sm">
                 <p className="font-semibold text-primary/80 mb-2">
-                  3 wallet confirmations required
+                  {externalBridgeRouteKind === "solana-to-evm"
+                    ? "2 wallet confirmations required"
+                    : "3 wallet confirmations required"}
                 </p>
                 <ol className="space-y-1 text-muted-foreground/80 list-none">
-                  <li>① Approve USDC spend on {sourceOption.label}</li>
-                  <li>② Burn USDC via CCTP V2 on {sourceOption.label}</li>
-                  <li>③ Mint USDC on {destinationOption.label} (auto-switched)</li>
+                  {externalBridgeRouteKind === "evm-to-solana" ? (
+                    <>
+                      <li>① Approve USDC spend in your EVM wallet on {sourceOption.label}</li>
+                      <li>② Burn USDC via CCTP V2 in your EVM wallet on {sourceOption.label}</li>
+                      <li>③ Mint USDC in your Solana wallet on {destinationOption.label}</li>
+                    </>
+                  ) : externalBridgeRouteKind === "solana-to-evm" ? (
+                    <>
+                      <li>① Burn USDC via CCTP V2 in your Solana wallet on {sourceOption.label}</li>
+                      <li>② Mint USDC in your EVM wallet on {destinationOption.label}</li>
+                    </>
+                  ) : (
+                    <>
+                      <li>① Approve USDC spend on {sourceOption.label}</li>
+                      <li>② Burn USDC via CCTP V2 on {sourceOption.label}</li>
+                      <li>③ Mint USDC on {destinationOption.label} (auto-switched)</li>
+                    </>
+                  )}
                 </ol>
                 <p className="mt-2 text-xs text-muted-foreground/60">
                   Estimated time:{" "}

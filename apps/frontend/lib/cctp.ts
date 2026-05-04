@@ -19,6 +19,7 @@ export const CCTP_DOMAIN_BY_CHAIN: Partial<
 > = {
   "ETH-SEPOLIA": 0,
   "ARC-TESTNET": 26,
+  "SOLANA-DEVNET": 5,
 };
 
 // ── Wagmi chain IDs for each bridge chain ──
@@ -35,6 +36,11 @@ export const CCTP_USDC_DECIMALS = 6;
 // ── Circle CCTP V2 Attestation API (sandbox) ──
 export const CCTP_V2_ATTESTATION_API_BASE =
   "https://iris-api-sandbox.circle.com/v2/messages";
+const CIRCLE_API_PROXY_ENABLED = ["1", "true", "yes", "on"].includes(
+  (process.env.NEXT_PUBLIC_CIRCLE_API_PROXY_ENABLED ?? "")
+    .trim()
+    .toLowerCase()
+);
 
 // ── Attestation polling settings ──
 export const CCTP_ATTESTATION_POLL_INTERVAL_MS = 5_000;
@@ -122,6 +128,10 @@ async function fetchAttestationPayload(url: string): Promise<{
   }
 
   // Fallback via our server proxy to reduce client-side network/CORS flakiness.
+  if (!CIRCLE_API_PROXY_ENABLED) {
+    return null;
+  }
+
   try {
     const proxied = await fetch("/api/circle/proxy", {
       method: "POST",
@@ -256,6 +266,10 @@ export function getCctpExplorerUrl(
 
   if (chain === "ARC-TESTNET") {
     return `https://testnet.arcscan.app/tx/${txHash}`;
+  }
+
+  if (chain === "SOLANA-DEVNET") {
+    return `https://solscan.io/tx/${txHash}?cluster=devnet`;
   }
 
   return null;

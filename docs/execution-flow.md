@@ -26,7 +26,7 @@ The frontend submits a structured payload to one of the task endpoints:
 `TaskController` validates the request body using `class-validator` (whitelist mode, strict). Type-specific validation:
 
 - **Payroll** — `PayrollValidationService` checks recipient addresses, amounts, token compatibility. Invalid entries reject the entire payload.
-- **Bridge** — `OrchestratorService.normalizeBridgePayload()` validates chains, addresses, amounts. Rejects same-chain bridges, non-USDC tokens, and invalid execution modes.
+- **Bridge** — `OrchestratorService.normalizeBridgePayload()` validates chains, addresses, amounts. Rejects same-chain bridges, non-USDC tokens, and invalid execution modes. For `bridgeExecutionMode: "external_signer"`, `walletAddress` is required while `walletId` is optional.
 - **Swap** — Requires `tokenIn`, `tokenOut`, `amountIn`, `recipient`.
 
 ### 3. Task Creation
@@ -101,6 +101,8 @@ The orchestrator routes through two layers:
 2. `AgentRouterService` — dispatches to the type-specific agent.
 
 The agent executes the domain operation and returns an `AgentExecutionResult`.
+
+External-wallet bridge tasks are a narrow exception: the browser can execute the bridge first, then submit `POST /tasks` with `bridgeExecutionMode: "external_signer"` so the backend stores validation output and audit metadata without requiring a Circle `walletId`.
 
 ### 8. Settlement
 

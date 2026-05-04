@@ -234,15 +234,18 @@ export class OrchestratorService {
     const walletAddress = this.readString(payload, 'walletAddress');
     const destinationAddress = this.readString(payload, 'destinationAddress');
 
-    // walletId is optional for passkey wallets — they are not Circle
-    // developer-controlled wallets and do not have a Circle walletId.
+    // walletId only exists for backend-controlled treasury wallets.
+    // Passkey and browser-wallet external signers do not provide one.
     const isPasskey = this.readString(payload, 'walletMode') === 'PASSKEY';
+    const isExternalWalletSource = sourceAccountType === 'external_wallet';
 
     const missing = [
       !sourceBlockchain ? 'sourceChain' : null,
       !destinationBlockchain ? 'destinationChain' : null,
       !amount ? 'amount' : null,
-      (!walletId && !isPasskey) ? 'walletId' : null,
+      (!walletId && !isPasskey && !isExternalWalletSource)
+        ? 'walletId'
+        : null,
       !walletAddress ? 'walletAddress' : null,
       !destinationAddress ? 'destinationAddress' : null,
     ].filter((field): field is string => Boolean(field));

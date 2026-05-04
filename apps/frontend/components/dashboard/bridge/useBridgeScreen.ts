@@ -120,13 +120,23 @@ export function useBridgeScreen() {
     sourceAccountType,
     isExternalBridgeMode,
     isExternalEvmBridge,
+    isExternalCrossChainBridge,
+    externalBridgeRouteKind,
     externalBridgeModeMessage,
     externalWalletAddress,
     externalWalletChainId,
+    externalSolanaWalletAddress,
+    availableSolanaWallets,
+    selectedSolanaWalletId,
+    selectedSolanaWalletLabel,
+    requiredExternalWalletLabels,
+    hasRequiredExternalWallets,
     sourceChainId,
     externalUsdcBalanceLabel,
     hasEnoughExternalUsdc,
     retryAttestation,
+    selectSolanaWallet,
+    connectSolanaWallet,
     submitExternalBridgeFlow,
   } = useBridgeExternalSignerState({
     sourceChain,
@@ -219,11 +229,11 @@ export function useBridgeScreen() {
     const effectiveSource = transfer?.sourceBlockchain ?? sourceChain;
     return getEstimatedBridgeTimeLabel(
       effectiveSource,
-      isExternalBridgeTransfer || isExternalEvmBridge
+      isExternalBridgeTransfer || isExternalBridgeMode
     );
   }, [
+    isExternalBridgeMode,
     isExternalBridgeTransfer,
-    isExternalEvmBridge,
     sourceChain,
     transfer?.sourceBlockchain,
   ]);
@@ -233,8 +243,8 @@ export function useBridgeScreen() {
     Boolean(transferWallet) &&
     hasSufficientWalletBalance;
   const canSubmitExternalWallet =
-    isExternalEvmBridge &&
-    Boolean(externalWalletAddress) &&
+    isExternalBridgeMode &&
+    hasRequiredExternalWallets &&
     hasEnoughExternalUsdc;
   const canSubmit =
     Boolean(destinationTokenAddress) &&
@@ -285,6 +295,19 @@ export function useBridgeScreen() {
       }
       if (isSameChainRoute) {
         setErrorMessage("Source and destination network must be different.");
+        return;
+      }
+      if (!hasRequiredExternalWallets) {
+        setErrorMessage(
+          externalBridgeModeMessage ??
+            `Connect ${requiredExternalWalletLabels.join(" and ")} before starting the bridge.`
+        );
+        return;
+      }
+      if (!hasEnoughExternalUsdc) {
+        setErrorMessage(
+          `Insufficient USDC in the source wallet on ${sourceOption.label}. Fund the wallet and try again.`
+        );
         return;
       }
       if (
@@ -514,18 +537,9 @@ export function useBridgeScreen() {
       return;
     }
 
-    // ── External EVM wallet flow ──────────────────────────────────────────────────
-    if (isExternalEvmBridge) {
-      await submitExternalBridgeFlow(clearStoredActiveTransfer);
-      return;
-    }
-
+    // ── External wallet flow ──────────────────────────────────────────────────────
     if (isExternalBridgeMode) {
-      setErrorMessage(
-        externalBridgeModeMessage ??
-          "External wallet bridge is not available for the selected route."
-      );
-      setIsReviewDialogOpen(false);
+      await submitExternalBridgeFlow(clearStoredActiveTransfer);
       return;
     }
 
@@ -704,6 +718,8 @@ export function useBridgeScreen() {
     passkeySourceRestrictionMessage,
     isExternalBridgeMode,
     isExternalEvmBridge,
+    isExternalCrossChainBridge,
+    externalBridgeRouteKind,
     externalBridgeModeMessage,
     externalUsdcBalanceLabel,
     hasEnoughExternalUsdc,
@@ -717,6 +733,12 @@ export function useBridgeScreen() {
     isDestinationSolana,
     externalWalletAddress,
     externalWalletChainId,
+    externalSolanaWalletAddress,
+    availableSolanaWallets,
+    selectedSolanaWalletId,
+    selectedSolanaWalletLabel,
+    requiredExternalWalletLabels,
+    hasRequiredExternalWallets,
     sourceChainId,
     arcWalletAddress: arcWallet?.address,
     sepoliaWalletAddress: sepoliaWallet?.address,
@@ -730,6 +752,8 @@ export function useBridgeScreen() {
     handleSavePasskeySolana,
     refreshDestinationWallets,
     handleBootstrapWallet,
+    selectSolanaWallet,
+    connectSolanaWallet,
     openBridgeReview,
     submitBridge,
     retryAttestation,
