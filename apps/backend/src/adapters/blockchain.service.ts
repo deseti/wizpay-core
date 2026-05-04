@@ -29,6 +29,27 @@ export interface TransactionResult {
   blockNumber?: number;
 }
 
+export interface RpcLogResult {
+  address: string;
+  topics: string[];
+  data: string;
+  blockNumber: string | null;
+  transactionHash: string | null;
+  logIndex: string | null;
+}
+
+export interface RpcBlockResult {
+  number: string | null;
+  timestamp: string;
+}
+
+export interface RpcTransactionReceiptResult {
+  transactionHash: string;
+  blockNumber: string | null;
+  status: string;
+  logs: RpcLogResult[];
+}
+
 export interface ContractCallParams {
   contractAddress: string;
   functionName: string;
@@ -112,6 +133,10 @@ export class BlockchainService {
 
   private get chainId(): number {
     return Number(this.configService.get<string>('CHAIN_ID') || '5042002');
+  }
+
+  private toHexBlockTag(blockNumber: bigint): string {
+    return `0x${blockNumber.toString(16)}`;
   }
 
   // ── Multi-chain RPC routing ──────────────────────────────────────
@@ -502,6 +527,77 @@ export class BlockchainService {
       tokenAddress,
       balance: BigInt(result).toString(),
     };
+  }
+
+  async getBlockNumberOnChain(chain: string): Promise<bigint> {
+    this.logger.debug(`getBlockNumberOnChain — chain=${chain}`);
+
+    const blockNumber = await this.rpcCallOnChain<string>(
+      chain,
+      'eth_blockNumber',
+      [],
+    );
+
+    return BigInt(blockNumber);
+  }
+
+  async getBlockOnChain(
+    blockNumber: bigint,
+    chain: string,
+  ): Promise<RpcBlockResult> {
+    this.logger.debug(
+      `getBlockOnChain — chain=${chain} block=${blockNumber.toString()}`,
+    );
+
+    const block = await this.rpcCallOnChain<RpcBlockResult | null>(
+      chain,
+      'eth_getBlockByNumber',
+      [this.toHexBlockTag(blockNumber), false],
+    );
+
+    if (!block) {
+      throw new Error(
+        `Block ${blockNumber.toString()} not found on chain ${chain}`,
+      );
+    }
+
+    return block;
+  }
+
+  async getLogsOnChain(input: {
+    address: string | string[];
+    topics?: Array<string | string[] | null>;
+    fromBlock: bigint;
+    toBlock: bigint;
+    chain: string;
+  }): Promise<RpcLogResult[]> {
+    this.logger.debug(
+      `getLogsOnChain — chain=${input.chain} from=${input.fromBlock.toString()} to=${input.toBlock.toString()}`,
+    );
+
+    return this.rpcCallOnChain<RpcLogResult[]>(input.chain, 'eth_getLogs', [
+      {
+        address: input.address,
+        ...(input.topics ? { topics: input.topics } : {}),
+        fromBlock: this.toHexBlockTag(input.fromBlock),
+        toBlock: this.toHexBlockTag(input.toBlock),
+      },
+    ]);
+  }
+
+  async getTransactionReceiptOnChain(
+    txHash: string,
+    chain: string,
+  ): Promise<RpcTransactionReceiptResult | null> {
+    this.logger.debug(
+      `getTransactionReceiptOnChain — chain=${chain} txHash=${txHash}`,
+    );
+
+    return this.rpcCallOnChain<RpcTransactionReceiptResult | null>(
+      chain,
+      'eth_getTransactionReceipt',
+      [txHash],
+    );
   }
 
   // ── Chain-specific transaction submission ────────────────────────

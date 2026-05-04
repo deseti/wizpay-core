@@ -17,6 +17,8 @@ import { OrchestratorService } from './orchestrator.service';
 import { PayrollInitService } from './payroll-init.service';
 import { CreateTaskDto } from '../task/dto/create-task.dto';
 import { TaskService } from '../task/task.service';
+import { TaskEmployeeBreakdownService } from '../task/task-employee-breakdown.service';
+import { TaskPayrollHistoryService } from '../task/task-payroll-history.service';
 import { CircleService } from '../adapters/circle.service';
 import { TaskType } from '../task/task-type.enum';
 import type { ReportTaskUnitInput } from '../task/task.types';
@@ -26,6 +28,8 @@ export class TaskController {
   constructor(
     private readonly orchestratorService: OrchestratorService,
     private readonly taskService: TaskService,
+    private readonly taskEmployeeBreakdownService: TaskEmployeeBreakdownService,
+    private readonly taskPayrollHistoryService: TaskPayrollHistoryService,
     private readonly payrollInitService: PayrollInitService,
     private readonly circleService: CircleService,
   ) {}
@@ -184,6 +188,22 @@ export class TaskController {
   }
 
   /**
+   * GET /tasks/payroll/history?wallet=0x... — Wallet-scoped payroll history.
+   *
+   * Returns confirmed payroll batch events and employee-level payments using
+   * backend chain reads so overview cards and recent payroll tables do not
+   * scan logs in the browser. Includes legacy contract coverage.
+   */
+  @Get('payroll/history')
+  async getPayrollHistory(@Query('wallet') walletAddress?: string) {
+    return {
+      data: await this.taskPayrollHistoryService.getWalletPayrollHistory(
+        walletAddress,
+      ),
+    };
+  }
+
+  /**
    * GET /tasks/:id — Poll task status.
    *
    * Frontend polls this endpoint to track progress.
@@ -193,6 +213,21 @@ export class TaskController {
   async getTask(@Param('id', new ParseUUIDPipe()) id: string) {
     return {
       data: await this.taskService.getTaskById(id),
+    };
+  }
+
+  /**
+   * GET /tasks/:id/employee-breakdown — Return confirmed employee-level payroll payments.
+   *
+   * Frontend uses this endpoint to render recent payroll rows without scanning
+   * chain logs or transaction receipts in the browser.
+   */
+  @Get(':id/employee-breakdown')
+  async getEmployeeBreakdown(@Param('id', new ParseUUIDPipe()) id: string) {
+    return {
+      data: await this.taskEmployeeBreakdownService.getPayrollEmployeeBreakdown(
+        id,
+      ),
     };
   }
 }

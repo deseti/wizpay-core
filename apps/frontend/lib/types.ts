@@ -143,6 +143,36 @@ export interface BackendTask {
   units: BackendTaskUnit[];
 }
 
+export interface BackendTaskEmployeeBreakdownItem {
+  taskId: string;
+  date: number;
+  employee: string;
+  status: "Confirmed";
+  amount: string;
+  tokenSymbol: string;
+  tokenDecimals: number;
+  txHash: string;
+}
+
+export interface BackendPayrollHistoryEvent {
+  txHash: string;
+  blockNumber: string;
+  timestampMs: number;
+  tokenIn: string;
+  tokenOut: string;
+  totalAmountIn: string;
+  totalAmountOut: string;
+  totalFees: string;
+  recipientCount: number;
+  referenceId: string;
+}
+
+export interface BackendPayrollHistoryResponse {
+  walletAddress: string;
+  events: BackendPayrollHistoryEvent[];
+  employeePayments: BackendTaskEmployeeBreakdownItem[];
+}
+
 export interface BackendTaskListResponse {
   items: BackendTask[];
   total: number;

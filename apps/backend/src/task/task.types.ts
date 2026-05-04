@@ -122,6 +122,36 @@ export interface TaskTransactionRecord {
   updatedAt: Date;
 }
 
+export interface TaskEmployeeBreakdownItem {
+  taskId: string;
+  date: number;
+  employee: string;
+  status: 'Confirmed';
+  amount: string;
+  tokenSymbol: string;
+  tokenDecimals: number;
+  txHash: string;
+}
+
+export interface TaskPayrollHistoryEvent {
+  txHash: string;
+  blockNumber: string;
+  timestampMs: number;
+  tokenIn: string;
+  tokenOut: string;
+  totalAmountIn: string;
+  totalAmountOut: string;
+  totalFees: string;
+  recipientCount: number;
+  referenceId: string;
+}
+
+export interface TaskPayrollHistoryResponse {
+  walletAddress: string;
+  events: TaskPayrollHistoryEvent[];
+  employeePayments: TaskEmployeeBreakdownItem[];
+}
+
 export interface AppendTransactionInput {
   taskId: string;
   txId: string;
