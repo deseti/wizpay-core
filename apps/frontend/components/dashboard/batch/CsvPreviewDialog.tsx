@@ -37,17 +37,17 @@ export function CsvPreviewDialog({
         if (!open) onClose();
       }}
     >
-      <DialogContent className="glass-card max-w-4xl border-border/40 bg-background/95 p-0 overflow-hidden">
-        <DialogHeader className="px-6 pt-6">
+      <DialogContent className="glass-card grid-rows-[auto_auto_minmax(0,1fr)_auto] max-h-[92dvh] max-w-[calc(100vw-1rem)] border-border/40 bg-background/95 p-0 overflow-hidden sm:max-w-4xl">
+        <DialogHeader className="px-4 pt-5 sm:px-6 sm:pt-6">
           <DialogTitle>Review CSV import</DialogTitle>
-          <DialogDescription>
+          <DialogDescription className="break-words">
             {csvPreview
               ? `${csvPreview.fileName} · ${csvPreview.rows.length} rows found. Only valid rows will be imported.`
               : "Review the file before importing recipients."}
           </DialogDescription>
         </DialogHeader>
 
-        <div className="grid gap-3 px-6 md:grid-cols-3">
+        <div className="grid gap-3 px-4 sm:px-6 md:grid-cols-3">
           <div className="rounded-2xl border border-border/40 bg-background/35 p-4">
             <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground/60">
               Rows found
@@ -74,7 +74,7 @@ export function CsvPreviewDialog({
           </div>
         </div>
 
-        <div className="max-h-[60vh] overflow-y-auto px-6 pb-6">
+        <div className="min-h-0 overflow-y-auto px-4 pb-4 sm:px-6 sm:pb-6">
           <div className="space-y-3">
             {csvPreview?.rows.map((row) => (
               <div
@@ -94,8 +94,8 @@ export function CsvPreviewDialog({
                     variant="outline"
                     className={
                       row.errors.length === 0
-                        ? "border-emerald-500/20 bg-emerald-500/5 text-emerald-300/80"
-                        : "border-amber-500/20 bg-amber-500/5 text-amber-300/80"
+                        ? "self-start border-emerald-500/20 bg-emerald-500/5 text-emerald-300/80"
+                        : "self-start border-amber-500/20 bg-amber-500/5 text-amber-300/80"
                     }
                   >
                     {row.errors.length === 0 ? "Ready" : "Needs review"}
@@ -138,14 +138,20 @@ export function CsvPreviewDialog({
           </div>
         </div>
 
-        <DialogFooter className="px-6" showCloseButton>
-          <Button type="button" variant="outline" onClick={onDownloadTemplate}>
+        <DialogFooter className="px-4 sm:px-6" showCloseButton>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={onDownloadTemplate}
+            className="w-full sm:w-auto"
+          >
             Download Template
           </Button>
           <Button
             type="button"
             onClick={onConfirm}
             disabled={isBusy || !csvPreview?.validRows.length}
+            className="w-full sm:w-auto"
           >
             Import {csvPreview?.validRows.length ?? 0} recipients
           </Button>

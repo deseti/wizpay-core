@@ -369,39 +369,41 @@ export function BatchComposer({
           ) : null}
 
           {/* Add recipient + CSV upload */}
-          <div className="flex flex-wrap items-center gap-3">
-            <Button
-              variant="outline"
-              onClick={addRecipient}
-              disabled={recipients.length >= 50 || isBusy}
-              className="h-10 gap-2 bg-background/40 border-border/40 hover:border-primary/30 hover:bg-primary/5 hover:text-primary transition-all"
-            >
-              <Plus className="h-4 w-4" />
-              Add Recipient
-            </Button>
-            <Button
-              variant="outline"
-              onClick={() => csvInputRef.current?.click()}
-              disabled={isBusy || csvLoading}
-              className="h-10 gap-2 bg-background/40 border-border/40 hover:border-primary/30 hover:bg-primary/5 hover:text-primary transition-all"
-            >
-              {csvLoading ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <Upload className="h-4 w-4" />
-              )}
-              {csvLoading ? "Parsing..." : "Upload CSV"}
-            </Button>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={handleDownloadTemplate}
-              disabled={isBusy}
-              className="h-10 gap-2 bg-background/40 border-border/40 hover:border-primary/30 hover:bg-primary/5 hover:text-primary transition-all"
-            >
-              <Download className="h-4 w-4" />
-              Download Template CSV
-            </Button>
+          <div className="space-y-3">
+            <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
+              <Button
+                variant="outline"
+                onClick={addRecipient}
+                disabled={recipients.length >= 50 || isBusy}
+                className="h-10 w-full justify-center gap-2 border-border/40 bg-background/40 transition-all hover:border-primary/30 hover:bg-primary/5 hover:text-primary sm:w-auto"
+              >
+                <Plus className="h-4 w-4" />
+                Add Recipient
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() => csvInputRef.current?.click()}
+                disabled={isBusy || csvLoading}
+                className="h-10 w-full justify-center gap-2 border-border/40 bg-background/40 transition-all hover:border-primary/30 hover:bg-primary/5 hover:text-primary sm:w-auto"
+              >
+                {csvLoading ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Upload className="h-4 w-4" />
+                )}
+                {csvLoading ? "Parsing..." : "Upload CSV"}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={handleDownloadTemplate}
+                disabled={isBusy}
+                className="h-10 w-full justify-center gap-2 border-border/40 bg-background/40 transition-all hover:border-primary/30 hover:bg-primary/5 hover:text-primary sm:w-auto"
+              >
+                <Download className="h-4 w-4" />
+                Download Template CSV
+              </Button>
+            </div>
             <input
               ref={csvInputRef}
               type="file"
