@@ -19,6 +19,7 @@ export class SolanaService {
   getSolanaRpcUrl(): string {
     return (
       this.configService.get<string>('SOLANA_RPC_URL') ||
+      this.configService.get<string>('SOLANA_DEVNET_RPC_URL') ||
       'https://api.devnet.solana.com'
     );
   }

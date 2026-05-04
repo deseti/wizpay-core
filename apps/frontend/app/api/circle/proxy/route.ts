@@ -80,10 +80,10 @@ export async function POST(request: Request) {
 
     const upstreamHeaders = pickForwardHeaders(headers as Record<string, string>);
 
-    const apiKey = process.env.CIRCLE_API_KEY?.trim();
-    if (apiKey) {
-      upstreamHeaders.set("authorization", `Bearer ${apiKey}`);
-    }
+    // NOTE: Do NOT inject CIRCLE_API_KEY here.
+    // This proxy is used exclusively for CCTP V2 attestation polling
+    // (iris-api-sandbox.circle.com /v2/messages/*) which is a public endpoint
+    // that does not require authentication. API keys must stay in the backend.
 
     const upstreamResponse = await fetch(target.toString(), {
       method: upperMethod,

@@ -84,6 +84,9 @@ export class WalletProvisionError extends Error {
 }
 
 const CIRCLE_INITIALIZE_BLOCKCHAINS = ['ARC-TESTNET', 'ETH-SEPOLIA'] as const;
+const CIRCLE_INITIALIZE_BLOCKCHAINS_SET = new Set<SupportedUserWalletBlockchain>(
+  CIRCLE_INITIALIZE_BLOCKCHAINS,
+);
 const SUPPORTED_BLOCKCHAINS = new Set<SupportedUserWalletBlockchain>([
   'ARC-TESTNET',
   'ETH-SEPOLIA',
@@ -116,6 +119,7 @@ export class WalletService {
 
     this.solanaRpcUrl =
       this.configService.get<string>('SOLANA_DEVNET_RPC_URL') ||
+      this.configService.get<string>('SOLANA_RPC_URL') ||
       'https://api.devnet.solana.com';
   }
 
@@ -123,16 +127,46 @@ export class WalletService {
     input: WalletSessionInput,
   ): Promise<InitializeWalletsResult> {
     const userId = this.resolveUserId(input);
-    const payload = await this.circleRequest<Record<string, unknown>>({
-      body: {
-        accountType: 'EOA',
-        blockchains: [...CIRCLE_INITIALIZE_BLOCKCHAINS],
-        idempotencyKey: randomUUID(),
-      },
-      method: 'POST',
-      path: '/v1/w3s/user/initialize',
-      userToken: input.userToken,
-    });
+
+    // Circle returns conflict when user wallets are already initialized.
+    // Short-circuit to keep this endpoint idempotent and avoid noisy 409s.
+    const existingWallets = await this.listUpstreamWallets(input.userToken);
+    const alreadyInitialized = existingWallets.some((wallet) =>
+      CIRCLE_INITIALIZE_BLOCKCHAINS_SET.has(wallet.blockchain),
+    );
+
+    if (alreadyInitialized) {
+      return {
+        challengeId: null,
+        userId,
+      };
+    }
+
+    let payload: Record<string, unknown>;
+    try {
+      payload = await this.circleRequest<Record<string, unknown>>({
+        body: {
+          accountType: 'EOA',
+          blockchains: [...CIRCLE_INITIALIZE_BLOCKCHAINS],
+          idempotencyKey: randomUUID(),
+        },
+        method: 'POST',
+        path: '/v1/w3s/user/initialize',
+        userToken: input.userToken,
+      });
+    } catch (error) {
+      if (
+        error instanceof WalletProvisionError &&
+        (error.code === 155106 || error.code === '155106')
+      ) {
+        return {
+          challengeId: null,
+          userId,
+        };
+      }
+
+      throw error;
+    }
 
     return {
       challengeId: this.readString(payload, 'challengeId'),

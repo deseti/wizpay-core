@@ -109,10 +109,6 @@ export function useSdkInitializer({
 
     async function initializeSdk() {
       try {
-        console.log(
-          "[CircleWalletProvider] SDK init — URL:",
-          window.location.href,
-        );
         const sdkModule =
           (await import("@circle-fin/w3s-pw-web-sdk")) as unknown as W3SSdkModule;
 

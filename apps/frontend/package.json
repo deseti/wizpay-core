@@ -5,10 +5,10 @@
   "scripts": {
     "circle:entity-secret:doctor": "node scripts/rotate-circle-entity-secret.mjs",
     "circle:entity-secret:rotate": "node scripts/rotate-circle-entity-secret.mjs --apply",
-    "dev": "next dev",
-    "dev:turbopack": "next dev",
-    "build": "next build --no-lint",
-    "start": "next start",
+    "dev": "./scripts/with-root-env.sh next dev",
+    "dev:turbopack": "./scripts/with-root-env.sh next dev",
+    "build": "./scripts/with-root-env.sh next build --no-lint",
+    "start": "./scripts/with-root-env.sh next start",
     "lint": "eslint"
   },
   "dependencies": {

@@ -6,9 +6,9 @@ Monorepo containing the WizPay frontend application, backend service, landing si
 
 Use the root [.env.example](.env.example) as the primary reference for shared configuration.
 
-- Root `.env`: primary source for Docker Compose and backend local fallback loading.
-- `apps/backend/.env`: optional backend-only override; use only when you explicitly need to bypass the root file.
-- `apps/frontend/.env.local`: local Next.js development file for the frontend.
+- Root `.env`: primary source for Docker Compose, docker-compose.dev, backend local runs, and frontend local runs.
+- `apps/backend/.env`: no longer used by default.
+- `apps/frontend/.env.local`: no longer required for normal local development.
 - `apps/frontend/.env.docker`: legacy local helper, not the primary source of truth.
 
 ## Local run modes
@@ -20,10 +20,10 @@ Use the root [.env.example](.env.example) as the primary reference for shared co
 
 ### Frontend local Next.js
 
-- Copy `apps/frontend/.env.example` to `apps/frontend/.env.local`.
+- Fill the root `.env`.
 - Start the app from `apps/frontend` with `npm run dev`.
 
 ### Backend local NestJS
 
-- Prefer filling the root `.env`.
+- Fill the root `.env`.
 - Start the API from `apps/backend` with `npm run start:dev`.

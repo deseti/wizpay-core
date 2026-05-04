@@ -12,7 +12,38 @@
 
 import { isStableFxMode } from "./fx-config";
 import { backendFetch } from "./backend-api";
-import type { FxQuote, FxTrade } from "./stablefx";
+
+// ─── FX Types (previously in lib/stablefx.ts) ─────────────────────
+
+export interface FxQuote {
+  quoteId: string;
+  sourceCurrency: string;
+  targetCurrency: string;
+  sourceAmount: string;
+  targetAmount: string;
+  exchangeRate: string;
+  feeAmount: string;
+  feeCurrency: string;
+  expiresAt: string;
+  provider: string;
+  /** Permit2 EIP-712 typed data for signing (tradable quotes only) */
+  typedData?: Record<string, unknown>;
+}
+
+export interface FxTrade {
+  tradeId: string;
+  quoteId: string;
+  status: "pending" | "processing" | "settled" | "failed";
+  sourceCurrency: string;
+  targetCurrency: string;
+  sourceAmount: string;
+  targetAmount: string;
+  exchangeRate: string;
+  senderAddress: string;
+  referenceId: string;
+  createdAt: string;
+  settledAt: string | null;
+}
 
 // ─── Types ──────────────────────────────────────────────────────────
 

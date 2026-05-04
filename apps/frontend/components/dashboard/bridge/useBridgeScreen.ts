@@ -1,69 +1,37 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { encodeFunctionData, formatUnits, parseUnits } from "viem";
+import { useCallback, useMemo, useRef, useState } from "react";
+import { encodeFunctionData, parseUnits } from "viem";
 import type { Address } from "viem";
-import {
-  usePublicClient,
-  useReadContract,
-  useSwitchChain,
-  useWalletClient,
-} from "wagmi";
 
 import { useCircleWallet } from "@/components/providers/CircleWalletProvider";
-import { useHybridWallet } from "@/components/providers/HybridWalletProvider";
 import { useToast } from "@/hooks/use-toast";
-import { useAdaptivePolling } from "@/hooks/useAdaptivePolling";
 import { useDialogState } from "@/hooks/useDialogState";
 import {
-  bootstrapCircleTransferWallet,
   createCircleTransfer,
-  getCircleTransferStatus,
-  getCircleTransferWallet,
-  TransferApiError,
   type CircleTransfer,
-  type CircleTransferBlockchain,
-  type CircleTransferWallet,
 } from "@/lib/transfer-service";
-import { CCTP_USDC_DECIMALS, CHAIN_ID_BY_BRIDGE_CHAIN } from "@/lib/cctp";
+import { CCTP_USDC_DECIMALS } from "@/lib/cctp";
 import { ERC20_ABI } from "@/constants/erc20";
 
 import {
   BRIDGE_ASSET_SYMBOL,
-  BRIDGE_EXTERNAL_ENABLED,
-  BRIDGE_POLL_INTERVAL_MS,
-  BRIDGE_STUCK_TIMEOUT_MS,
-  DEFAULT_SOURCE_BLOCKCHAIN,
-  DESTINATION_OPTIONS,
-  USDC_ADDRESS_BY_CHAIN,
-  type DestinationWalletMap,
 } from "./bridge-types";
-import {
-  clearStoredActiveTransfer,
-  clearStoredTransferWallet,
-  getStoredActiveTransfer,
-  getStoredTransferWallet,
-  setStoredActiveTransfer,
-  setStoredTransferWallet,
-} from "./bridge-storage";
+import { clearStoredActiveTransfer } from "./bridge-storage";
 import {
   getBridgeErrorMessage,
-  getDefaultDestinationBlockchain,
   getEstimatedBridgeTimeLabel,
   getOptionByChain,
   getTreasuryFundingMessage,
   getTreasurySetupMessage,
   isPositiveDecimal,
-  isSolanaChain,
   isTrackedTransfer,
   isValidDestinationAddress,
-  recoverTerminalTransfer,
-  shortenAddress,
 } from "./bridge-utils";
-import {
-  retryExternalAttestationAndMint,
-  submitExternalBridge,
-} from "./useExternalBridge";
+import { useBridgeFormState } from "./useBridgeFormState";
+import { useBridgeExternalSignerState } from "./useBridgeExternalSignerState";
+import { useBridgeTransferLifecycle } from "./useBridgeTransferLifecycle";
+import { useBridgeWalletState } from "./useBridgeWalletState";
 
 export function useBridgeScreen() {
   const {
@@ -78,138 +46,163 @@ export function useBridgeScreen() {
     savePasskeySolanaAddress,
     userEmail,
   } = useCircleWallet();
-  const { walletMode, externalWalletAddress, externalWalletChainId } =
-    useHybridWallet();
-  const { data: externalWalletClient } = useWalletClient();
-  const { switchChainAsync } = useSwitchChain();
   const { toast } = useToast();
-  const initialSourceBlockchain: CircleTransferBlockchain =
-    authMethod === "passkey" ? "ARC-TESTNET" : DEFAULT_SOURCE_BLOCKCHAIN;
 
   // ── Refs ───────────────────────────────────────────────────────────────────────
-  const restoredTransferRef = useRef(false);
   const terminalNoticeRef = useRef<string | null>(null);
-  const reconnectingPollCountRef = useRef(0);
-  const pollTransferFnRef = useRef<(() => Promise<void>) | null>(null);
-
-  // ── Route state ────────────────────────────────────────────────────────────────
-  const [sourceChain, setSourceChain] = useState<CircleTransferBlockchain>(
-    initialSourceBlockchain
-  );
-  const [destinationChain, setDestinationChain] =
-    useState<CircleTransferBlockchain>(
-      getDefaultDestinationBlockchain(initialSourceBlockchain)
-    );
-  const [amount, setAmount] = useState("");
-  const [destinationAddress, setDestinationAddress] = useState("");
 
   // ── Transfer / UI state ────────────────────────────────────────────────────────
   const [transfer, setTransfer] = useState<CircleTransfer | null>(null);
-  const [transferWallet, setTransferWallet] =
-    useState<CircleTransferWallet | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [walletStatusError, setWalletStatusError] = useState<string | null>(
-    null
-  );
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [isDepositingToTreasury, setIsDepositingToTreasury] = useState(false);
-  const [isWalletLoading, setIsWalletLoading] = useState(false);
-  const [isWalletBootstrapping, setIsWalletBootstrapping] = useState(false);
-  const [isPollingTransfer, setIsPollingTransfer] = useState(false);
-  const [isReconnectingToTracking, setIsReconnectingToTracking] =
-    useState(false);
+  const [, setIsDepositingToTreasury] = useState(false);
   const { isOpen: isReviewDialogOpen, setIsOpen: setIsReviewDialogOpen } =
     useDialogState();
   const { isOpen: isSuccessDialogOpen, setIsOpen: setIsSuccessDialogOpen } =
     useDialogState();
-  const [destinationWallets, setDestinationWallets] =
-    useState<DestinationWalletMap>({});
-  const [isDestinationWalletsLoading, setIsDestinationWalletsLoading] =
-    useState(false);
-  const [copiedWallet, setCopiedWallet] = useState<string | null>(null);
-  const [passkeySolanaInput, setPasskeySolanaInput] = useState("");
 
   const tokenSymbol = BRIDGE_ASSET_SYMBOL;
+  const isTransferActive = isTrackedTransfer(transfer);
+
+  const {
+    sourceChain,
+    setSourceChain,
+    destinationChain,
+    setDestinationChain,
+    amount,
+    setAmount,
+    destinationAddress,
+    setDestinationAddress,
+    passkeySolanaInput,
+    setPasskeySolanaInput,
+    sourceOption,
+    destinationOption,
+    sourceTokenAddress,
+    destinationTokenAddress,
+    isSameChainRoute,
+    isPasskeyWalletSession,
+    isPasskeyUnsupportedSource,
+    passkeySourceRestrictionMessage,
+    sourceChainOptions,
+    destinationChainOptions,
+    isDestinationSolana,
+    handleSourceChainChange,
+    handleDestinationChainChange,
+  } = useBridgeFormState({
+    authMethod,
+    arcWalletAddress: arcWallet?.address,
+    sepoliaWalletAddress: sepoliaWallet?.address,
+    solanaWalletAddress: solanaWallet?.address,
+    isTransferActive,
+  });
+  const {
+    transferWallet,
+    walletStatusError,
+    isWalletLoading,
+    isWalletBootstrapping,
+    destinationWallets,
+    isDestinationWalletsLoading,
+    copiedWallet,
+    refreshTransferWallet,
+    refreshDestinationWallets,
+    copyWalletAddress,
+    handleBootstrapWallet,
+  } = useBridgeWalletState({
+    sourceChain,
+    sourceTokenAddress,
+    sourceLabel: sourceOption.label,
+    destinationLabel: destinationOption.label,
+    tokenSymbol,
+    toast,
+  });
+  const {
+    bridgeExecutionMode,
+    sourceAccountType,
+    isExternalBridgeMode,
+    isExternalEvmBridge,
+    externalBridgeModeMessage,
+    externalWalletAddress,
+    externalWalletChainId,
+    sourceChainId,
+    externalUsdcBalanceLabel,
+    hasEnoughExternalUsdc,
+    retryAttestation,
+    submitExternalBridgeFlow,
+  } = useBridgeExternalSignerState({
+    sourceChain,
+    destinationChain,
+    amount,
+    destinationAddress,
+    sourceTokenAddress,
+    sourceOption,
+    destinationOption,
+    transfer,
+    tokenSymbol,
+    setTransfer,
+    setIsSubmitting,
+    setErrorMessage,
+    setIsReviewDialogOpen,
+    setIsSuccessDialogOpen,
+    toast,
+  });
+
+  // ── Terminal transfer handler ──────────────────────────────────────────────────
+  const handleTerminalTransferUpdate = useCallback(
+    (latest: CircleTransfer) => {
+      if (latest.status === "settled") {
+        const key = `${latest.transferId}:settled`;
+        if (terminalNoticeRef.current !== key) {
+          terminalNoticeRef.current = key;
+          setIsSuccessDialogOpen(true);
+          clearStoredActiveTransfer();
+          toast({
+            title: "Bridge completed",
+            description: `${tokenSymbol} arrived on ${getOptionByChain(latest.blockchain).label}.`,
+          });
+          void refreshTransferWallet();
+        }
+        return;
+      }
+
+      if (latest.status === "failed") {
+        const key = `${latest.transferId}:failed`;
+        if (terminalNoticeRef.current !== key) {
+          terminalNoticeRef.current = key;
+          clearStoredActiveTransfer();
+          toast({
+            title: "Bridge transfer failed",
+            description:
+              latest.errorReason ||
+              `Circle could not finish the ${getOptionByChain(latest.sourceBlockchain).label} to ${getOptionByChain(latest.blockchain).label} bridge.`,
+            variant: "destructive",
+          });
+          void refreshTransferWallet();
+        }
+      }
+    },
+    [refreshTransferWallet, setIsSuccessDialogOpen, toast, tokenSymbol]
+  );
+  const {
+    isPollingTransfer,
+    isReconnectingToTracking,
+    isExternalBridgeTransfer,
+    clearTransferTracking,
+    resetTransferTrackingState,
+    syncTrackedTransfer,
+  } = useBridgeTransferLifecycle({
+    transfer,
+    setTransfer,
+    sourceLabel: sourceOption.label,
+    destinationLabel: destinationOption.label,
+    setSourceChain,
+    setDestinationChain,
+    setAmount,
+    setDestinationAddress,
+    setErrorMessage,
+    onTerminalTransferUpdate: handleTerminalTransferUpdate,
+  });
 
   // ── Derived values ─────────────────────────────────────────────────────────────
-  const sourceOption = useMemo(
-    () => getOptionByChain(sourceChain),
-    [sourceChain]
-  );
-  const destinationOption = useMemo(
-    () => getOptionByChain(destinationChain),
-    [destinationChain]
-  );
-  const suggestedDestinationAddress =
-    destinationChain === "ARC-TESTNET"
-      ? (arcWallet?.address ?? "")
-      : destinationChain === "ETH-SEPOLIA"
-        ? (sepoliaWallet?.address ?? "")
-        : (solanaWallet?.address ?? "");
-  const destinationTokenAddress = USDC_ADDRESS_BY_CHAIN[destinationChain];
-  const sourceTokenAddress = USDC_ADDRESS_BY_CHAIN[sourceChain];
-  const isSameChainRoute = sourceChain === destinationChain;
-  const bridgeExecutionMode =
-    walletMode === "external" ? "external_signer" : "app_treasury";
-  const isPasskeyWalletSession = authMethod === "passkey";
-  const isPasskeyUnsupportedSource =
-    isPasskeyWalletSession &&
-    (sourceChain === "SOLANA-DEVNET" || sourceChain === "ETH-SEPOLIA");
-  const passkeySourceRestrictionMessage =
-    "Passkey wallet can only use Arc as source. Use Google login, Email, OTP, or External Wallet (MetaMask) for Solana and Ethereum Sepolia source.";
-  const sourceAccountType =
-    bridgeExecutionMode === "external_signer"
-      ? "external_wallet"
-      : "app_treasury_wallet";
-  const isExternalBridgeMode = bridgeExecutionMode === "external_signer";
-  const isExternalEvmBridge =
-    isExternalBridgeMode &&
-    BRIDGE_EXTERNAL_ENABLED &&
-    !isSolanaChain(sourceChain) &&
-    !isSolanaChain(destinationChain);
-  const sourceChainId = CHAIN_ID_BY_BRIDGE_CHAIN[sourceChain];
-  const destChainId = CHAIN_ID_BY_BRIDGE_CHAIN[destinationChain];
-  const sourcePublicClient = usePublicClient({ chainId: sourceChainId });
-  const destPublicClient = usePublicClient({ chainId: destChainId });
-  const externalBridgeModeMessage = !BRIDGE_EXTERNAL_ENABLED
-    ? `External wallet bridge is currently disabled. Switch to App Wallet (Circle) to continue.`
-    : isSolanaChain(sourceChain) || isSolanaChain(destinationChain)
-      ? `External wallet bridge does not support Solana routes. Switch to App Wallet (Circle) or select an EVM-only route.`
-      : null;
-
-  const externalUsdcAddress = isExternalEvmBridge
-    ? (sourceTokenAddress as Address | undefined)
-    : undefined;
-  const { data: externalUsdcBalanceRaw } = useReadContract({
-    abi: ERC20_ABI,
-    address: externalUsdcAddress,
-    functionName: "balanceOf",
-    args: externalWalletAddress ? [externalWalletAddress] : undefined,
-    chainId: sourceChainId,
-    query: {
-      enabled: Boolean(
-        isExternalEvmBridge &&
-          externalWalletAddress &&
-          externalUsdcAddress &&
-          sourceChainId
-      ),
-      staleTime: 10_000,
-      refetchInterval: 15_000,
-    },
-  });
-  const externalUsdcBalance =
-    typeof externalUsdcBalanceRaw === "bigint"
-      ? Number(formatUnits(externalUsdcBalanceRaw, CCTP_USDC_DECIMALS))
-      : null;
-  const externalUsdcBalanceLabel =
-    externalUsdcBalance !== null
-      ? `${externalUsdcBalance.toLocaleString(undefined, { maximumFractionDigits: 6 })} USDC`
-      : "Loading...";
-  const hasEnoughExternalUsdc =
-    externalUsdcBalance === null ||
-    !isPositiveDecimal(amount) ||
-    externalUsdcBalance >= Number(amount);
-
   const walletBalanceAmount = Number(transferWallet?.balance?.amount || "0");
   const walletBalanceKnown = transferWallet?.balance != null;
   const treasuryWalletEmpty =
@@ -221,9 +214,6 @@ export function useBridgeScreen() {
     !Number.isFinite(Number(amount || "0")) ||
     Number(amount || "0") <= 0 ||
     walletBalanceAmount >= Number(amount || "0");
-  const isTransferActive = isTrackedTransfer(transfer);
-  const isExternalBridgeTransfer =
-    transfer?.transferId?.startsWith("ext-") ?? false;
 
   const estimatedTimeLabel = useMemo(() => {
     const effectiveSource = transfer?.sourceBlockchain ?? sourceChain;
@@ -256,11 +246,6 @@ export function useBridgeScreen() {
     (canSubmitAppWallet || canSubmitExternalWallet) &&
     !isTransferActive;
 
-  const sourceChainOptions = isPasskeyWalletSession
-    ? DESTINATION_OPTIONS.filter((opt) => opt.id === "ARC-TESTNET")
-    : DESTINATION_OPTIONS;
-  const destinationChainOptions = DESTINATION_OPTIONS;
-
   const canRetryExternalAttestation =
     isExternalBridgeTransfer &&
     Boolean(transfer?.txHashBurn) &&
@@ -269,399 +254,22 @@ export function useBridgeScreen() {
       transfer?.rawStatus === "attesting" ||
       transfer?.status === "failed");
 
-  const isDestinationSolana = isSolanaChain(destinationChain);
-
-  // ── Restore active transfer from localStorage ──────────────────────────────────
-  useEffect(() => {
-    if (restoredTransferRef.current) return;
-    restoredTransferRef.current = true;
-
-    const storedTransfer = getStoredActiveTransfer();
-    if (!storedTransfer) return;
-
-    const recoveredTransfer = recoverTerminalTransfer(storedTransfer);
-    if (recoveredTransfer) {
-      clearStoredActiveTransfer();
-      return;
-    }
-
-    if (
-      storedTransfer.status === "settled" ||
-      storedTransfer.status === "failed"
-    ) {
-      clearStoredActiveTransfer();
-      return;
-    }
-
-    const storedAgeMs =
-      Date.now() - new Date(storedTransfer.createdAt).getTime();
-    if (storedAgeMs > BRIDGE_STUCK_TIMEOUT_MS) {
-      clearStoredActiveTransfer();
-      return;
-    }
-
-    if (
-      storedTransfer.transferId.startsWith("0x") ||
-      storedTransfer.transferId.startsWith("ext-")
-    ) {
-      clearStoredActiveTransfer();
-      return;
-    }
-
-    setTransfer(storedTransfer);
-    setSourceChain(storedTransfer.sourceBlockchain);
-    setDestinationChain(storedTransfer.blockchain);
-    setAmount(storedTransfer.amount);
-    setDestinationAddress(storedTransfer.destinationAddress || "");
-  }, []);
-
-  // ── Sync suggested destination address ────────────────────────────────────────
-  useEffect(() => {
-    if (isTransferActive) return;
-    if (suggestedDestinationAddress) {
-      setDestinationAddress(suggestedDestinationAddress);
-      return;
-    }
-    setDestinationAddress("");
-  }, [isTransferActive, suggestedDestinationAddress]);
-
-  // ── Load source treasury wallet ───────────────────────────────────────────────
-  useEffect(() => {
-    let cancelled = false;
-
-    async function loadTransferWallet() {
-      setIsWalletLoading(true);
-      setTransferWallet((current) =>
-        current?.blockchain === sourceChain ? current : null
-      );
-
-      const stored = getStoredTransferWallet(sourceChain);
-
-      try {
-        const wallet = await getCircleTransferWallet({
-          blockchain: sourceChain,
-          tokenAddress: sourceTokenAddress,
-          walletId: stored?.walletId || undefined,
-          walletAddress: stored?.walletAddress || undefined,
-        });
-
-        if (cancelled) return;
-        setTransferWallet(wallet);
-        setStoredTransferWallet(sourceChain, wallet);
-        setWalletStatusError(null);
-      } catch (error) {
-        if (cancelled) return;
-        if (
-          error instanceof TransferApiError &&
-          (error.code === "CIRCLE_WALLET_NOT_FOUND" ||
-            error.code === "CIRCLE_WALLET_CONFIG_MISSING" ||
-            error.code === "CIRCLE_WALLET_CHAIN_MISMATCH" ||
-            error.code === "CIRCLE_WALLET_ID_MISMATCH")
-        ) {
-          clearStoredTransferWallet(sourceChain);
-        }
-        setTransferWallet(null);
-        setWalletStatusError(
-          getBridgeErrorMessage(error, {
-            destinationLabel: destinationOption.label,
-            sourceLabel: sourceOption.label,
-          })
-        );
-      } finally {
-        if (!cancelled) setIsWalletLoading(false);
-      }
-    }
-
-    void loadTransferWallet();
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    destinationOption.label,
-    sourceChain,
-    sourceOption.label,
-    sourceTokenAddress,
-  ]);
-
-  // ── Persist active transfer ────────────────────────────────────────────────────
-  useEffect(() => {
-    if (!transfer) return;
-    setStoredActiveTransfer(transfer);
-  }, [transfer]);
-
-  // ── Poll active transfer status ────────────────────────────────────────────────
-  useEffect(() => {
-    if (
-      !transfer?.transferId ||
-      !isTransferActive ||
-      isExternalBridgeTransfer
-    ) {
-      setIsPollingTransfer(false);
-      setIsReconnectingToTracking(false);
-      return;
-    }
-
-    const activeTransferId = transfer.transferId;
-    let cancelled = false;
-
-    async function pollTransfer() {
-      setIsPollingTransfer(true);
-      try {
-        const latest = await getCircleTransferStatus(activeTransferId);
-        if (cancelled) return;
-
-        setTransfer(latest);
-        setStoredActiveTransfer(latest);
-        reconnectingPollCountRef.current = 0;
-        setIsReconnectingToTracking(false);
-        setErrorMessage(null);
-        handleTerminalTransferUpdate(latest);
-      } catch (error) {
-        if (cancelled) return;
-
-        if (
-          error instanceof TransferApiError &&
-          error.code === "CIRCLE_BRIDGE_NOT_FOUND"
-        ) {
-          const recovered = recoverTerminalTransfer(transfer);
-          if (recovered) {
-            setTransfer(recovered);
-            setIsReconnectingToTracking(false);
-            setErrorMessage(null);
-            handleTerminalTransferUpdate(recovered);
-            return;
-          }
-
-          reconnectingPollCountRef.current += 1;
-          if (reconnectingPollCountRef.current >= 15) {
-            reconnectingPollCountRef.current = 0;
-            clearStoredActiveTransfer();
-            setTransfer(null);
-            setIsReconnectingToTracking(false);
-            setErrorMessage(
-              "Bridge tracking timed out. The task no longer exists on backend."
-            );
-            return;
-          }
-
-          setIsReconnectingToTracking(true);
-          setErrorMessage(
-            "Bridge not yet detected on backend. Reconnecting to status tracking..."
-          );
-          return;
-        }
-
-        setIsReconnectingToTracking(false);
-        setErrorMessage(
-          getBridgeErrorMessage(error, {
-            destinationLabel: destinationOption.label,
-            sourceLabel: sourceOption.label,
-          })
-        );
-      } finally {
-        if (!cancelled) setIsPollingTransfer(false);
-      }
-    }
-
-    pollTransferFnRef.current = pollTransfer;
-    void pollTransfer();
-
-    return () => {
-      cancelled = true;
-      pollTransferFnRef.current = null;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    isTransferActive,
-    transfer?.transferId,
-    destinationOption.label,
-    sourceOption.label,
-  ]);
-
-  useAdaptivePolling({
-    onPoll: () => void pollTransferFnRef.current?.(),
-    activeInterval: BRIDGE_POLL_INTERVAL_MS,
-    idleInterval: 15_000,
-    idleAfter: 60_000,
-    enabled: Boolean(transfer?.transferId) && isTransferActive,
-  });
-
-  // ── Load initial destination wallets ──────────────────────────────────────────
-  useEffect(() => {
-    void refreshDestinationWallets();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // ── Terminal transfer handler ──────────────────────────────────────────────────
-  function handleTerminalTransferUpdate(latest: CircleTransfer) {
-    if (latest.status === "settled") {
-      const key = `${latest.transferId}:settled`;
-      if (terminalNoticeRef.current !== key) {
-        terminalNoticeRef.current = key;
-        setIsSuccessDialogOpen(true);
-        clearStoredActiveTransfer();
-        toast({
-          title: "Bridge completed",
-          description: `${tokenSymbol} arrived on ${getOptionByChain(latest.blockchain).label}.`,
-        });
-        void refreshTransferWallet();
-      }
-      return;
-    }
-
-    if (latest.status === "failed") {
-      const key = `${latest.transferId}:failed`;
-      if (terminalNoticeRef.current !== key) {
-        terminalNoticeRef.current = key;
-        clearStoredActiveTransfer();
-        toast({
-          title: "Bridge transfer failed",
-          description:
-            latest.errorReason ||
-            `Circle could not finish the ${getOptionByChain(latest.sourceBlockchain).label} to ${getOptionByChain(latest.blockchain).label} bridge.`,
-          variant: "destructive",
-        });
-        void refreshTransferWallet();
-      }
-    }
-  }
-
   // ── Actions ────────────────────────────────────────────────────────────────────
 
   function dismissTransfer() {
-    clearStoredActiveTransfer();
-    setTransfer(null);
+    clearTransferTracking();
     setErrorMessage(null);
-    setIsReconnectingToTracking(false);
     setIsSubmitting(false);
     setIsDepositingToTreasury(false);
-    reconnectingPollCountRef.current = 0;
   }
-
-  async function refreshTransferWallet() {
-    setIsWalletLoading(true);
-    setTransferWallet((current) =>
-      current?.blockchain === sourceChain ? current : null
-    );
-    const stored = getStoredTransferWallet(sourceChain);
-    try {
-      const wallet = await getCircleTransferWallet({
-        blockchain: sourceChain,
-        tokenAddress: sourceTokenAddress,
-        walletId: stored?.walletId || undefined,
-        walletAddress: stored?.walletAddress || undefined,
-      });
-      setTransferWallet(wallet);
-      setStoredTransferWallet(sourceChain, wallet);
-      setWalletStatusError(null);
-    } catch (error) {
-      if (
-        error instanceof TransferApiError &&
-        (error.code === "CIRCLE_WALLET_NOT_FOUND" ||
-          error.code === "CIRCLE_WALLET_CONFIG_MISSING" ||
-          error.code === "CIRCLE_WALLET_CHAIN_MISMATCH" ||
-          error.code === "CIRCLE_WALLET_ID_MISMATCH")
-      ) {
-        clearStoredTransferWallet(sourceChain);
-      }
-      setTransferWallet(null);
-      setWalletStatusError(
-        getBridgeErrorMessage(error, {
-          destinationLabel: destinationOption.label,
-          sourceLabel: sourceOption.label,
-        })
-      );
-    } finally {
-      setIsWalletLoading(false);
-    }
-  }
-
-  const copyWalletAddress = useCallback(
-    async (address: string, key: string) => {
-      try {
-        await navigator.clipboard.writeText(address);
-        setCopiedWallet(key);
-        window.setTimeout(() => setCopiedWallet(null), 2000);
-      } catch {
-        // clipboard not available
-      }
-    },
-    []
-  );
 
   const handleSavePasskeySolana = useCallback(() => {
     const trimmed = passkeySolanaInput.trim();
     if (!trimmed) return;
     savePasskeySolanaAddress(trimmed);
     setPasskeySolanaInput("");
-  }, [passkeySolanaInput, savePasskeySolanaAddress]);
+  }, [passkeySolanaInput, savePasskeySolanaAddress, setPasskeySolanaInput]);
 
-  async function refreshDestinationWallets() {
-    setIsDestinationWalletsLoading(true);
-    const chains = DESTINATION_OPTIONS.map((opt) => opt.id);
-    try {
-      const entries = await Promise.all(
-        chains.map(async (chain) => {
-          const tokenAddress = USDC_ADDRESS_BY_CHAIN[chain];
-          if (!tokenAddress) return [chain, null] as const;
-          const stored = getStoredTransferWallet(chain);
-          try {
-            const wallet = await getCircleTransferWallet({
-              blockchain: chain,
-              tokenAddress,
-              walletId: stored?.walletId || undefined,
-              walletAddress: stored?.walletAddress || undefined,
-            });
-            setStoredTransferWallet(chain, wallet);
-            return [chain, wallet] as const;
-          } catch {
-            return [chain, null] as const;
-          }
-        })
-      );
-      const next: DestinationWalletMap = {};
-      for (const [chain, wallet] of entries) {
-        next[chain] = wallet;
-      }
-      setDestinationWallets(next);
-    } finally {
-      setIsDestinationWalletsLoading(false);
-    }
-  }
-
-  async function handleBootstrapWallet() {
-    setIsWalletBootstrapping(true);
-    setWalletStatusError(null);
-    try {
-      const wallet = await bootstrapCircleTransferWallet({
-        blockchain: sourceChain,
-        tokenAddress: sourceTokenAddress,
-        refId: `WIZPAY-BRIDGE-SOURCE-${sourceChain}-${Date.now()}`,
-        walletName: `WizPay ${sourceOption.label} App Treasury Wallet`,
-      });
-      setTransferWallet(wallet);
-      setStoredTransferWallet(sourceChain, wallet);
-      void refreshDestinationWallets();
-      setWalletStatusError(null);
-      toast({
-        title: "App treasury wallet ready",
-        description: `Fund ${shortenAddress(wallet.walletAddress)} on ${sourceOption.label} with ${tokenSymbol} before bridging.`,
-      });
-    } catch (error) {
-      const message = getBridgeErrorMessage(error, {
-        destinationLabel: destinationOption.label,
-        sourceLabel: sourceOption.label,
-      });
-      setWalletStatusError(message);
-      toast({
-        title: "Source wallet setup failed",
-        description: message,
-        variant: "destructive",
-      });
-    } finally {
-      setIsWalletBootstrapping(false);
-    }
-  }
 
   function openBridgeReview() {
     if (isExternalBridgeMode) {
@@ -794,8 +402,7 @@ export function useBridgeScreen() {
       setErrorMessage(null);
       setIsReviewDialogOpen(false);
       setIsSuccessDialogOpen(false);
-      reconnectingPollCountRef.current = 0;
-      setIsReconnectingToTracking(false);
+      resetTransferTrackingState();
 
       try {
         const referenceId = `BRIDGE-${sourceChain}-TO-${destinationChain}-${Date.now()}`;
@@ -883,14 +490,7 @@ export function useBridgeScreen() {
         });
 
         terminalNoticeRef.current = null;
-        setTransfer(queuedTransfer);
-        setStoredActiveTransfer(queuedTransfer);
-        setSourceChain(queuedTransfer.sourceBlockchain);
-        setDestinationChain(queuedTransfer.blockchain);
-        setAmount(queuedTransfer.amount);
-        setDestinationAddress(
-          queuedTransfer.destinationAddress || destinationAddress
-        );
+        syncTrackedTransfer(queuedTransfer, destinationAddress);
         toast({
           title: "Bridge started",
           description: `Passkey bridge started. Estimated time ${estimatedTimeLabel}.`,
@@ -916,32 +516,7 @@ export function useBridgeScreen() {
 
     // ── External EVM wallet flow ──────────────────────────────────────────────────
     if (isExternalEvmBridge) {
-      await submitExternalBridge(
-        {
-          sourceChain,
-          destinationChain,
-          amount,
-          destinationAddress,
-          sourceTokenAddress,
-          sourceOption,
-          destinationOption,
-          externalWalletClient,
-          externalWalletAddress: externalWalletAddress as Address | undefined,
-          externalWalletChainId,
-          sourcePublicClient,
-          destPublicClient,
-          switchChainAsync,
-          setTransfer,
-          setIsSubmitting,
-          setErrorMessage,
-          setIsReviewDialogOpen,
-          setIsSuccessDialogOpen,
-          toast,
-          tokenSymbol,
-          transfer,
-        },
-        clearStoredActiveTransfer
-      );
+      await submitExternalBridgeFlow(clearStoredActiveTransfer);
       return;
     }
 
@@ -973,8 +548,7 @@ export function useBridgeScreen() {
     setErrorMessage(null);
     setIsReviewDialogOpen(false);
     setIsSuccessDialogOpen(false);
-    reconnectingPollCountRef.current = 0;
-    setIsReconnectingToTracking(false);
+    resetTransferTrackingState();
 
     try {
       const referenceId = `BRIDGE-${sourceChain}-TO-${destinationChain}-${Date.now()}`;
@@ -1058,14 +632,7 @@ export function useBridgeScreen() {
       });
 
       terminalNoticeRef.current = null;
-      setTransfer(queuedTransfer);
-      setStoredActiveTransfer(queuedTransfer);
-      setSourceChain(queuedTransfer.sourceBlockchain);
-      setDestinationChain(queuedTransfer.blockchain);
-      setAmount(queuedTransfer.amount);
-      setDestinationAddress(
-        queuedTransfer.destinationAddress || destinationAddress
-      );
+      syncTrackedTransfer(queuedTransfer, destinationAddress);
       toast({
         title: "Bridge started",
         description: `Estimated time ${estimatedTimeLabel}. You can leave this page and come back later while Circle finishes the bridge.`,
@@ -1087,91 +654,19 @@ export function useBridgeScreen() {
     }
   }
 
-  // ── Chain change handlers ──────────────────────────────────────────────────────
-  const handleSourceChainChange = useCallback(
-    (value: string) => {
-      const newSource = value as CircleTransferBlockchain;
-      if (newSource === destinationChain) {
-        const fallback = getDefaultDestinationBlockchain(newSource);
-        setDestinationChain(fallback);
-        if (isSolanaChain(fallback) !== isSolanaChain(destinationChain)) {
-          setDestinationAddress("");
-        }
-      }
-      setSourceChain(newSource);
-    },
-    [destinationChain]
-  );
-
-  const handleDestinationChainChange = useCallback(
-    (value: string) => {
-      const newDest = value as CircleTransferBlockchain;
-      if (newDest === sourceChain) return;
-      if (isSolanaChain(newDest) !== isSolanaChain(destinationChain)) {
-        setDestinationAddress("");
-      }
-      setDestinationChain(newDest);
-    },
-    [sourceChain, destinationChain]
-  );
-
-  // ── Composite action handlers ──────────────────────────────────────────────────
-  const retryAttestation = useCallback(() => {
-    void retryExternalAttestationAndMint({
-      sourceChain,
-      destinationChain,
-      amount,
-      destinationAddress,
-      sourceTokenAddress,
-      sourceOption,
-      destinationOption,
-      externalWalletClient,
-      externalWalletAddress: externalWalletAddress as Address | undefined,
-      externalWalletChainId,
-      sourcePublicClient,
-      destPublicClient,
-      switchChainAsync,
-      setTransfer,
-      setIsSubmitting,
-      setErrorMessage,
-      setIsReviewDialogOpen,
-      setIsSuccessDialogOpen,
-      toast,
-      tokenSymbol,
-      transfer,
-    });
-  }, [
-    amount,
-    destinationAddress,
-    destinationChain,
-    destinationOption,
-    destPublicClient,
-    externalWalletAddress,
-    externalWalletChainId,
-    externalWalletClient,
-    setIsReviewDialogOpen,
-    setIsSuccessDialogOpen,
-    sourceChain,
-    sourceOption,
-    sourcePublicClient,
-    sourceTokenAddress,
-    switchChainAsync,
-    toast,
-    tokenSymbol,
-    transfer,
-  ]);
-
   const handleStartNew = useCallback(() => {
     setIsSuccessDialogOpen(false);
-    clearStoredActiveTransfer();
-    setTransfer(null);
+    clearTransferTracking();
     setAmount("");
     setDestinationAddress("");
     setErrorMessage(null);
-    reconnectingPollCountRef.current = 0;
-    setIsReconnectingToTracking(false);
     terminalNoticeRef.current = null;
-  }, []);
+  }, [
+    clearTransferTracking,
+    setAmount,
+    setDestinationAddress,
+    setIsSuccessDialogOpen,
+  ]);
 
   return {
     // ── State ──────────────────────────────────────────────────────────────────

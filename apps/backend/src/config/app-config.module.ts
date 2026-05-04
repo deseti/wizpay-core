@@ -6,12 +6,9 @@ import configuration from './configuration';
 import { validateEnvironment } from './env.validation';
 
 function resolveEnvFilePath(): string | undefined {
-  // In Docker, env vars are injected directly — no .env file needed.
-  // Locally, the .env lives at monorepo root (two levels up from apps/backend).
-  const candidates = [
-    path.resolve(process.cwd(), '.env'),         // Docker: /app/.env or local root
-    path.resolve(process.cwd(), '../../.env'),    // Local: apps/backend -> monorepo root
-  ];
+  // Local backend runs should read only the monorepo root .env.
+  // Docker injects env vars directly, so no file is needed in containers.
+  const candidates = [path.resolve(process.cwd(), '../../.env')];
 
   for (const candidate of candidates) {
     if (!fs.existsSync(candidate)) {
@@ -39,14 +36,16 @@ function resolveEnvFilePath(): string | undefined {
   return undefined;
 }
 
+const envFilePath = resolveEnvFilePath();
+
 @Module({
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
       cache: true,
       expandVariables: true,
-      envFilePath: resolveEnvFilePath(),
-      ignoreEnvFile: resolveEnvFilePath() === undefined,
+      envFilePath,
+      ignoreEnvFile: envFilePath === undefined,
       load: [configuration],
       validate: validateEnvironment,
     }),
