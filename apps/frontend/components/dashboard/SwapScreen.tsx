@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { type Address, type Hex } from "viem";
 import {
   ArrowRightLeft,
@@ -45,6 +45,7 @@ import {
   parseAmountToUnits,
   type TokenSymbol,
 } from "@/lib/wizpay";
+import { buildXShareUrl } from "@/lib/social";
 import { arcTestnet } from "@/lib/wagmi";
 import { initSwapTask, reportSwapResult } from "@/lib/swap-service";
 
@@ -98,8 +99,6 @@ export function SwapScreen() {
   const [swapStep, setSwapStep] = useState<"idle" | "approving" | "swapping">("idle");
   const { isOpen: isSuccessDialogOpen, setIsOpen: setIsSuccessDialogOpen } = useDialogState();
   const [successState, setSuccessState] = useState<SwapSuccessState | null>(null);
-  const isApproving = swapStep === "approving";
-  const isSwapping = swapStep === "swapping";
 
   const tokenInConfig = SUPPORTED_TOKENS[tokenIn];
   const tokenOutConfig = SUPPORTED_TOKENS[tokenOut];
@@ -138,7 +137,8 @@ export function SwapScreen() {
         : undefined,
     query: {
       enabled: Boolean(walletAddress && amountInUnits > 0n && tokenIn !== tokenOut),
-      refetchInterval: 12000,
+      refetchOnWindowFocus: false,
+      staleTime: 15_000,
     },
   });
 
@@ -172,18 +172,10 @@ export function SwapScreen() {
     amountInUnits > 0n &&
     !insufficientBalance;
 
-  useEffect(() => {
+  function resetSwapFeedback() {
     setErrorMessage(null);
     setSuccessState(null);
-  }, [amountIn, tokenIn, tokenOut]);
-
-  useEffect(() => {
-    if (tokenIn !== tokenOut) {
-      return;
-    }
-
-    setTokenOut(tokenIn === "USDC" ? "EURC" : "USDC");
-  }, [tokenIn, tokenOut]);
+  }
 
   async function waitForAllowanceUpdate(txHash: Hex | null) {
     if (!publicClient) {
@@ -423,7 +415,7 @@ export function SwapScreen() {
 
   return (
     <>
-      <div className="animate-fade-up space-y-5">
+      <div className="animate-fade-up space-y-4 sm:space-y-5">
         <div className="flex flex-col gap-1">
           <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">Swap</h1>
           <p className="text-sm text-muted-foreground/70">
@@ -433,7 +425,7 @@ export function SwapScreen() {
 
         {/* Main Swap Card */}
         <Card className="glass-card overflow-hidden border-border/40 mx-auto max-w-lg">
-          <CardContent className="space-y-5 py-6">
+          <CardContent className="space-y-4 py-5 sm:space-y-5 sm:py-6">
             {/* From Token */}
             <div className="rounded-2xl border border-border/40 bg-background/35 p-4 space-y-3">
               <div className="flex items-center justify-between">
@@ -450,10 +442,25 @@ export function SwapScreen() {
                   step="0.000001"
                   placeholder="0.0"
                   value={amountIn}
-                  onChange={(event) => setAmountIn(event.target.value)}
+                  onChange={(event) => {
+                    resetSwapFeedback();
+                    setAmountIn(event.target.value);
+                  }}
                   className="h-12 border-0 bg-transparent text-2xl font-bold placeholder:text-muted-foreground/30 focus-visible:ring-0 p-0 flex-1"
                 />
-                <Select value={tokenIn} onValueChange={(value) => setTokenIn(value as TokenSymbol)}>
+                <Select
+                  value={tokenIn}
+                  onValueChange={(value) => {
+                    const nextTokenIn = value as TokenSymbol;
+
+                    resetSwapFeedback();
+                    setTokenIn(nextTokenIn);
+
+                    if (nextTokenIn === tokenOut) {
+                      setTokenOut(nextTokenIn === "USDC" ? "EURC" : "USDC");
+                    }
+                  }}
+                >
                   <SelectTrigger className="h-10 w-[110px] border-border/40 bg-background/50 rounded-xl">
                     <SelectValue />
                   </SelectTrigger>
@@ -487,16 +494,24 @@ export function SwapScreen() {
                     : "0.0"
                   }
                 </p>
-                <Select value={tokenOut} onValueChange={(value) => setTokenOut(value as TokenSymbol)}>
+                <Select
+                  value={tokenOut}
+                  onValueChange={(value) => {
+                    resetSwapFeedback();
+                    setTokenOut(value as TokenSymbol);
+                  }}
+                >
                   <SelectTrigger className="h-10 w-[110px] border-border/40 bg-background/50 rounded-xl">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    {Object.values(SUPPORTED_TOKENS).map((token) => (
+                    {Object.values(SUPPORTED_TOKENS)
+                      .filter((token) => token.symbol !== tokenIn)
+                      .map((token) => (
                       <SelectItem key={`out-${token.symbol}`} value={token.symbol}>
                         {token.symbol}
                       </SelectItem>
-                    ))}
+                      ))}
                   </SelectContent>
                 </Select>
               </div>
@@ -602,16 +617,13 @@ export function SwapScreen() {
             {successState ? (
               <div className="mt-6 space-y-4">
                 {(() => {
-                  const shareText = `Swap completed on WizPay: ${successState.amountIn} ${successState.tokenIn} to ${successState.tokenOut}.${
-                    successState.explorerUrl
-                      ? `\n\nTrack tx: ${successState.explorerUrl}`
-                      : successState.txHash
-                        ? `\n\nReference: ${successState.txHash}`
-                        : ""
-                  }`;
-                  const xShareUrl = `https://x.com/intent/tweet?text=${encodeURIComponent(
-                    shareText
-                  )}`;
+                  const xShareUrl = buildXShareUrl({
+                    summary: `Swap completed on WizPay: ${successState.amountIn} ${successState.tokenIn} to ${successState.tokenOut}.`,
+                    explorerUrl: successState.explorerUrl,
+                    secondaryText: successState.txHash
+                      ? `Reference: ${successState.txHash}`
+                      : null,
+                  });
 
                   return (
                     <div className="flex flex-col gap-3">

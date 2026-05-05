@@ -16,6 +16,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import type { CircleTransfer, CircleTransferBlockchain } from "@/lib/transfer-service";
+import { buildXShareUrl } from "@/lib/social";
 import { getEstimatedBridgeTimeLabel, hasExplorerTxHash, shortenAddress, getOptionByChain } from "./bridge-utils";
 import { BRIDGE_ASSET_SYMBOL } from "./bridge-types";
 
@@ -26,7 +27,6 @@ interface BridgeReviewDialogProps {
   onOpenChange: (open: boolean) => void;
   isSubmitting: boolean;
   isExternalBridgeMode: boolean;
-  isExternalEvmBridge: boolean;
   externalBridgeRouteKind: "evm-to-evm" | "evm-to-solana" | "solana-to-evm" | "solana-to-solana";
   sourceOption: { id: CircleTransferBlockchain; label: string };
   destinationOption: { id: CircleTransferBlockchain; label: string };
@@ -44,7 +44,6 @@ export function BridgeReviewDialog({
   onOpenChange,
   isSubmitting,
   isExternalBridgeMode,
-  isExternalEvmBridge,
   externalBridgeRouteKind,
   sourceOption,
   destinationOption,
@@ -234,8 +233,10 @@ export function BridgeSuccessDialog({
     : null;
   const shareBridgeUrl = mintExplorerUrl ?? burnExplorerUrl;
 
-  const bridgeShareText = `Bridge completed on WizPay: ${transfer.amount} ${tokenSymbol} from ${transferSourceOption.label} to ${transferDestinationOption.label}.${shareBridgeUrl ? `\n\nTrack tx: ${shareBridgeUrl}` : ""}`;
-  const bridgeXShareUrl = `https://x.com/intent/tweet?text=${encodeURIComponent(bridgeShareText)}`;
+  const bridgeXShareUrl = buildXShareUrl({
+    summary: `Bridge completed on WizPay: ${transfer.amount} ${tokenSymbol} from ${transferSourceOption.label} to ${transferDestinationOption.label}.`,
+    explorerUrl: shareBridgeUrl,
+  });
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>

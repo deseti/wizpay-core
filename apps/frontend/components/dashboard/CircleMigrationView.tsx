@@ -17,6 +17,8 @@ import { DashboardBottomNav } from "@/components/dashboard/DashboardBottomNav";
 import { DashboardHeader } from "@/components/dashboard/DashboardHeader";
 import { DashboardSidebar } from "@/components/dashboard/DashboardSidebar";
 import { MigrationNoticeCard } from "@/components/dashboard/MigrationNoticeCard";
+import { useMediaQuery } from "@/hooks/useMediaQuery";
+import { cn } from "@/lib/utils";
 
 export function CircleMigrationView({
   completed,
@@ -31,9 +33,10 @@ export function CircleMigrationView({
 }) {
   const { authenticated, ready } = useCircleWallet();
   const { walletAddress } = useActiveWalletAddress();
+  const isDesktop = useMediaQuery("(min-width: 768px)");
 
   return (
-    <div className="relative flex min-h-screen overflow-hidden bg-background">
+    <div className="relative flex min-h-screen overflow-x-hidden bg-background">
       <div className="pointer-events-none fixed inset-0 -z-10">
         <div className="grid-fade absolute inset-0 opacity-25" />
         <div className="absolute left-[-8%] top-[-12%] h-[28rem] w-[28rem] rounded-full bg-primary/12 blur-[140px] animate-float" />
@@ -48,7 +51,7 @@ export function CircleMigrationView({
       </div>
 
       {!ready || !authenticated ? (
-        <div className="flex h-screen w-full flex-col overflow-y-auto">
+        <div className="flex min-h-screen w-full flex-col">
           <DashboardHeader />
           <main className="mx-auto flex w-full max-w-7xl flex-1 items-center justify-center px-4 py-8 sm:px-6">
             <ConnectWalletCard />
@@ -56,9 +59,14 @@ export function CircleMigrationView({
         </div>
       ) : (
         <>
-          <DashboardSidebar />
+          {isDesktop ? <DashboardSidebar /> : null}
 
-          <div className="flex h-screen w-full flex-1 flex-col overflow-y-auto pb-28 md:pb-6">
+          <div
+            className={cn(
+              "flex w-full flex-1 flex-col",
+              isDesktop ? "h-screen overflow-y-auto pb-6" : "min-h-screen pb-28"
+            )}
+          >
             <DashboardHeader />
 
             <main className="mx-auto flex w-full max-w-6xl flex-1 flex-col gap-6 px-4 py-5 sm:px-6 lg:py-8">

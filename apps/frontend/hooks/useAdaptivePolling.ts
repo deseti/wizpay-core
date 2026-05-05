@@ -62,6 +62,10 @@ export function useAdaptivePolling({
       }
 
       intervalRef.current = setInterval(() => {
+        if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+          return;
+        }
+
         void onPollRef.current();
         // Re-evaluate idle state
         const nowIdle = Date.now() - lastActivityRef.current > idleAfter;

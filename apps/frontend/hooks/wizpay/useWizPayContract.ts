@@ -181,8 +181,10 @@ export function useWizPayContract({
     ],
     query: {
       enabled: !!engineAddressForBalances,
-      refetchInterval: 15_000,
-      staleTime: 15_000,
+      refetchInterval: 30_000,
+      refetchIntervalInBackground: false,
+      refetchOnWindowFocus: false,
+      staleTime: 30_000,
       placeholderData: keepPreviousData,
     },
   });
@@ -227,8 +229,10 @@ export function useWizPayContract({
     ],
     query: {
       enabled: rawQuoteEnabled && !isStableFxMode,
-      refetchInterval: 12_000,
-      staleTime: 12_000,
+      refetchInterval: 20_000,
+      refetchIntervalInBackground: false,
+      refetchOnWindowFocus: false,
+      staleTime: 20_000,
       placeholderData: keepPreviousData,
     },
   });

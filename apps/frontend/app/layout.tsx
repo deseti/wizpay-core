@@ -1,5 +1,12 @@
 import type { Metadata, Viewport } from "next";
 import { Geist_Mono, Manrope } from "next/font/google";
+import { Toaster } from "@/components/ui/toaster";
+import {
+  WIZPAY_APP_URL,
+  WIZPAY_OG_IMAGE_URL,
+  WIZPAY_SOCIAL_DESCRIPTION,
+  WIZPAY_SOCIAL_TITLE,
+} from "@/lib/social";
 
 import "./globals.css";
 import { Providers } from "./providers";
@@ -20,9 +27,33 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "WizPay — Cross-Token Payroll on Arc",
-  description:
-    "Live WizPay payroll dashboard for Arc Testnet with dark-mode batch routing, real-time balance tracking, and mixed USDC or EURC recipient settlement.",
+  metadataBase: new URL(WIZPAY_APP_URL),
+  title: WIZPAY_SOCIAL_TITLE,
+  description: WIZPAY_SOCIAL_DESCRIPTION,
+  alternates: {
+    canonical: "/",
+  },
+  openGraph: {
+    title: WIZPAY_SOCIAL_TITLE,
+    description: WIZPAY_SOCIAL_DESCRIPTION,
+    url: WIZPAY_APP_URL,
+    siteName: "WizPay",
+    images: [
+      {
+        url: WIZPAY_OG_IMAGE_URL,
+        width: 1200,
+        height: 630,
+        alt: WIZPAY_SOCIAL_TITLE,
+      },
+    ],
+    type: "website",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: WIZPAY_SOCIAL_TITLE,
+    description: WIZPAY_SOCIAL_DESCRIPTION,
+    images: [WIZPAY_OG_IMAGE_URL],
+  },
 };
 
 export const viewport: Viewport = {
@@ -33,8 +64,6 @@ export const viewport: Viewport = {
   viewportFit: "cover",
   themeColor: "#1a1130",
 };
-
-import { Toaster } from "@/components/ui/toaster";
 
 export default function RootLayout({
   children,

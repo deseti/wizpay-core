@@ -3,7 +3,6 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { ArrowRightLeft, Coins, Home, Repeat, Route, Wallet } from "lucide-react";
-import { useCircleWallet } from "@/components/providers/CircleWalletProvider";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { FaucetButton } from "./FaucetButton";
@@ -19,7 +18,6 @@ const navItems = [
 
 export function DashboardSidebar() {
   const pathname = usePathname();
-  useCircleWallet();
 
   return (
     <aside className="sticky top-0 hidden h-screen w-64 flex-col border-r border-border/30 bg-background/50 backdrop-blur-2xl md:flex rounded-none shadow-2xl shadow-black/20">

@@ -14,11 +14,19 @@ import {
   type TokenSymbol,
 } from "@/lib/wizpay";
 
+interface UseTokenBalancesOptions {
+  enabled?: boolean;
+  refetchInterval?: number | false;
+}
+
 /**
  * Fetches ERC-20 balances for all supported tokens (USDC, EURC)
  * for the connected wallet via multicall.
  */
-export function useTokenBalances() {
+export function useTokenBalances({
+  enabled = true,
+  refetchInterval = 30_000,
+}: UseTokenBalancesOptions = {}) {
   const { arcWallet, getWalletBalances, primaryWallet } = useCircleWallet();
   const { walletMode } = useHybridWallet();
   const { walletAddress } = useActiveWalletAddress();
@@ -34,8 +42,10 @@ export function useTokenBalances() {
 
   const circleBalancesQuery = useQuery({
     queryKey: ["circle-wallet-balances", circleWalletId ?? "disconnected"],
-    enabled: walletMode === "circle" && Boolean(circleWalletId),
-    refetchInterval: 15_000,
+    enabled: enabled && walletMode === "circle" && Boolean(circleWalletId),
+    refetchInterval,
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: false,
     staleTime: 10_000,
     queryFn: async () => {
       if (!circleWalletId) {
@@ -47,10 +57,13 @@ export function useTokenBalances() {
   });
 
   const { data, isLoading, isError, error, refetch } = useReadContracts({
-    contracts: walletMode === "external" && walletAddress ? contracts : [],
+    contracts:
+      enabled && walletMode === "external" && walletAddress ? contracts : [],
     query: {
-      enabled: walletMode === "external" && Boolean(walletAddress),
-      refetchInterval: 15_000,
+      enabled: enabled && walletMode === "external" && Boolean(walletAddress),
+      refetchInterval,
+      refetchIntervalInBackground: false,
+      refetchOnWindowFocus: false,
     },
   });
 

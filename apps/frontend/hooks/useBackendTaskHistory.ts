@@ -72,14 +72,27 @@ function isChainTxId(value: unknown): value is string {
   return false;
 }
 
+type BackendTaskExecutionResult = {
+  txHash?: unknown;
+  execution?: {
+    txHash?: unknown;
+    normalizedTransfer?: NormalizedBridgeTransfer;
+    transfer?: {
+      txHash?: unknown;
+      txHashMint?: unknown;
+      txHashBurn?: unknown;
+    };
+  };
+};
+
 function resolveTaskTxHash(task: BackendTask): string | null {
-  const result = task.result as any;
-  const nt = result?.execution?.normalizedTransfer as NormalizedBridgeTransfer | undefined;
+  const result = task.result as BackendTaskExecutionResult | null;
+  const normalizedTransfer = result?.execution?.normalizedTransfer;
 
   const candidates = [
-    nt?.txId,
-    nt?.txIdMint,
-    nt?.txIdBurn,
+    normalizedTransfer?.txId,
+    normalizedTransfer?.txIdMint,
+    normalizedTransfer?.txIdBurn,
     task.units[0]?.txHash,
     result?.txHash,
     result?.execution?.txHash,
@@ -128,7 +141,8 @@ export function backendTaskToHistoryItem(
 
   const bridgeTransfer =
     task.type === "bridge"
-      ? ((task.result as any)?.execution?.normalizedTransfer as NormalizedBridgeTransfer | undefined)
+      ? (task.result as BackendTaskExecutionResult | null)?.execution
+          ?.normalizedTransfer
       : undefined;
 
   return {
@@ -187,7 +201,7 @@ export function useBackendTaskHistory(
     type,
     limit = 50,
     enabled = true,
-    refetchInterval = 30_000,
+    refetchInterval = 60_000,
   } = options;
 
   const params = new URLSearchParams();
@@ -204,6 +218,8 @@ export function useBackendTaskHistory(
       backendFetch<BackendTaskListResponse>(`/tasks?${params.toString()}`),
     enabled,
     refetchInterval,
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: false,
     staleTime: 15_000,
   });
 

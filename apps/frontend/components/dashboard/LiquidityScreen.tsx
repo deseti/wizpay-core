@@ -34,6 +34,7 @@ import {
   isTransactionHash,
   type TokenSymbol,
 } from "@/lib/wizpay";
+import { buildXShareUrl } from "@/lib/social";
 import { USDC_ADDRESS, EURC_ADDRESS } from "@/constants/addresses";
 import { initLiquidityTask, reportLiquidityResult } from "@/lib/swap-service";
 
@@ -218,14 +219,11 @@ export function LiquidityScreen() {
 
   const actionWord = activeTab === "deposit" ? "deposited" : "withdrew";
   const explorerUrl = getExplorerTxUrl(txHash);
-  const shareText = `Just ${actionWord} ${amountStr} ${selectedToken} as liquidity into the WizPay StableFX Vault on Arc Testnet! 💧🚀${
-    explorerUrl
-      ? `\n\nVerify on-chain: ${explorerUrl}`
-      : txHash
-        ? `\n\nCircle reference: ${txHash}`
-        : ""
-  }`;
-  const xShareUrl = `https://x.com/intent/tweet?text=${encodeURIComponent(shareText)}`;
+  const xShareUrl = buildXShareUrl({
+    summary: `Just ${actionWord} ${amountStr} ${selectedToken} as liquidity into the WizPay StableFX Vault on Arc Testnet! 💧🚀`,
+    explorerUrl,
+    secondaryText: txHash ? `Circle reference: ${txHash}` : null,
+  });
 
   if (step === "success") {
     return (
@@ -358,7 +356,7 @@ export function LiquidityScreen() {
   };
 
   return (
-    <div className="mx-auto max-w-lg mt-6 mb-24">
+    <div className="mx-auto mt-4 max-w-lg mb-20 sm:mt-6 sm:mb-24">
       <Card className="glass-card border-border/40 shadow-xl animate-fade-up">
         <CardHeader>
           <CardTitle className="text-2xl flex items-center gap-2.5">
@@ -389,7 +387,7 @@ export function LiquidityScreen() {
               <TabsTrigger value="withdraw">Withdraw</TabsTrigger>
             </TabsList>
 
-            <div className="mt-6 space-y-5">
+            <div className="mt-5 space-y-4 sm:mt-6 sm:space-y-5">
               <div className="space-y-2">
                 <Label>{activeTab === "deposit" ? "Deposit Token" : "Withdraw as"}</Label>
                 <Select

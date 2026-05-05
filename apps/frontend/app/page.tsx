@@ -1,5 +1,6 @@
 "use client";
 
+import { useMemo } from "react";
 import Link from "next/link";
 import {
   ArrowRightLeft,
@@ -21,9 +22,15 @@ import {
 } from "@/components/ui/card";
 import { SkeletonBalance } from "@/components/ui/skeleton-loaders";
 import { EmptyStateView } from "@/components/ui/empty-state";
+import { useActiveWalletAddress } from "@/hooks/useActiveWalletAddress";
+import { useBackendTaskHistory } from "@/hooks/useBackendTaskHistory";
 import { useTokenBalances } from "@/hooks/useTokenBalances";
-import { useWizPay } from "@/hooks/wizpay";
-import { formatTokenAmount, getExplorerTxUrl, TOKEN_OPTIONS } from "@/lib/wizpay";
+import {
+  formatTokenAmount,
+  getExplorerTxUrl,
+  TOKEN_OPTIONS,
+  type TokenSymbol,
+} from "@/lib/wizpay";
 import { TOKEN_BY_ADDRESS } from "@/constants/erc20";
 import type { UnifiedHistoryItem } from "@/lib/types";
 
@@ -41,8 +48,12 @@ const COLOR_MAP: Record<string, string> = {
   amber: "bg-amber-500/12 text-amber-400 hover:bg-amber-500/20",
 };
 
-function TotalBalance() {
-  const { balances, isLoading } = useTokenBalances();
+interface BalanceSnapshotProps {
+  balances: Record<TokenSymbol, bigint>;
+  isLoading: boolean;
+}
+
+function TotalBalance({ balances, isLoading }: BalanceSnapshotProps) {
 
   if (isLoading) {
     return <SkeletonBalance />;
@@ -88,8 +99,7 @@ function QuickActions() {
   );
 }
 
-function TokenList() {
-  const { balances, isLoading } = useTokenBalances();
+function TokenList({ balances, isLoading }: BalanceSnapshotProps) {
 
   if (isLoading) {
     return (
@@ -142,7 +152,33 @@ const ACTION_LABELS: Record<string, { label: string; color: string }> = {
   remove_lp: { label: "Remove LP", color: "text-amber-400" },
 };
 
-function RecentActivity({ items }: { items: UnifiedHistoryItem[] }) {
+function RecentActivity({
+  items,
+  isLoading,
+}: {
+  items: UnifiedHistoryItem[];
+  isLoading: boolean;
+}) {
+  if (isLoading) {
+    return (
+      <div className="space-y-3">
+        {[1, 2, 3].map((index) => (
+          <div
+            key={index}
+            className="flex min-h-[52px] items-center gap-3 rounded-xl px-3 py-3.5"
+          >
+            <div className="h-9 w-9 rounded-lg bg-muted/30 animate-pulse" />
+            <div className="flex-1 space-y-1.5">
+              <div className="h-4 w-24 rounded bg-muted/20 animate-pulse" />
+              <div className="h-3 w-32 rounded bg-muted/15 animate-pulse" />
+            </div>
+            <div className="h-4 w-20 rounded bg-muted/20 animate-pulse" />
+          </div>
+        ))}
+      </div>
+    );
+  }
+
   const recent = items.slice(0, 5);
 
   if (recent.length === 0) {
@@ -221,7 +257,34 @@ function RecentActivity({ items }: { items: UnifiedHistoryItem[] }) {
 }
 
 function HomeContent() {
-  const wp = useWizPay();
+  const { isConnected } = useActiveWalletAddress();
+  const { balances, isLoading: isBalancesLoading } = useTokenBalances({
+    refetchInterval: 30_000,
+  });
+  const { items, isLoading: isHistoryLoading } = useBackendTaskHistory({
+    enabled: isConnected,
+    limit: 25,
+    refetchInterval: 60_000,
+  });
+  const unifiedHistory = useMemo(() => {
+    const seen = new Set<string>();
+
+    return items
+      .filter((item) => {
+        const key =
+          item.txHash && item.txHash !== "0x"
+            ? `tx:${item.txHash.toLowerCase()}`
+            : `fallback:${item.type}:${item.referenceId ?? ""}:${item.timestampMs}`;
+
+        if (seen.has(key)) {
+          return false;
+        }
+
+        seen.add(key);
+        return true;
+      })
+      .sort((left, right) => right.timestampMs - left.timestampMs);
+  }, [items]);
 
   return (
     <div className="animate-fade-up space-y-5 stagger-children">
@@ -229,7 +292,7 @@ function HomeContent() {
       <Card className="glass-card border-primary/20 overflow-hidden">
         <div className="absolute inset-0 bg-gradient-to-br from-primary/5 to-transparent pointer-events-none" />
         <CardContent className="relative pt-6 pb-5 space-y-5">
-          <TotalBalance />
+          <TotalBalance balances={balances} isLoading={isBalancesLoading} />
           <QuickActions />
         </CardContent>
       </Card>
@@ -250,7 +313,7 @@ function HomeContent() {
           </div>
         </CardHeader>
         <CardContent className="pt-0">
-          <TokenList />
+          <TokenList balances={balances} isLoading={isBalancesLoading} />
         </CardContent>
       </Card>
 
@@ -263,7 +326,7 @@ function HomeContent() {
           </CardTitle>
         </CardHeader>
         <CardContent className="pt-0">
-          <RecentActivity items={wp.unifiedHistory} />
+          <RecentActivity items={unifiedHistory} isLoading={isHistoryLoading} />
         </CardContent>
       </Card>
     </div>

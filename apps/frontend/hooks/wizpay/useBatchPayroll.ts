@@ -231,6 +231,10 @@ export function useBatchPayroll({
     }
 
     const intervalId = window.setInterval(() => {
+      if (document.visibilityState === "hidden") {
+        return;
+      }
+
       void refreshTask(taskId).catch(() => {
         // Ignore background polling errors; foreground actions surface them.
       });

@@ -11,6 +11,7 @@ import {
   formatTokenAmount,
   type TokenSymbol,
 } from "@/lib/wizpay";
+import { buildXShareUrl } from "@/lib/social";
 
 interface SuccessModalProps {
   isOpen: boolean;
@@ -54,15 +55,17 @@ export function SuccessModal({
   const shareSummary = isMultiBatch
     ? `Just settled a payroll of ${amountFormatted} ${tokenSymbol} to ${recipientCount} recipients across multiple submissions on Arc Testnet! 🚀`
     : `Just settled a payroll of ${amountFormatted} ${tokenSymbol} to ${recipientCount} recipients on Arc Testnet! 🚀`;
-  const shareDetails = txHash
-    ? isExplorerHash(txHash)
-      ? `\n\nVerify it on-chain: ${EXPLORER_BASE_URL}/tx/${txHash}`
-      : `\n\nCircle settlement reference: ${txHash}`
-    : "";
-  const shareText = `${shareSummary}${shareDetails}`;
-  const xShareUrl = `https://x.com/intent/tweet?text=${encodeURIComponent(
-    shareText
-  )}`;
+  const xShareUrl = buildXShareUrl({
+    summary: shareSummary,
+    explorerUrl:
+      txHash && isExplorerHash(txHash)
+        ? `${EXPLORER_BASE_URL}/tx/${txHash}`
+        : null,
+    secondaryText:
+      txHash && !isExplorerHash(txHash)
+        ? `Circle settlement reference: ${txHash}`
+        : null,
+  });
 
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center overflow-y-auto overflow-x-hidden bg-background/85 px-4 backdrop-blur-md transition-all duration-300">

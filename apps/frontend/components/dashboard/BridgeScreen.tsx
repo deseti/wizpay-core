@@ -11,6 +11,8 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { useMediaQuery } from "@/hooks/useMediaQuery";
 import {
   Select,
   SelectContent,
@@ -33,6 +35,7 @@ import {
 import { useBridgeScreen } from "./bridge/useBridgeScreen";
 
 export function BridgeScreen() {
+  const isDesktop = useMediaQuery("(min-width: 1024px)");
   const {
     sourceChain,
     destinationChain,
@@ -66,7 +69,6 @@ export function BridgeScreen() {
     isPasskeyUnsupportedSource,
     passkeySourceRestrictionMessage,
     isExternalBridgeMode,
-    isExternalEvmBridge,
     isExternalCrossChainBridge,
     externalBridgeRouteKind,
     externalBridgeModeMessage,
@@ -78,7 +80,6 @@ export function BridgeScreen() {
     estimatedTimeLabel,
     sourceChainOptions,
     destinationChainOptions,
-    canRetryExternalAttestation,
     isDestinationSolana,
     externalWalletAddress,
     externalWalletChainId,
@@ -127,6 +128,88 @@ export function BridgeScreen() {
       ? `Route: burn from your ${sourceOption.label} source wallet, wait for Circle attestation, then mint on ${destinationOption.label} with the destination wallet.`
       : `Route: approve and burn on ${sourceOption.label}, wait for Circle attestation, then mint on ${destinationOption.label} from your EVM wallet.`
     : `Route: approve a deposit from your personal ${sourceOption.label} wallet into the source treasury wallet, then burn from treasury and mint to your destination address on ${destinationOption.label}.`;
+  const bridgeWalletPanel = (
+    <BridgeRightPanel
+      transferWallet={transferWallet}
+      walletStatusError={walletStatusError}
+      isWalletLoading={isWalletLoading}
+      isWalletBootstrapping={isWalletBootstrapping}
+      sourceOption={sourceOption}
+      tokenSymbol={tokenSymbol}
+      onRefreshTreasuryWallet={() => void refreshTransferWallet()}
+      onBootstrapWallet={() => void handleBootstrapWallet()}
+      arcWalletAddress={arcWalletAddress}
+      sepoliaWalletAddress={sepoliaWalletAddress}
+      solanaWalletAddress={solanaWalletAddress}
+      destinationWallets={destinationWallets}
+      isDestinationWalletsLoading={isDestinationWalletsLoading}
+      isPasskeyWalletSession={isPasskeyWalletSession}
+      copiedWallet={copiedWallet}
+      passkeySolanaInput={passkeySolanaInput}
+      onCopyWalletAddress={(address, key) =>
+        void copyWalletAddress(address, key)
+      }
+      onPasskeySolanaInputChange={setPasskeySolanaInput}
+      onSavePasskeySolana={handleSavePasskeySolana}
+      onRefreshDestinationWallets={() => void refreshDestinationWallets()}
+      transfer={transfer}
+    />
+  );
+  const bridgeGuideCards = (
+    <div className="grid gap-4 lg:grid-cols-2">
+      <Card className="glass-card border-border/40">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Route className="h-4 w-4 text-primary" />
+            CCTP flow
+          </CardTitle>
+          <CardDescription>
+            {isExternalBridgeMode
+              ? "External wallet routes still follow the standard CCTP lifecycle, but the source and destination wallets sign the on-chain steps directly."
+              : "App Wallet mode runs through three stages after your personal wallet deposit is approved."}
+          </CardDescription>
+        </CardHeader>
+        <div className="px-6 pb-6 space-y-2 text-sm text-muted-foreground/80">
+          {isExternalBridgeMode ? (
+            <>
+              <p>1. Confirm the source-side burn path in the required external wallet.</p>
+              <p>2. Wait for Circle attestation to become available for the burn.</p>
+              <p>3. Confirm the destination-side mint in the receiving wallet.</p>
+            </>
+          ) : (
+            <>
+              <p>1. Approve a deposit from your personal source wallet to the treasury wallet.</p>
+              <p>2. Burn USDC on the source chain treasury wallet and wait for Circle attestation.</p>
+              <p>3. Mint USDC on the destination chain for the wallet you entered.</p>
+            </>
+          )}
+        </div>
+      </Card>
+
+      <Card className="glass-card border-border/40">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Clock3 className="h-4 w-4 text-primary" />
+            Tracking
+          </CardTitle>
+          <CardDescription>
+            This bridge is non-blocking by design.
+          </CardDescription>
+        </CardHeader>
+        <div className="px-6 pb-6 space-y-2 text-sm text-muted-foreground/80">
+          <p>Status refreshes every 4 seconds while a bridge is pending.</p>
+          <p>
+            The latest transfer is stored locally so the page can resume after
+            refresh.
+          </p>
+          <p>
+            If the flow runs longer than 2 minutes, the UI tells the user it
+            is still processing on-chain.
+          </p>
+        </div>
+      </Card>
+    </div>
+  );
 
   // ── Render ────────────────────────────────────────────────────────────────────
   return (
@@ -159,7 +242,7 @@ export function BridgeScreen() {
         </CardHeader>
         <CardContent className="grid gap-6 py-6 lg:grid-cols-[minmax(0,1fr)_19rem]">
           {/* ── Left column ── */}
-          <div className="space-y-5">
+          <div className="space-y-4 sm:space-y-5">
             {/* Treasury model banner */}
             <div className="rounded-2xl border border-primary/20 bg-primary/5 p-4">
               <p className="text-xs font-semibold uppercase tracking-[0.16em] text-primary/80">
@@ -471,88 +554,29 @@ export function BridgeScreen() {
           </div>
 
           {/* ── Right column ── */}
-          <BridgeRightPanel
-            transferWallet={transferWallet}
-            walletStatusError={walletStatusError}
-            isWalletLoading={isWalletLoading}
-            isWalletBootstrapping={isWalletBootstrapping}
-            sourceOption={sourceOption}
-            tokenSymbol={tokenSymbol}
-            onRefreshTreasuryWallet={() => void refreshTransferWallet()}
-            onBootstrapWallet={() => void handleBootstrapWallet()}
-            arcWalletAddress={arcWalletAddress}
-            sepoliaWalletAddress={sepoliaWalletAddress}
-            solanaWalletAddress={solanaWalletAddress}
-            destinationWallets={destinationWallets}
-            isDestinationWalletsLoading={isDestinationWalletsLoading}
-            isPasskeyWalletSession={isPasskeyWalletSession}
-            copiedWallet={copiedWallet}
-            passkeySolanaInput={passkeySolanaInput}
-            onCopyWalletAddress={(address, key) =>
-              void copyWalletAddress(address, key)
-            }
-            onPasskeySolanaInputChange={setPasskeySolanaInput}
-            onSavePasskeySolana={handleSavePasskeySolana}
-            onRefreshDestinationWallets={() => void refreshDestinationWallets()}
-            transfer={transfer}
-          />
+          {isDesktop ? (
+            bridgeWalletPanel
+          ) : (
+            <div className="rounded-2xl border border-border/40 bg-background/20 p-3 lg:hidden">
+              <Tabs defaultValue="wallets" className="gap-4">
+                <TabsList className="grid w-full grid-cols-2 bg-background/40">
+                  <TabsTrigger value="wallets">Wallets</TabsTrigger>
+                  <TabsTrigger value="guide">Guide</TabsTrigger>
+                </TabsList>
+                <TabsContent value="wallets" className="mt-0">
+                  {bridgeWalletPanel}
+                </TabsContent>
+                <TabsContent value="guide" className="mt-0">
+                  {bridgeGuideCards}
+                </TabsContent>
+              </Tabs>
+            </div>
+          )}
         </CardContent>
       </Card>
 
       {/* ── Info cards ── */}
-      <div className="grid gap-4 lg:grid-cols-2">
-        <Card className="glass-card border-border/40">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <Route className="h-4 w-4 text-primary" />
-              CCTP flow
-            </CardTitle>
-            <CardDescription>
-              {isExternalBridgeMode
-                ? "External wallet routes still follow the standard CCTP lifecycle, but the source and destination wallets sign the on-chain steps directly."
-                : "App Wallet mode runs through three stages after your personal wallet deposit is approved."}
-            </CardDescription>
-          </CardHeader>
-          <div className="px-6 pb-6 space-y-2 text-sm text-muted-foreground/80">
-            {isExternalBridgeMode ? (
-              <>
-                <p>1. Confirm the source-side burn path in the required external wallet.</p>
-                <p>2. Wait for Circle attestation to become available for the burn.</p>
-                <p>3. Confirm the destination-side mint in the receiving wallet.</p>
-              </>
-            ) : (
-              <>
-                <p>1. Approve a deposit from your personal source wallet to the treasury wallet.</p>
-                <p>2. Burn USDC on the source chain treasury wallet and wait for Circle attestation.</p>
-                <p>3. Mint USDC on the destination chain for the wallet you entered.</p>
-              </>
-            )}
-          </div>
-        </Card>
-
-        <Card className="glass-card border-border/40">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <Clock3 className="h-4 w-4 text-primary" />
-              Tracking
-            </CardTitle>
-            <CardDescription>
-              This bridge is non-blocking by design.
-            </CardDescription>
-          </CardHeader>
-          <div className="px-6 pb-6 space-y-2 text-sm text-muted-foreground/80">
-            <p>Status refreshes every 4 seconds while a bridge is pending.</p>
-            <p>
-              The latest transfer is stored locally so the page can resume after
-              refresh.
-            </p>
-            <p>
-              If the flow runs longer than 2 minutes, the UI tells the user it
-              is still processing on-chain.
-            </p>
-          </div>
-        </Card>
-      </div>
+      {isDesktop ? bridgeGuideCards : null}
 
       {/* ── Dialogs ── */}
       <BridgeReviewDialog
@@ -560,7 +584,6 @@ export function BridgeScreen() {
         onOpenChange={setIsReviewDialogOpen}
         isSubmitting={isSubmitting}
         isExternalBridgeMode={isExternalBridgeMode}
-        isExternalEvmBridge={isExternalEvmBridge}
         externalBridgeRouteKind={externalBridgeRouteKind}
         sourceOption={sourceOption}
         destinationOption={destinationOption}
