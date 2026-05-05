@@ -45,7 +45,7 @@ services:
       # ── Feature flags ────────────────────────────────────────────────────
       WIZPAY_BRIDGE_EXTERNAL_ENABLED: ${WIZPAY_BRIDGE_EXTERNAL_ENABLED:-false}
     ports:
-      - "4000:4000"
+      - "127.0.0.1:4000:4000"
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:4000/tasks || exit 1"]
       interval: 15s
@@ -154,7 +154,7 @@ services:
       UPSTASH_REDIS_REST_URL: ${UPSTASH_REDIS_REST_URL:-}
       UPSTASH_REDIS_REST_TOKEN: ${UPSTASH_REDIS_REST_TOKEN:-}
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/ || exit 1"]
       interval: 15s
