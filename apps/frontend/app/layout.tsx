@@ -12,7 +12,6 @@ import "./globals.css";
 import { Providers } from "./providers";
 
 /** Circle Web SDK requires client-side initialization — skip static prerendering */
-export const dynamic = "force-dynamic";
 
 const manrope = Manrope({
   variable: "--font-sans",
