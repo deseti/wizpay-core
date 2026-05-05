@@ -92,6 +92,7 @@ External browser wallets are not a third `walletMode`. They are a bridge executi
 - These audit tasks require `walletAddress` but do not require `walletId`.
 - Solana support is provider-agnostic: any compatible injected Solana wallet can be used, not just Phantom.
 - `NEXT_PUBLIC_CIRCLE_API_PROXY_ENABLED=true` enables the same-origin `/api/circle/proxy` fallback when the deployed Next.js runtime serves that route. When the flag is unset, bridge clients use direct Circle API requests only.
+- Production reverse proxies must route `/api/circle/proxy` to the frontend Next.js app before any generic backend `/api/` rule; otherwise external `ETH-SEPOLIA -> ARC-TESTNET` transfers can silently fall back to slow full-finality burns.
 
 ## Isolation
 

@@ -36,11 +36,20 @@ export const CCTP_USDC_DECIMALS = 6;
 // ── Circle CCTP V2 Attestation API (sandbox) ──
 export const CCTP_V2_ATTESTATION_API_BASE =
   "https://iris-api-sandbox.circle.com/v2/messages";
+const CCTP_V2_FAST_BURN_FEE_API_BASE =
+  "https://iris-api-sandbox.circle.com/v2/burn/USDC/fees";
 const CIRCLE_API_PROXY_ENABLED = ["1", "true", "yes", "on"].includes(
   (process.env.NEXT_PUBLIC_CIRCLE_API_PROXY_ENABLED ?? "")
     .trim()
     .toLowerCase()
 );
+const CCTP_FAST_BURN_FEE_TIMEOUT_MS = 8_000;
+const CCTP_FAST_BURN_FEE_MAX_ATTEMPTS = 3;
+
+type CctpFastBurnFeeTier = {
+  finalityThreshold: number;
+  minimumFee: string | number;
+};
 
 // ── Attestation polling settings ──
 export const CCTP_ATTESTATION_POLL_INTERVAL_MS = 5_000;
@@ -162,6 +171,102 @@ async function fetchAttestationPayload(url: string): Promise<{
   } catch {
     return null;
   }
+}
+
+async function fetchJsonWithTimeout(url: string) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), CCTP_FAST_BURN_FEE_TIMEOUT_MS);
+
+  try {
+    return await fetch(url, {
+      cache: "no-store",
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+async function fetchFastBurnFeePayload(
+  sourceDomain: number,
+  destinationDomain: number
+): Promise<CctpFastBurnFeeTier[] | null> {
+  const url = `${CCTP_V2_FAST_BURN_FEE_API_BASE}/${sourceDomain}/${destinationDomain}`;
+
+  for (let attempt = 1; attempt <= CCTP_FAST_BURN_FEE_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      const response = await fetchJsonWithTimeout(url);
+
+      if (!response.ok) {
+        continue;
+      }
+
+      const payload = (await response.json()) as unknown;
+
+      if (Array.isArray(payload)) {
+        return payload as CctpFastBurnFeeTier[];
+      }
+    } catch {
+      // Fall through to retry or proxy fallback.
+    }
+  }
+
+  try {
+    const proxied = await fetch("/api/circle/proxy", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        url,
+        method: "GET",
+        headers: {
+          accept: "application/json",
+        },
+      }),
+      cache: "no-store",
+    });
+
+    if (!proxied.ok) {
+      return null;
+    }
+
+    const payload = (await proxied.json()) as unknown;
+    return Array.isArray(payload) ? (payload as CctpFastBurnFeeTier[]) : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function resolveCctpFastBurnMaxFee(
+  sourceDomain: number,
+  destinationDomain: number,
+  amountMinorUnits: bigint
+): Promise<bigint | null> {
+  const feeTiers = await fetchFastBurnFeePayload(sourceDomain, destinationDomain);
+
+  if (!feeTiers?.length) {
+    return null;
+  }
+
+  const fastTier = feeTiers.find(
+    (tier) => tier.finalityThreshold === CCTP_MIN_FINALITY_FAST
+  );
+
+  if (!fastTier) {
+    return null;
+  }
+
+  const minimumFeeValue = Number.parseFloat(String(fastTier.minimumFee));
+
+  if (!Number.isFinite(minimumFeeValue) || minimumFeeValue < 0) {
+    return null;
+  }
+
+  const scaledBps = BigInt(Math.round(minimumFeeValue * 100));
+  const baseFee = (scaledBps * amountMinorUnits + 999_999n) / 1_000_000n;
+
+  return baseFee + baseFee / 10n;
 }
 
 /**

@@ -15,7 +15,10 @@ function isAllowedPath(url: URL) {
     url.host === "iris-api.circle.com" ||
     url.host === "iris-api-sandbox.circle.com"
   ) {
-    return url.pathname.startsWith("/v2/messages/");
+    return (
+      url.pathname.startsWith("/v2/messages/") ||
+      url.pathname.startsWith("/v2/burn/")
+    );
   }
 
   return false;

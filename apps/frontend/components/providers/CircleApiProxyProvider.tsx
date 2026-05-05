@@ -40,7 +40,8 @@ function shouldProxyCircleRequest(url: URL) {
 
   return (
     url.pathname.startsWith("/v1/stablecoinKits/") ||
-    url.pathname.startsWith("/v2/messages/")
+    url.pathname.startsWith("/v2/messages/") ||
+    url.pathname.startsWith("/v2/burn/")
   );
 }
 
