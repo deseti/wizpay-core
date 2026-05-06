@@ -21,12 +21,33 @@ import "./IFXEngine.sol";
  * - Non-custodial design
  */
 contract WizPay is Ownable, Pausable, ReentrancyGuard {
+    error FxEngineZeroAddress();
+    error FeeExceedsMaximum(uint256 feeBps, uint256 maxFeeBps);
+    error TokenInZeroAddress();
+    error TokenOutZeroAddress();
+    error RecipientZeroAddress();
+    error TokenZeroAddress();
+    error AmountMustBeGreaterThanZero();
+    error TokenNotWhitelisted(address token);
+    error TokenTransferFromFailed(address token, address from, address to, uint256 amount);
+    error TokenTransferFailed(address token, address to, uint256 amount);
+    error TokenApproveFailed(address token, address spender, uint256 amount);
+    error DirectTransferBelowMinimum(uint256 amountOut, uint256 minAmountOut);
+    error EmptyBatch();
+    error ArrayLengthMismatch();
+    error BatchTooLarge(uint256 provided, uint256 maxAllowed);
+    error ReferenceIdRequired();
+    error ReferenceIdTooLong(uint256 provided, uint256 maxAllowed);
+    error InsufficientTokenBalance(uint256 balance, uint256 amount);
+
     // Address of the FX Engine (can be StableFX, Uniswap, or any DEX)
     IFXEngine public fxEngine;
 
     // Fee configuration (in basis points: 10000 = 100%)
     uint256 public feeBps;
     uint256 public constant MAX_FEE_BPS = 100; // 1% max fee
+    uint256 internal constant MAX_BATCH_SIZE = 50;
+    uint256 internal constant MAX_REFERENCE_ID_LENGTH = 64;
     address public feeCollector;
 
     // Token whitelist
@@ -84,8 +105,8 @@ contract WizPay is Ownable, Pausable, ReentrancyGuard {
         address _feeCollector,
         uint256 _feeBps
     ) Ownable(msg.sender) {
-        require(_fxEngine != address(0), "WizPay: FX Engine cannot be zero address");
-        require(_feeBps <= MAX_FEE_BPS, "WizPay: Fee exceeds maximum");
+        if (_fxEngine == address(0)) revert FxEngineZeroAddress();
+        if (_feeBps > MAX_FEE_BPS) revert FeeExceedsMaximum(_feeBps, MAX_FEE_BPS);
         
         fxEngine = IFXEngine(_fxEngine);
         feeCollector = _feeCollector;
@@ -140,8 +161,15 @@ contract WizPay is Ownable, Pausable, ReentrancyGuard {
     }
 
     /**
-     * @dev Mixed batch payout: a single input token can be routed into different
-     * output tokens per recipient in one atomic transaction.
+     * @notice Routes a single funding token into per-recipient output tokens.
+     * @dev Mixed-token batch execution preserves atomicity across the full batch.
+     * @param tokenIn Funding asset debited from the sender.
+     * @param tokenOuts Output token to deliver for each recipient index.
+     * @param recipients Recipient addresses for each batch leg.
+     * @param amountsIn Input amount to route for each batch leg.
+     * @param minAmountsOut Minimum acceptable output per batch leg.
+     * @param referenceId Off-chain batch correlation identifier.
+     * @return totalOut Aggregate output amount delivered across every batch leg.
      */
     function batchRouteAndPay(
         address tokenIn,
@@ -198,39 +226,35 @@ contract WizPay is Ownable, Pausable, ReentrancyGuard {
         uint256 minAmountOut,
         address recipient
     ) internal returns (uint256 amountOut) {
-        require(tokenIn != address(0), "WizPay: tokenIn cannot be zero address");
-        require(tokenOut != address(0), "WizPay: tokenOut cannot be zero address");
-        require(amountIn > 0, "WizPay: amountIn must be greater than zero");
-        require(recipient != address(0), "WizPay: recipient cannot be zero address");
+        if (tokenIn == address(0)) revert TokenInZeroAddress();
+        if (tokenOut == address(0)) revert TokenOutZeroAddress();
+        if (amountIn == 0) revert AmountMustBeGreaterThanZero();
+        if (recipient == address(0)) revert RecipientZeroAddress();
 
         // Check whitelist if enabled
         if (whitelistEnabled) {
-            require(whitelistedTokens[tokenIn], "WizPay: tokenIn not whitelisted");
-            require(whitelistedTokens[tokenOut], "WizPay: tokenOut not whitelisted");
+            if (!whitelistedTokens[tokenIn]) revert TokenNotWhitelisted(tokenIn);
+            if (!whitelistedTokens[tokenOut]) revert TokenNotWhitelisted(tokenOut);
         }
 
-        // Step 1: Pull tokens from sender to this contract
-        bool success = IERC20(tokenIn).transferFrom(msg.sender, address(this), amountIn);
-        require(success, "WizPay: transferFrom failed");
+        // Pull the funding asset into the router once so the rest of the route is deterministic.
+        _transferTokenFrom(tokenIn, msg.sender, address(this), amountIn);
 
-        // Step 2: Calculate fee (if any)
+        // The router keeps no per-payment balance sheet, so fee deduction is the only local effect.
         uint256 feeAmount = _calculateFee(amountIn);
         uint256 amountAfterFee = amountIn - feeAmount;
 
         if (feeAmount > 0) {
-            success = IERC20(tokenIn).transfer(feeCollector, feeAmount);
-            require(success, "WizPay: fee transfer failed");
+            _transferToken(tokenIn, feeCollector, feeAmount);
             emit FeeCollected(tokenIn, feeAmount);
         }
 
         if (tokenIn == tokenOut) {
-            require(
-                amountAfterFee >= minAmountOut,
-                "WizPay: direct transfer below minimum output"
-            );
+            if (amountAfterFee < minAmountOut) {
+                revert DirectTransferBelowMinimum(amountAfterFee, minAmountOut);
+            }
 
-            success = IERC20(tokenOut).transfer(recipient, amountAfterFee);
-            require(success, "WizPay: direct transfer failed");
+            _transferToken(tokenOut, recipient, amountAfterFee);
 
             emit PaymentRouted(
                 msg.sender,
@@ -245,14 +269,11 @@ contract WizPay is Ownable, Pausable, ReentrancyGuard {
             return amountAfterFee;
         }
 
-        // Step 3: Approve FX Engine to spend our tokens
-        success = IERC20(tokenIn).approve(address(fxEngine), 0);
-        require(success, "WizPay: approve reset failed");
-        success = IERC20(tokenIn).approve(address(fxEngine), amountAfterFee);
-        require(success, "WizPay: approve failed");
+        // Reset and re-grant approval to keep allowance management explicit for the FX engine.
+        _approveToken(tokenIn, address(fxEngine), 0);
+        _approveToken(tokenIn, address(fxEngine), amountAfterFee);
 
-        // Step 4: Perform atomic swap through FX Engine
-        // Adjust minAmountOut proportionally if fee was taken
+        // Quote enforcement remains deterministic after fees by scaling the user's floor down proportionally.
         uint256 adjustedMinOut = minAmountOut;
         if (feeAmount > 0 && amountIn > 0) {
             adjustedMinOut = (minAmountOut * amountAfterFee) / amountIn;
@@ -292,6 +313,7 @@ contract WizPay is Ownable, Pausable, ReentrancyGuard {
         uint256 totalFees = 0;
 
         for (uint256 i = 0; i < recipients.length; i++) {
+            // Each leg routes independently, but the enclosing transaction keeps the batch atomic.
             uint256 amountOut = _processPayment(
                 tokenIn,
                 tokenOut,
@@ -324,14 +346,20 @@ contract WizPay is Ownable, Pausable, ReentrancyGuard {
         uint256 minAmountsLength,
         string memory referenceId
     ) internal pure {
-        require(recipientsLength > 0, "WizPay: empty batch");
-        require(
-            recipientsLength == amountsLength && recipientsLength == minAmountsLength,
-            "WizPay: array length mismatch"
-        );
-        require(recipientsLength <= 50, "WizPay: batch too large");
-        require(bytes(referenceId).length > 0, "WizPay: referenceId required");
-        require(bytes(referenceId).length <= 64, "WizPay: referenceId too long");
+        if (recipientsLength == 0) revert EmptyBatch();
+        if (recipientsLength != amountsLength || recipientsLength != minAmountsLength) {
+            revert ArrayLengthMismatch();
+        }
+
+        if (recipientsLength > MAX_BATCH_SIZE) {
+            revert BatchTooLarge(recipientsLength, MAX_BATCH_SIZE);
+        }
+
+        uint256 referenceIdLength = bytes(referenceId).length;
+        if (referenceIdLength == 0) revert ReferenceIdRequired();
+        if (referenceIdLength > MAX_REFERENCE_ID_LENGTH) {
+            revert ReferenceIdTooLong(referenceIdLength, MAX_REFERENCE_ID_LENGTH);
+        }
     }
 
     function _validateBatchInputs(
@@ -341,7 +369,7 @@ contract WizPay is Ownable, Pausable, ReentrancyGuard {
         uint256 minAmountsLength,
         string memory referenceId
     ) internal pure {
-        require(recipientsLength == tokenOutsLength, "WizPay: array length mismatch");
+        if (recipientsLength != tokenOutsLength) revert ArrayLengthMismatch();
         _validateBatchInputs(recipientsLength, amountsLength, minAmountsLength, referenceId);
     }
 
@@ -354,30 +382,30 @@ contract WizPay is Ownable, Pausable, ReentrancyGuard {
     }
 
     /**
-     * @dev Allows owner to update the FX Engine address
-     * @param _fxEngine New FX Engine address
+     * @notice Updates the downstream FX engine used for on-chain settlement.
+     * @param _fxEngine New FX engine contract address.
      */
     function updateFXEngine(address _fxEngine) external onlyOwner {
-        require(_fxEngine != address(0), "WizPay: FX Engine cannot be zero address");
+        if (_fxEngine == address(0)) revert FxEngineZeroAddress();
         address oldEngine = address(fxEngine);
         fxEngine = IFXEngine(_fxEngine);
         emit FXEngineUpdated(oldEngine, _fxEngine);
     }
 
     /**
-     * @dev Update fee configuration
-     * @param _feeBps New fee in basis points (100 = 1%)
+     * @notice Updates the fee schedule applied before routing funds.
+     * @param _feeBps New fee in basis points where 100 equals 1%.
      */
     function updateFee(uint256 _feeBps) external onlyOwner {
-        require(_feeBps <= MAX_FEE_BPS, "WizPay: Fee exceeds maximum");
+        if (_feeBps > MAX_FEE_BPS) revert FeeExceedsMaximum(_feeBps, MAX_FEE_BPS);
         uint256 oldFee = feeBps;
         feeBps = _feeBps;
         emit FeeUpdated(oldFee, _feeBps);
     }
 
     /**
-     * @dev Update fee collector address
-     * @param _feeCollector New fee collector address
+     * @notice Updates the recipient address for protocol fees.
+     * @param _feeCollector New fee collector address.
      */
     function updateFeeCollector(address _feeCollector) external onlyOwner {
         address oldCollector = feeCollector;
@@ -386,32 +414,32 @@ contract WizPay is Ownable, Pausable, ReentrancyGuard {
     }
 
     /**
-     * @dev Whitelist or delist a token
-     * @param token Token address
-     * @param status True to whitelist, false to delist
+     * @notice Adds or removes a token from the routing allowlist.
+     * @param token Token address to update.
+     * @param status True to allow routing, false to disable routing.
      */
     function setTokenWhitelist(address token, bool status) external onlyOwner {
-        require(token != address(0), "WizPay: Token cannot be zero address");
+        if (token == address(0)) revert TokenZeroAddress();
         whitelistedTokens[token] = status;
         emit TokenWhitelisted(token, status);
     }
 
     /**
-     * @dev Batch whitelist multiple tokens
-     * @param tokens Array of token addresses
-     * @param status True to whitelist, false to delist
+     * @notice Batch updates the routing allowlist.
+     * @param tokens Token addresses to update.
+     * @param status True to allow routing, false to disable routing.
      */
     function batchSetTokenWhitelist(address[] calldata tokens, bool status) external onlyOwner {
         for (uint256 i = 0; i < tokens.length; i++) {
-            require(tokens[i] != address(0), "WizPay: Token cannot be zero address");
+            if (tokens[i] == address(0)) revert TokenZeroAddress();
             whitelistedTokens[tokens[i]] = status;
             emit TokenWhitelisted(tokens[i], status);
         }
     }
 
     /**
-     * @dev Enable or disable whitelist enforcement
-     * @param enabled True to enable whitelist, false to disable
+     * @notice Enables or disables token allowlist enforcement.
+     * @param enabled True to require allowlisted assets, false to accept any token.
      */
     function setWhitelistEnabled(bool enabled) external onlyOwner {
         whitelistEnabled = enabled;
@@ -419,48 +447,45 @@ contract WizPay is Ownable, Pausable, ReentrancyGuard {
     }
 
     /**
-     * @dev Emergency token rescue for stuck/accidentally sent tokens
-     * @param token Token address to withdraw
-     * @param amount Amount to withdraw
+     * @notice Recovers tokens that become stranded in the router contract.
+     * @param token Token address to recover.
+     * @param amount Amount to recover.
      *
      * Only callable by owner. Use when tokens are sent directly to the
      * contract address without going through routeAndPay.
      */
     function emergencyWithdraw(address token, uint256 amount) external onlyOwner {
-        require(token != address(0), "WizPay: Invalid token");
-        require(amount > 0, "WizPay: Invalid amount");
+        if (token == address(0)) revert TokenZeroAddress();
+        if (amount == 0) revert AmountMustBeGreaterThanZero();
         
         uint256 balance = IERC20(token).balanceOf(address(this));
-        require(balance >= amount, "WizPay: Insufficient balance");
+        if (balance < amount) revert InsufficientTokenBalance(balance, amount);
         
-        require(
-            IERC20(token).transfer(owner(), amount),
-            "WizPay: Transfer failed"
-        );
+        _transferToken(token, owner(), amount);
         
         emit EmergencyWithdraw(token, amount, owner());
     }
 
     /**
-     * @dev Pause the contract (emergency stop)
+     * @notice Pauses payment routing and batch execution.
      */
     function pause() external onlyOwner {
         _pause();
     }
 
     /**
-     * @dev Unpause the contract
+     * @notice Resumes payment routing and batch execution.
      */
     function unpause() external onlyOwner {
         _unpause();
     }
 
     /**
-     * @dev Get estimated output amount for a potential payment
-     * @param tokenIn Address of the input stablecoin
-     * @param tokenOut Address of the output stablecoin
-     * @param amountIn Amount of input tokens
-     * @return estimatedAmountOut Estimated amount of output tokens
+     * @notice Estimates the recipient output for a single payment route.
+     * @param tokenIn Input stablecoin address.
+     * @param tokenOut Output stablecoin address.
+     * @param amountIn Amount of input tokens.
+     * @return estimatedAmountOut Estimated amount delivered after protocol fees.
      */
     function getEstimatedOutput(
         address tokenIn,
@@ -481,6 +506,15 @@ contract WizPay is Ownable, Pausable, ReentrancyGuard {
         return fxEngine.getEstimatedAmount(tokenIn, tokenOut, amountAfterFee);
     }
 
+    /**
+     * @notice Estimates every leg of a mixed-output batch before execution.
+     * @param tokenIn Shared input stablecoin.
+     * @param tokenOuts Output token per recipient leg.
+     * @param amountsIn Input amount per recipient leg.
+     * @return estimatedAmountsOut Estimated output per batch leg.
+     * @return totalEstimatedOut Sum of all estimated outputs.
+     * @return totalFees Sum of all protocol fees across the batch.
+     */
     function getBatchEstimatedOutputs(
         address tokenIn,
         address[] calldata tokenOuts,
@@ -494,11 +528,12 @@ contract WizPay is Ownable, Pausable, ReentrancyGuard {
             uint256 totalFees
         )
     {
-        require(tokenOuts.length == amountsIn.length, "WizPay: array length mismatch");
+        if (tokenOuts.length != amountsIn.length) revert ArrayLengthMismatch();
 
         estimatedAmountsOut = new uint256[](amountsIn.length);
 
         for (uint256 i = 0; i < amountsIn.length; i++) {
+            // Estimation mirrors execution order so off-chain reconciliation uses identical fee math.
             uint256 feeAmount = _calculateFee(amountsIn[i]);
             uint256 amountAfterFee = amountsIn[i] - feeAmount;
 
@@ -515,6 +550,24 @@ contract WizPay is Ownable, Pausable, ReentrancyGuard {
             }
 
             totalEstimatedOut += estimatedAmountsOut[i];
+        }
+    }
+
+    function _transferTokenFrom(address token, address from, address to, uint256 amount) private {
+        if (!IERC20(token).transferFrom(from, to, amount)) {
+            revert TokenTransferFromFailed(token, from, to, amount);
+        }
+    }
+
+    function _transferToken(address token, address to, uint256 amount) private {
+        if (!IERC20(token).transfer(to, amount)) {
+            revert TokenTransferFailed(token, to, amount);
+        }
+    }
+
+    function _approveToken(address token, address spender, uint256 amount) private {
+        if (!IERC20(token).approve(spender, amount)) {
+            revert TokenApproveFailed(token, spender, amount);
         }
     }
 }

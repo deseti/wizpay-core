@@ -11,17 +11,40 @@ interface IERC20MetadataLike {
 }
 
 contract MockFXEngine is IFXEngine {
+    error ExchangeRateNotConfigured();
+    error SlippageToleranceExceeded();
+    error TransferInFailed();
+    error InsufficientLiquidity();
+    error TransferOutFailed();
+
     mapping(address => mapping(address => uint256)) public exchangeRates;
     bool public slippageFailure;
 
+    /**
+     * @notice Sets a mock exchange rate for a token pair.
+     * @param tokenIn Input token address.
+     * @param tokenOut Output token address.
+     * @param rate Quote scaled to 18 decimals.
+     */
     function setExchangeRate(address tokenIn, address tokenOut, uint256 rate) external {
         exchangeRates[tokenIn][tokenOut] = rate;
     }
 
+    /**
+     * @notice Forces quoted swaps to fail slippage checks when enabled.
+     * @param enabled True to force failing output quotes.
+     */
     function setSlippageFailure(bool enabled) external {
         slippageFailure = enabled;
     }
 
+    /**
+     * @notice Estimates output for the configured mock rate table.
+     * @param tokenIn Input token address.
+     * @param tokenOut Output token address.
+     * @param amountIn Input token amount.
+     * @return estimatedAmountOut Estimated token output.
+     */
     function getEstimatedAmount(
         address tokenIn,
         address tokenOut,
@@ -40,6 +63,15 @@ contract MockFXEngine is IFXEngine {
         return _scaleAmount(tokenIn, tokenOut, estimatedAmountOut);
     }
 
+    /**
+     * @notice Executes a mock swap using the configured exchange rate table.
+     * @param tokenIn Input token address.
+     * @param tokenOut Output token address.
+     * @param amountIn Input token amount.
+     * @param minAmountOut Minimum acceptable output amount.
+     * @param to Recipient of the output tokens.
+     * @return amountOut Actual output amount.
+     */
     function swap(
         address tokenIn,
         address tokenOut,
@@ -48,24 +80,22 @@ contract MockFXEngine is IFXEngine {
         address to
     ) external override returns (uint256 amountOut) {
         uint256 quotedAmountOut = getEstimatedAmount(tokenIn, tokenOut, amountIn);
-        require(quotedAmountOut > 0, "MockFXEngine: exchange rate not configured");
+        if (quotedAmountOut == 0) revert ExchangeRateNotConfigured();
 
         amountOut = slippageFailure ? quotedAmountOut / 2 : quotedAmountOut;
-        require(amountOut >= minAmountOut, "MockFXEngine: slippage tolerance exceeded");
+        if (amountOut < minAmountOut) revert SlippageToleranceExceeded();
 
-        require(
-            IERC20MetadataLike(tokenIn).transferFrom(msg.sender, address(this), amountIn),
-            "MockFXEngine: transfer in failed"
-        );
+        if (!IERC20MetadataLike(tokenIn).transferFrom(msg.sender, address(this), amountIn)) {
+            revert TransferInFailed();
+        }
 
-        require(
-            IERC20MetadataLike(tokenOut).balanceOf(address(this)) >= amountOut,
-            "MockFXEngine: insufficient liquidity"
-        );
-        require(
-            IERC20MetadataLike(tokenOut).transfer(to, amountOut),
-            "MockFXEngine: transfer out failed"
-        );
+        if (IERC20MetadataLike(tokenOut).balanceOf(address(this)) < amountOut) {
+            revert InsufficientLiquidity();
+        }
+
+        if (!IERC20MetadataLike(tokenOut).transfer(to, amountOut)) {
+            revert TransferOutFailed();
+        }
     }
 
     function _scaleAmount(

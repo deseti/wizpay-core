@@ -2,6 +2,10 @@
 pragma solidity ^0.8.20;
 
 contract MockERC20 {
+    error InsufficientAllowance();
+    error InsufficientBalance();
+    error ZeroAddress();
+
     string public name;
     string public symbol;
     uint8 public immutable decimals;
@@ -25,21 +29,40 @@ contract MockERC20 {
         _mint(msg.sender, initialSupply);
     }
 
+    /**
+     * @notice Transfers tokens from the caller to a recipient.
+     * @param to Recipient address.
+     * @param amount Token amount to transfer.
+     * @return True when the transfer succeeds.
+     */
     function transfer(address to, uint256 amount) external returns (bool) {
         _transfer(msg.sender, to, amount);
         return true;
     }
 
+    /**
+     * @notice Sets the allowance for a spender.
+     * @param spender Approved spender.
+     * @param amount Allowance amount.
+     * @return True when the approval succeeds.
+     */
     function approve(address spender, uint256 amount) external returns (bool) {
         allowance[msg.sender][spender] = amount;
         emit Approval(msg.sender, spender, amount);
         return true;
     }
 
+    /**
+     * @notice Transfers tokens using the allowance mechanism.
+     * @param from Token owner.
+     * @param to Recipient address.
+     * @param amount Token amount to transfer.
+     * @return True when the transfer succeeds.
+     */
     function transferFrom(address from, address to, uint256 amount) external returns (bool) {
         uint256 allowed = allowance[from][msg.sender];
-        require(allowed >= amount, "MockERC20: insufficient allowance");
-        require(balanceOf[from] >= amount, "MockERC20: insufficient balance");
+        if (allowed < amount) revert InsufficientAllowance();
+        if (balanceOf[from] < amount) revert InsufficientBalance();
 
         if (allowed != type(uint256).max) {
             allowance[from][msg.sender] = allowed - amount;
@@ -50,12 +73,17 @@ contract MockERC20 {
         return true;
     }
 
+    /**
+     * @notice Mints tokens to a target address.
+     * @param to Recipient address.
+     * @param amount Token amount to mint.
+     */
     function mint(address to, uint256 amount) external {
         _mint(to, amount);
     }
 
     function _mint(address to, uint256 amount) internal {
-        require(to != address(0), "MockERC20: zero address");
+        if (to == address(0)) revert ZeroAddress();
 
         totalSupply += amount;
         balanceOf[to] += amount;
@@ -64,8 +92,8 @@ contract MockERC20 {
     }
 
     function _transfer(address from, address to, uint256 amount) internal {
-        require(to != address(0), "MockERC20: zero address");
-        require(balanceOf[from] >= amount, "MockERC20: insufficient balance");
+        if (to == address(0)) revert ZeroAddress();
+        if (balanceOf[from] < amount) revert InsufficientBalance();
 
         balanceOf[from] -= amount;
         balanceOf[to] += amount;

@@ -2,6 +2,9 @@
   "name": "landing-page",
   "private": true,
   "version": "0.0.0",
+  "description": "Vite landing experience for the WizPay product and ecosystem narrative.",
+  "author": "DeSeti (WizPay)",
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "dev": "vite",

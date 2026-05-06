@@ -1,6 +1,25 @@
 {
   "name": "wizpay-core",
+  "description": "Institutional-grade task execution engine for batched USDC payroll on Arc.",
+  "author": "DeSeti (WizPay)",
+  "license": "MIT",
   "private": true,
+  "packageManager": "npm@10.9.7",
+  "engines": {
+    "node": ">=22.0.0",
+    "npm": ">=10.0.0"
+  },
+  "scripts": {
+    "dev:stack": "docker compose up --build",
+    "dev:backend": "npm run start:dev -w backend",
+    "dev:frontend": "npm run dev -w frontend",
+    "dev:landing": "npm run dev -w landing-page",
+    "build": "npm run build -w backend && npm run build -w frontend && npm run build -w landing-page && npm run build -w wizpay_router",
+    "lint": "npm run lint -w backend && npm run lint -w frontend && npm run lint -w landing-page",
+    "test": "npm run test:backend && npm run test:contracts",
+    "test:backend": "npm run test -w backend",
+    "test:contracts": "npm run test -w wizpay_router"
+  },
   "workspaces": [
     "apps/*",
     "packages/*"

@@ -2,7 +2,8 @@
   "name": "wizpay_router",
   "version": "1.0.0",
   "private": true,
-  "description": "Foundry workspace for WizPay contracts",
+  "description": "Foundry workspace for WizPay settlement and liquidity contracts on Arc.",
+  "author": "DeSeti (WizPay)",
   "type": "module",
   "scripts": {
     "build": "forge build",
@@ -11,8 +12,7 @@
     "anvil": "anvil"
   },
   "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "license": "MIT",
   "devDependencies": {},
   "dependencies": {
     "dotenv": "^17.2.3",

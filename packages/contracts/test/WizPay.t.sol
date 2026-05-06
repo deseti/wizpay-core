@@ -71,12 +71,12 @@ contract WizPayTest is Test {
     }
 
     function testDeploymentRevertsWhenFxEngineIsZero() public {
-        vm.expectRevert(bytes("WizPay: FX Engine cannot be zero address"));
+        vm.expectRevert(WizPay.FxEngineZeroAddress.selector);
         new WizPay(address(0), feeCollector, FEE_BPS);
     }
 
     function testDeploymentRevertsWhenFeeExceedsMaximum() public {
-        vm.expectRevert(bytes("WizPay: Fee exceeds maximum"));
+        vm.expectRevert(abi.encodeWithSelector(WizPay.FeeExceedsMaximum.selector, 150, 100));
         new WizPay(address(fxEngine), feeCollector, 150);
     }
 
@@ -230,7 +230,7 @@ contract WizPayTest is Test {
         vm.prank(sender);
         mockEURC.approve(address(wizPay), paymentAmount);
 
-        vm.expectRevert(bytes("MockFXEngine: slippage tolerance exceeded"));
+        vm.expectRevert(MockFXEngine.SlippageToleranceExceeded.selector);
         vm.prank(sender);
         wizPay.routeAndPay(
             address(mockEURC),
@@ -248,7 +248,7 @@ contract WizPayTest is Test {
         vm.prank(sender);
         mockEURC.approve(address(wizPay), paymentAmount);
 
-        vm.expectRevert(bytes("MockFXEngine: slippage tolerance exceeded"));
+        vm.expectRevert(MockFXEngine.SlippageToleranceExceeded.selector);
         vm.prank(sender);
         wizPay.routeAndPay(
             address(mockEURC),
@@ -260,13 +260,13 @@ contract WizPayTest is Test {
     }
 
     function testInputValidationRevertsOnZeroAddresses() public {
-        vm.expectRevert(bytes("WizPay: tokenIn cannot be zero address"));
+        vm.expectRevert(WizPay.TokenInZeroAddress.selector);
         wizPay.routeAndPay(address(0), address(mockUSDC), 1_000e6, 1_000e6, recipient);
 
-        vm.expectRevert(bytes("WizPay: tokenOut cannot be zero address"));
+        vm.expectRevert(WizPay.TokenOutZeroAddress.selector);
         wizPay.routeAndPay(address(mockEURC), address(0), 1_000e6, 1_000e6, recipient);
 
-        vm.expectRevert(bytes("WizPay: amountIn must be greater than zero"));
+        vm.expectRevert(WizPay.AmountMustBeGreaterThanZero.selector);
         wizPay.routeAndPay(address(mockEURC), address(mockUSDC), 0, 1_000e6, recipient);
     }
 
@@ -274,7 +274,7 @@ contract WizPayTest is Test {
         vm.prank(sender);
         mockEURC.approve(address(wizPay), 1_000e6);
 
-        vm.expectRevert(bytes("WizPay: recipient cannot be zero address"));
+        vm.expectRevert(WizPay.RecipientZeroAddress.selector);
         vm.prank(sender);
         wizPay.routeAndPay(address(mockEURC), address(mockUSDC), 1_000e6, 1_000e6, address(0));
     }

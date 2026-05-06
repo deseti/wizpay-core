@@ -1,6 +1,9 @@
 {
   "name": "frontend",
   "version": "0.1.0",
+  "description": "Next.js operator console for WizPay task creation, monitoring, and Arc execution flows.",
+  "author": "DeSeti (WizPay)",
+  "license": "MIT",
   "private": true,
   "scripts": {
     "circle:entity-secret:doctor": "node scripts/rotate-circle-entity-secret.mjs",

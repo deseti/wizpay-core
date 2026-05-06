@@ -1,10 +1,10 @@
 {
   "name": "backend",
   "version": "0.0.1",
-  "description": "",
-  "author": "",
+  "description": "NestJS task orchestrator for WizPay payroll, FX, bridge, and liquidity execution.",
+  "author": "DeSeti (WizPay)",
   "private": true,
-  "license": "UNLICENSED",
+  "license": "MIT",
   "scripts": {
     "prebuild": "rm -f tsconfig.build.tsbuildinfo dist/tsconfig.build.tsbuildinfo",
     "prestart:dev": "rm -f tsconfig.build.tsbuildinfo dist/tsconfig.build.tsbuildinfo",
