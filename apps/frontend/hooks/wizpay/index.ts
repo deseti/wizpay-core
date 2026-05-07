@@ -5,27 +5,30 @@ import { useWizPayState } from "./useWizPayState";
 import { useWizPayContract } from "./useWizPayContract";
 import { useWizPayHistory } from "./useWizPayHistory";
 import { useBatchPayroll } from "./useBatchPayroll";
+import { useResolvedRecipients } from "./useResolvedRecipients";
 import { isStableFxMode } from "@/lib/fx-config";
 
 export function useWizPay(): WizPayState {
   // 1. Initialize UI / Local State
   const state = useWizPayState();
+  const preparedRecipients = useResolvedRecipients(state.recipients);
 
   // 1a. Derived Batch values
   const batchAmount = useMemo(
     () =>
-      state.preparedRecipients.reduce((sum, r) => sum + r.amountUnits, 0n),
-    [state.preparedRecipients]
+      preparedRecipients.reduce((sum, r) => sum + r.amountUnits, 0n),
+    [preparedRecipients]
   );
   const validRecipientCount = useMemo(
-    () => state.preparedRecipients.filter((r) => r.validAddress).length,
-    [state.preparedRecipients]
+    () => preparedRecipients.filter((r) => r.validAddress).length,
+    [preparedRecipients]
   );
 
   // 2. Initialize Contract Interactions
   const contract = useWizPayContract({
     state,
     batchAmount,
+    preparedRecipients,
   });
 
   const batchPayroll = useBatchPayroll({
@@ -125,6 +128,7 @@ export function useWizPay(): WizPayState {
   // 4. Return unified state matching the previous monolithic footprint
   return {
     ...state,
+    preparedRecipients,
     ...contract,
     ...history,
     batchAmount,

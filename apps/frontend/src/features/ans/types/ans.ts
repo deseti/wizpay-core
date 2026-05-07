@@ -107,6 +107,11 @@ export interface AnsBackendResolution {
   namespace: string | null
   isSupportedNamespace: boolean
   resolvedAddress: string | null
+  resolutionStatus:
+    | "resolved"
+    | "name_not_found"
+    | "resolver_unavailable"
+    | "unsupported_namespace"
 }
 
 export interface AnsRegistrationConfirmation {

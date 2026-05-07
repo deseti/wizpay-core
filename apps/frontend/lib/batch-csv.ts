@@ -6,13 +6,12 @@
  * contexts (though currently only used on the client).
  */
 
-import { getAddress, isAddress } from "viem";
-
 import {
   createRecipient,
   type RecipientDraft,
   type TokenSymbol,
 } from "@/lib/wizpay";
+import { classifyRecipientInput } from "@/lib/recipient-resolution";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -20,8 +19,9 @@ export const RECIPIENT_PREVIEW_LIMIT = 5;
 
 export const CSV_TEMPLATE_CONTENT = [
   "address,amount,token",
-  "0x1111111111111111111111111111111111111111,100,USDC",
-  "0x2222222222222222222222222222222222222222,250.50,EURC",
+  "alice.arc,100,USDC",
+  "treasury.wizpay,250.50,EURC",
+  "0x2222222222222222222222222222222222222222,25,USDC",
 ].join("\n");
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -55,9 +55,10 @@ export function cleanCsvCell(value: string) {
  * - Header row detection (address / wallet / recipient keywords)
  * - Comma and semicolon delimiters
  * - Address validation + checksum normalisation via viem
+ * - Exact .arc / .wizpay ANS recipient validation
  * - Amount validation (must be > 0)
  * - Token resolution (USDC / EURC, falls back to selectedToken)
- * - Duplicate address detection within a single file
+ * - Duplicate recipient detection within a single file
  *
  * Returns `null` if the file is empty.
  */
@@ -87,7 +88,7 @@ export function buildCsvPreview(
   const delimiter = sampleLine.includes(";") ? ";" : ",";
   const rows: CsvPreviewRow[] = [];
   const validRows: RecipientDraft[] = [];
-  const seenAddresses = new Set<string>();
+  const seenRecipients = new Set<string>();
 
   for (let index = startIndex; index < lines.length; index += 1) {
     const [addressRaw = "", amountRaw = "", tokenRaw = ""] = lines[index]
@@ -101,14 +102,10 @@ export function buildCsvPreview(
         : normalizedTokenRaw === "USDC"
           ? "USDC"
           : selectedToken;
-    const addressMatch = addressRaw.match(/0x[a-fA-F0-9]{40}/);
-    const normalizedAddress =
-      addressMatch && isAddress(addressMatch[0])
-        ? getAddress(addressMatch[0])
-        : null;
+    const classification = classifyRecipientInput(addressRaw);
 
-    if (!normalizedAddress) {
-      errors.push("Wallet address is not valid.");
+    if (classification.errorMessage) {
+      errors.push(classification.errorMessage);
     }
 
     if (
@@ -127,13 +124,20 @@ export function buildCsvPreview(
       errors.push("Token must be USDC or EURC.");
     }
 
-    if (normalizedAddress) {
-      const dedupeKey = normalizedAddress.toLowerCase();
+    const dedupeKey =
+      classification.normalizedAddress?.toLowerCase() ??
+      classification.normalizedDomain?.toLowerCase();
 
-      if (seenAddresses.has(dedupeKey)) {
-        errors.push("Duplicate address found in this file.");
+    if (dedupeKey) {
+      const duplicateMessage =
+        classification.kind === "ans"
+          ? "Duplicate ANS name found in this file."
+          : "Duplicate address found in this file.";
+
+      if (seenRecipients.has(dedupeKey)) {
+        errors.push(duplicateMessage);
       } else {
-        seenAddresses.add(dedupeKey);
+        seenRecipients.add(dedupeKey);
       }
     }
 
@@ -145,10 +149,13 @@ export function buildCsvPreview(
       errors,
     });
 
-    if (errors.length === 0 && normalizedAddress) {
+    const importedRecipientValue =
+      classification.normalizedAddress ?? classification.normalizedDomain;
+
+    if (errors.length === 0 && importedRecipientValue) {
       validRows.push({
         ...createRecipient(resolvedToken),
-        address: normalizedAddress,
+        address: importedRecipientValue,
         amount: amountRaw,
         targetToken: resolvedToken,
       });

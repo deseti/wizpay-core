@@ -99,6 +99,10 @@ export class TaskService {
       });
     }
 
+    const resolvedAnsRecipientCount = validation.recipients.filter(
+      (recipient) => recipient.resolvedFromAns,
+    ).length;
+
     const batches = this.batchService.splitIntoBatches(validation.recipients);
     const totals = this.batchService.calculateTotals(batches);
     const sourceToken =
@@ -119,6 +123,10 @@ export class TaskService {
         recipientCount: batch.recipients.length,
         recipients: batch.recipients.map((recipient) => ({
           address: recipient.address,
+          ...(recipient.originalAddress
+            ? { originalAddress: recipient.originalAddress }
+            : {}),
+          ...(recipient.resolvedFromAns ? { resolvedFromAns: true } : {}),
           amount: recipient.amount,
           targetToken: recipient.targetToken,
         })),
@@ -140,6 +148,7 @@ export class TaskService {
             referenceId,
             sourceToken,
             ...(walletAddress ? { walletAddress } : {}),
+            resolvedAnsRecipients: resolvedAnsRecipientCount,
             totalBatches: totals.totalBatches,
             totalRecipients: totals.totalRecipients,
             totalAmount: totals.totalAmount.toString(),
@@ -170,6 +179,7 @@ export class TaskService {
             message: 'Task payroll created',
             context: {
               totalUnits: units.length,
+              resolvedAnsRecipients: resolvedAnsRecipientCount,
               sourceToken,
             } as Prisma.InputJsonValue,
           },
@@ -181,6 +191,7 @@ export class TaskService {
             message: `Prepared ${units.length} payroll batch unit(s)`,
             context: {
               referenceId,
+              resolvedAnsRecipients: resolvedAnsRecipientCount,
               totalRecipients: totals.totalRecipients,
             } as Prisma.InputJsonValue,
           },

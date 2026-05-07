@@ -155,6 +155,8 @@ export function BatchComposer({
                 recipient lists can contain 50, 100, or 1000 recipients in one
                 run; the app just splits them into Arc batches of up to 50
                 recipients, and each batch is confirmed from the user wallet.
+                Exact .arc and .wizpay names are resolved before validation and
+                execution.
               </CardDescription>
             </div>
             <div className="flex flex-wrap items-center gap-2">
@@ -291,7 +293,7 @@ export function BatchComposer({
               <TableHeader>
                 <TableRow className="hover:bg-transparent border-border/30">
                   <TableHead className="w-12">#</TableHead>
-                  <TableHead>Wallet Address</TableHead>
+                  <TableHead>Wallet Address / ANS Name</TableHead>
                   <TableHead className="w-40">Target Token</TableHead>
                   <TableHead className="w-40">You Send</TableHead>
                   <TableHead className="w-40">They Receive</TableHead>
@@ -412,8 +414,8 @@ export function BatchComposer({
               onChange={handleCsvUpload}
             />
             <p className="text-[11px] text-muted-foreground/60">
-              Use address, amount, token. You will review every row before it is
-              imported.
+              Use wallet address or exact .arc/.wizpay name, amount, token. You
+              will review every row before it is imported.
             </p>
           </div>
         </CardContent>

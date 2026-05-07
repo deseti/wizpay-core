@@ -1,6 +1,6 @@
 import { keepPreviousData } from "@tanstack/react-query";
 import { useEffect, useMemo } from "react";
-import { type Address, type Hex } from "viem";
+import { getAddress, isAddress, type Address, type Hex } from "viem";
 import { usePublicClient, useReadContract, useReadContracts } from "wagmi";
 
 import { useActiveWalletAddress } from "@/hooks/useActiveWalletAddress";
@@ -20,7 +20,11 @@ import {
   type RecipientDraft,
   type TokenSymbol,
 } from "@/lib/wizpay";
-import type { QuoteSummary, TransactionActionResult } from "@/lib/types";
+import type {
+  PreparedRecipient,
+  QuoteSummary,
+  TransactionActionResult,
+} from "@/lib/types";
 import type { useWizPayState } from "./useWizPayState";
 import {
   isStableFxMode,
@@ -72,9 +76,11 @@ function waitFor(ms: number) {
 export function useWizPayContract({
   state,
   batchAmount,
+  preparedRecipients,
 }: {
   state: BaseState;
   batchAmount: bigint;
+  preparedRecipients: PreparedRecipient[];
 }) {
   const { walletAddress, walletMode } = useActiveWalletAddress();
   const { executeTransaction } = useTransactionExecutor();
@@ -206,9 +212,9 @@ export function useWizPayContract({
 
   const rawQuoteEnabled = Boolean(
     walletAddress &&
-      state.preparedRecipients.length > 0 &&
+      preparedRecipients.length > 0 &&
       batchAmount > 0n &&
-      state.preparedRecipients.every((r) => r.amountUnits > 0n)
+      preparedRecipients.every((r) => r.amountUnits > 0n)
   );
 
   const {
@@ -222,10 +228,10 @@ export function useWizPayContract({
     functionName: "getBatchEstimatedOutputs",
     args: [
       activeToken.address,
-      state.preparedRecipients.map(
+      preparedRecipients.map(
         (r) => SUPPORTED_TOKENS[r.targetToken].address
       ),
-      state.preparedRecipients.map((r) => r.amountUnits),
+      preparedRecipients.map((r) => r.amountUnits),
     ],
     query: {
       enabled: rawQuoteEnabled && !isStableFxMode,
@@ -260,8 +266,8 @@ export function useWizPayContract({
   const quoteRefreshing = Boolean(rawQuoteFetching && rawQuoteData);
 
   const rowDiagnostics = useMemo<(string | null)[]>(() => {
-    return state.preparedRecipients.map(() => null);
-  }, [state.preparedRecipients]);
+    return preparedRecipients.map(() => null);
+  }, [preparedRecipients]);
 
   const hasRouteIssue = false;
   const needsApproval =
@@ -271,17 +277,30 @@ export function useWizPayContract({
   const prepareBatchRecipients = (
     batchRecipients?: RecipientDraft[]
   ): PreparedBatchRecipient[] => {
+    if (!batchRecipients) {
+      return preparedRecipients.map((recipient) => ({
+        address: (recipient.normalizedAddress ?? recipient.address) as Address,
+        amountUnits: recipient.amountUnits,
+        id: recipient.id,
+        targetToken: recipient.targetToken,
+        validAddress: recipient.validAddress,
+      }));
+    }
+
     const sourceRecipients = batchRecipients ?? state.recipients;
 
     return sourceRecipients.map((recipient) => {
       const trimmedAddress = recipient.address.trim();
+      const normalizedAddress = isAddress(trimmedAddress)
+        ? getAddress(trimmedAddress)
+        : null;
 
       return {
-        address: trimmedAddress as Address,
+        address: (normalizedAddress ?? trimmedAddress) as Address,
         amountUnits: parseAmountToUnits(recipient.amount, activeToken.decimals),
         id: recipient.id,
         targetToken: recipient.targetToken,
-        validAddress: /^0x[a-fA-F0-9]{40}$/.test(trimmedAddress),
+        validAddress: Boolean(normalizedAddress),
       };
     });
   };
@@ -510,7 +529,7 @@ export function useWizPayContract({
     batchRecipients?: RecipientDraft[],
     batchReferenceId?: string
   ): Promise<TransactionActionResult> => {
-    if (!state.validate() || hasRouteIssue) {
+    if ((!batchRecipients && !state.validate(preparedRecipients)) || hasRouteIssue) {
       return { ok: false, hash: null };
     }
 
@@ -524,20 +543,20 @@ export function useWizPayContract({
       return { ok: false, hash: null };
     }
 
-    const preparedRecipients = prepareBatchRecipients(batchRecipients);
-    const batchTotalAmount = preparedRecipients.reduce(
+    const batchPreparedRecipients = prepareBatchRecipients(batchRecipients);
+    const batchTotalAmount = batchPreparedRecipients.reduce(
       (sum, recipient) => sum + recipient.amountUnits,
       0n
     );
-    const batchValidRecipientCount = preparedRecipients.filter(
+    const batchValidRecipientCount = batchPreparedRecipients.filter(
       (recipient) => recipient.validAddress
     ).length;
     const referenceId = (batchReferenceId ?? state.referenceId).trim();
 
     if (
-      preparedRecipients.length === 0 ||
+      batchPreparedRecipients.length === 0 ||
       batchTotalAmount === 0n ||
-      batchValidRecipientCount !== preparedRecipients.length
+      batchValidRecipientCount !== batchPreparedRecipients.length
     ) {
       state.setErrorMessage(
         "Review every payroll recipient before submitting this batch."
@@ -570,13 +589,13 @@ export function useWizPayContract({
       return { ok: false, hash: null };
     }
 
-    const tokenOuts = preparedRecipients.map(
+    const tokenOuts = batchPreparedRecipients.map(
       (recipient) => SUPPORTED_TOKENS[recipient.targetToken].address
     );
-    const recipients = preparedRecipients.map(
+    const recipients = batchPreparedRecipients.map(
       (recipient) => recipient.address
     ) as readonly Address[];
-    const amountsIn = preparedRecipients.map(
+    const amountsIn = batchPreparedRecipients.map(
       (recipient) => recipient.amountUnits
     );
 
@@ -587,7 +606,7 @@ export function useWizPayContract({
 
     try {
       const minAmountsOut = await getMinimumAmountsOut(
-        preparedRecipients,
+        batchPreparedRecipients,
         batchRecipients
       );
 
@@ -643,7 +662,7 @@ export function useWizPayContract({
       state.setStatusMessage(null);
 
       applyBatchSessionTotals(
-        preparedRecipients,
+        batchPreparedRecipients,
         batchTotalAmount,
         batchValidRecipientCount
       );

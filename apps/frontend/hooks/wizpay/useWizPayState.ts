@@ -107,9 +107,10 @@ export function useWizPayState() {
     });
   }, [recipients]);
 
-  const validate = useCallback(() => {
+  const validate = useCallback((preparedRecipientsOverride?: PreparedRecipient[]) => {
     const nextErrors: Record<string, string> = {};
     const trimmedReferenceId = referenceId.trim();
+    const recipientsToValidate = preparedRecipientsOverride ?? preparedRecipients;
 
     if (!trimmedReferenceId) {
       nextErrors.referenceId = "Reference ID is required";
@@ -117,9 +118,13 @@ export function useWizPayState() {
       nextErrors.referenceId = `Reference ID must be ${MAX_REFERENCE_ID_LENGTH} characters or less`;
     }
 
-    preparedRecipients.forEach((r) => {
+    recipientsToValidate.forEach((r) => {
       if (!r.address.trim()) {
-        nextErrors[`${r.id}-address`] = "Wallet address is required";
+        nextErrors[`${r.id}-address`] = "Wallet address or ANS name is required";
+      } else if (r.recipientInputType === "ans" && r.resolutionState === "loading") {
+        nextErrors[`${r.id}-address`] = "Wait for ANS resolution to finish.";
+      } else if (r.resolutionError) {
+        nextErrors[`${r.id}-address`] = r.resolutionError;
       } else if (!r.validAddress) {
         nextErrors[`${r.id}-address`] = "Invalid wallet address";
       }

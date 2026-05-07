@@ -42,7 +42,7 @@ export function CsvPreviewDialog({
           <DialogTitle>Review CSV import</DialogTitle>
           <DialogDescription className="break-words">
             {csvPreview
-              ? `${csvPreview.fileName} · ${csvPreview.rows.length} rows found. Only valid rows will be imported.`
+              ? `${csvPreview.fileName} · ${csvPreview.rows.length} rows found. Rows may contain raw wallet addresses or exact .arc/.wizpay names.`
               : "Review the file before importing recipients."}
           </DialogDescription>
         </DialogHeader>

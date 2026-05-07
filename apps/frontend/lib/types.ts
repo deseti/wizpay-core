@@ -10,10 +10,18 @@ export type StepState =
   | "wallet"
   | "confirmed";
 
+export type RecipientInputType = "address" | "ans" | "invalid";
+export type RecipientResolutionState = "idle" | "loading" | "resolved" | "error";
+
 /* ── Recipient row enriched with parsed amounts ── */
 export interface PreparedRecipient extends RecipientDraft {
   validAddress: boolean;
   amountUnits: bigint;
+  normalizedAddress: Address | null;
+  ansDomain: string | null;
+  recipientInputType: RecipientInputType;
+  resolutionState: RecipientResolutionState;
+  resolutionError: string | null;
 }
 
 /* ── Fee-aware quote from `getBatchEstimatedOutputs` ── */

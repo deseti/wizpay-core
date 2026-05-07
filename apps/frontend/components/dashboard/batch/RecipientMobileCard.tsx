@@ -19,7 +19,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
-import { formatTokenAmount, TOKEN_OPTIONS } from "@/lib/wizpay";
+import { formatCompactAddress, formatTokenAmount, TOKEN_OPTIONS } from "@/lib/wizpay";
 import type { PreparedRecipient } from "@/lib/types";
 import type { RecipientDraft, TokenSymbol } from "@/lib/wizpay";
 
@@ -85,10 +85,10 @@ export function RecipientMobileCard({
       </CardHeader>
       <CardContent className="space-y-3">
         <div className="space-y-1">
-          <label className="text-xs text-muted-foreground">Wallet Address</label>
+          <label className="text-xs text-muted-foreground">Wallet Address / ANS Name</label>
           <div className="flex items-start gap-2">
             <Input
-              placeholder="0x..."
+              placeholder="0x... or alice.arc"
               value={recipient.address}
               onChange={(e) =>
                 updateRecipient(recipient.id, "address", e.target.value)
@@ -113,6 +113,20 @@ export function RecipientMobileCard({
             <p className="text-xs text-destructive">
               {errors[`${recipient.id}-address`]}
             </p>
+          ) : recipient.recipientInputType === "ans" ? (
+            recipient.resolutionState === "loading" ? (
+              <p className="text-xs text-muted-foreground/70">
+                Resolving {recipient.ansDomain ?? recipient.address}...
+              </p>
+            ) : recipient.normalizedAddress ? (
+              <p className="text-xs text-emerald-300/80">
+                Resolves to {formatCompactAddress(recipient.normalizedAddress)}
+              </p>
+            ) : recipient.resolutionError ? (
+              <p className="text-xs text-destructive">
+                {recipient.resolutionError}
+              </p>
+            ) : null
           ) : null}
         </div>
 

@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { getAddress, isAddress } from 'viem';
 import { AnsService } from '../../ans/ans.service';
 import { BlockchainService } from '../../adapters/blockchain.service';
 
@@ -6,6 +7,8 @@ import { BlockchainService } from '../../adapters/blockchain.service';
 
 export interface ValidatedRecipient {
   address: string;
+  originalAddress?: string;
+  resolvedFromAns?: boolean;
   amount: string;
   amountUnits: bigint;
   targetToken: string;
@@ -23,14 +26,21 @@ const SUPPORTED_TOKENS = ['USDC', 'EURC'] as const;
 const TOKEN_DECIMALS: Record<string, number> = { USDC: 6, EURC: 6 };
 const MAX_BATCH_SIZE = 50;
 const MAX_REFERENCE_ID_LENGTH = 64;
-const ETH_ADDRESS_REGEX = /^0x[a-fA-F0-9]{40}$/;
-const ANS_SUFFIXES = ['.arc', '.wizpay'] as const;
 
 interface ResolvedRecipientAddress {
   originalValue?: string;
-  resolvedAddress: string | null;
+  normalizedAddress: string | null;
   attemptedAnsResolution: boolean;
+  resolvedFromAns: boolean;
+  errorMessage: string | null;
 }
+
+type RecipientInputKind =
+  | 'address'
+  | 'ans'
+  | 'invalid-address'
+  | 'invalid-ans'
+  | 'unsupported-ans';
 
 // ─── Service ────────────────────────────────────────────────────────
 
@@ -110,20 +120,14 @@ export class PayrollValidationService {
 
       // Address
       const address = resolvedAddress.originalValue;
-      let normalizedAddress: string | null = null;
+      let normalizedAddress = resolvedAddress.normalizedAddress;
 
       if (!address || typeof address !== 'string') {
         errors.push(`${prefix}.address: required`);
-      } else if (resolvedAddress.attemptedAnsResolution) {
-        if (!resolvedAddress.resolvedAddress) {
-          errors.push(`${prefix}.address: Domain ${address.trim()} is not registered`);
-        } else {
-          normalizedAddress = resolvedAddress.resolvedAddress;
-        }
-      } else if (!ETH_ADDRESS_REGEX.test(address.trim())) {
+      } else if (resolvedAddress.errorMessage) {
+        errors.push(`${prefix}.address: ${resolvedAddress.errorMessage}`);
+      } else if (!normalizedAddress) {
         errors.push(`${prefix}.address: invalid Ethereum address "${address}"`);
-      } else {
-        normalizedAddress = address.trim();
       }
 
       // Amount
@@ -152,6 +156,8 @@ export class PayrollValidationService {
         if (!isNaN(numAmount) && numAmount > 0) {
           validatedRecipients.push({
             address: normalizedAddress,
+            originalAddress: typeof address === 'string' ? address.trim() : undefined,
+            resolvedFromAns: resolvedAddress.resolvedFromAns,
             amount: amountStr,
             amountUnits: this.parseAmountToUnits(amountStr, decimals),
             targetToken,
@@ -224,8 +230,10 @@ export class PayrollValidationService {
       recipients.map(async (recipient, index) => {
         if (!recipient || typeof recipient !== 'object') {
           return {
-            resolvedAddress: null,
+            normalizedAddress: null,
             attemptedAnsResolution: false,
+            resolvedFromAns: false,
+            errorMessage: null,
           } satisfies ResolvedRecipientAddress;
         }
 
@@ -235,41 +243,92 @@ export class PayrollValidationService {
         if (!originalValue) {
           return {
             originalValue,
-            resolvedAddress: null,
+            normalizedAddress: null,
             attemptedAnsResolution: false,
+            resolvedFromAns: false,
+            errorMessage: null,
           } satisfies ResolvedRecipientAddress;
         }
 
         const trimmedValue = originalValue.trim();
-        if (!this.shouldResolveAnsDomain(trimmedValue)) {
+        const inputKind = this.classifyRecipientInput(trimmedValue);
+
+        if (inputKind.kind === 'address') {
           return {
             originalValue,
-            resolvedAddress: null,
+            normalizedAddress: getAddress(trimmedValue),
             attemptedAnsResolution: false,
+            resolvedFromAns: false,
+            errorMessage: null,
+          } satisfies ResolvedRecipientAddress;
+        }
+
+        if (inputKind.kind === 'invalid-address') {
+          return {
+            originalValue,
+            normalizedAddress: null,
+            attemptedAnsResolution: false,
+            resolvedFromAns: false,
+            errorMessage: null,
+          } satisfies ResolvedRecipientAddress;
+        }
+
+        if (inputKind.kind === 'unsupported-ans' || inputKind.kind === 'invalid-ans') {
+          return {
+            originalValue,
+            normalizedAddress: null,
+            attemptedAnsResolution: true,
+            resolvedFromAns: false,
+            errorMessage: inputKind.errorMessage,
           } satisfies ResolvedRecipientAddress;
         }
 
         try {
-          const resolvedAddress = await this.ansService.resolveAddress(trimmedValue);
-          if (!resolvedAddress || !ETH_ADDRESS_REGEX.test(resolvedAddress)) {
-            this.logger.warn(
-              `ANS resolution failed for recipients[${index}] domain "${trimmedValue}".`,
-            );
+          const resolvedAddress = await this.ansService.inspectDomain(
+            inputKind.normalizedDomain,
+          );
+
+          if (!resolvedAddress) {
             return {
               originalValue,
-              resolvedAddress: null,
+              normalizedAddress: null,
               attemptedAnsResolution: true,
+              resolvedFromAns: false,
+              errorMessage: `Invalid ANS format. ${trimmedValue}`,
+            } satisfies ResolvedRecipientAddress;
+          }
+
+          if (resolvedAddress.resolutionStatus !== 'resolved' || !resolvedAddress.resolvedAddress) {
+            const errorMessage =
+              resolvedAddress.resolutionStatus === 'unsupported_namespace'
+                ? 'Unsupported ANS namespace. Only .arc and .wizpay are supported.'
+                : resolvedAddress.resolutionStatus === 'resolver_unavailable'
+                  ? `Resolver unavailable for "${resolvedAddress.normalizedDomain}".`
+                  : `Name not found for "${resolvedAddress.normalizedDomain}".`;
+
+            this.logger.warn(
+              `ANS resolution failed for recipients[${index}] domain "${trimmedValue}": ${errorMessage}`,
+            );
+
+            return {
+              originalValue,
+              normalizedAddress: null,
+              attemptedAnsResolution: true,
+              resolvedFromAns: false,
+              errorMessage,
             } satisfies ResolvedRecipientAddress;
           }
 
           this.logger.log(
-            `Resolved ANS domain "${trimmedValue}" to ${resolvedAddress}.`,
+            `Resolved ANS domain "${trimmedValue}" to ${resolvedAddress.resolvedAddress}.`,
           );
 
           return {
             originalValue,
-            resolvedAddress,
+            normalizedAddress: resolvedAddress.resolvedAddress,
             attemptedAnsResolution: true,
+            resolvedFromAns: true,
+            errorMessage: null,
           } satisfies ResolvedRecipientAddress;
         } catch (error) {
           this.logger.error(
@@ -277,8 +336,10 @@ export class PayrollValidationService {
           );
           return {
             originalValue,
-            resolvedAddress: null,
+            normalizedAddress: null,
             attemptedAnsResolution: true,
+            resolvedFromAns: false,
+            errorMessage: `Resolver unavailable for "${inputKind.normalizedDomain}".`,
           } satisfies ResolvedRecipientAddress;
         }
       }),
@@ -299,11 +360,80 @@ export class PayrollValidationService {
     return undefined;
   }
 
-  private shouldResolveAnsDomain(value: string): boolean {
-    const normalizedValue = value.trim().toLowerCase();
-    return (
-      ANS_SUFFIXES.some((suffix) => normalizedValue.endsWith(suffix)) ||
-      !normalizedValue.startsWith('0x')
-    );
+  private classifyRecipientInput(value: string): {
+    kind: RecipientInputKind;
+    normalizedDomain: string;
+    errorMessage: string | null;
+  } {
+    if (isAddress(value)) {
+      return {
+        kind: 'address',
+        normalizedDomain: '',
+        errorMessage: null,
+      };
+    }
+
+    if (!value.includes('.')) {
+      return {
+        kind: 'invalid-address',
+        normalizedDomain: '',
+        errorMessage: null,
+      };
+    }
+
+    const parsedDomain = this.ansService.parseDomain(value);
+    const normalizedDomain = parsedDomain?.normalizedDomain ?? value.trim().toLowerCase();
+    const parts = normalizedDomain.split('.').filter(Boolean);
+
+    if (parts.length !== 2) {
+      return {
+        kind: 'invalid-ans',
+        normalizedDomain,
+        errorMessage:
+          'Invalid ANS format. Only exact second-level .arc and .wizpay names are supported.',
+      };
+    }
+
+    if (!parsedDomain?.isSupportedNamespace) {
+      return {
+        kind: 'unsupported-ans',
+        normalizedDomain,
+        errorMessage:
+          'Unsupported ANS namespace. Only .arc and .wizpay are supported.',
+      };
+    }
+
+    const label = parts[0] ?? '';
+    if (label.length < 3) {
+      return {
+        kind: 'invalid-ans',
+        normalizedDomain,
+        errorMessage: 'Invalid ANS format. Labels must be at least 3 characters long.',
+      };
+    }
+
+    if (label.startsWith('-') || label.endsWith('-')) {
+      return {
+        kind: 'invalid-ans',
+        normalizedDomain,
+        errorMessage:
+          'Invalid ANS format. Labels cannot start or end with a hyphen.',
+      };
+    }
+
+    if (!/^[a-z0-9-]+$/.test(label)) {
+      return {
+        kind: 'invalid-ans',
+        normalizedDomain,
+        errorMessage:
+          'Invalid ANS format. Use lowercase letters, numbers, and hyphens only.',
+      };
+    }
+
+    return {
+      kind: 'ans',
+      normalizedDomain,
+      errorMessage: null,
+    };
   }
 }

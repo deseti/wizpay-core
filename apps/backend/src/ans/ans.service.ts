@@ -54,40 +54,10 @@ export class AnsService {
    * @returns The resolved checksum EVM address, or `null` when no resolver or address record exists.
    */
   async resolveAddress(domain: string): Promise<string | null> {
-    const parsedDomain = this.parseDomain(domain);
-    if (!parsedDomain?.isSupportedNamespace) {
-      return null;
-    }
-
-    const { normalizedDomain } = parsedDomain;
-
-    const node = namehash(normalizedDomain);
-
-    try {
-      const resolverAddress = await this.getResolverAddress(node, normalizedDomain);
-      if (!resolverAddress) {
-        return null;
-      }
-
-      const resolvedAddress = await this.publicClient.readContract({
-        address: resolverAddress,
-        abi: PUBLIC_RESOLVER_ABI,
-        functionName: 'addr',
-        args: [node],
-      });
-
-      if (!resolvedAddress || resolvedAddress === zeroAddress) {
-        return null;
-      }
-
-      return getAddress(resolvedAddress);
-    } catch (error: unknown) {
-      this.logger.error(
-        `Failed to resolve address for ANS domain "${normalizedDomain}".`,
-        error instanceof Error ? error.stack : undefined,
-      );
-      return null;
-    }
+    const resolution = await this.inspectDomain(domain);
+    return resolution?.resolutionStatus === 'resolved'
+      ? resolution.resolvedAddress
+      : null;
   }
 
   /**
@@ -168,10 +138,59 @@ export class AnsService {
       return null;
     }
 
-    return {
-      ...parsedDomain,
-      resolvedAddress: await this.resolveAddress(parsedDomain.normalizedDomain),
-    };
+    if (!parsedDomain.isSupportedNamespace) {
+      return {
+        ...parsedDomain,
+        resolvedAddress: null,
+        resolutionStatus: 'unsupported_namespace',
+      };
+    }
+
+    const { normalizedDomain } = parsedDomain;
+    const node = namehash(normalizedDomain);
+
+    try {
+      const resolverAddress = await this.getResolverAddress(node, normalizedDomain);
+      if (!resolverAddress) {
+        return {
+          ...parsedDomain,
+          resolvedAddress: null,
+          resolutionStatus: 'resolver_unavailable',
+        };
+      }
+
+      const resolvedAddress = await this.publicClient.readContract({
+        address: resolverAddress,
+        abi: PUBLIC_RESOLVER_ABI,
+        functionName: 'addr',
+        args: [node],
+      });
+
+      if (!resolvedAddress || resolvedAddress === zeroAddress) {
+        return {
+          ...parsedDomain,
+          resolvedAddress: null,
+          resolutionStatus: 'name_not_found',
+        };
+      }
+
+      return {
+        ...parsedDomain,
+        resolvedAddress: getAddress(resolvedAddress),
+        resolutionStatus: 'resolved',
+      };
+    } catch (error: unknown) {
+      this.logger.error(
+        `Failed to inspect ANS domain "${normalizedDomain}".`,
+        error instanceof Error ? error.stack : undefined,
+      );
+
+      return {
+        ...parsedDomain,
+        resolvedAddress: null,
+        resolutionStatus: 'resolver_unavailable',
+      };
+    }
   }
 
   private async getResolverAddress(
