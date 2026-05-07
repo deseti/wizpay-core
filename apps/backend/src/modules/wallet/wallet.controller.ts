@@ -5,7 +5,9 @@ import {
   HttpException,
   InternalServerErrorException,
   Post,
+  ServiceUnavailableException,
 } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { WalletProvisionError, WalletService } from './wallet.service';
 
 type WalletSessionBody = {
@@ -92,6 +94,16 @@ function mapWalletControllerError(error: unknown) {
     return error;
   }
 
+  if (isDatabaseUnavailableError(error)) {
+    return new ServiceUnavailableException({
+      error:
+        'Circle wallet sync reached the backend, but the backend could not reach Postgres to persist wallet state.',
+      code: 'DATABASE_UNREACHABLE',
+      details:
+        'If you are running apps/backend directly on the host, start Docker Compose Postgres or point DATABASE_URL at 127.0.0.1:15432 instead of the docker-only postgres hostname.',
+    });
+  }
+
   if (error instanceof WalletProvisionError) {
     return new HttpException(
       {
@@ -113,5 +125,22 @@ function mapWalletControllerError(error: unknown) {
 
   return new InternalServerErrorException(
     'Unexpected wallet provisioning error',
+  );
+}
+
+function isDatabaseUnavailableError(error: unknown) {
+  if (error instanceof Prisma.PrismaClientInitializationError) {
+    return true;
+  }
+
+  if (error instanceof Prisma.PrismaClientKnownRequestError) {
+    return error.code === 'P1001' || error.code === 'P1002';
+  }
+
+  return (
+    error instanceof Error &&
+    /Can't reach database server|DatabaseNotReachable|getaddrinfo ENOTFOUND postgres/i.test(
+      error.message,
+    )
   );
 }

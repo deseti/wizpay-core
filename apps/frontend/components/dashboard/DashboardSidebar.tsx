@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { ArrowRightLeft, Coins, Home, Repeat, Route, Wallet } from "lucide-react";
+import { ArrowRightLeft, AtSign, Coins, Home, Repeat, Route, Wallet } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { FaucetButton } from "./FaucetButton";
@@ -14,7 +14,16 @@ const navItems = [
   { href: "/bridge", label: "Bridge", icon: Route },
   { href: "/assets", label: "Assets", icon: Wallet },
   { href: "/liquidity", label: "Liquidity", icon: Coins },
+  { href: "/ans", label: "ANS", icon: AtSign },
 ];
+
+function isActivePath(pathname: string, href: string) {
+  if (href === "/") {
+    return pathname === href;
+  }
+
+  return pathname === href || pathname.startsWith(`${href}/`);
+}
 
 export function DashboardSidebar() {
   const pathname = usePathname();
@@ -53,7 +62,7 @@ export function DashboardSidebar() {
           Menu
         </div>
         {navItems.map(({ href, label, icon: Icon }) => {
-          const isActive = pathname === href;
+          const isActive = isActivePath(pathname, href);
           return (
             <Link
               key={href}

@@ -83,6 +83,10 @@ const ACTION_CONFIG: Record<
     label: "FX",
     className: "bg-pink-500/12 text-pink-300/90 border-pink-500/25",
   },
+  ans: {
+    label: "ANS",
+    className: "bg-orange-500/12 text-orange-300/90 border-orange-500/25",
+  },
 };
 
 const FILTER_TABS: { value: ActivityFilter; label: string }[] = [
@@ -91,9 +95,14 @@ const FILTER_TABS: { value: ActivityFilter; label: string }[] = [
   { value: "swap", label: "Swap" },
   { value: "bridge", label: "Bridge" },
   { value: "fx", label: "FX" },
+  { value: "ans", label: "ANS" },
   { value: "add_lp", label: "Add LP" },
   { value: "remove_lp", label: "Remove LP" },
 ];
+
+function usesTokenAmount(type: HistoryActionType): boolean {
+  return type === "payroll" || type === "swap" || type === "bridge" || type === "fx" || type === "ans";
+}
 
 function getDetailText(item: UnifiedHistoryItem): string {
   if (item.type === "payroll") {
@@ -112,6 +121,10 @@ function getDetailText(item: UnifiedHistoryItem): string {
     const amt = formatTokenAmount(item.totalAmountIn ?? 0n, 6);
     return `${amt} ${inSym}`;
   }
+  if (item.type === "ans") {
+    const durationYears = item.ansDurationYears ?? 1;
+    return `${item.ansDomain ?? item.referenceId ?? "ANS name"} · ${durationYears} year${durationYears === 1 ? "" : "s"}`;
+  }
   const tokenSym =
     TOKEN_BY_ADDRESS.get(item.lpToken?.toLowerCase() ?? "")?.symbol ?? "Token";
   const amount = formatTokenAmount(item.lpAmount ?? 0n, 6);
@@ -125,6 +138,7 @@ function getReferenceText(item: UnifiedHistoryItem): string {
   if (item.type === "swap") return "Token Swap";
   if (item.type === "bridge") return "Bridge Transfer";
   if (item.type === "fx") return "FX Settlement";
+  if (item.type === "ans") return item.ansDomain ? `Register ${item.ansDomain}` : "ANS Registration";
   return "—";
 }
 
@@ -312,7 +326,7 @@ export function TransactionHistory({
                           </div>
                         </TableCell>
                         <TableCell className="font-mono text-sm whitespace-nowrap">
-                          {(item.type === "payroll" || item.type === "swap" || item.type === "bridge" || item.type === "fx")
+                          {usesTokenAmount(item.type)
                             ? `${formatTokenAmount(item.totalAmountIn ?? 0n, 6)} ${TOKEN_BY_ADDRESS.get(item.tokenIn?.toLowerCase() ?? "")?.symbol ?? ""}`
                             : `${formatTokenAmount(item.lpAmount ?? 0n, 6)} ${TOKEN_BY_ADDRESS.get(item.lpToken?.toLowerCase() ?? "")?.symbol ?? ""}`}
                         </TableCell>
@@ -375,7 +389,7 @@ export function TransactionHistory({
                       </div>
                       <div className="rounded-xl border border-border/40 bg-background/35 px-3 py-2.5">
                         <p className="text-xs uppercase tracking-[0.16em] text-muted-foreground/60 font-semibold">
-                          {item.type === "payroll" ? "Total Amount" : "LP Amount"}
+                          {usesTokenAmount(item.type) ? "Total Amount" : "LP Amount"}
                         </p>
                         <p className="mt-1 font-mono text-sm font-medium">
                           {getDetailText(item)}

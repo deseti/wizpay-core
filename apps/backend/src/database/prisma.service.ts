@@ -2,6 +2,7 @@ import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/commo
 import { ConfigService } from '@nestjs/config';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from '@prisma/client';
+import { isDockerRuntime } from '../config/runtime-env';
 
 const MAX_RETRIES = 5;
 const RETRY_DELAY_MS = 3000;
@@ -14,9 +15,7 @@ export class PrismaService
   private readonly logger = new Logger(PrismaService.name);
 
   constructor(configService: ConfigService) {
-    const connectionString =
-      process.env.DATABASE_URL ??
-      configService.getOrThrow<string>('DATABASE_URL');
+    const connectionString = configService.getOrThrow<string>('DATABASE_URL');
 
     process.env.DATABASE_URL = connectionString;
 
@@ -33,9 +32,7 @@ export class PrismaService
       '//$1:****@',
     );
     const isDocker =
-      process.env.DOCKER === 'true' ||
-      process.env.NODE_ENV === 'production' ||
-      connectionString.includes('@postgres:');
+      isDockerRuntime() || process.env.NODE_ENV === 'production';
 
     this.logger.log(`DATABASE_URL: ${maskedUrl}`);
     this.logger.log(`Environment: ${isDocker ? 'docker' : 'local'}`);

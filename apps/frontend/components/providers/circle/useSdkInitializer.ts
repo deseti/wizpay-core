@@ -86,7 +86,10 @@ export function useSdkInitializer({
       LOGIN_CONFIG_STORAGE_KEY,
     );
 
-    if (storedSession) {
+    if (storedSession?.authMethod === "passkey") {
+      persistSession(null);
+      setSession(null);
+    } else if (storedSession) {
       setSession(storedSession);
     }
 

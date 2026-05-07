@@ -1,5 +1,5 @@
+import { walletConnect, injected } from "@wagmi/connectors";
 import { createConfig, fallback, http } from "wagmi";
-import { injected } from "@wagmi/core";
 import { defineChain, type Chain } from "viem";
 import { sepolia } from "viem/chains";
 
@@ -56,6 +56,10 @@ export const ETHEREUM_SEPOLIA_RPC_URLS = parseRpcUrls(
 );
 
 export const ETHEREUM_SEPOLIA_RPC_URL = ETHEREUM_SEPOLIA_RPC_URLS[0];
+export const WALLETCONNECT_PROJECT_ID =
+  process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID?.trim() ?? "";
+export const HAS_WALLETCONNECT_PROJECT_ID =
+  WALLETCONNECT_PROJECT_ID.length > 0;
 
 /**
  * Arc Testnet — custom chain definition
@@ -115,6 +119,14 @@ const connectors = [
   injected({
     shimDisconnect: true,
   }),
+  ...(HAS_WALLETCONNECT_PROJECT_ID
+    ? [
+        walletConnect({
+          projectId: WALLETCONNECT_PROJECT_ID,
+          showQrModal: true,
+        }),
+      ]
+    : []),
 ];
 
 /**

@@ -2,6 +2,7 @@ import {
   DEFAULT_REDIS_HOST,
   DEFAULT_REDIS_PORT,
 } from './configuration';
+import { normalizeRuntimeEnvironmentValues } from './runtime-env';
 
 type EnvironmentValues = Record<string, unknown> & {
   DATABASE_URL?: string;
@@ -10,7 +11,9 @@ type EnvironmentValues = Record<string, unknown> & {
 };
 
 export function validateEnvironment(config: Record<string, unknown>) {
-  const environment = config as EnvironmentValues;
+  const environment = normalizeRuntimeEnvironmentValues(
+    config as EnvironmentValues & Record<string, string | undefined>,
+  ) as EnvironmentValues;
   const databaseUrl = environment.DATABASE_URL?.trim();
   const redisPort = Number.parseInt(
     environment.REDIS_PORT ?? String(DEFAULT_REDIS_PORT),

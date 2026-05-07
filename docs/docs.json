@@ -24,6 +24,7 @@
             "group": "Architecture",
             "pages": [
               "architecture",
+              "domain-multi-tenant-architecture",
               "execution-flow",
               "task-system"
             ]
@@ -32,7 +33,8 @@
             "group": "Reference",
             "pages": [
               "wallet-modes",
-              "api-overview"
+              "api-overview",
+              "circle-google-login-audit"
             ]
           }
         ]

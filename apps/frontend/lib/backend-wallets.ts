@@ -128,7 +128,7 @@ function mapBackendWallet(wallet: BackendWalletRecord): BackendManagedCircleWall
 
 function normalizeWalletApiError(error: unknown): WalletApiError {
   if (error instanceof BackendApiError) {
-    const nextError = new Error(error.message) as WalletApiError;
+    const nextError = new Error(formatWalletApiErrorMessage(error)) as WalletApiError;
     nextError.code = parseWalletApiCode(error.code);
     nextError.details = error.details;
     nextError.status = error.status;
@@ -148,4 +148,30 @@ function parseWalletApiCode(code: string | undefined) {
   }
 
   return /^\d+$/.test(code) ? Number(code) : code;
+}
+
+function formatWalletApiErrorMessage(error: BackendApiError) {
+  if (error.code === "DATABASE_UNREACHABLE") {
+    return joinMessageParts(
+      error.message,
+      error.details ||
+        "Start Docker Compose Postgres for local dev or point DATABASE_URL at 127.0.0.1:15432 when running apps/backend on the host."
+    );
+  }
+
+  if (error.status === 503 && error.details) {
+    return joinMessageParts(error.message, error.details);
+  }
+
+  return error.message;
+}
+
+function joinMessageParts(...parts: Array<string | undefined>) {
+  return parts.filter((part, index, values) => {
+    if (!part) {
+      return false;
+    }
+
+    return values.indexOf(part) === index;
+  }).join(" ");
 }

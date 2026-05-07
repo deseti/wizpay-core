@@ -17,6 +17,7 @@ import {
   getWalletModeDescription,
   getWalletModeLabel,
 } from "@/lib/wallet-mode";
+import { HAS_WALLETCONNECT_PROJECT_ID } from "@/lib/wagmi";
 
 const features = [
   { icon: Zap, label: "Multi-Token" },
@@ -106,8 +107,9 @@ export function ConnectWalletCard() {
 
           {walletMode === "external" ? (
             <p className="mt-3 text-xs leading-relaxed text-amber-300/80">
-              Injected browser wallets are supported in this build. WalletConnect QR
-              modal is currently disabled.
+              {HAS_WALLETCONNECT_PROJECT_ID
+                ? "Browser wallets and WalletConnect QR are available in this build."
+                : "Browser wallets."}
             </p>
           ) : null}
 

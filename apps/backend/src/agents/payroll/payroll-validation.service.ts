@@ -1,4 +1,5 @@
-import { Injectable, Logger, BadRequestException } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
+import { AnsService } from '../../ans/ans.service';
 import { BlockchainService } from '../../adapters/blockchain.service';
 
 // ─── Types ──────────────────────────────────────────────────────────
@@ -23,6 +24,13 @@ const TOKEN_DECIMALS: Record<string, number> = { USDC: 6, EURC: 6 };
 const MAX_BATCH_SIZE = 50;
 const MAX_REFERENCE_ID_LENGTH = 64;
 const ETH_ADDRESS_REGEX = /^0x[a-fA-F0-9]{40}$/;
+const ANS_SUFFIXES = ['.arc', '.wizpay'] as const;
+
+interface ResolvedRecipientAddress {
+  originalValue?: string;
+  resolvedAddress: string | null;
+  attemptedAnsResolution: boolean;
+}
 
 // ─── Service ────────────────────────────────────────────────────────
 
@@ -44,7 +52,10 @@ const ETH_ADDRESS_REGEX = /^0x[a-fA-F0-9]{40}$/;
 export class PayrollValidationService {
   private readonly logger = new Logger(PayrollValidationService.name);
 
-  constructor(private readonly blockchainService: BlockchainService) {}
+  constructor(
+    private readonly blockchainService: BlockchainService,
+    private readonly ansService: AnsService,
+  ) {}
 
   /**
    * Validate a payroll task payload before execution.
@@ -85,10 +96,12 @@ export class PayrollValidationService {
     // ── Individual recipient validation ────────────────────────────
     const decimals = TOKEN_DECIMALS[sourceToken ?? 'USDC'] ?? 6;
     const validatedRecipients: ValidatedRecipient[] = [];
+    const resolvedAddresses = await this.resolveRecipientAddresses(recipients);
 
     for (let i = 0; i < recipients.length; i++) {
       const recipient = recipients[i] as Record<string, unknown> | undefined;
       const prefix = `recipients[${i}]`;
+      const resolvedAddress = resolvedAddresses[i];
 
       if (!recipient || typeof recipient !== 'object') {
         errors.push(`${prefix}: must be an object`);
@@ -96,11 +109,21 @@ export class PayrollValidationService {
       }
 
       // Address
-      const address = recipient.address as string | undefined;
+      const address = resolvedAddress.originalValue;
+      let normalizedAddress: string | null = null;
+
       if (!address || typeof address !== 'string') {
         errors.push(`${prefix}.address: required`);
+      } else if (resolvedAddress.attemptedAnsResolution) {
+        if (!resolvedAddress.resolvedAddress) {
+          errors.push(`${prefix}.address: Domain ${address.trim()} is not registered`);
+        } else {
+          normalizedAddress = resolvedAddress.resolvedAddress;
+        }
       } else if (!ETH_ADDRESS_REGEX.test(address.trim())) {
         errors.push(`${prefix}.address: invalid Ethereum address "${address}"`);
+      } else {
+        normalizedAddress = address.trim();
       }
 
       // Amount
@@ -123,12 +146,12 @@ export class PayrollValidationService {
       }
 
       // If no errors for this recipient, add to validated list
-      if (address && amount !== undefined && amount !== null && amount !== '') {
+      if (normalizedAddress && amount !== undefined && amount !== null && amount !== '') {
         const amountStr = String(amount);
         const numAmount = Number(amountStr);
         if (!isNaN(numAmount) && numAmount > 0) {
           validatedRecipients.push({
-            address: (address as string).trim(),
+            address: normalizedAddress,
             amount: amountStr,
             amountUnits: this.parseAmountToUnits(amountStr, decimals),
             targetToken,
@@ -192,5 +215,95 @@ export class PayrollValidationService {
     } catch {
       return 0n;
     }
+  }
+
+  private async resolveRecipientAddresses(
+    recipients: unknown[],
+  ): Promise<ResolvedRecipientAddress[]> {
+    return Promise.all(
+      recipients.map(async (recipient, index) => {
+        if (!recipient || typeof recipient !== 'object') {
+          return {
+            resolvedAddress: null,
+            attemptedAnsResolution: false,
+          } satisfies ResolvedRecipientAddress;
+        }
+
+        const originalValue = this.getRecipientAddressValue(
+          recipient as Record<string, unknown>,
+        );
+        if (!originalValue) {
+          return {
+            originalValue,
+            resolvedAddress: null,
+            attemptedAnsResolution: false,
+          } satisfies ResolvedRecipientAddress;
+        }
+
+        const trimmedValue = originalValue.trim();
+        if (!this.shouldResolveAnsDomain(trimmedValue)) {
+          return {
+            originalValue,
+            resolvedAddress: null,
+            attemptedAnsResolution: false,
+          } satisfies ResolvedRecipientAddress;
+        }
+
+        try {
+          const resolvedAddress = await this.ansService.resolveAddress(trimmedValue);
+          if (!resolvedAddress || !ETH_ADDRESS_REGEX.test(resolvedAddress)) {
+            this.logger.warn(
+              `ANS resolution failed for recipients[${index}] domain "${trimmedValue}".`,
+            );
+            return {
+              originalValue,
+              resolvedAddress: null,
+              attemptedAnsResolution: true,
+            } satisfies ResolvedRecipientAddress;
+          }
+
+          this.logger.log(
+            `Resolved ANS domain "${trimmedValue}" to ${resolvedAddress}.`,
+          );
+
+          return {
+            originalValue,
+            resolvedAddress,
+            attemptedAnsResolution: true,
+          } satisfies ResolvedRecipientAddress;
+        } catch (error) {
+          this.logger.error(
+            `Unexpected ANS resolution error for recipients[${index}] domain "${trimmedValue}": ${error instanceof Error ? error.message : String(error)}`,
+          );
+          return {
+            originalValue,
+            resolvedAddress: null,
+            attemptedAnsResolution: true,
+          } satisfies ResolvedRecipientAddress;
+        }
+      }),
+    );
+  }
+
+  private getRecipientAddressValue(
+    recipient: Record<string, unknown>,
+  ): string | undefined {
+    if (typeof recipient.address === 'string') {
+      return recipient.address;
+    }
+
+    if (typeof recipient.recipientAddress === 'string') {
+      return recipient.recipientAddress;
+    }
+
+    return undefined;
+  }
+
+  private shouldResolveAnsDomain(value: string): boolean {
+    const normalizedValue = value.trim().toLowerCase();
+    return (
+      ANS_SUFFIXES.some((suffix) => normalizedValue.endsWith(suffix)) ||
+      !normalizedValue.startsWith('0x')
+    );
   }
 }

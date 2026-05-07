@@ -103,6 +103,7 @@ function TokenDetailCard({
             {tokenHistory.map((item) => {
               const actionLabel =
                 item.type === "payroll" ? "Send" :
+                item.type === "ans" ? "ANS" :
                 item.type === "add_lp" ? "Add LP" :
                 item.type === "remove_lp" ? "Remove LP" : item.type;
               const amount = item.totalAmountIn
@@ -111,10 +112,14 @@ function TokenDetailCard({
                   ? formatTokenAmount(item.lpAmount, 6)
                   : "—";
               const txUrl = getExplorerTxUrl(item.txHash);
+              const itemKey =
+                item.txHash !== "0x"
+                  ? item.txHash
+                  : `${item.type}-${item.referenceId ?? item.timestampMs}`;
 
               return (
                 <div
-                  key={item.txHash}
+                  key={itemKey}
                   className="flex items-center justify-between px-3 py-2.5 hover:bg-muted/15 transition-colors"
                 >
                   <div>

@@ -39,7 +39,7 @@ export interface HistoryItem {
 }
 
 /* ── Unified history covering all dashboard event types ── */
-export type HistoryActionType = "payroll" | "add_lp" | "remove_lp" | "swap" | "bridge" | "fx";
+export type HistoryActionType = "payroll" | "add_lp" | "remove_lp" | "swap" | "bridge" | "fx" | "ans";
 
 /** One atomic step of a cross-chain bridge transfer. */
 export interface NormalizedBridgeStep {
@@ -82,6 +82,9 @@ export interface UnifiedHistoryItem {
   lpShares?: bigint;
   /* Bridge-specific */
   bridgeTransfer?: NormalizedBridgeTransfer;
+  /* ANS-specific */
+  ansDomain?: string;
+  ansDurationYears?: number;
 }
 
 export interface TransactionActionResult {

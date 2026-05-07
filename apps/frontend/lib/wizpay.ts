@@ -115,7 +115,7 @@ export function getFriendlyErrorMessage(error: unknown): string {
   if (
     message.includes("standard circle rest api key prefix")
   ) {
-    return "CIRCLE_API_KEY is using the wrong key type. Use a Circle REST API key with TEST_API_KEY or LIVE_API_KEY prefix in apps/frontend/.env.local for local Next.js or in the root .env for Docker.";
+    return "CIRCLE_API_KEY is using the wrong key type. Use a Circle REST API key with TEST_API_KEY or LIVE_API_KEY prefix in the root .env, or in a local frontend override if you are intentionally bypassing the shared root env.";
   }
 
   if (
@@ -131,7 +131,7 @@ export function getFriendlyErrorMessage(error: unknown): string {
     message.includes("missing_api_key") ||
     message.includes("401 unauthorized")
   ) {
-    return "Circle StableFX is not authorized for the configured API key. Update CIRCLE_API_KEY with a StableFX-enabled key in apps/frontend/.env.local for local Next.js or in the root .env for Docker.";
+    return "Circle StableFX is not authorized for the configured API key. Update CIRCLE_API_KEY with a StableFX-enabled key in the root .env, or in a local frontend override if you are intentionally bypassing the shared root env.";
   }
 
   if (message.includes("exchange rate not set")) {
