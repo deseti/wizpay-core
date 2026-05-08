@@ -31,6 +31,9 @@ export const metadata: Metadata = {
   title: WIZPAY_SOCIAL_TITLE,
   description: WIZPAY_SOCIAL_DESCRIPTION,
   manifest: "/manifest.webmanifest",
+  icons: {
+    apple: "/apple-touch-icon.png",
+  },
   alternates: {
     canonical: "/",
   },
