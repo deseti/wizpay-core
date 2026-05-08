@@ -38,6 +38,14 @@ Circle Wallet-as-a-Service. The backend has signing authority.
 - `walletId` required per operation.
 - Supports EVM (ARC-TESTNET, ETH-SEPOLIA) and Solana (SOLANA-DEVNET).
 
+**Mobile session recovery:**
+
+On mobile browsers, Circle SDK sessions can silently expire when the browser is backgrounded or the device goes offline. The frontend provider layer handles this transparently:
+
+- `useMobileRecovery` listens to `visibilitychange`, `focus`, `pageshow`, and `online` events. On each trigger (throttled to prevent flooding) it calls `rearmSdkForSession` to re-attach the current auth token to the SDK instance.
+- `ensureSessionReady()` is called before every Circle-mode operation (transaction execution, bridge, typed data signing). If the session is stale, it re-arms the SDK and refreshes the wallet list before the operation proceeds.
+- If a Circle operation returns a recoverable session error (code `155706` or an invalid-device code), `withRecoveredSession` calls `ensureSessionReady` and retries the operation exactly once. The retry is transparent to the caller.
+
 **Wallet provisioning endpoints:**
 
 | Endpoint | Purpose |

@@ -44,6 +44,7 @@ import { useEmailAuth } from "./circle/useEmailAuth";
 import { useWalletLoader } from "./circle/useWalletLoader";
 import { useChallengeActions } from "./circle/useChallengeActions";
 import { useSdkInitializer } from "./circle/useSdkInitializer";
+import { useCircleMobileRecovery } from "./circle/useMobileRecovery";
 import type {
   LoginMethod,
   W3SLoginMethod,
@@ -138,6 +139,7 @@ const DISABLED_CONTEXT_VALUE: CircleWalletContextValue = {
   createTransferChallenge: async () => {
     throw new Error("Auth not configured.");
   },
+  ensureSessionReady: async () => {},
   executeChallenge: async () => {
     throw new Error("Auth not configured.");
   },
@@ -509,21 +511,7 @@ function CircleWalletProviderInner({
     authRequestInFlightRef,
   });
 
-  const {
-    executeChallenge,
-    createContractExecutionChallenge,
-    createTransferChallenge,
-    createTypedDataChallenge,
-    getWalletBalances,
-  } = useChallengeActions({
-    session,
-    postW3sAction,
-    executeChallengeForSession,
-    passkeyChallengeStoreRef,
-    passkeyRuntimeByWalletIdRef,
-  });
-
-  useSdkInitializer({
+  const { reinitializeSdk } = useSdkInitializer({
     sdkRef,
     loginConfigRef,
     googleOAuthDiagnosticsRef,
@@ -540,6 +528,90 @@ function CircleWalletProviderInner({
     ready,
     deviceId,
     ensureDeviceId,
+  });
+
+  const resetActiveCircleSession = useCallback(
+    (message: string) => {
+      authRequestInFlightRef.current = false;
+      clearCircleOAuthState();
+      clearStoredLoginConfig({ preserveGoogleCookies: true });
+      clearPasskeyState();
+      persistSession(null);
+      setArcWallet(null);
+      setAuthError(message);
+      setAuthStatus(null);
+      setHasPendingEmailOtp(false);
+      setIsAuthenticating(false);
+      setSession(null);
+      setSepoliaWallet(null);
+      setSolanaWallet(null);
+      setWallets([]);
+    },
+    [clearPasskeyState, clearStoredLoginConfig, persistSession],
+  );
+
+  const rearmSdkForSession = useCallback(
+    async (
+      authSession: CircleSession,
+      options?: { forceReinitialize?: boolean },
+    ) => {
+      if (isPasskeySession(authSession)) {
+        return null;
+      }
+
+      const sdk = options?.forceReinitialize
+        ? await reinitializeSdk()
+        : sdkRef.current ?? (await reinitializeSdk());
+
+      if (!sdk) {
+        throw new Error("Circle Web SDK is not ready yet.");
+      }
+
+      const updatedConfig: Record<string, unknown> = {
+        appSettings: { appId: getRestoredCircleAppId() },
+      };
+
+      if (loginConfigRef.current?.loginConfigs) {
+        updatedConfig.loginConfigs = loginConfigRef.current.loginConfigs;
+      }
+
+      sdk.updateConfigs(updatedConfig);
+      sdk.setAuthentication({
+        encryptionKey: authSession.encryptionKey,
+        userToken: authSession.userToken,
+      });
+
+      return sdk;
+    },
+    [reinitializeSdk],
+  );
+
+  const { ensureCircleSessionReady } = useCircleMobileRecovery({
+    session,
+    ready,
+    authRequestInFlightRef,
+    ensureDeviceId,
+    handleAuthFailure,
+    loadWalletsEnsuringSolana,
+    rearmSdkForSession,
+    resetActiveCircleSession,
+    setAuthError,
+    setAuthStatus,
+  });
+
+  const {
+    executeChallenge,
+    createContractExecutionChallenge,
+    createTransferChallenge,
+    createTypedDataChallenge,
+    getWalletBalances,
+  } = useChallengeActions({
+    session,
+    ensureCircleSessionReady,
+    postW3sAction,
+    executeChallengeForSession,
+    passkeyChallengeStoreRef,
+    passkeyRuntimeByWalletIdRef,
   });
 
   useEffect(() => {
@@ -580,6 +652,7 @@ function CircleWalletProviderInner({
     };
   }, [
     clearPasskeyState,
+    handleAuthFailure,
     loadWallets,
     loadWalletsEnsuringSolana,
     persistSession,
@@ -654,6 +727,12 @@ function CircleWalletProviderInner({
       createContractExecutionChallenge,
       createTransferChallenge,
       createTypedDataChallenge,
+      ensureSessionReady: async () => {
+        await ensureCircleSessionReady({
+          reason: "manual",
+          refreshWallets: true,
+        });
+      },
       executeChallenge,
       getWalletBalances,
       hasPendingEmailOtp,
@@ -691,6 +770,7 @@ function CircleWalletProviderInner({
       createContractExecutionChallenge,
       createTransferChallenge,
       createTypedDataChallenge,
+      ensureCircleSessionReady,
       executeChallenge,
       getWalletBalances,
       hasPendingEmailOtp,
@@ -703,6 +783,7 @@ function CircleWalletProviderInner({
       requestGoogleLogin,
       requestPasskeyLogin,
       requestPasskeyRegistration,
+      savePasskeySolanaAddress,
       sepoliaWallet,
       solanaWallet,
       session,

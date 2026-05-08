@@ -63,6 +63,7 @@ export const SUPPORTED_WALLET_CHAINS = new Set([
 ]);
 export const INVALID_DEVICE_ERROR_CODES = new Set([155113, 155137, 155143, 155144, 155145]);
 export const OAUTH_RECOVERY_ERROR_CODES = new Set([155114, 155140]);
+export const EXPIRED_SESSION_ERROR_CODES = new Set([155718, 155719]);
 
 export function getGoogleOAuthErrorMessage(diagnostics: GoogleOAuthDiagnostics | null) {
   if (!diagnostics) {
@@ -100,18 +101,8 @@ export function getErrorMessage(
   error: unknown,
   googleOAuthDiagnostics: GoogleOAuthDiagnostics | null = null
 ) {
-  const directMessage =
-    getNestedString(error, ["message"]) ??
-    getNestedString(error, ["error", "message"]) ??
-    getNestedString(error, ["data", "message"]);
-  const directCode =
-    (isRecord(error) && typeof error.code === "number" ? error.code : null) ??
-    (isRecord(error) && isRecord(error.error) && typeof error.error.code === "number"
-      ? error.error.code
-      : null) ??
-    (isRecord(error) && isRecord(error.data) && typeof error.data.code === "number"
-      ? error.data.code
-      : null);
+  const directMessage = getCircleErrorDetail(error).message;
+  const directCode = getCircleErrorDetail(error).code;
 
   if (error instanceof Error && error.message) {
     return error.message;
@@ -142,6 +133,42 @@ export function getErrorMessage(
   }
 
   return "Circle wallet request failed.";
+}
+
+export function getCircleErrorDetail(error: unknown) {
+  return {
+    code:
+      (isRecord(error) && typeof error.code === "number" ? error.code : null) ??
+      (isRecord(error) && typeof error.code === "string"
+        ? Number.parseInt(error.code, 10)
+        : null) ??
+      (isRecord(error) && isRecord(error.error) && typeof error.error.code === "number"
+        ? error.error.code
+        : null) ??
+      (isRecord(error) && isRecord(error.error) && typeof error.error.code === "string"
+        ? Number.parseInt(error.error.code, 10)
+        : null) ??
+      (isRecord(error) && isRecord(error.data) && typeof error.data.code === "number"
+        ? error.data.code
+        : null) ??
+      (isRecord(error) && isRecord(error.data) && typeof error.data.code === "string"
+        ? Number.parseInt(error.data.code, 10)
+        : null),
+    message:
+      getNestedString(error, ["message"]) ??
+      getNestedString(error, ["error", "message"]) ??
+      getNestedString(error, ["data", "message"]),
+  };
+}
+
+export function isCircleRecoverableSessionError(error: unknown) {
+  const { code } = getCircleErrorDetail(error);
+  return code === 155706 || INVALID_DEVICE_ERROR_CODES.has(code ?? -1);
+}
+
+export function isCircleExpiredSessionError(error: unknown) {
+  const { code } = getCircleErrorDetail(error);
+  return EXPIRED_SESSION_ERROR_CODES.has(code ?? -1);
 }
 
 export function isRecord(value: unknown): value is Record<string, unknown> {

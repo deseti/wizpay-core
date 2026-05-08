@@ -41,6 +41,7 @@ export function useBridgeScreen() {
     authMethod,
     createContractExecutionChallenge,
     createTransferChallenge,
+    ensureSessionReady,
     executeChallenge,
     getWalletBalances,
     savePasskeySolanaAddress,
@@ -566,6 +567,8 @@ export function useBridgeScreen() {
 
     try {
       const referenceId = `BRIDGE-${sourceChain}-TO-${destinationChain}-${Date.now()}`;
+
+      await ensureSessionReady();
 
       const userSourceWallet =
         sourceChain === "ARC-TESTNET"

@@ -118,6 +118,7 @@ export type CircleWalletContextValue = {
   authStatus: string | null;
   authenticated: boolean;
   closeLogin: () => void;
+  ensureSessionReady: () => Promise<void>;
   createContractExecutionChallenge: (
     payload: Record<string, unknown>
   ) => Promise<CircleChallengeHandle>;

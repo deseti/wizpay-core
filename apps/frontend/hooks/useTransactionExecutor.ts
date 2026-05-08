@@ -109,6 +109,7 @@ export function useTransactionExecutor() {
     arcWallet,
     createContractExecutionChallenge,
     createTypedDataChallenge,
+    ensureSessionReady,
     executeChallenge,
     sepoliaWallet,
   } = useCircleWallet();
@@ -185,6 +186,9 @@ export function useTransactionExecutor() {
     const chainId = params.chainId ?? arcTestnet.id;
     const publicClient = getPublicClientForChain(chainId);
     const startBlock = publicClient ? await publicClient.getBlockNumber() : 0n;
+
+    await ensureSessionReady();
+
     const targetWallet = getCircleWalletForChain(chainId);
 
     if (!targetWallet?.id) {
@@ -282,6 +286,8 @@ export function useTransactionExecutor() {
     typedData: Record<string, unknown>;
   }): Promise<Hex> => {
     if (walletMode === "circle") {
+      await ensureSessionReady();
+
       const targetWallet = getCircleWalletForChain(chainId);
 
       if (!targetWallet?.id) {

@@ -14,10 +14,11 @@ function truncateAddress(address: string) {
 }
 
 interface FaucetButtonProps {
+  compact?: boolean;
   walletActions?: ReactNode;
 }
 
-export function FaucetButton({ walletActions }: FaucetButtonProps) {
+export function FaucetButton({ compact = false, walletActions }: FaucetButtonProps) {
   const {
     arcWallet,
     sepoliaWallet,
@@ -87,6 +88,33 @@ export function FaucetButton({ walletActions }: FaucetButtonProps) {
       title: "Solana address saved",
       description: "Passkey Solana address saved. Use it for bridge destinations and faucets.",
     });
+  }
+
+  if (compact) {
+    return (
+      <div className="flex flex-col gap-3">
+        <p className="text-sm leading-6 text-muted-foreground/75">
+          Open Circle Faucet to top up your connected testnet wallets before you
+          bridge, swap, or add liquidity on mobile.
+        </p>
+        <Button
+          variant="outline"
+          className="h-11 w-full justify-start gap-3 rounded-2xl border-primary/20 bg-primary/8 text-foreground shadow-sm hover:border-primary/35 hover:bg-primary/12"
+          asChild
+        >
+          <a
+            href="https://faucet.circle.com"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            <div className="flex items-center justify-center rounded-xl bg-primary/15 p-1.5 text-primary">
+              <Droplet className="h-4 w-4" />
+            </div>
+            Open Circle Faucet
+          </a>
+        </Button>
+      </div>
+    );
   }
 
   return (

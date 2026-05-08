@@ -1,11 +1,11 @@
 "use client";
 
-import { useEffect, useRef } from "react";
-import type React from "react";import { PASSKEY_CONFIG } from "@/services/circle-auth.service";
+import { useCallback, useEffect, useRef } from "react";
+import type React from "react";
+import { PASSKEY_CONFIG } from "@/services/circle-auth.service";
 import { getPasskeySupportError } from "@/lib/circle-passkey";
 import {
   readStoredJson,
-  writeStoredJson,
   isW3SLoginCompleteResult,
   getGoogleOAuthDiagnostics,
   getRestoredCircleAppId,
@@ -66,6 +66,8 @@ export function useSdkInitializer({
   const persistSessionRef = useRef<
     ((nextSession: CircleSession | null) => void) | null
   >(null);
+  const initInFlightRef = useRef<Promise<W3SSdkInstance | null> | null>(null);
+  const unmountedRef = useRef(false);
 
   useEffect(() => {
     handleAuthFailureRef.current = handleAuthFailure;
@@ -78,6 +80,14 @@ export function useSdkInitializer({
   useEffect(() => {
     persistSessionRef.current = persistSession;
   }, [persistSession]);
+
+  useEffect(() => {
+    unmountedRef.current = false;
+
+    return () => {
+      unmountedRef.current = true;
+    };
+  }, []);
 
   // Restore persisted session from localStorage on first mount
   useEffect(() => {
@@ -106,11 +116,20 @@ export function useSdkInitializer({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Dynamically load and initialize the Circle W3S SDK
-  useEffect(() => {
-    let cancelled = false;
+  const initializeSdk = useCallback(
+    async (options?: { force?: boolean }) => {
+      if (initInFlightRef.current && !options?.force) {
+        return initInFlightRef.current;
+      }
 
-    async function initializeSdk() {
+      const nextPromise = (async () => {
+        if (options?.force) {
+          sdkRef.current = null;
+          if (!unmountedRef.current) {
+            setReady(false);
+          }
+        }
+
       try {
         const sdkModule =
           (await import("@circle-fin/w3s-pw-web-sdk")) as unknown as W3SSdkModule;
@@ -129,7 +148,7 @@ export function useSdkInitializer({
         if (restoredLoginConfig) {
           loginConfigRef.current = restoredLoginConfig;
 
-          if (!cancelled) {
+          if (!unmountedRef.current) {
             setHasPendingEmailOtp(restoredLoginConfig.loginMethod === "email");
           }
         }
@@ -146,7 +165,7 @@ export function useSdkInitializer({
         }
 
         const sdk = new sdkModule.W3SSdk(initialConfig, (error, result) => {
-          if (cancelled) {
+          if (unmountedRef.current) {
             return;
           }
 
@@ -180,25 +199,39 @@ export function useSdkInitializer({
 
         sdkRef.current = sdk;
 
-        if (!cancelled) {
+        if (!unmountedRef.current) {
           setReady(true);
           setAuthStatus(null);
         }
+
+        return sdk;
       } catch (error) {
-        if (!cancelled) {
+        if (!unmountedRef.current) {
           setReady(true);
           handleAuthFailureRef.current?.(error);
         }
+
+        return null;
       }
-    }
+      })();
 
+      initInFlightRef.current = nextPromise;
+
+      try {
+        return await nextPromise;
+      } finally {
+        if (initInFlightRef.current === nextPromise) {
+          initInFlightRef.current = null;
+        }
+      }
+    },
+    [googleOAuthDiagnosticsRef, loginConfigRef, sdkRef, setAuthStatus, setHasPendingEmailOtp, setIsAuthenticating, setReady, setSession],
+  );
+
+  // Dynamically load and initialize the Circle W3S SDK
+  useEffect(() => {
     void initializeSdk();
-
-    return () => {
-      cancelled = true;
-    };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [initializeSdk]);
 
   // Pre-fetch device ID as soon as SDK is ready so logins don't pay the round-trip cost
   useEffect(() => {
@@ -257,4 +290,11 @@ export function useSdkInitializer({
       cancelled = true;
     };
   }, [deviceId, ensureDeviceId, handleAuthFailure, ready, setAuthError]);
+
+  return {
+    reinitializeSdk: useCallback(
+      async () => initializeSdk({ force: true }),
+      [initializeSdk],
+    ),
+  };
 }

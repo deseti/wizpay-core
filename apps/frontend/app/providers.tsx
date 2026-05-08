@@ -11,6 +11,7 @@ import { CircleWalletProvider } from "@/components/providers/CircleWalletProvide
 import { HybridWalletProvider } from "@/components/providers/HybridWalletProvider";
 import { SolanaWalletProvider } from "@/components/providers/SolanaWalletProvider";
 import { arcTestnet, config } from "@/lib/wagmi";
+import { PwaRuntime } from "@/src/features/pwa/components/PwaRuntime";
 
 export function Providers({ children }: { children: React.ReactNode }) {
   const [queryClient] = useState(
@@ -37,7 +38,10 @@ export function Providers({ children }: { children: React.ReactNode }) {
           <CircleWalletProvider>
             <SolanaWalletProvider>
               <HybridWalletProvider>
-                <CircleApiProxyProvider>{children}</CircleApiProxyProvider>
+                <CircleApiProxyProvider>
+                  <PwaRuntime />
+                  {children}
+                </CircleApiProxyProvider>
               </HybridWalletProvider>
             </SolanaWalletProvider>
           </CircleWalletProvider>

@@ -27,10 +27,17 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   metadataBase: new URL(WIZPAY_APP_URL),
+  applicationName: "WizPay",
   title: WIZPAY_SOCIAL_TITLE,
   description: WIZPAY_SOCIAL_DESCRIPTION,
+  manifest: "/manifest.webmanifest",
   alternates: {
     canonical: "/",
+  },
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: "black-translucent",
+    title: "WizPay",
   },
   openGraph: {
     title: WIZPAY_SOCIAL_TITLE,

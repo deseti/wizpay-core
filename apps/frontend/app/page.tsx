@@ -7,12 +7,14 @@ import {
   ArrowRightLeft,
   ArrowUpRight,
   Coins,
+  Droplet,
   Route,
   TrendingUp,
   Wallet,
 } from "lucide-react";
 
 import { DashboardAppFrame } from "@/components/dashboard/DashboardAppFrame";
+import { FaucetButton } from "@/components/dashboard/FaucetButton";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -96,6 +98,30 @@ function QuickActions() {
         </Link>
       ))}
     </div>
+  );
+}
+
+function MobileFaucetCard() {
+  return (
+    <Card className="glass-card border-cyan-400/15 md:hidden">
+      <CardContent className="space-y-4 pt-5">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <p className="text-sm font-semibold text-foreground">
+              Need testnet funds?
+            </p>
+            <p className="mt-1 text-sm leading-6 text-muted-foreground/75">
+              The faucet is the fastest way to keep mobile flows moving when you
+              need fresh USDC or chain-native test funds.
+            </p>
+          </div>
+          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-cyan-500/12 text-cyan-300 ring-1 ring-cyan-400/20">
+            <Droplet className="h-5 w-5" />
+          </div>
+        </div>
+        <FaucetButton compact />
+      </CardContent>
+    </Card>
   );
 }
 
@@ -296,6 +322,8 @@ function HomeContent() {
           <QuickActions />
         </CardContent>
       </Card>
+
+      <MobileFaucetCard />
 
       {/* Assets Summary */}
       <Card className="glass-card border-border/40">

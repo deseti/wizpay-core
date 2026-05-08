@@ -1,100 +1,34 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 
 import { useMediaQuery } from "@/hooks/useMediaQuery";
+import {
+  showPwaInstallPrompt,
+  usePwaInstallState,
+} from "@/src/features/pwa/install-state";
 
 import {
-  clearMobileInstallPromptState,
   dismissMobileInstallPrompt,
   readMobileInstallPromptState,
 } from "../storage";
 
 const DISMISS_TTL_MS = 1000 * 60 * 60 * 24 * 7;
-const MOBILE_UA_REGEX = /android|iphone|ipad|ipod|mobile/i;
-
-type MobilePlatform = "android" | "ios" | "other";
-
-interface InstallChoiceResult {
-  outcome: "accepted" | "dismissed";
-  platform: string;
-}
-
-interface BeforeInstallPromptEvent extends Event {
-  prompt: () => Promise<void>;
-  userChoice: Promise<InstallChoiceResult>;
-}
-
-function detectPlatform(userAgent: string): MobilePlatform {
-  if (/iphone|ipad|ipod/i.test(userAgent)) {
-    return "ios";
-  }
-
-  if (/android/i.test(userAgent)) {
-    return "android";
-  }
-
-  return "other";
-}
 
 export function useMobileInstallPrompt() {
   const isMobileViewport = useMediaQuery("(max-width: 767px)");
-  const isStandaloneMode = useMediaQuery("(display-mode: standalone)");
-  const [deferredPrompt, setDeferredPrompt] =
-    useState<BeforeInstallPromptEvent | null>(null);
-  const [dismissedAt, setDismissedAt] = useState<number | null>(null);
+  const {
+    isInstalled,
+    isMobileDevice,
+    manualInstallAvailable,
+    nativePromptAvailable,
+    platform,
+  } = usePwaInstallState();
+  const [dismissedAt, setDismissedAt] = useState<number | null>(
+    () => readMobileInstallPromptState().dismissedAt,
+  );
   const [currentTimestamp, setCurrentTimestamp] = useState(() => Date.now());
-  const [platform, setPlatform] = useState<MobilePlatform>("other");
-  const [isMobileDevice, setIsMobileDevice] = useState(false);
   const [showInstructions, setShowInstructions] = useState(false);
-
-  const navigatorWithStandalone =
-    typeof navigator === "undefined"
-      ? null
-      : (navigator as Navigator & { standalone?: boolean });
-  const isInstalled =
-    isStandaloneMode || navigatorWithStandalone?.standalone === true;
-
-  useEffect(() => {
-    if (typeof window === "undefined") {
-      return;
-    }
-
-    const userAgent = navigator.userAgent;
-    const syncPromptEnvironment = () => {
-      setDismissedAt(readMobileInstallPromptState().dismissedAt);
-      setPlatform(detectPlatform(userAgent));
-      setIsMobileDevice(MOBILE_UA_REGEX.test(userAgent));
-      setCurrentTimestamp(Date.now());
-    };
-
-    syncPromptEnvironment();
-
-    const handleBeforeInstallPrompt = (event: Event) => {
-      event.preventDefault();
-      setDeferredPrompt(event as BeforeInstallPromptEvent);
-      clearMobileInstallPromptState();
-      setDismissedAt(null);
-    };
-
-    const handleAppInstalled = () => {
-      setDeferredPrompt(null);
-    };
-
-    window.addEventListener(
-      "beforeinstallprompt",
-      handleBeforeInstallPrompt as EventListener,
-    );
-    window.addEventListener("appinstalled", handleAppInstalled);
-
-    return () => {
-      window.removeEventListener(
-        "beforeinstallprompt",
-        handleBeforeInstallPrompt as EventListener,
-      );
-      window.removeEventListener("appinstalled", handleAppInstalled);
-    };
-  }, []);
 
   const isDismissed = useMemo(() => {
     if (!dismissedAt) {
@@ -105,7 +39,11 @@ export function useMobileInstallPrompt() {
   }, [currentTimestamp, dismissedAt]);
 
   const canShowPrompt =
-    isMobileViewport && isMobileDevice && !isInstalled && !isDismissed;
+    isMobileViewport &&
+    isMobileDevice &&
+    !isInstalled &&
+    !isDismissed &&
+    (nativePromptAvailable || manualInstallAvailable);
 
   const dismissPrompt = useCallback(() => {
     const nextDismissedAt = Date.now();
@@ -115,23 +53,20 @@ export function useMobileInstallPrompt() {
   }, []);
 
   const promptInstall = useCallback(async () => {
-    if (!deferredPrompt) {
+    if (!nativePromptAvailable) {
       setShowInstructions(true);
       return false;
     }
 
-    await deferredPrompt.prompt();
-    const result = await deferredPrompt.userChoice;
-    setDeferredPrompt(null);
+    const result = await showPwaInstallPrompt();
 
-    if (result.outcome === "accepted") {
-      setIsInstalled(true);
+    if (result?.outcome === "accepted") {
       return true;
     }
 
     setShowInstructions(true);
     return false;
-  }, [deferredPrompt]);
+  }, [nativePromptAvailable]);
 
   const instructionText =
     platform === "ios"
@@ -149,6 +84,6 @@ export function useMobileInstallPrompt() {
     promptInstall,
     setShowInstructions,
     showInstructions,
-    supportsNativePrompt: Boolean(deferredPrompt),
+    supportsNativePrompt: nativePromptAvailable,
   };
 }

@@ -221,7 +221,23 @@ export function useWalletLoader({
       return new Promise<unknown>((resolve, reject) => {
         sdk.execute(challengeId, (error, result) => {
           if (error) {
-            reject(new Error(getErrorMessage(error)));
+            const nextError = new Error(getErrorMessage(error)) as Error & {
+              code?: number | string;
+              raw?: unknown;
+            };
+
+            if (isRecord(error) && (typeof error.code === "number" || typeof error.code === "string")) {
+              nextError.code = error.code;
+            } else if (
+              isRecord(error) &&
+              isRecord(error.error) &&
+              (typeof error.error.code === "number" || typeof error.error.code === "string")
+            ) {
+              nextError.code = error.error.code;
+            }
+
+            nextError.raw = error;
+            reject(nextError);
             return;
           }
 

@@ -8,6 +8,7 @@ import {
   type PasskeyChainRuntime,
 } from "@/lib/circle-passkey";
 import {
+  isCircleRecoverableSessionError,
   isPasskeySession,
   isRecord,
   isHexValue,
@@ -80,6 +81,11 @@ function buildW3sUserActionParams(
 
 export interface ChallengeActionsDeps {
   session: CircleSession | null;
+  ensureCircleSessionReady: (options?: {
+    forceReinitialize?: boolean;
+    reason?: string;
+    refreshWallets?: boolean;
+  }) => Promise<void>;
   postW3sAction: (
     action: string,
     params?: Record<string, unknown>,
@@ -98,20 +104,63 @@ export interface ChallengeActionsDeps {
 
 export function useChallengeActions({
   session,
+  ensureCircleSessionReady,
   postW3sAction,
   executeChallengeForSession,
   passkeyChallengeStoreRef,
   passkeyRuntimeByWalletIdRef,
 }: ChallengeActionsDeps) {
+  const withRecoveredSession = useCallback(
+    async <T,>(
+      actionLabel: string,
+      action: () => Promise<T>,
+      options?: { refreshWallets?: boolean },
+    ) => {
+      if (!session || isPasskeySession(session) || !session.userToken) {
+        throw new Error("Circle session is not available.");
+      }
+
+      await ensureCircleSessionReady({
+        reason: `${actionLabel}:preflight`,
+        refreshWallets: options?.refreshWallets,
+      });
+
+      try {
+        return await action();
+      } catch (error) {
+        if (!isCircleRecoverableSessionError(error)) {
+          throw error;
+        }
+
+        await ensureCircleSessionReady({
+          forceReinitialize: true,
+          reason: `${actionLabel}:retry`,
+          refreshWallets: true,
+        });
+
+        return action();
+      }
+    },
+    [ensureCircleSessionReady, session],
+  );
+
   const executeChallenge = useCallback(
     async (challengeId: string) => {
       if (!session) {
         throw new Error("Circle session is not available.");
       }
 
-      return executeChallengeForSession(challengeId, session);
+       if (isPasskeySession(session)) {
+        return executeChallengeForSession(challengeId, session);
+      }
+
+      return withRecoveredSession(
+        "executeChallenge",
+        () => executeChallengeForSession(challengeId, session),
+        { refreshWallets: false },
+      );
     },
-    [executeChallengeForSession, session],
+    [executeChallengeForSession, session, withRecoveredSession],
   );
 
   const createContractExecutionChallenge = useCallback(
@@ -164,9 +213,13 @@ export function useChallengeActions({
         throw new Error("Circle session is not available.");
       }
 
-      const response = await postW3sAction(
+      const response = await withRecoveredSession(
         "createContractExecutionChallenge",
-        buildW3sUserActionParams(payload, session.userToken),
+        () =>
+          postW3sAction(
+            "createContractExecutionChallenge",
+            buildW3sUserActionParams(payload, session.userToken),
+          ),
       );
 
       if (!isRecord(response)) {
@@ -184,7 +237,7 @@ export function useChallengeActions({
         raw: response,
       };
     },
-    [passkeyChallengeStoreRef, postW3sAction, session],
+    [passkeyChallengeStoreRef, postW3sAction, session, withRecoveredSession],
   );
 
   const createTransferChallenge = useCallback(
@@ -193,9 +246,13 @@ export function useChallengeActions({
         throw new Error("Circle session is not available.");
       }
 
-      const response = await postW3sAction(
+      const response = await withRecoveredSession(
         "createTransferChallenge",
-        buildW3sUserActionParams(payload, session.userToken),
+        () =>
+          postW3sAction(
+            "createTransferChallenge",
+            buildW3sUserActionParams(payload, session.userToken),
+          ),
       );
 
       if (!isRecord(response)) {
@@ -213,7 +270,7 @@ export function useChallengeActions({
         raw: response,
       };
     },
-    [postW3sAction, session],
+    [postW3sAction, session, withRecoveredSession],
   );
 
   const createTypedDataChallenge = useCallback(
@@ -255,9 +312,13 @@ export function useChallengeActions({
         throw new Error("Circle session is not available.");
       }
 
-      const response = await postW3sAction(
+      const response = await withRecoveredSession(
         "createTypedDataChallenge",
-        buildW3sUserActionParams(payload, session.userToken),
+        () =>
+          postW3sAction(
+            "createTypedDataChallenge",
+            buildW3sUserActionParams(payload, session.userToken),
+          ),
       );
 
       if (!isRecord(response)) {
@@ -277,7 +338,7 @@ export function useChallengeActions({
         raw: response,
       };
     },
-    [passkeyChallengeStoreRef, postW3sAction, session],
+    [passkeyChallengeStoreRef, postW3sAction, session, withRecoveredSession],
   );
 
   const getWalletBalances = useCallback(
@@ -300,10 +361,15 @@ export function useChallengeActions({
         throw new Error("Circle session is not available.");
       }
 
-      const response = await postW3sAction("getWalletBalances", {
-        userToken: session.userToken,
-        walletId,
-      });
+      const response = await withRecoveredSession(
+        "getWalletBalances",
+        () =>
+          postW3sAction("getWalletBalances", {
+            userToken: session.userToken,
+            walletId,
+          }),
+        { refreshWallets: false },
+      );
 
       if (!isRecord(response) || !Array.isArray(response.tokenBalances)) {
         return [];
@@ -315,7 +381,7 @@ export function useChallengeActions({
           (balance): balance is CircleWalletTokenBalance => balance !== null,
         );
     },
-    [passkeyRuntimeByWalletIdRef, postW3sAction, session],
+    [passkeyRuntimeByWalletIdRef, postW3sAction, session, withRecoveredSession],
   );
 
   return {
