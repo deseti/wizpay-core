@@ -1,5 +1,5 @@
 export const WIZPAY_APP_URL = "https://app.wizpay.xyz";
-export const WIZPAY_SOCIAL_TITLE = "WizPay | Cross-token payroll on Arc";
+export const WIZPAY_SOCIAL_TITLE = "WizPay Apps PayMent";
 export const WIZPAY_SOCIAL_DESCRIPTION =
   "Send payroll, bridge funds, swap assets, and manage liquidity from a single WizPay dashboard on Arc Testnet.";
 export const WIZPAY_OG_IMAGE_URL = `${WIZPAY_APP_URL}/opengraph-image`;

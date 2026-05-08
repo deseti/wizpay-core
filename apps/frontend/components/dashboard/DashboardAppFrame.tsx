@@ -7,6 +7,7 @@ import { DashboardBottomNav } from "@/components/dashboard/DashboardBottomNav";
 import { DashboardHeader } from "@/components/dashboard/DashboardHeader";
 import { DashboardSidebar } from "@/components/dashboard/DashboardSidebar";
 import { useHybridWallet } from "@/components/providers/HybridWalletProvider";
+import { MobileInstallPrompt } from "@/src/features/profile/components/MobileInstallPrompt";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { cn } from "@/lib/utils";
 
@@ -39,6 +40,7 @@ export function DashboardAppFrame({ children }: DashboardAppFrameProps) {
           <main className="mx-auto flex w-full max-w-7xl flex-1 items-center justify-center px-4 py-8 sm:px-6">
             <ConnectWalletCard />
           </main>
+          <MobileInstallPrompt hasBottomNav={false} />
         </div>
       ) : (
         <>
@@ -57,6 +59,7 @@ export function DashboardAppFrame({ children }: DashboardAppFrameProps) {
             </main>
           </div>
 
+          <MobileInstallPrompt hasBottomNav />
           <DashboardBottomNav />
         </>
       )}

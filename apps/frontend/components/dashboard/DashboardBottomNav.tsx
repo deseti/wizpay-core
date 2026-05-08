@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { ArrowLeftRight, Coins, Home, Wallet } from "lucide-react";
+import { ArrowLeftRight, Coins, Home, User, Wallet } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const tabs = [
@@ -10,6 +10,7 @@ const tabs = [
   { href: "/swap", label: "Swap", icon: ArrowLeftRight },
   { href: "/liquidity", label: "Liquidity", icon: Coins },
   { href: "/assets", label: "Assets", icon: Wallet },
+  { href: "/profile", label: "Profile", icon: User },
 ] as const;
 
 function isActiveDestination(pathname: string, href: string) {

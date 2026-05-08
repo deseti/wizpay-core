@@ -1,6 +1,7 @@
 "use client";
 
 import { ConnectButton } from "@rainbow-me/rainbowkit";
+import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import {
   ArrowRightLeft,
@@ -22,6 +23,35 @@ import { arcTestnet } from "@/lib/wagmi";
 
 function truncateAddress(address: string) {
   return `${address.slice(0, 6)}…${address.slice(-4)}`;
+}
+
+function MobileProfileEntry({
+  label,
+  statusLabel,
+}: {
+  label: string;
+  statusLabel: string;
+}) {
+  return (
+    <Link
+      href="/profile"
+      className="flex items-center gap-2 rounded-2xl border border-border/40 bg-card/60 px-2.5 py-1.5 backdrop-blur-md shadow-lg shadow-black/10 transition-all hover:border-primary/25 hover:bg-primary/10 active:scale-95 md:hidden"
+      aria-label="Open profile"
+    >
+      <span className="relative flex h-8 w-8 items-center justify-center rounded-xl bg-gradient-to-br from-primary/25 to-violet-500/20 text-primary ring-1 ring-primary/20">
+        <User className="h-4 w-4" />
+        <span className="absolute bottom-0.5 right-0.5 h-2.5 w-2.5 rounded-full border border-background bg-emerald-400" />
+      </span>
+      <span className="hidden min-[380px]:flex min-w-0 flex-col text-left leading-none">
+        <span className="truncate text-[11px] font-semibold text-foreground">
+          {label}
+        </span>
+        <span className="truncate text-[10px] uppercase tracking-[0.18em] text-muted-foreground/65">
+          {statusLabel}
+        </span>
+      </span>
+    </Link>
+  );
 }
 
 export function DashboardHeader() {
@@ -150,7 +180,12 @@ export function DashboardHeader() {
                 Sign In to App Wallet
               </button>
             ) : (
-              <div className="flex items-center gap-1.5 rounded-2xl border border-border/40 bg-card/50 p-1 backdrop-blur-md shadow-lg shadow-black/10">
+              <>
+                <MobileProfileEntry
+                  label={userEmail?.split("@")[0] ?? activeWalletShortAddress ?? "Account"}
+                  statusLabel="App Wallet"
+                />
+                <div className="hidden items-center gap-1.5 rounded-2xl border border-border/40 bg-card/50 p-1 backdrop-blur-md shadow-lg shadow-black/10 md:flex">
                 {activeWalletAddress ? (
                   <button
                     onClick={() =>
@@ -308,7 +343,8 @@ export function DashboardHeader() {
                     </>
                   ) : null}
                 </div>
-              </div>
+                </div>
+              </>
             )
           ) : (
             <ConnectButton.Custom>
@@ -340,11 +376,16 @@ export function DashboardHeader() {
                 }
 
                 return (
-                  <div className="flex items-center gap-1.5 rounded-2xl border border-border/40 bg-card/50 p-1 backdrop-blur-md shadow-lg shadow-black/10">
+                  <>
+                    <MobileProfileEntry
+                      label={activeWalletShortAddress ?? account?.displayName ?? "Account"}
+                      statusLabel={activeWalletChainName ?? "External"}
+                    />
+                    <div className="hidden items-center gap-1.5 rounded-2xl border border-border/40 bg-card/50 p-1 backdrop-blur-md shadow-lg shadow-black/10 md:flex">
                     {activeWalletAddress ? (
                       <button
                         onClick={() => void copyAddress(activeWalletAddress)}
-                        className="flex items-center gap-1.5 rounded-xl px-2.5 py-2 font-mono text-[11px] text-foreground/75 transition-all hover:bg-primary/10 hover:text-primary active:scale-95 sm:text-xs"
+                        className="hidden items-center gap-1.5 rounded-xl px-2.5 py-2 font-mono text-[11px] text-foreground/75 transition-all hover:bg-primary/10 hover:text-primary active:scale-95 sm:flex sm:text-xs"
                         title="Copy active wallet address"
                       >
                         <span className="hidden min-[400px]:inline">
@@ -379,7 +420,8 @@ export function DashboardHeader() {
                       </span>
                       <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
                     </button>
-                  </div>
+                    </div>
+                  </>
                 );
               }}
             </ConnectButton.Custom>
