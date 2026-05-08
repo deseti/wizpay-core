@@ -158,6 +158,11 @@ function AssetsContent() {
   const { balances, isLoading } = useTokenBalances();
   const { walletAddress } = useActiveWalletAddress();
   const wp = useWizPay();
+  const totalUsdValue =
+    Number(balances.USDC) / 1e6 + (Number(balances.EURC) / 1e6) * 1.08;
+  const activeTokenCount = TOKEN_OPTIONS.filter(
+    (token) => balances[token.symbol] > 0n,
+  ).length;
 
   if (isLoading) {
     return (
@@ -206,6 +211,41 @@ function AssetsContent() {
         )}
       </div>
 
+      <Card className="glass-card border-primary/20 overflow-hidden">
+        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_right,rgba(34,211,238,0.16),transparent_48%),radial-gradient(circle_at_bottom_left,rgba(139,92,246,0.14),transparent_44%)]" />
+        <CardContent className="relative py-5">
+          <div className="grid gap-4 sm:grid-cols-3">
+            <div>
+              <p className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground/55">
+                Portfolio Value
+              </p>
+              <p className="mt-2 text-2xl font-bold tracking-tight neon-text">
+                ${totalUsdValue.toLocaleString("en-US", {
+                  minimumFractionDigits: 2,
+                  maximumFractionDigits: 2,
+                })}
+              </p>
+            </div>
+            <div>
+              <p className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground/55">
+                Active Tokens
+              </p>
+              <p className="mt-2 text-xl font-semibold">
+                {activeTokenCount}
+              </p>
+            </div>
+            <div>
+              <p className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground/55">
+                Network
+              </p>
+              <p className="mt-2 text-sm font-medium text-cyan-300">
+                Arc Testnet
+              </p>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
       {!hasAnyBalance ? (
         <EmptyStateView
           icon={<Wallet className="h-7 w-7 text-primary/60" />}
@@ -223,7 +263,7 @@ function AssetsContent() {
           }
         />
       ) : (
-        <div className="grid gap-4 sm:grid-cols-2">
+        <div className="grid gap-4">
           {TOKEN_OPTIONS.map((token) => (
             <TokenDetailCard
               key={token.symbol}

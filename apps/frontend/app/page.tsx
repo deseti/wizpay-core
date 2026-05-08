@@ -3,10 +3,10 @@
 import { useMemo } from "react";
 import Link from "next/link";
 import {
+  AtSign,
   ArrowRightLeft,
   ArrowUpRight,
   Coins,
-  Repeat,
   Route,
   TrendingUp,
   Wallet,
@@ -36,7 +36,7 @@ import type { UnifiedHistoryItem } from "@/lib/types";
 
 const QUICK_ACTIONS = [
   { href: "/send", label: "Send", icon: ArrowRightLeft, color: "violet" },
-  { href: "/swap", label: "Swap", icon: Repeat, color: "cyan" },
+  { href: "/ans", label: "ANS", icon: AtSign, color: "cyan" },
   { href: "/bridge", label: "Bridge", icon: Route, color: "emerald" },
   { href: "/liquidity", label: "LP", icon: Coins, color: "amber" },
 ] as const;

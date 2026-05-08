@@ -160,15 +160,10 @@ export function DashboardHeader() {
                         activeWalletLabel
                       )
                     }
-                    className="flex items-center gap-1.5 rounded-xl px-2.5 py-2 font-mono text-[11px] text-foreground/75 transition-all hover:bg-primary/10 hover:text-primary active:scale-95 sm:text-xs"
+                    className="hidden sm:flex items-center gap-1.5 rounded-xl px-2.5 py-2 font-mono text-[11px] text-foreground/75 transition-all hover:bg-primary/10 hover:text-primary active:scale-95 sm:text-xs"
                     title="Copy active wallet address"
                   >
-                    <span className="hidden min-[400px]:inline">
-                      {activeWalletShortAddress}
-                    </span>
-                    <span className="inline min-[400px]:hidden">
-                      {truncateAddress(activeWalletAddress)}
-                    </span>
+                    {activeWalletShortAddress}
                     {copiedAddress === "active" ? (
                       <Check className="h-3 w-3 text-emerald-400" />
                     ) : (
@@ -192,105 +187,125 @@ export function DashboardHeader() {
                   </button>
 
                   {menuOpen ? (
-                    <div className="absolute right-0 top-full z-50 mt-2 w-60 overflow-hidden rounded-2xl border border-border/40 bg-card/95 shadow-2xl shadow-black/40 backdrop-blur-2xl animate-scale-in">
-                      <div className="border-b border-border/30 px-4 py-3">
-                        <p className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground/55">
-                          Active Wallet
-                        </p>
-                        <p className="mt-1 text-sm font-semibold text-foreground">
-                          {activeWalletLabel}
-                        </p>
-                        <p className="mt-1 text-xs text-muted-foreground">
-                          Logged in via {loginMethodLabel}
-                        </p>
-                        {userEmail ? (
-                          <p className="mt-2 flex items-center gap-1.5 text-xs text-muted-foreground/75">
-                            <Mail className="h-3.5 w-3.5" />
-                            {userEmail}
-                          </p>
-                        ) : null}
-                      </div>
-
-                      {activeWalletAddress ? (
-                        <div className="border-b border-border/30 px-3 py-3">
-                          <button
-                            onClick={() =>
-                              void copyAddress(
-                                activeWalletAddress,
-                                "active",
-                                activeWalletLabel
-                              )
-                            }
-                            className="flex w-full items-center justify-between rounded-xl border border-border/30 bg-background/40 px-3 py-2 text-left transition-all hover:border-primary/20 hover:bg-primary/10"
-                          >
-                            <div>
-                              <p className="text-[10px] uppercase tracking-[0.2em] text-muted-foreground/60">
-                                Active App Wallet
-                              </p>
-                              <p className="font-mono text-xs text-foreground/80">
-                                {truncateAddress(activeWalletAddress)}
-                              </p>
-                            </div>
-                            {copiedAddress === "active" ? (
-                              <Check className="h-3.5 w-3.5 text-emerald-400" />
-                            ) : (
-                              <Copy className="h-3.5 w-3.5 text-muted-foreground" />
-                            )}
-                          </button>
+                    <>
+                      {/* Mobile backdrop */}
+                      <div
+                        className="fixed inset-0 z-40 bg-black/60 backdrop-blur-sm md:hidden"
+                        onClick={() => setMenuOpen(false)}
+                      />
+                      {/* Sheet – bottom on mobile, dropdown on desktop */}
+                      <div className="
+                        fixed inset-x-0 bottom-0 z-50 max-h-[80vh] overflow-y-auto rounded-t-3xl border-t border-border/40 bg-card/98 shadow-2xl shadow-black/60 backdrop-blur-2xl animate-scale-in
+                        md:absolute md:inset-auto md:right-0 md:top-full md:mt-2 md:max-h-none md:w-64 md:overflow-hidden md:rounded-2xl md:rounded-t-2xl md:border md:shadow-2xl
+                      ">
+                        {/* Handle bar (mobile only) */}
+                        <div className="flex justify-center pt-2.5 pb-1 md:hidden">
+                          <div className="h-1 w-10 rounded-full bg-border/60" />
                         </div>
-                      ) : null}
 
-                      {circleWalletEntries.length > 0 ? (
-                        <div className="border-b border-border/30 px-3 py-3">
-                          <p className="mb-2 px-1 text-[10px] uppercase tracking-[0.2em] text-muted-foreground/60">
-                            Available Circle Addresses
+                        <div className="border-b border-border/30 px-4 py-3">
+                          <p className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground/55">
+                            Active Wallet
                           </p>
-                          <div className="space-y-2">
-                            {circleWalletEntries.map((wallet) => (
-                              <button
-                                key={wallet.id}
-                                onClick={() =>
-                                  void copyAddress(
-                                    wallet.address,
-                                    wallet.id,
-                                    wallet.label,
-                                    wallet.id === "solana"
-                                      ? "Use this Solana Devnet address for Solana faucets and Solana bridge destinations."
-                                      : `Use this ${wallet.label} address when you need funds on that chain.`
-                                  )
-                                }
-                                className="flex w-full items-center justify-between rounded-xl border border-border/30 bg-background/35 px-3 py-2 text-left transition-all hover:border-primary/20 hover:bg-primary/10"
-                              >
-                                <div>
-                                  <p className="text-[10px] uppercase tracking-[0.2em] text-muted-foreground/60">
-                                    {wallet.label}
-                                  </p>
-                                  <p className="font-mono text-xs text-foreground/80">
-                                    {truncateAddress(wallet.address)}
-                                  </p>
-                                </div>
-                                {copiedAddress === wallet.id ? (
-                                  <Check className="h-3.5 w-3.5 text-emerald-400" />
+                          <p className="mt-1 text-sm font-semibold text-foreground">
+                            {activeWalletLabel}
+                          </p>
+                          <p className="mt-1 text-xs text-muted-foreground">
+                            Logged in via {loginMethodLabel}
+                          </p>
+                          {userEmail ? (
+                            <p className="mt-2 flex items-center gap-1.5 text-xs text-muted-foreground/75">
+                              <Mail className="h-3.5 w-3.5" />
+                              {userEmail}
+                            </p>
+                          ) : null}
+                        </div>
+
+                        {activeWalletAddress ? (
+                          <div className="border-b border-border/30 px-3 py-3">
+                            <button
+                              onClick={() =>
+                                void copyAddress(
+                                  activeWalletAddress,
+                                  "active",
+                                  activeWalletLabel
+                                )
+                              }
+                              className="flex w-full items-center justify-between rounded-xl border border-border/30 bg-background/40 px-3 py-2.5 text-left transition-all hover:border-primary/20 hover:bg-primary/10"
+                            >
+                              <div>
+                                <p className="text-[10px] uppercase tracking-[0.2em] text-muted-foreground/60">
+                                  Active App Wallet
+                                </p>
+                                <p className="mt-0.5 font-mono text-xs text-foreground/80 break-all">
+                                  {activeWalletAddress}
+                                </p>
+                              </div>
+                              <div className="ml-3 shrink-0">
+                                {copiedAddress === "active" ? (
+                                  <Check className="h-4 w-4 text-emerald-400" />
                                 ) : (
-                                  <Copy className="h-3.5 w-3.5 text-muted-foreground" />
+                                  <Copy className="h-4 w-4 text-muted-foreground" />
                                 )}
-                              </button>
-                            ))}
+                              </div>
+                            </button>
                           </div>
-                        </div>
-                      ) : null}
+                        ) : null}
 
-                      <button
-                        onClick={() => {
-                          logout();
-                          setMenuOpen(false);
-                        }}
-                        className="flex w-full items-center gap-3 border-t border-border/30 px-4 py-3 text-sm text-red-400 transition-all hover:bg-red-500/10"
-                      >
-                        <LogOut className="h-4 w-4" />
-                        Logout
-                      </button>
-                    </div>
+                        {circleWalletEntries.length > 0 ? (
+                          <div className="border-b border-border/30 px-3 py-3">
+                            <p className="mb-2 px-1 text-[10px] uppercase tracking-[0.2em] text-muted-foreground/60">
+                              All Circle Addresses
+                            </p>
+                            <div className="space-y-2">
+                              {circleWalletEntries.map((wallet) => (
+                                <button
+                                  key={wallet.id}
+                                  onClick={() =>
+                                    void copyAddress(
+                                      wallet.address,
+                                      wallet.id,
+                                      wallet.label,
+                                      wallet.id === "solana"
+                                        ? "Use this Solana Devnet address for Solana faucets and Solana bridge destinations."
+                                        : `Use this ${wallet.label} address when you need funds on that chain.`
+                                    )
+                                  }
+                                  className="flex w-full items-center justify-between rounded-xl border border-border/30 bg-background/35 px-3 py-2.5 text-left transition-all hover:border-primary/20 hover:bg-primary/10"
+                                >
+                                  <div className="min-w-0 flex-1">
+                                    <p className="text-[10px] uppercase tracking-[0.2em] text-muted-foreground/60">
+                                      {wallet.label}
+                                    </p>
+                                    <p className="mt-0.5 font-mono text-xs text-foreground/80 break-all">
+                                      {wallet.address}
+                                    </p>
+                                  </div>
+                                  <div className="ml-3 shrink-0">
+                                    {copiedAddress === wallet.id ? (
+                                      <Check className="h-4 w-4 text-emerald-400" />
+                                    ) : (
+                                      <Copy className="h-4 w-4 text-muted-foreground" />
+                                    )}
+                                  </div>
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        ) : null}
+
+                        <button
+                          onClick={() => {
+                            logout();
+                            setMenuOpen(false);
+                          }}
+                          className="flex w-full items-center gap-3 border-t border-border/30 px-4 py-4 text-sm text-red-400 transition-all hover:bg-red-500/10"
+                        >
+                          <LogOut className="h-4 w-4" />
+                          Logout
+                        </button>
+                      </div>
+                    </>
                   ) : null}
                 </div>
               </div>

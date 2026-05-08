@@ -2,12 +2,12 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { AtSign, Coins, Home, Wallet } from "lucide-react";
+import { ArrowLeftRight, Coins, Home, Wallet } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const tabs = [
   { href: "/", label: "Home", icon: Home },
-  { href: "/ans", label: "ANS", icon: AtSign },
+  { href: "/swap", label: "Swap", icon: ArrowLeftRight },
   { href: "/liquidity", label: "Liquidity", icon: Coins },
   { href: "/assets", label: "Assets", icon: Wallet },
 ] as const;

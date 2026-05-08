@@ -1,4 +1,12 @@
-import { walletConnect, injected } from "@wagmi/connectors";
+import { connectorsForWallets } from "@rainbow-me/rainbowkit";
+import {
+  coinbaseWallet,
+  injectedWallet,
+  metaMaskWallet,
+  rabbyWallet,
+  rainbowWallet,
+  walletConnectWallet,
+} from "@rainbow-me/rainbowkit/wallets";
 import { createConfig, fallback, http } from "wagmi";
 import { defineChain, type Chain } from "viem";
 import { sepolia } from "viem/chains";
@@ -115,19 +123,30 @@ export const SUPPORTED_CHAIN_IDS = new Set<number>(
   SUPPORTED_CHAINS.map((chain) => chain.id)
 );
 
-const connectors = [
-  injected({
-    shimDisconnect: true,
-  }),
-  ...(HAS_WALLETCONNECT_PROJECT_ID
-    ? [
-        walletConnect({
-          projectId: WALLETCONNECT_PROJECT_ID,
-          showQrModal: true,
-        }),
-      ]
-    : []),
-];
+const RAINBOWKIT_PROJECT_ID =
+  HAS_WALLETCONNECT_PROJECT_ID
+    ? WALLETCONNECT_PROJECT_ID
+    : "wizpay-local-rainbowkit";
+
+const connectors = connectorsForWallets(
+  [
+    {
+      groupName: "Popular",
+      wallets: [
+        rabbyWallet,
+        metaMaskWallet,
+        rainbowWallet,
+        coinbaseWallet,
+        ...(HAS_WALLETCONNECT_PROJECT_ID ? [walletConnectWallet] : []),
+        injectedWallet,
+      ],
+    },
+  ],
+  {
+    appName: "WizPay",
+    projectId: RAINBOWKIT_PROJECT_ID,
+  }
+);
 
 /**
  * Wagmi configuration for both public reads and RainbowKit external wallets.

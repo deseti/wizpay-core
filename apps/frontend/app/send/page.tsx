@@ -7,7 +7,6 @@ import { PreflightPanel } from "@/components/dashboard/PreflightPanel";
 import { StatsCards } from "@/components/dashboard/StatsCards";
 import { StatusBanners } from "@/components/dashboard/StatusBanners";
 import { SuccessModal } from "@/components/dashboard/SuccessModal";
-import { TransactionHistory } from "@/components/dashboard/TransactionHistory";
 import { DashboardAppFrame } from "@/components/dashboard/DashboardAppFrame";
 import { ReceiveModal } from "@/components/dashboard/ReceiveModal";
 import { Button } from "@/components/ui/button";
@@ -148,11 +147,6 @@ function SendWorkspace() {
           task={wp.payrollTask}
           copiedHash={wp.copiedHash}
           copyHash={wp.copyHash}
-        />
-
-        <TransactionHistory
-          unifiedHistory={wp.unifiedHistory}
-          isLoading={wp.historyLoading}
         />
       </div>
 
