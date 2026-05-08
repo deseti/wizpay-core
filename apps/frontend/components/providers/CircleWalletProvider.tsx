@@ -99,6 +99,22 @@ import {
 
 export const CircleWalletContext =
   createContext<CircleWalletContextValue | null>(null);
+
+const MOBILE_AUTH_UA_REGEX = /android|iphone|ipad|ipod|mobile/i;
+
+function isMobileOrStandaloneAuthRuntime() {
+  if (typeof window === "undefined") {
+    return false;
+  }
+
+  return (
+    MOBILE_AUTH_UA_REGEX.test(window.navigator.userAgent) ||
+    window.matchMedia("(display-mode: standalone)").matches ||
+    (window.navigator as Navigator & { standalone?: boolean }).standalone ===
+      true
+  );
+}
+
 export function CircleWalletProvider({
   children,
 }: {
@@ -173,6 +189,7 @@ function CircleWalletProviderInner({
   const loginConfigRef = useRef<StoredLoginConfig | null>(null);
   const googleOAuthDiagnosticsRef = useRef<GoogleOAuthDiagnostics | null>(null);
   const authRequestInFlightRef = useRef(false);
+  const deviceIdInFlightRef = useRef<Promise<string> | null>(null);
   const passkeyChallengeStoreRef = useRef(
     new Map<string, CirclePasskeyChallenge>(),
   );
@@ -256,19 +273,35 @@ function CircleWalletProviderInner({
       throw new Error("Circle Web SDK is not ready yet.");
     }
 
-    const nextDeviceId = await sdk.getDeviceId();
-
-    if (!nextDeviceId) {
-      throw new Error("Circle device ID is unavailable.");
+    if (deviceIdInFlightRef.current) {
+      return deviceIdInFlightRef.current;
     }
 
-    setDeviceId(nextDeviceId);
+    const nextDeviceIdPromise = (async () => {
+      const nextDeviceId = await sdk.getDeviceId();
 
-    if (typeof window !== "undefined") {
-      window.localStorage.setItem(DEVICE_ID_STORAGE_KEY, nextDeviceId);
+      if (!nextDeviceId) {
+        throw new Error("Circle device ID is unavailable.");
+      }
+
+      setDeviceId(nextDeviceId);
+
+      if (typeof window !== "undefined") {
+        window.localStorage.setItem(DEVICE_ID_STORAGE_KEY, nextDeviceId);
+      }
+
+      return nextDeviceId;
+    })();
+
+    deviceIdInFlightRef.current = nextDeviceIdPromise;
+
+    try {
+      return await nextDeviceIdPromise;
+    } finally {
+      if (deviceIdInFlightRef.current === nextDeviceIdPromise) {
+        deviceIdInFlightRef.current = null;
+      }
     }
-
-    return nextDeviceId;
   }, [deviceId]);
 
   const persistSession = useCallback((nextSession: CircleSession | null) => {
@@ -715,6 +748,13 @@ function CircleWalletProviderInner({
 
   const primaryWallet =
     arcWallet ?? sepoliaWallet ?? solanaWallet ?? wallets[0] ?? null;
+  const shouldAllowAuthBeforeDeviceId = useMemo(
+    () => isMobileOrStandaloneAuthRuntime(),
+    [],
+  );
+  const isLoginRuntimeReady = shouldAllowAuthBeforeDeviceId
+    ? ready
+    : Boolean(deviceId);
 
   const value = useMemo<CircleWalletContextValue>(
     () => ({
@@ -801,7 +841,7 @@ function CircleWalletProviderInner({
         canUseGoogle={Boolean(CIRCLE_APP_ID && GOOGLE_CLIENT_ID)}
         canUsePasskey={PASSKEY_ENABLED}
         hasPendingEmailOtp={hasPendingEmailOtp}
-        isDeviceReady={Boolean(deviceId)}
+        isSdkReady={isLoginRuntimeReady}
         isAuthenticating={isAuthenticating}
         isOpen={isLoginOpen}
         onClose={() => setIsLoginOpen(false)}

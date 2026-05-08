@@ -38,6 +38,11 @@ function addMediaQueryListener(
   return () => query.removeListener(listener);
 }
 
+type WindowWithIdleCallback = Window & {
+  cancelIdleCallback?: (handle: number) => void;
+  requestIdleCallback?: (callback: () => void) => number;
+};
+
 export function PwaRuntime() {
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -54,6 +59,7 @@ export function PwaRuntime() {
     const standaloneQuery = window.matchMedia("(display-mode: standalone)");
 
     let cancelled = false;
+    let idleCallbackHandle: number | null = null;
 
     const syncInstallState = () => {
       updatePwaInstallState({
@@ -69,17 +75,41 @@ export function PwaRuntime() {
 
     syncInstallState();
 
-    if ("serviceWorker" in window.navigator) {
+    const registerServiceWorker = () => {
+      if (!("serviceWorker" in window.navigator)) {
+        return;
+      }
+
       void window.navigator.serviceWorker
-        .register("/sw.js", { scope: "/" })
-        .then(() => {
-          if (!cancelled) {
-            updatePwaInstallState({ isServiceWorkerReady: true });
-          }
-        })
-        .catch((error) => {
-          console.warn("[PwaRuntime] Failed to register service worker", error);
-        });
+          .register("/sw.js", { scope: "/" })
+          .then(() => {
+            if (!cancelled) {
+              updatePwaInstallState({ isServiceWorkerReady: true });
+            }
+          })
+          .catch((error) => {
+            console.warn("[PwaRuntime] Failed to register service worker", error);
+          });
+    };
+
+    const scheduleServiceWorkerRegistration = () => {
+      const windowWithIdle = window as WindowWithIdleCallback;
+
+      if (typeof windowWithIdle.requestIdleCallback === "function") {
+        idleCallbackHandle =
+          windowWithIdle.requestIdleCallback(registerServiceWorker);
+        return;
+      }
+
+      queueMicrotask(registerServiceWorker);
+    };
+
+    if (document.readyState === "complete") {
+      scheduleServiceWorkerRegistration();
+    } else {
+      window.addEventListener("load", scheduleServiceWorkerRegistration, {
+        once: true,
+      });
     }
 
     const handleBeforeInstallPrompt = (event: Event) => {
@@ -114,6 +144,12 @@ export function PwaRuntime() {
 
     return () => {
       cancelled = true;
+      window.removeEventListener("load", scheduleServiceWorkerRegistration);
+      if (idleCallbackHandle !== null) {
+        (window as WindowWithIdleCallback).cancelIdleCallback?.(
+          idleCallbackHandle,
+        );
+      }
       removeDisplayModeListener();
       window.removeEventListener(
         "beforeinstallprompt",

@@ -7,7 +7,7 @@ export function OTPModal({
   email,
   setEmail,
   isAuthenticating,
-  isDeviceReady,
+  isSdkReady,
   hasPendingEmailOtp,
   onRequestEmailOtp,
   onVerifyEmailOtp,
@@ -15,7 +15,7 @@ export function OTPModal({
   email: string;
   setEmail: (email: string) => void;
   isAuthenticating: boolean;
-  isDeviceReady: boolean;
+  isSdkReady: boolean;
   hasPendingEmailOtp: boolean;
   onRequestEmailOtp: (email: string) => Promise<void>;
   onVerifyEmailOtp: () => void;
@@ -36,7 +36,7 @@ export function OTPModal({
         />
         <div className="grid gap-2 sm:grid-cols-2">
           <Button
-            disabled={isAuthenticating || !email.trim() || !isDeviceReady}
+            disabled={isAuthenticating || !email.trim() || !isSdkReady}
             variant="outline"
             onClick={() => {
               void onRequestEmailOtp(email);

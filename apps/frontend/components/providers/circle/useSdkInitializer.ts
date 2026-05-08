@@ -21,6 +21,60 @@ import {
   type W3SSdkModule,
 } from "@/services/circle-auth.service";
 
+const MOBILE_UA_REGEX = /android|iphone|ipad|ipod|mobile/i;
+const TRANSIENT_DEVICE_ID_ERRORS = new Set(["Failed to receive deviceId"]);
+
+function isMobileOrStandaloneRuntime() {
+  if (typeof window === "undefined") {
+    return false;
+  }
+
+  return (
+    MOBILE_UA_REGEX.test(window.navigator.userAgent) ||
+    window.matchMedia("(display-mode: standalone)").matches ||
+    (window.navigator as Navigator & { standalone?: boolean }).standalone ===
+      true
+  );
+}
+
+function waitForWindowLoad() {
+  if (document.readyState === "complete") {
+    return Promise.resolve();
+  }
+
+  return new Promise<void>((resolve) => {
+    window.addEventListener("load", () => resolve(), { once: true });
+  });
+}
+
+function waitForVisibleDocument() {
+  if (document.visibilityState === "visible") {
+    return Promise.resolve();
+  }
+
+  return new Promise<void>((resolve) => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState !== "visible") {
+        return;
+      }
+
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      resolve();
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+  });
+}
+
+async function waitForCircleBrowserContextReady() {
+  if (typeof window === "undefined" || !isMobileOrStandaloneRuntime()) {
+    return;
+  }
+
+  await waitForWindowLoad();
+  await waitForVisibleDocument();
+}
+
 export interface SdkInitializerDeps {
   sdkRef: React.MutableRefObject<W3SSdkInstance | null>;
   loginConfigRef: React.MutableRefObject<StoredLoginConfig | null>;
@@ -131,6 +185,12 @@ export function useSdkInitializer({
         }
 
       try {
+        await waitForCircleBrowserContextReady();
+
+        if (unmountedRef.current) {
+          return null;
+        }
+
         const sdkModule =
           (await import("@circle-fin/w3s-pw-web-sdk")) as unknown as W3SSdkModule;
 
@@ -233,7 +293,9 @@ export function useSdkInitializer({
     void initializeSdk();
   }, [initializeSdk]);
 
-  // Pre-fetch device ID as soon as SDK is ready so logins don't pay the round-trip cost
+  // Opportunistically pre-fetch the device ID. Login actions still call
+  // ensureDeviceId themselves, so a transient Android iframe miss here must
+  // never leave the auth UI permanently disabled.
   useEffect(() => {
     if (!ready || deviceId) {
       return;
@@ -256,7 +318,18 @@ export function useSdkInitializer({
       } catch (error) {
         if (!cancelled) {
           const message =
-            error instanceof Error ? error.message : "Unknown error";
+            error instanceof Error
+              ? error.message
+              : typeof error === "string"
+                ? error
+                : "Unknown error";
+
+          if (TRANSIENT_DEVICE_ID_ERRORS.has(message)) {
+            setAuthError((current: string | null) =>
+              current === message ? null : current,
+            );
+            return;
+          }
 
           // Surface a clear, actionable message when the server-side API key
           // is missing — this is the most common Docker misconfiguration.

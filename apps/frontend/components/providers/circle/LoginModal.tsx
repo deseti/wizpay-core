@@ -11,7 +11,7 @@ export function LoginModal({
   canUseGoogle,
   canUsePasskey,
   hasPendingEmailOtp,
-  isDeviceReady,
+  isSdkReady,
   isAuthenticating,
   isOpen,
   onClose,
@@ -27,7 +27,7 @@ export function LoginModal({
   canUseGoogle: boolean;
   canUsePasskey: boolean;
   hasPendingEmailOtp: boolean;
-  isDeviceReady: boolean;
+  isSdkReady: boolean;
   isAuthenticating: boolean;
   isOpen: boolean;
   onClose: () => void;
@@ -74,7 +74,7 @@ export function LoginModal({
             </p>
             <Button
               className="mt-4 w-full"
-              disabled={!canUseGoogle || isAuthenticating || !isDeviceReady}
+              disabled={!canUseGoogle || isAuthenticating || !isSdkReady}
               onClick={() => {
                 void onRequestGoogleLogin();
               }}
@@ -85,9 +85,9 @@ export function LoginModal({
               <p className="mt-2 text-xs text-muted-foreground/60">
                 Add NEXT_PUBLIC_GOOGLE_CLIENT_ID to enable Google sign-in.
               </p>
-            ) : !isDeviceReady ? (
+            ) : !isSdkReady ? (
               <p className="mt-2 text-xs text-muted-foreground/60">
-                Circle device is initializing. Login buttons will enable automatically.
+                Circle wallet runtime is initializing. Login buttons will enable automatically.
               </p>
             ) : null}
           </div>
@@ -96,7 +96,7 @@ export function LoginModal({
             email={email}
             setEmail={setEmail}
             isAuthenticating={isAuthenticating}
-            isDeviceReady={isDeviceReady}
+            isSdkReady={isSdkReady}
             hasPendingEmailOtp={hasPendingEmailOtp}
             onRequestEmailOtp={onRequestEmailOtp}
             onVerifyEmailOtp={onVerifyEmailOtp}
