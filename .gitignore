@@ -4,3 +4,7 @@ node_modules
 .next
 dist
 packages/contracts/lib/
+# Internal AI / audit workspace
+agents/
+internal/
+.kiro/

@@ -37,6 +37,10 @@ contract StableFXAdapter_V2 is IFXEngine, ERC20, Ownable, ReentrancyGuard {
     error FeeTooHigh(uint256 feeBps, uint256 maxFeeBps);
     error AcceptedPoolTokenWithdrawalForbidden(address token);
     error RecipientZeroAddress();
+    error ReciprocalInvariantViolation(uint256 rate, uint256 inverseRate, uint256 product);
+    error RateDeviationExceeded(uint256 prevRate, uint256 newRate, uint256 deviation);
+    error SolvencyConstraintViolation(uint256 remaining, uint256 minRequired);
+    error WrongRedemptionToken(address expected, address requested);
 
     // Exchange rate oracle (18 decimals: 1e18 = 1:1 rate)
     mapping(address => mapping(address => uint256)) public exchangeRates;
@@ -55,6 +59,16 @@ contract StableFXAdapter_V2 is IFXEngine, ERC20, Ownable, ReentrancyGuard {
     
     address[] public acceptedTokens;
     mapping(address => bool) public isAcceptedToken;
+
+    // Internal ledger state (replaces balanceOf for accounting decisions)
+    mapping(address => uint256) public poolLedger;      // deposited principal per token
+    mapping(address => uint256) public accruedFees;     // fee revenue per token
+    mapping(address => address) public depositToken;    // each LP's deposit token
+
+    // Accounting constants
+    uint256 public constant RECIPROCAL_TOLERANCE = 0.01e18;   // 1% tolerance
+    uint256 public constant MAX_RATE_DEVIATION_BPS = 1000;    // 10% max deviation
+    uint256 public constant MIN_RESERVE_RATIO = 1000;         // 10% minimum reserve
     
     // Events
     event ExchangeRateUpdated(
@@ -78,6 +92,7 @@ contract StableFXAdapter_V2 is IFXEngine, ERC20, Ownable, ReentrancyGuard {
     event AcceptedTokenAdded(address indexed token);
     event LpFeeUpdated(uint256 oldFeeBps, uint256 newFeeBps);
     event EmergencyWithdrawal(address indexed token, uint256 amount, address indexed to);
+    event RateSkippedInTVL(address indexed token);
     
     /**
      * @notice Creates the StableFX liquidity adapter.
@@ -114,19 +129,59 @@ contract StableFXAdapter_V2 is IFXEngine, ERC20, Ownable, ReentrancyGuard {
 
     /**
      * @notice Calculates total pool value normalized to the base asset.
-     * @dev Every accepted token must have a valid conversion path into `baseAsset`.
+     * @dev Uses internal ledger (poolLedger + accruedFees) instead of balanceOf().
+     *      Skips tokens with expired/misconfigured rates rather than reverting.
      * @return totalValue Total pool value expressed in base-asset units.
      */
-    function getTVL() public view returns (uint256 totalValue) {
+    function getTVL() public returns (uint256 totalValue) {
         for (uint256 i = 0; i < acceptedTokens.length; i++) {
             address token = acceptedTokens[i];
-            uint256 balance = IERC20(token).balanceOf(address(this));
+            uint256 ledgerBalance = poolLedger[token] + accruedFees[token];
             
-            if (balance > 0) {
-                totalValue += getEstimatedAmountInternal(token, baseAsset, balance);
+            if (ledgerBalance > 0) {
+                (bool success, uint256 converted) = _safeGetEstimatedAmount(token, baseAsset, ledgerBalance);
+                if (success) {
+                    totalValue += converted;
+                } else {
+                    emit RateSkippedInTVL(token);
+                }
             }
         }
         return totalValue;
+    }
+
+    /**
+     * @notice Safe wrapper for rate conversion that returns false instead of reverting.
+     * @dev Uses try/catch on external self-call to isolate rate failures.
+     * @param tokenIn Input token address.
+     * @param tokenOut Output token address.
+     * @param amountIn Amount to convert.
+     * @return success Whether the conversion succeeded.
+     * @return result The converted amount (0 if failed).
+     */
+    function _safeGetEstimatedAmount(
+        address tokenIn,
+        address tokenOut,
+        uint256 amountIn
+    ) internal view returns (bool success, uint256 result) {
+        if (tokenIn == tokenOut) return (true, amountIn);
+        
+        try this.getExchangeRate(tokenIn, tokenOut) returns (uint256 rate) {
+            uint256 tokenInDecimals = getTokenDecimals(tokenIn);
+            uint256 tokenOutDecimals = getTokenDecimals(tokenOut);
+            
+            result = (amountIn * rate) / 1e18;
+            
+            if (tokenInDecimals > tokenOutDecimals) {
+                result = result / (10 ** (tokenInDecimals - tokenOutDecimals));
+            } else if (tokenOutDecimals > tokenInDecimals) {
+                result = result * (10 ** (tokenOutDecimals - tokenInDecimals));
+            }
+            
+            return (true, result);
+        } catch {
+            return (false, 0);
+        }
     }
 
     /**
@@ -139,10 +194,19 @@ contract StableFXAdapter_V2 is IFXEngine, ERC20, Ownable, ReentrancyGuard {
         if (!isAcceptedToken[token]) revert TokenNotAccepted(token);
         if (amount == 0) revert AmountMustBeGreaterThanZero();
         
+        // 1. Capture TVL BEFORE updating poolLedger (ledger-based, immune to donations)
         uint256 tvlBefore = getTVL();
         
+        // 2. Transfer tokens from user
         _transferTokenFrom(token, msg.sender, address(this), amount);
         
+        // 3. Update internal ledger AFTER transfer but BEFORE minting shares
+        poolLedger[token] += amount;
+        
+        // 4. Record deposit token for same-asset redemption enforcement
+        depositToken[msg.sender] = token;
+        
+        // 5. Mint shares based on tvlBefore (formula unchanged)
         uint256 valueAdded = getEstimatedAmountInternal(token, baseAsset, amount);
         uint256 sharesToMint = 0;
         
@@ -160,9 +224,11 @@ contract StableFXAdapter_V2 is IFXEngine, ERC20, Ownable, ReentrancyGuard {
     }
 
     /**
-     * @notice Burns LP shares and withdraws a chosen accepted token.
-     * @dev Burn happens before transfer to preserve checks-effects-interactions ordering.
-     * @param targetToken Accepted token to withdraw.
+     * @notice Burns LP shares and withdraws the LP's deposited token pro-rata.
+     * @dev Uses single pro-rata calculation against poolLedger instead of double conversion.
+     *      Enforces same-asset redemption: LP can only withdraw the token they deposited.
+     *      Applies solvency check on non-full withdrawals to maintain minimum reserve.
+     * @param targetToken Accepted token to withdraw (must match LP's deposit token).
      * @param shares LP shares to burn.
      */
     function removeLiquidity(address targetToken, uint256 shares) external nonReentrant {
@@ -172,24 +238,43 @@ contract StableFXAdapter_V2 is IFXEngine, ERC20, Ownable, ReentrancyGuard {
         if (shares == 0 || shares > userShares) {
             revert InsufficientShares(userShares, shares);
         }
-        
-        uint256 currentTvl = getTVL();
-        // TVL value the shares represent
-        uint256 valueToWithdraw = (shares * currentTvl) / totalSupply();
-        
-        // Convert the baseAsset-normalized value back to targetToken
-        uint256 amountToWithdraw = getEstimatedAmountInternal(baseAsset, targetToken, valueToWithdraw);
-        
-        uint256 available = IERC20(targetToken).balanceOf(address(this));
-        if (available < amountToWithdraw) {
-            revert InsufficientPoolLiquidity(available, amountToWithdraw);
+
+        // Enforce same-asset redemption: LP must withdraw the token they deposited.
+        // If depositToken is not set (address(0)), allow any accepted token for backward compatibility.
+        address lpDepositToken = depositToken[msg.sender];
+        if (lpDepositToken != address(0) && targetToken != lpDepositToken) {
+            revert WrongRedemptionToken(lpDepositToken, targetToken);
         }
-        
+
+        // Single pro-rata calculation against internal ledger
+        uint256 ledgerBalance = poolLedger[targetToken];
+        uint256 amountOut = (shares * ledgerBalance) / totalSupply();
+
+        // Solvency check for non-full withdrawals:
+        // If this is not a full withdrawal of all shares, ensure the pool retains minimum reserve.
+        bool isFullWithdrawal = (shares == userShares && userShares == totalSupply());
+        if (!isFullWithdrawal && ledgerBalance > 0) {
+            uint256 remaining = ledgerBalance - amountOut;
+            uint256 minRequired = (ledgerBalance * MIN_RESERVE_RATIO) / 10000;
+            if (remaining < minRequired) {
+                revert SolvencyConstraintViolation(remaining, minRequired);
+            }
+        }
+
+        // Verify sufficient actual token balance for transfer
+        uint256 available = IERC20(targetToken).balanceOf(address(this));
+        if (available < amountOut) {
+            revert InsufficientPoolLiquidity(available, amountOut);
+        }
+
+        // Update internal ledger before external interactions
+        poolLedger[targetToken] -= amountOut;
+
         _burn(msg.sender, shares);
-        
-        _transferToken(targetToken, msg.sender, amountToWithdraw);
-        
-        emit LiquidityRemoved(targetToken, amountToWithdraw, shares);
+
+        _transferToken(targetToken, msg.sender, amountOut);
+
+        emit LiquidityRemoved(targetToken, amountOut, shares);
     }
 
     /**
@@ -206,8 +291,31 @@ contract StableFXAdapter_V2 is IFXEngine, ERC20, Ownable, ReentrancyGuard {
         if (tokenIn == address(0) || tokenOut == address(0)) revert TokenZeroAddress();
         if (rate == 0) revert InvalidRate();
         
+        // Rate bounds checking: enforce max deviation from previous rate
+        uint256 prevRate = exchangeRates[tokenIn][tokenOut];
+        if (prevRate != 0) {
+            uint256 deviation;
+            if (rate > prevRate) {
+                deviation = ((rate - prevRate) * 10000) / prevRate;
+            } else {
+                deviation = ((prevRate - rate) * 10000) / prevRate;
+            }
+            if (deviation > MAX_RATE_DEVIATION_BPS) {
+                revert RateDeviationExceeded(prevRate, rate, deviation);
+            }
+        }
+        
         exchangeRates[tokenIn][tokenOut] = rate;
         rateTimestamps[tokenIn][tokenOut] = block.timestamp;
+        
+        // Enforce reciprocal rate invariant: rate_AB * rate_BA ≈ 1e18
+        uint256 inverseRate = exchangeRates[tokenOut][tokenIn];
+        if (inverseRate != 0) {
+            uint256 product = (rate * inverseRate) / 1e18;
+            if (product < (1e18 - RECIPROCAL_TOLERANCE) || product > (1e18 + RECIPROCAL_TOLERANCE)) {
+                revert ReciprocalInvariantViolation(rate, inverseRate, product);
+            }
+        }
         
         emit ExchangeRateUpdated(tokenIn, tokenOut, rate, block.timestamp);
     }
@@ -265,19 +373,19 @@ contract StableFXAdapter_V2 is IFXEngine, ERC20, Ownable, ReentrancyGuard {
         uint256 tokenInDecimals = getTokenDecimals(tokenIn);
         uint256 tokenOutDecimals = getTokenDecimals(tokenOut);
         
-        // Base calculation
-        amountOut = (amountIn * rate) / 1e18;
+        // Base calculation (raw amount before fee)
+        uint256 rawAmountOut = (amountIn * rate) / 1e18;
         
         // Adjust decimals
         if (tokenInDecimals > tokenOutDecimals) {
-            amountOut = amountOut / (10 ** (tokenInDecimals - tokenOutDecimals));
+            rawAmountOut = rawAmountOut / (10 ** (tokenInDecimals - tokenOutDecimals));
         } else if (tokenOutDecimals > tokenInDecimals) {
-            amountOut = amountOut * (10 ** (tokenOutDecimals - tokenInDecimals));
+            rawAmountOut = rawAmountOut * (10 ** (tokenOutDecimals - tokenInDecimals));
         }
         
-        // Take LP Fee (Fee stays in contract thereby increasing Pool TVL)
-        uint256 lpFee = (amountOut * lpFeeBps) / 10000;
-        amountOut = amountOut - lpFee;
+        // Take LP Fee (Fee tracked separately in accruedFees)
+        uint256 lpFee = (rawAmountOut * lpFeeBps) / 10000;
+        amountOut = rawAmountOut - lpFee;
 
         if (amountOut < minAmountOut) revert SlippageExceeded(amountOut, minAmountOut);
         
@@ -290,6 +398,11 @@ contract StableFXAdapter_V2 is IFXEngine, ERC20, Ownable, ReentrancyGuard {
         _transferTokenFrom(tokenIn, msg.sender, address(this), amountIn);
         
         _transferToken(tokenOut, to, amountOut);
+
+        // Fee/principal separation: track inflow and outflow in internal ledger
+        poolLedger[tokenIn] += amountIn;
+        poolLedger[tokenOut] -= rawAmountOut;
+        accruedFees[tokenOut] += lpFee;
         
         emit SwapExecuted(tokenIn, tokenOut, amountIn, amountOut, rate, lpFee);
         return amountOut;
@@ -373,6 +486,20 @@ contract StableFXAdapter_V2 is IFXEngine, ERC20, Ownable, ReentrancyGuard {
 
         _transferToken(token, owner(), amount);
         emit EmergencyWithdrawal(token, amount, owner());
+    }
+
+    /**
+     * @notice Allows the owner to claim accrued LP fees for a given token.
+     * @dev Transfers the full accrued fee balance to the owner and resets the counter.
+     * @param token Token address to claim fees for.
+     */
+    function claimFees(address token) external onlyOwner nonReentrant {
+        if (token == address(0)) revert TokenZeroAddress();
+        uint256 fees = accruedFees[token];
+        if (fees == 0) revert AmountMustBeGreaterThanZero();
+
+        accruedFees[token] = 0;
+        _transferToken(token, owner(), fees);
     }
 
     function _transferToken(address token, address to, uint256 amount) internal {

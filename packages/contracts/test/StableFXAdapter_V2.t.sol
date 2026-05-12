@@ -41,7 +41,7 @@ contract StableFXAdapterV2Test is Test {
         vm.stopPrank();
     }
 
-    function testAddLiquidityMintsProportionalShares() public view {
+    function testAddLiquidityMintsProportionalShares() public {
         assertEq(adapter.balanceOf(lp), 100_000e6);
         assertEq(adapter.totalSupply(), 100_000e6);
         assertEq(adapter.getTVL(), 100_000e6);
@@ -71,12 +71,14 @@ contract StableFXAdapterV2Test is Test {
 
     function testRemoveLiquidityBurnsSharesBeforePayout() public {
         uint256 sharesToBurn = 25_000e6;
-        uint256 usdcBefore = usdc.balanceOf(lp);
+        // LP's last deposit was EURC, so same-asset redemption enforces EURC withdrawal.
+        // Pro-rata: 25_000e6 shares * 50_000e6 poolLedger[EURC] / 100_000e6 totalSupply = 12_500e6
+        uint256 eurcBefore = eurc.balanceOf(lp);
 
         vm.prank(lp);
-        adapter.removeLiquidity(address(usdc), sharesToBurn);
+        adapter.removeLiquidity(address(eurc), sharesToBurn);
 
         assertEq(adapter.balanceOf(lp), 75_000e6);
-        assertEq(usdc.balanceOf(lp), usdcBefore + 25_000e6);
+        assertEq(eurc.balanceOf(lp), eurcBefore + 12_500e6);
     }
 }
