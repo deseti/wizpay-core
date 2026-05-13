@@ -5,6 +5,7 @@ node_modules
 dist
 packages/contracts/lib/
 # Internal AI / audit workspace
+AGENTS.md
 agents/
 internal/
 .kiro/

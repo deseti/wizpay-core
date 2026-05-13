@@ -2,6 +2,10 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { TaskController } from './orchestrator/task.controller';
 import { OrchestratorService } from './orchestrator/orchestrator.service';
 import { TaskService } from './task/task.service';
+import { TaskEmployeeBreakdownService } from './task/task-employee-breakdown.service';
+import { TaskPayrollHistoryService } from './task/task-payroll-history.service';
+import { PayrollInitService } from './orchestrator/payroll-init.service';
+import { CircleService } from './adapters/circle.service';
 import { TaskStatus } from './task/task-status.enum';
 import { TaskType } from './task/task-type.enum';
 import { TaskDetails } from './task/task.types';
@@ -29,6 +33,22 @@ describe('TaskController', () => {
     getTaskById: jest.fn().mockResolvedValue(taskFixture),
   };
 
+  const taskEmployeeBreakdownService = {
+    getPayrollEmployeeBreakdown: jest.fn().mockResolvedValue([]),
+  };
+
+  const taskPayrollHistoryService = {
+    getWalletPayrollHistory: jest.fn().mockResolvedValue([]),
+  };
+
+  const payrollInitService = {
+    prepare: jest.fn().mockResolvedValue({}),
+  };
+
+  const circleService = {
+    getQuote: jest.fn().mockResolvedValue({}),
+  };
+
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
       controllers: [TaskController],
@@ -40,6 +60,22 @@ describe('TaskController', () => {
         {
           provide: TaskService,
           useValue: taskService,
+        },
+        {
+          provide: TaskEmployeeBreakdownService,
+          useValue: taskEmployeeBreakdownService,
+        },
+        {
+          provide: TaskPayrollHistoryService,
+          useValue: taskPayrollHistoryService,
+        },
+        {
+          provide: PayrollInitService,
+          useValue: payrollInitService,
+        },
+        {
+          provide: CircleService,
+          useValue: circleService,
         },
       ],
     }).compile();

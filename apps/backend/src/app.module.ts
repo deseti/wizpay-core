@@ -4,6 +4,7 @@ import { AdaptersModule } from './adapters/adapters.module';
 import { AgentsModule } from './agents/agents.module';
 import { AppConfigModule } from './config/app-config.module';
 import { DatabaseModule } from './database/database.module';
+import { FxModule } from './fx/fx.module';
 import { IntegrationsModule } from './integrations/integrations.module';
 import { WalletModule } from './modules/wallet/wallet.module';
 import { OrchestratorModule } from './orchestrator/orchestrator.module';
@@ -16,6 +17,7 @@ import { TaskModule } from './task/task.module';
     DatabaseModule,
     AdaptersModule,
     AgentsModule,
+    FxModule,
     IntegrationsModule,
     TaskModule,
     QueueModule,

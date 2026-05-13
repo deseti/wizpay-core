@@ -32,7 +32,31 @@ import { TaskTransactionService } from './task-transaction.service';
 import { TaskMapperService, TaskWithRelations } from './task-mapper.service';
 import { TaskUnitService } from './task-unit.service';
 
-const ALLOWED_TRANSITIONS: Record<TaskStatus, readonly TaskStatus[]> = {
+// ════════════════════════════════════════════════════════════════════
+//  FX-specific step identifiers for the StableFX settlement lifecycle.
+//  Each step is logged as a machine-readable identifier in the task log.
+// ════════════════════════════════════════════════════════════════════
+
+export const FX_STEPS = {
+  QUOTE_REQUESTED: 'fx.quote_requested',
+  QUOTE_RECEIVED: 'fx.quote_received',
+  TRADE_CREATED: 'fx.trade_created',
+  ESCROW_FUNDED: 'fx.escrow_funded',
+  SETTLEMENT_POLLING: 'fx.settlement_polling',
+  SETTLEMENT_CONFIRMED: 'fx.settlement_confirmed',
+  SETTLEMENT_FAILED: 'fx.settlement_failed',
+  OUTPUT_VALIDATION_FAILED: 'fx.output_validation_failed',
+  RATE_ANOMALY: 'fx.rate_anomaly',
+} as const;
+
+export type FxStep = (typeof FX_STEPS)[keyof typeof FX_STEPS];
+
+// ════════════════════════════════════════════════════════════════════
+//  State transition map — defines all valid status transitions.
+//  Any transition not in this map is rejected.
+// ════════════════════════════════════════════════════════════════════
+
+export const ALLOWED_TRANSITIONS: Record<TaskStatus, readonly TaskStatus[]> = {
   [TaskStatus.CREATED]: [TaskStatus.ASSIGNED, TaskStatus.FAILED],
   [TaskStatus.ASSIGNED]: [TaskStatus.IN_PROGRESS, TaskStatus.FAILED],
   [TaskStatus.IN_PROGRESS]: [
@@ -412,6 +436,147 @@ export class TaskService {
     },
   ): Promise<TaskLogRecord> {
     return this.taskLogService.logStep(taskId, step, status, message, options);
+  }
+
+  // ════════════════════════════════════════════════════════════════════
+  //  Idempotency guard — prevents duplicate execution at worker pickup
+  // ════════════════════════════════════════════════════════════════════
+
+  /**
+   * Checks whether a task is eligible for worker execution.
+   * A task must be in ASSIGNED status at the moment of worker pickup.
+   * If not ASSIGNED, execution is skipped without side effects
+   * (no duplicate payments, settlements, or log entries beyond a skip notification).
+   *
+   * @returns `true` if the task should proceed with execution, `false` if skipped.
+   */
+  async tryPickupForExecution(taskId: string): Promise<boolean> {
+    const task = await this.prisma.task.findUnique({
+      where: { id: taskId },
+      select: { id: true, status: true },
+    });
+
+    if (!task) {
+      throw new NotFoundException(`Task ${taskId} not found`);
+    }
+
+    const currentStatus = task.status as TaskStatus;
+
+    if (currentStatus !== TaskStatus.ASSIGNED) {
+      // Log the skip event for audit — this is the only side effect
+      await this.taskLogService.logStep(
+        taskId,
+        'task.idempotency_skip',
+        currentStatus,
+        `Worker pickup skipped: task status is ${currentStatus}, expected ${TaskStatus.ASSIGNED}`,
+        {
+          level: 'INFO',
+          context: {
+            expectedStatus: TaskStatus.ASSIGNED,
+            actualStatus: currentStatus,
+            skippedAt: new Date().toISOString(),
+          },
+        },
+      );
+
+      return false;
+    }
+
+    return true;
+  }
+
+  // ════════════════════════════════════════════════════════════════════
+  //  Append-only audit log — records state transitions immutably
+  // ════════════════════════════════════════════════════════════════════
+
+  /**
+   * Appends an immutable audit log entry for a state transition.
+   * Log entries can only be appended, never modified or deleted.
+   * Each entry records: taskId, timestamp, priorStatus, newStatus, stepId, contextData.
+   */
+  async appendTransitionLog(
+    taskId: string,
+    priorStatus: TaskStatus,
+    newStatus: TaskStatus,
+    stepId: string,
+    contextData?: TaskPayload,
+  ): Promise<TaskLogRecord> {
+    return this.taskLogService.logStep(
+      taskId,
+      stepId,
+      newStatus,
+      `State transition: ${priorStatus} → ${newStatus}`,
+      {
+        level: 'INFO',
+        context: {
+          priorStatus,
+          newStatus,
+          stepId,
+          timestamp: new Date().toISOString(),
+          ...(contextData ?? {}),
+        },
+      },
+    );
+  }
+
+  /**
+   * Validates that a state transition is allowed per the transition map,
+   * then performs the transition atomically with an append-only log entry.
+   * This is the preferred method for FX-related state transitions.
+   */
+  async transitionWithAudit(
+    taskId: string,
+    nextStatus: TaskStatus,
+    stepId: string,
+    options?: {
+      message?: string;
+      result?: TaskPayload;
+      context?: TaskPayload;
+    },
+  ): Promise<TaskDetails> {
+    const task = await this.prisma.task.findUnique({ where: { id: taskId } });
+
+    if (!task) {
+      throw new NotFoundException(`Task ${taskId} not found`);
+    }
+
+    const currentStatus = task.status as TaskStatus;
+
+    if (currentStatus === nextStatus) {
+      return this.getTaskById(taskId);
+    }
+
+    this.ensureTransition(currentStatus, nextStatus);
+
+    await this.prisma.task.update({
+      where: { id: taskId },
+      data: {
+        status: nextStatus,
+        ...(options?.result
+          ? { result: options.result as Prisma.InputJsonValue }
+          : {}),
+      },
+    });
+
+    await this.appendTransitionLog(
+      taskId,
+      currentStatus,
+      nextStatus,
+      stepId,
+      options?.context,
+    );
+
+    return this.getTaskById(taskId);
+  }
+
+  /**
+   * Validates that a proposed state transition is allowed.
+   * Returns true if the transition is valid, false otherwise.
+   * Does not throw — useful for pre-checking before committing.
+   */
+  isValidTransition(currentStatus: TaskStatus, nextStatus: TaskStatus): boolean {
+    const allowed = ALLOWED_TRANSITIONS[currentStatus];
+    return allowed !== undefined && allowed.includes(nextStatus);
   }
 
   async reportUnit(

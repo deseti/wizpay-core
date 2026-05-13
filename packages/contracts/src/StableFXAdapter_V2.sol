@@ -41,6 +41,7 @@ contract StableFXAdapter_V2 is IFXEngine, ERC20, Ownable, ReentrancyGuard {
     error RateDeviationExceeded(uint256 prevRate, uint256 newRate, uint256 deviation);
     error SolvencyConstraintViolation(uint256 remaining, uint256 minRequired);
     error WrongRedemptionToken(address expected, address requested);
+    error MigrationComplete();
 
     // Exchange rate oracle (18 decimals: 1e18 = 1:1 rate)
     mapping(address => mapping(address => uint256)) public exchangeRates;
@@ -64,6 +65,9 @@ contract StableFXAdapter_V2 is IFXEngine, ERC20, Ownable, ReentrancyGuard {
     mapping(address => uint256) public poolLedger;      // deposited principal per token
     mapping(address => uint256) public accruedFees;     // fee revenue per token
     mapping(address => address) public depositToken;    // each LP's deposit token
+
+    // Migration flag: once set, setExchangeRate is permanently disabled
+    bool public migrationComplete;
 
     // Accounting constants
     uint256 public constant RECIPROCAL_TOLERANCE = 0.01e18;   // 1% tolerance
@@ -93,6 +97,7 @@ contract StableFXAdapter_V2 is IFXEngine, ERC20, Ownable, ReentrancyGuard {
     event LpFeeUpdated(uint256 oldFeeBps, uint256 newFeeBps);
     event EmergencyWithdrawal(address indexed token, uint256 amount, address indexed to);
     event RateSkippedInTVL(address indexed token);
+    event MigrationCompleted(uint256 timestamp);
     
     /**
      * @notice Creates the StableFX liquidity adapter.
@@ -125,6 +130,16 @@ contract StableFXAdapter_V2 is IFXEngine, ERC20, Ownable, ReentrancyGuard {
         isAcceptedToken[token] = true;
         acceptedTokens.push(token);
         emit AcceptedTokenAdded(token);
+    }
+
+    /**
+     * @notice Marks the migration as complete, permanently disabling setExchangeRate.
+     * @dev Once called, no exchange rates can be updated on this contract.
+     *      This is irreversible — the flag cannot be unset.
+     */
+    function setMigrationComplete() external onlyOwner {
+        migrationComplete = true;
+        emit MigrationCompleted(block.timestamp);
     }
 
     /**
@@ -288,6 +303,7 @@ contract StableFXAdapter_V2 is IFXEngine, ERC20, Ownable, ReentrancyGuard {
         address tokenOut,
         uint256 rate
     ) external onlyOwner {
+        if (migrationComplete) revert MigrationComplete();
         if (tokenIn == address(0) || tokenOut == address(0)) revert TokenZeroAddress();
         if (rate == 0) revert InvalidRate();
         

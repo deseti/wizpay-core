@@ -4,6 +4,7 @@ import {
   Body,
   Controller,
   Get,
+  Inject,
   Param,
   ParseIntPipe,
   ParseUUIDPipe,
@@ -12,6 +13,7 @@ import {
   UnauthorizedException,
   UsePipes,
   ValidationPipe,
+  forwardRef,
 } from '@nestjs/common';
 import { OrchestratorService } from './orchestrator.service';
 import { PayrollInitService } from './payroll-init.service';
@@ -28,6 +30,7 @@ export class TaskController {
   constructor(
     private readonly orchestratorService: OrchestratorService,
     private readonly taskService: TaskService,
+    @Inject(forwardRef(() => TaskEmployeeBreakdownService))
     private readonly taskEmployeeBreakdownService: TaskEmployeeBreakdownService,
     private readonly taskPayrollHistoryService: TaskPayrollHistoryService,
     private readonly payrollInitService: PayrollInitService,
