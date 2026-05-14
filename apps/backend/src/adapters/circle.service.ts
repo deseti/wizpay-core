@@ -97,6 +97,17 @@ export interface CircleWalletBalance {
   tokenAddress: string;
 }
 
+export class CircleApiError extends Error {
+  constructor(
+    public readonly status: number,
+    message: string,
+    public readonly body?: unknown,
+  ) {
+    super(message);
+    this.name = 'CircleApiError';
+  }
+}
+
 // ─── Constants ──────────────────────────────────────────────────────
 
 /** On-chain token addresses per blockchain. Extend as new chains are added. */
@@ -149,7 +160,9 @@ export class CircleService {
       this.configService.get<string>('CIRCLE_WALLETS_BASE_URL') ||
       this.configService.get<string>('CIRCLE_BASE_URL') ||
       'https://api.circle.com'
-    ).replace(/\/v1\/?$/, '').replace(/\/+$/, '');
+    )
+      .replace(/\/v1\/?$/, '')
+      .replace(/\/+$/, '');
 
     this.blockchain =
       this.configService.get<string>('CIRCLE_TRANSFER_BLOCKCHAIN') ||
@@ -157,18 +170,20 @@ export class CircleService {
 
     // ── Startup env verification ──────────────────────────────────────
     const arcWalletId = this.configService.get<string>('CIRCLE_WALLET_ID_ARC');
-    const sepoliaWalletId = this.configService.get<string>('CIRCLE_WALLET_ID_SEPOLIA');
+    const sepoliaWalletId = this.configService.get<string>(
+      'CIRCLE_WALLET_ID_SEPOLIA',
+    );
     const apiKey = this.configService.get<string>('CIRCLE_API_KEY');
     const entitySecret = this.configService.get<string>('CIRCLE_ENTITY_SECRET');
 
     this.logger.log(
       `CircleService init — ` +
-      `baseUrl=${this.baseUrl} ` +
-      `blockchain=${this.blockchain} ` +
-      `apiKeyConfigured=${apiKey ? 'yes' : 'no'} ` +
-      `entitySecretConfigured=${entitySecret ? 'yes' : 'no'} ` +
-      `arcWalletConfigured=${arcWalletId ? 'yes' : 'no'} ` +
-      `sepoliaWalletConfigured=${sepoliaWalletId ? 'yes' : 'no'}`,
+        `baseUrl=${this.baseUrl} ` +
+        `blockchain=${this.blockchain} ` +
+        `apiKeyConfigured=${apiKey ? 'yes' : 'no'} ` +
+        `entitySecretConfigured=${entitySecret ? 'yes' : 'no'} ` +
+        `arcWalletConfigured=${arcWalletId ? 'yes' : 'no'} ` +
+        `sepoliaWalletConfigured=${sepoliaWalletId ? 'yes' : 'no'}`,
     );
   }
 
@@ -431,7 +446,11 @@ export class CircleService {
       const status = await this.getTransactionStatus(txId);
 
       if (TERMINAL_STATUSES.has(status.status)) {
-        if (status.status === 'FAILED' || status.status === 'CANCELLED' || status.status === 'DENIED') {
+        if (
+          status.status === 'FAILED' ||
+          status.status === 'CANCELLED' ||
+          status.status === 'DENIED'
+        ) {
           throw new Error(
             `Circle transaction ${txId} ended with status ${status.status}${status.errorReason ? `: ${status.errorReason}` : ''}`,
           );
@@ -502,7 +521,15 @@ export class CircleService {
         `Circle API error — status=${res.status} path=${path} message="${upstreamMessage}"`,
       );
 
-      throw new Error(upstreamMessage);
+      if (res.status === 401 && path.includes('/stablefx/')) {
+        throw new CircleApiError(
+          res.status,
+          'Circle StableFX RFQ is blocked by authorization or product entitlement. Verify the Bearer API key and StableFX access before retrying.',
+          body,
+        );
+      }
+
+      throw new CircleApiError(res.status, upstreamMessage, body);
     }
 
     return res.json() as Promise<T>;
@@ -616,7 +643,7 @@ export class CircleService {
     });
 
     const balances: CircleWalletBalance[] =
-      ((response.data?.tokenBalances as unknown as CircleWalletBalance[]) ?? []);
+      (response.data?.tokenBalances as unknown as CircleWalletBalance[]) ?? [];
 
     return balances;
   }

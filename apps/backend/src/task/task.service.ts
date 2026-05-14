@@ -31,6 +31,10 @@ import { TaskLogService } from './task-log.service';
 import { TaskTransactionService } from './task-transaction.service';
 import { TaskMapperService, TaskWithRelations } from './task-mapper.service';
 import { TaskUnitService } from './task-unit.service';
+import {
+  assertLegacyLiquidityEnabled,
+  throwOfficialStableFxAuthRequired,
+} from '../fx/stablefx-cutover.guard';
 
 // ════════════════════════════════════════════════════════════════════
 //  FX-specific step identifiers for the StableFX settlement lifecycle.
@@ -127,12 +131,20 @@ export class TaskService {
       (recipient) => recipient.resolvedFromAns,
     ).length;
 
-    const batches = this.batchService.splitIntoBatches(validation.recipients);
-    const totals = this.batchService.calculateTotals(batches);
     const sourceToken =
       typeof payload.sourceToken === 'string' && payload.sourceToken.trim()
         ? payload.sourceToken.trim()
         : 'USDC';
+    const hasCrossCurrencyRecipient = validation.recipients.some(
+      (recipient) => recipient.targetToken !== sourceToken,
+    );
+
+    if (hasCrossCurrencyRecipient) {
+      throwOfficialStableFxAuthRequired();
+    }
+
+    const batches = this.batchService.splitIntoBatches(validation.recipients);
+    const totals = this.batchService.calculateTotals(batches);
     const walletAddress =
       typeof payload.walletAddress === 'string' && payload.walletAddress.trim()
         ? payload.walletAddress.trim().toLowerCase()
@@ -245,83 +257,23 @@ export class TaskService {
     };
   }
 
-  async createSwapTask(
-    payload: TaskPayload,
-  ): Promise<CreateSwapTaskResult> {
-    const tokenIn = typeof payload.tokenIn === 'string' ? payload.tokenIn : '';
-    const tokenOut = typeof payload.tokenOut === 'string' ? payload.tokenOut : '';
-    const amountIn = typeof payload.amountIn === 'string' ? payload.amountIn : '';
-    const minAmountOut = typeof payload.minAmountOut === 'string' ? payload.minAmountOut : '0';
-    const recipient = typeof payload.recipient === 'string' ? payload.recipient : '';
-
-    if (!tokenIn || !tokenOut || !amountIn || !recipient) {
-      throw new BadRequestException(
-        'Missing required fields: tokenIn, tokenOut, amountIn, recipient',
-      );
-    }
-
-    const referenceId = `SWAP-${Date.now()}`;
-
-    const task = await this.prisma.$transaction(async (tx) => {
-      const created = await tx.task.create({
-        data: {
-          type: TaskType.SWAP,
-          status: TaskStatus.ASSIGNED,
-          totalUnits: 1,
-          completedUnits: 0,
-          failedUnits: 0,
-          metadata: { referenceId, tokenIn, tokenOut, amountIn, minAmountOut, recipient } as Prisma.InputJsonValue,
-          payload: payload as Prisma.InputJsonValue,
-        },
-      });
-
-      await tx.taskUnit.create({
-        data: {
-          taskId: created.id,
-          type: 'step',
-          index: 0,
-          status: 'PENDING',
-          payload: { referenceId, tokenIn, tokenOut, amountIn, minAmountOut, recipient } as Prisma.InputJsonValue,
-        },
-      });
-
-      await tx.taskLog.create({
-        data: {
-          taskId: created.id,
-          level: 'INFO',
-          step: 'task.assigned',
-          status: TaskStatus.ASSIGNED,
-          message: `Swap task created: ${amountIn} ${tokenIn} → ${tokenOut}`,
-          context: { referenceId, tokenIn, tokenOut } as Prisma.InputJsonValue,
-        },
-      });
-
-      return tx.task.findUniqueOrThrow({
-        where: { id: created.id },
-        include: { logs: true, units: true, transactions: true },
-      });
-    });
-
-    const unit = task.units[0];
-
-    return {
-      taskId: task.id,
-      unitId: unit.id,
-      referenceId,
-      tokenIn,
-      tokenOut,
-      amountIn,
-      minAmountOut,
-      recipient,
-    };
+  async createSwapTask(payload: TaskPayload): Promise<CreateSwapTaskResult> {
+    // Swap is the same FX capability as cross-currency Send.
+    // Block with official RFQ auth required until Circle StableFX entitlement is available.
+    // When official Circle StableFX RFQ is implemented, replace this guard with
+    // actual RFQ quote + execution logic.
+    throwOfficialStableFxAuthRequired();
   }
 
   async createLiquidityTask(
     payload: TaskPayload,
   ): Promise<CreateLiquidityTaskResult> {
-    const operation = payload.operation === 'add' || payload.operation === 'remove'
-      ? payload.operation
-      : null;
+    assertLegacyLiquidityEnabled();
+
+    const operation =
+      payload.operation === 'add' || payload.operation === 'remove'
+        ? payload.operation
+        : null;
     const token = typeof payload.token === 'string' ? payload.token : '';
     const amount = typeof payload.amount === 'string' ? payload.amount : '';
 
@@ -574,7 +526,10 @@ export class TaskService {
    * Returns true if the transition is valid, false otherwise.
    * Does not throw — useful for pre-checking before committing.
    */
-  isValidTransition(currentStatus: TaskStatus, nextStatus: TaskStatus): boolean {
+  isValidTransition(
+    currentStatus: TaskStatus,
+    nextStatus: TaskStatus,
+  ): boolean {
     const allowed = ALLOWED_TRANSITIONS[currentStatus];
     return allowed !== undefined && allowed.includes(nextStatus);
   }
@@ -623,9 +578,7 @@ export class TaskService {
   /**
    * Get all transactions for a task.
    */
-  async getTaskTransactions(
-    taskId: string,
-  ): Promise<TaskTransactionRecord[]> {
+  async getTaskTransactions(taskId: string): Promise<TaskTransactionRecord[]> {
     return this.taskTransactionService.getTaskTransactions(taskId);
   }
 
@@ -688,14 +641,51 @@ export class TaskService {
       ...(options.walletAddress
         ? {
             OR: [
-              { metadata: { path: ['walletAddress'], equals: options.walletAddress } },
-              { metadata: { path: ['recipient'], equals: options.walletAddress } },
-              { metadata: { path: ['destinationAddress'], equals: options.walletAddress } },
-              { metadata: { path: ['sourceAddress'], equals: options.walletAddress } },
-              { payload: { path: ['walletAddress'], equals: options.walletAddress } },
-              { payload: { path: ['recipient'], equals: options.walletAddress } },
-              { payload: { path: ['destinationAddress'], equals: options.walletAddress } },
-              { payload: { path: ['sourceAddress'], equals: options.walletAddress } },
+              {
+                metadata: {
+                  path: ['walletAddress'],
+                  equals: options.walletAddress,
+                },
+              },
+              {
+                metadata: {
+                  path: ['recipient'],
+                  equals: options.walletAddress,
+                },
+              },
+              {
+                metadata: {
+                  path: ['destinationAddress'],
+                  equals: options.walletAddress,
+                },
+              },
+              {
+                metadata: {
+                  path: ['sourceAddress'],
+                  equals: options.walletAddress,
+                },
+              },
+              {
+                payload: {
+                  path: ['walletAddress'],
+                  equals: options.walletAddress,
+                },
+              },
+              {
+                payload: { path: ['recipient'], equals: options.walletAddress },
+              },
+              {
+                payload: {
+                  path: ['destinationAddress'],
+                  equals: options.walletAddress,
+                },
+              },
+              {
+                payload: {
+                  path: ['sourceAddress'],
+                  equals: options.walletAddress,
+                },
+              },
             ],
           }
         : {}),
@@ -707,7 +697,9 @@ export class TaskService {
         include: {
           logs: { orderBy: { createdAt: 'asc' } },
           units: { orderBy: [{ index: 'asc' }, { createdAt: 'asc' }] },
-          transactions: { orderBy: [{ batchIndex: 'asc' }, { createdAt: 'asc' }] },
+          transactions: {
+            orderBy: [{ batchIndex: 'asc' }, { createdAt: 'asc' }],
+          },
         },
         orderBy: { createdAt: 'desc' },
         take: limit,

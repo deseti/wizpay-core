@@ -4,6 +4,10 @@ import {
   CIRCUIT_BREAKER_THRESHOLD,
   CIRCUIT_BREAKER_WINDOW,
 } from './fx.constants';
+import {
+  isLegacyFxEnabled,
+  legacyFxDisabledMessage,
+} from './stablefx-cutover.guard';
 
 /**
  * Valid routing modes for the FX feature flag.
@@ -66,12 +70,20 @@ export class FxRoutingGuard {
   getActiveMode(): FxMode {
     if (this.currentMode === undefined) {
       const configValue = this.configService.get<string>('FX_ROUTING_MODE');
-      if (configValue === 'legacy' || configValue === 'new') {
+      if (configValue === 'legacy' && isLegacyFxEnabled()) {
         this.currentMode = configValue;
+      } else if (configValue === 'legacy') {
+        this.currentMode = 'new';
+        this.logger.warn(
+          'FX_ROUTING_MODE="legacy" ignored because legacy FX is disabled by default. ' +
+            'Routing through official StableFX RFQ.',
+        );
+      } else if (configValue === 'new' || configValue === undefined) {
+        this.currentMode = 'new';
       } else {
         throw new Error(
           `FX routing configuration is unavailable: mode is "${configValue ?? 'unset'}". ` +
-            `Expected exactly "legacy" or "new".`,
+            `Expected "new" or an explicitly enabled legacy test mode.`,
         );
       }
     }
@@ -95,6 +107,10 @@ export class FxRoutingGuard {
       throw new Error(
         `Invalid FX routing mode: "${mode}". Must be exactly "legacy" or "new".`,
       );
+    }
+
+    if (mode === 'legacy' && !isLegacyFxEnabled()) {
+      throw new Error(legacyFxDisabledMessage());
     }
 
     const previousMode = this.currentMode ?? 'unset';

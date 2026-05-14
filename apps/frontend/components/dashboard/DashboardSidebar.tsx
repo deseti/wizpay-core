@@ -2,7 +2,15 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { ArrowRightLeft, AtSign, Coins, Home, Repeat, Route, Wallet } from "lucide-react";
+import {
+  ArrowRightLeft,
+  AtSign,
+  Home,
+  Repeat,
+  Route,
+  User,
+  Wallet,
+} from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { FaucetButton } from "./FaucetButton";
@@ -13,7 +21,7 @@ const navItems = [
   { href: "/swap", label: "Swap", icon: Repeat },
   { href: "/bridge", label: "Bridge", icon: Route },
   { href: "/assets", label: "Assets", icon: Wallet },
-  { href: "/liquidity", label: "Liquidity", icon: Coins },
+  { href: "/profile", label: "Profile", icon: User },
   { href: "/ans", label: "ANS", icon: AtSign },
 ];
 
@@ -71,7 +79,7 @@ export function DashboardSidebar() {
                 "group relative flex w-full items-center gap-3 rounded-xl px-3 py-3 text-sm font-medium transition-all duration-250",
                 isActive
                   ? "bg-primary/12 text-primary shadow-md shadow-primary/5 ring-1 ring-primary/15"
-                  : "text-muted-foreground hover:bg-muted/40 hover:text-foreground"
+                  : "text-muted-foreground hover:bg-muted/40 hover:text-foreground",
               )}
             >
               {/* Active glow bar */}
@@ -84,13 +92,13 @@ export function DashboardSidebar() {
                   "flex items-center justify-center rounded-lg p-1.5 transition-all duration-250",
                   isActive
                     ? "bg-primary/20 text-primary shadow-sm shadow-primary/10"
-                    : "text-muted-foreground group-hover:bg-muted/60 group-hover:text-foreground"
+                    : "text-muted-foreground group-hover:bg-muted/60 group-hover:text-foreground",
                 )}
               >
                 <Icon
                   className={cn(
                     "h-4 w-4 transition-transform duration-250",
-                    isActive ? "scale-110" : "group-hover:scale-105"
+                    isActive ? "scale-110" : "group-hover:scale-105",
                   )}
                 />
               </div>

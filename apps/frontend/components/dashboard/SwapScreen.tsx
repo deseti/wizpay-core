@@ -49,6 +49,11 @@ import { buildXShareUrl } from "@/lib/social";
 import { arcTestnet } from "@/lib/wagmi";
 import { initSwapTask, reportSwapResult } from "@/lib/swap-service";
 
+const OFFICIAL_STABLEFX_AUTH_REQUIRED_MESSAGE =
+  "OFFICIAL_STABLEFX_AUTH_REQUIRED: Swap uses official Circle StableFX RFQ only. " +
+  "StableFXAdapter, internal LP liquidity, synthetic pricing, and adapter balances are disabled for default routing " +
+  "until Circle StableFX authentication and entitlement are available.";
+
 const MAX_CONFIRMATION_POLLS = 20;
 const POLL_INTERVAL_MS = 1500;
 
@@ -96,15 +101,20 @@ export function SwapScreen() {
   const [tokenOut, setTokenOut] = useState<TokenSymbol>("EURC");
   const [amountIn, setAmountIn] = useState("");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [swapStep, setSwapStep] = useState<"idle" | "approving" | "swapping">("idle");
-  const { isOpen: isSuccessDialogOpen, setIsOpen: setIsSuccessDialogOpen } = useDialogState();
-  const [successState, setSuccessState] = useState<SwapSuccessState | null>(null);
+  const [swapStep, setSwapStep] = useState<"idle" | "approving" | "swapping">(
+    "idle",
+  );
+  const { isOpen: isSuccessDialogOpen, setIsOpen: setIsSuccessDialogOpen } =
+    useDialogState();
+  const [successState, setSuccessState] = useState<SwapSuccessState | null>(
+    null,
+  );
 
   const tokenInConfig = SUPPORTED_TOKENS[tokenIn];
   const tokenOutConfig = SUPPORTED_TOKENS[tokenOut];
   const amountInUnits = useMemo(
     () => parseAmountToUnits(amountIn, tokenInConfig.decimals),
-    [amountIn, tokenInConfig.decimals]
+    [amountIn, tokenInConfig.decimals],
   );
 
   const { data: currentAllowanceData, refetch: refetchAllowance } =
@@ -117,14 +127,16 @@ export function SwapScreen() {
       query: { enabled: Boolean(walletAddress) },
     });
 
-  const { data: currentBalanceData, refetch: refetchBalance } = useReadContract({
-    address: tokenInConfig.address,
-    abi: ERC20_ABI,
-    chainId: arcTestnet.id,
-    functionName: "balanceOf",
-    args: walletAddress ? [walletAddress] : undefined,
-    query: { enabled: Boolean(walletAddress) },
-  });
+  const { data: currentBalanceData, refetch: refetchBalance } = useReadContract(
+    {
+      address: tokenInConfig.address,
+      abi: ERC20_ABI,
+      chainId: arcTestnet.id,
+      functionName: "balanceOf",
+      args: walletAddress ? [walletAddress] : undefined,
+      query: { enabled: Boolean(walletAddress) },
+    },
+  );
 
   const { data: estimatedOutputData, refetch: refetchQuote } = useReadContract({
     address: WIZPAY_ADDRESS,
@@ -136,7 +148,8 @@ export function SwapScreen() {
         ? [tokenInConfig.address, tokenOutConfig.address, amountInUnits]
         : undefined,
     query: {
-      enabled: Boolean(walletAddress && amountInUnits > 0n && tokenIn !== tokenOut),
+      // Official Circle StableFX RFQ is required; disable on-chain quote polling.
+      enabled: false,
       refetchOnWindowFocus: false,
       staleTime: 15_000,
     },
@@ -155,7 +168,7 @@ export function SwapScreen() {
   const feeBps = feeBpsData ?? 0n;
   const estimatedFee = useMemo(
     () => (amountInUnits * feeBps) / 10000n,
-    [amountInUnits, feeBps]
+    [amountInUnits, feeBps],
   );
   const minimumOut = useMemo(() => {
     if (estimatedOutput <= 0n) {
@@ -166,7 +179,11 @@ export function SwapScreen() {
   }, [estimatedOutput]);
   const needsApproval = amountInUnits > 0n && currentAllowance < amountInUnits;
   const insufficientBalance = amountInUnits > currentBalance;
+  // Swap execution is blocked until official Circle StableFX RFQ auth is available.
+  // Keep the UI visible but prevent submission.
+  const isOfficialRfqAvailable = false;
   const canSubmit =
+    isOfficialRfqAvailable &&
     Boolean(walletAddress) &&
     tokenIn !== tokenOut &&
     amountInUnits > 0n &&
@@ -203,7 +220,7 @@ export function SwapScreen() {
     }
 
     throw new Error(
-      "Swap approval completed, but the allowance did not refresh before the timeout window ended."
+      "Swap approval completed, but the allowance did not refresh before the timeout window ended.",
     );
   }
 
@@ -242,7 +259,7 @@ export function SwapScreen() {
 
       const matchedLog = logs.find(
         (log) =>
-          Boolean(log.transactionHash) && log.args.referenceId === referenceId
+          Boolean(log.transactionHash) && log.args.referenceId === referenceId,
       );
 
       if (matchedLog?.transactionHash) {
@@ -259,15 +276,22 @@ export function SwapScreen() {
     }
 
     throw new Error(
-      "Circle reported the swap challenge complete, but the final settlement event did not appear before the timeout window ended."
+      "Circle reported the swap challenge complete, but the final settlement event did not appear before the timeout window ended.",
     );
   }
 
   const { isProcessing: isGuarded, guard } = useActionGuard();
 
   async function handleSwap() {
+    if (!isOfficialRfqAvailable) {
+      setErrorMessage(OFFICIAL_STABLEFX_AUTH_REQUIRED_MESSAGE);
+      return;
+    }
+
     if (!canSubmit) {
-      setErrorMessage("Connect the active wallet and enter a valid swap amount first.");
+      setErrorMessage(
+        "Connect the active wallet and enter a valid swap amount first.",
+      );
       return;
     }
 
@@ -277,7 +301,9 @@ export function SwapScreen() {
     }
 
     if (!walletAddress) {
-      setErrorMessage("Connect the active wallet and enter a valid swap amount first.");
+      setErrorMessage(
+        "Connect the active wallet and enter a valid swap amount first.",
+      );
       return;
     }
 
@@ -381,11 +407,7 @@ export function SwapScreen() {
       });
       setIsSuccessDialogOpen(true);
 
-      await Promise.all([
-        refetchAllowance(),
-        refetchBalance(),
-        refetchQuote(),
-      ]);
+      await Promise.all([refetchAllowance(), refetchBalance(), refetchQuote()]);
 
       toast({
         title: "Swap submitted",
@@ -417,7 +439,9 @@ export function SwapScreen() {
     <>
       <div className="animate-fade-up space-y-4 sm:space-y-5">
         <div className="flex flex-col gap-1">
-          <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">Swap</h1>
+          <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">
+            Swap
+          </h1>
           <p className="text-sm text-muted-foreground/70">
             Swap tokens instantly through the WizPay routing engine.
           </p>
@@ -429,9 +453,13 @@ export function SwapScreen() {
             {/* From Token */}
             <div className="rounded-2xl border border-border/40 bg-background/35 p-4 space-y-3">
               <div className="flex items-center justify-between">
-                <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground/60">You pay</span>
+                <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground/60">
+                  You pay
+                </span>
                 <span className="text-xs text-muted-foreground/50">
-                  Balance: {formatTokenAmount(currentBalance, tokenInConfig.decimals)} {tokenIn}
+                  Balance:{" "}
+                  {formatTokenAmount(currentBalance, tokenInConfig.decimals)}{" "}
+                  {tokenIn}
                 </span>
               </div>
               <div className="flex items-center gap-3">
@@ -466,7 +494,10 @@ export function SwapScreen() {
                   </SelectTrigger>
                   <SelectContent>
                     {Object.values(SUPPORTED_TOKENS).map((token) => (
-                      <SelectItem key={`in-${token.symbol}`} value={token.symbol}>
+                      <SelectItem
+                        key={`in-${token.symbol}`}
+                        value={token.symbol}
+                      >
                         {token.symbol}
                       </SelectItem>
                     ))}
@@ -485,14 +516,21 @@ export function SwapScreen() {
             {/* To Token */}
             <div className="rounded-2xl border border-border/40 bg-background/35 p-4 space-y-3">
               <div className="flex items-center justify-between">
-                <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground/60">You receive</span>
+                <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground/60">
+                  You receive
+                </span>
               </div>
               <div className="flex items-center gap-3">
                 <p className="text-2xl font-bold flex-1 min-w-0">
-                  {amountInUnits > 0n && tokenIn !== tokenOut && estimatedOutput > 0n
-                    ? formatTokenAmount(estimatedOutput, tokenOutConfig.decimals, 6)
-                    : "0.0"
-                  }
+                  {amountInUnits > 0n &&
+                  tokenIn !== tokenOut &&
+                  estimatedOutput > 0n
+                    ? formatTokenAmount(
+                        estimatedOutput,
+                        tokenOutConfig.decimals,
+                        6,
+                      )
+                    : "0.0"}
                 </p>
                 <Select
                   value={tokenOut}
@@ -508,9 +546,12 @@ export function SwapScreen() {
                     {Object.values(SUPPORTED_TOKENS)
                       .filter((token) => token.symbol !== tokenIn)
                       .map((token) => (
-                      <SelectItem key={`out-${token.symbol}`} value={token.symbol}>
-                        {token.symbol}
-                      </SelectItem>
+                        <SelectItem
+                          key={`out-${token.symbol}`}
+                          value={token.symbol}
+                        >
+                          {token.symbol}
+                        </SelectItem>
                       ))}
                   </SelectContent>
                 </Select>
@@ -522,11 +563,17 @@ export function SwapScreen() {
               <div className="rounded-xl border border-border/30 bg-background/20 px-4 py-3 space-y-2 text-sm">
                 <div className="flex justify-between text-muted-foreground/70">
                   <span>Min. received</span>
-                  <span className="font-mono">{formatTokenAmount(minimumOut, tokenOutConfig.decimals, 6)} {tokenOut}</span>
+                  <span className="font-mono">
+                    {formatTokenAmount(minimumOut, tokenOutConfig.decimals, 6)}{" "}
+                    {tokenOut}
+                  </span>
                 </div>
                 <div className="flex justify-between text-muted-foreground/70">
                   <span>Fee</span>
-                  <span className="font-mono">{formatTokenAmount(estimatedFee, tokenInConfig.decimals, 6)} {tokenIn}</span>
+                  <span className="font-mono">
+                    {formatTokenAmount(estimatedFee, tokenInConfig.decimals, 6)}{" "}
+                    {tokenIn}
+                  </span>
                 </div>
                 <div className="flex justify-between text-muted-foreground/70">
                   <span>Slippage</span>
@@ -535,7 +582,15 @@ export function SwapScreen() {
               </div>
             )}
 
-            {/* Error */}
+            {/* Official RFQ blocker notice */}
+            {!isOfficialRfqAvailable && (
+              <div className="rounded-xl border border-amber-500/25 bg-amber-500/5 px-4 py-3 text-sm text-amber-200">
+                Swap requires official Circle StableFX RFQ authentication.
+                StableFXAdapter, internal LP liquidity, and legacy routing are
+                disabled until entitlement is available.
+              </div>
+            )}
+
             {errorMessage && (
               <div className="rounded-xl border border-destructive/25 bg-destructive/5 px-4 py-3 text-sm text-destructive flex items-center justify-between gap-2">
                 <span>{errorMessage}</span>
@@ -587,18 +642,21 @@ export function SwapScreen() {
           </CardContent>
         </Card>
 
-          <Card className="glass-card border-border/40">
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <ArrowRightLeft className="h-4 w-4 text-primary" />
-                Token Pair
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="text-sm text-muted-foreground/80">
-              <p>Only Arc Testnet USDC and EURC are available. For batch routing, use the Send page.</p>
-            </CardContent>
-          </Card>
-        </div>
+        <Card className="glass-card border-border/40">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <ArrowRightLeft className="h-4 w-4 text-primary" />
+              Token Pair
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="text-sm text-muted-foreground/80">
+            <p>
+              Only Arc Testnet USDC and EURC are available. For batch routing,
+              use the Send page.
+            </p>
+          </CardContent>
+        </Card>
+      </div>
 
       <Dialog open={isSuccessDialogOpen} onOpenChange={setIsSuccessDialogOpen}>
         <DialogContent className="glass-card max-w-md overflow-hidden border-border/40 bg-background/95 p-0">
@@ -655,21 +713,32 @@ export function SwapScreen() {
                     </span>
                   </div>
                   <div className="mt-3 flex items-center justify-between gap-3 text-sm">
-                    <span className="text-muted-foreground/70">Expected out</span>
+                    <span className="text-muted-foreground/70">
+                      Expected out
+                    </span>
                     <span className="font-mono font-medium">
-                      {successState.amountOut ?? "Pending"} {successState.tokenOut}
+                      {successState.amountOut ?? "Pending"}{" "}
+                      {successState.tokenOut}
                     </span>
                   </div>
                   <div className="mt-3 flex items-center justify-between gap-3 text-sm">
-                    <span className="text-muted-foreground/70">Transaction</span>
-                    <span className="font-mono font-medium">{shortenHash(successState.txHash)}</span>
+                    <span className="text-muted-foreground/70">
+                      Transaction
+                    </span>
+                    <span className="font-mono font-medium">
+                      {shortenHash(successState.txHash)}
+                    </span>
                   </div>
                 </div>
 
                 <div className="flex flex-col gap-3 sm:flex-row">
                   {successState.explorerUrl ? (
                     <Button asChild className="flex-1">
-                      <a href={successState.explorerUrl} target="_blank" rel="noreferrer">
+                      <a
+                        href={successState.explorerUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
                         <ExternalLink className="h-4 w-4" />
                         View transaction
                       </a>

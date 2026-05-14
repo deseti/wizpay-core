@@ -4,13 +4,14 @@ import {
   Body,
   Controller,
   Get,
+  HttpException,
+  HttpStatus,
   Inject,
   Param,
   ParseIntPipe,
   ParseUUIDPipe,
   Post,
   Query,
-  UnauthorizedException,
   UsePipes,
   ValidationPipe,
   forwardRef,
@@ -21,7 +22,8 @@ import { CreateTaskDto } from '../task/dto/create-task.dto';
 import { TaskService } from '../task/task.service';
 import { TaskEmployeeBreakdownService } from '../task/task-employee-breakdown.service';
 import { TaskPayrollHistoryService } from '../task/task-payroll-history.service';
-import { CircleService } from '../adapters/circle.service';
+import { CircleApiError, CircleService } from '../adapters/circle.service';
+import { OFFICIAL_STABLEFX_AUTH_REQUIRED } from '../fx/stablefx-cutover.guard';
 import { TaskType } from '../task/task-type.enum';
 import type { ReportTaskUnitInput } from '../task/task.types';
 
@@ -69,8 +71,15 @@ export class TaskController {
       const message =
         error instanceof Error ? error.message : 'Unable to fetch FX quote';
 
-      if (message.includes('401')) {
-        throw new UnauthorizedException(message);
+      if (error instanceof CircleApiError && error.status === 401) {
+        throw new HttpException(
+          {
+            code: OFFICIAL_STABLEFX_AUTH_REQUIRED,
+            error: 'Official StableFX RFQ authentication required',
+            message,
+          },
+          HttpStatus.UNAUTHORIZED,
+        );
       }
 
       throw new BadGatewayException(message);

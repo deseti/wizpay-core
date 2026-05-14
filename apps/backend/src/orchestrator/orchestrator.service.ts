@@ -16,6 +16,11 @@ import { normalizeBridgeChain } from '../common/multichain';
 import { FxRoutingGuard } from '../fx/fx-routing-guard.service';
 import { StableFXRfqClient } from '../fx/stablefx-rfq-client.service';
 import { FxOperationPayload } from '../fx/fx.types';
+import {
+  assertLegacyFxEnabled,
+  assertLegacyLiquidityEnabled,
+  throwOfficialStableFxAuthRequired,
+} from '../fx/stablefx-cutover.guard';
 
 type BridgeExecutionMode = 'app_treasury' | 'external_signer';
 type BridgeSourceAccountType = 'app_treasury_wallet' | 'external_wallet';
@@ -39,6 +44,18 @@ export class OrchestratorService {
   // ─────────────────────────────────────────────────────────────────────────────
 
   async handleTask(type: TaskType, payload: TaskPayload): Promise<TaskDetails> {
+    if (type === TaskType.SWAP) {
+      assertLegacyFxEnabled();
+    }
+
+    if (type === TaskType.LIQUIDITY) {
+      assertLegacyLiquidityEnabled();
+    }
+
+    if (type === TaskType.PAYROLL && this.hasCrossCurrencyPayroll(payload)) {
+      throwOfficialStableFxAuthRequired();
+    }
+
     const route = TASK_QUEUE_MAP[type];
 
     if (!route) {
@@ -46,9 +63,7 @@ export class OrchestratorService {
     }
 
     const enrichedPayload =
-      type === TaskType.BRIDGE
-        ? this.normalizeBridgePayload(payload)
-        : payload;
+      type === TaskType.BRIDGE ? this.normalizeBridgePayload(payload) : payload;
 
     const task = await this.taskService.createTask(type, enrichedPayload);
 
@@ -110,6 +125,7 @@ export class OrchestratorService {
     );
 
     if (mode === 'legacy') {
+      assertLegacyFxEnabled();
       return this.executeLegacySwap(payload, operationId, timestamp);
     }
 
@@ -232,7 +248,10 @@ export class OrchestratorService {
       );
 
       // Step 4: Create trade via StableFXRfqClient
-      const trade = await this.rfqClient.createTrade(quote.quoteId, operationId);
+      const trade = await this.rfqClient.createTrade(
+        quote.quoteId,
+        operationId,
+      );
 
       await this.taskService.logStep(
         task.id,
@@ -299,6 +318,25 @@ export class OrchestratorService {
    */
   private generateOperationId(): string {
     return `fx_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+  }
+
+  private hasCrossCurrencyPayroll(payload: TaskPayload): boolean {
+    const sourceToken =
+      typeof payload.sourceToken === 'string' && payload.sourceToken.trim()
+        ? payload.sourceToken.trim()
+        : 'USDC';
+    const recipients = Array.isArray(payload.recipients)
+      ? payload.recipients
+      : [];
+
+    return recipients.some((recipient) => {
+      if (!recipient || typeof recipient !== 'object') {
+        return false;
+      }
+
+      const targetToken = (recipient as Record<string, unknown>).targetToken;
+      return typeof targetToken === 'string' && targetToken !== sourceToken;
+    });
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
@@ -477,9 +515,7 @@ export class OrchestratorService {
       !sourceBlockchain ? 'sourceChain' : null,
       !destinationBlockchain ? 'destinationChain' : null,
       !amount ? 'amount' : null,
-      (!walletId && !isPasskey && !isExternalWalletSource)
-        ? 'walletId'
-        : null,
+      !walletId && !isPasskey && !isExternalWalletSource ? 'walletId' : null,
       !walletAddress ? 'walletAddress' : null,
       !destinationAddress ? 'destinationAddress' : null,
     ].filter((field): field is string => Boolean(field));
@@ -660,13 +696,13 @@ export class OrchestratorService {
 
   async updateTaskState(taskId: string, state: string, result?: any) {
     const statusMap: Record<string, TaskStatus> = {
-      'in_progress': TaskStatus.IN_PROGRESS,
-      'executed': TaskStatus.EXECUTED,
-      'failed': TaskStatus.FAILED,
+      in_progress: TaskStatus.IN_PROGRESS,
+      executed: TaskStatus.EXECUTED,
+      failed: TaskStatus.FAILED,
     };
-    
+
     const taskStatus = statusMap[state] || TaskStatus.ASSIGNED;
-    
+
     await this.taskService.updateStatus(taskId, taskStatus, {
       step: `task.${state}`,
       message: `Task state updated to ${state}`,

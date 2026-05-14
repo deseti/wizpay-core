@@ -20,6 +20,7 @@ describe('OrchestratorService — handleFxOperation', () => {
   let executionRouter: jest.Mocked<ExecutionRouterService>;
   let fxRoutingGuard: jest.Mocked<FxRoutingGuard>;
   let rfqClient: jest.Mocked<StableFXRfqClient>;
+  const originalLegacyFxFlag = process.env.WIZPAY_ENABLE_LEGACY_FX;
 
   const mockTaskDetails = {
     id: 'task-123',
@@ -112,9 +113,19 @@ describe('OrchestratorService — handleFxOperation', () => {
     service = module.get(OrchestratorService);
     taskService = module.get(TaskService) as jest.Mocked<TaskService>;
     queueService = module.get(QueueService) as jest.Mocked<QueueService>;
-    executionRouter = module.get(ExecutionRouterService) as jest.Mocked<ExecutionRouterService>;
+    executionRouter = module.get(
+      ExecutionRouterService,
+    ) as jest.Mocked<ExecutionRouterService>;
     fxRoutingGuard = module.get(FxRoutingGuard) as jest.Mocked<FxRoutingGuard>;
     rfqClient = module.get(StableFXRfqClient) as jest.Mocked<StableFXRfqClient>;
+  });
+
+  afterEach(() => {
+    if (originalLegacyFxFlag === undefined) {
+      delete process.env.WIZPAY_ENABLE_LEGACY_FX;
+    } else {
+      process.env.WIZPAY_ENABLE_LEGACY_FX = originalLegacyFxFlag;
+    }
   });
 
   // ─────────────────────────────────────────────────────────────────────────────
@@ -123,6 +134,7 @@ describe('OrchestratorService — handleFxOperation', () => {
 
   describe('legacy mode routing', () => {
     beforeEach(() => {
+      process.env.WIZPAY_ENABLE_LEGACY_FX = 'true';
       fxRoutingGuard.getActiveMode.mockReturnValue('legacy');
     });
 
@@ -357,6 +369,7 @@ describe('OrchestratorService — handleFxOperation', () => {
 
   describe('routing path logging', () => {
     it('logs routing path for legacy mode operations', async () => {
+      process.env.WIZPAY_ENABLE_LEGACY_FX = 'true';
       fxRoutingGuard.getActiveMode.mockReturnValue('legacy');
 
       // Spy on the logger
@@ -383,9 +396,7 @@ describe('OrchestratorService — handleFxOperation', () => {
 
       await service.handleFxOperation(validPayload);
 
-      expect(logSpy).toHaveBeenCalledWith(
-        expect.stringContaining('route=new'),
-      );
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('route=new'));
       expect(logSpy).toHaveBeenCalledWith(
         expect.stringContaining('operationId='),
       );
@@ -405,9 +416,7 @@ describe('OrchestratorService — handleFxOperation', () => {
       expect(logSpy).toHaveBeenCalledWith(
         expect.stringContaining('source=USDC'),
       );
-      expect(logSpy).toHaveBeenCalledWith(
-        expect.stringContaining('dest=EURC'),
-      );
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('dest=EURC'));
     });
   });
 

@@ -13,13 +13,13 @@ Every request follows the same pipeline: **Payload → Validation → Queue → 
 
 The frontend submits a structured payload to one of the task endpoints:
 
-| Endpoint | Task Type | Purpose |
-|---|---|---|
-| `POST /tasks` | Any | Generic task creation (bridge, generic) |
-| `POST /tasks/payroll/init` | Payroll | Validate + batch before execution |
-| `POST /tasks/swap/init` | Swap | Create swap task |
-| `POST /tasks/liquidity/init` | Liquidity | Create liquidity task |
-| `POST /tasks/fx/execute` | FX | Execute FX trade |
+| Endpoint                     | Task Type | Purpose                                 |
+| ---------------------------- | --------- | --------------------------------------- |
+| `POST /tasks`                | Any       | Generic task creation (bridge, generic) |
+| `POST /tasks/payroll/init`   | Payroll   | Validate + batch before execution       |
+| `POST /tasks/swap/init`      | Swap      | Legacy swap task, disabled by default   |
+| `POST /tasks/liquidity/init` | Liquidity | Legacy LP task, disabled by default     |
+| `POST /tasks/fx/execute`     | FX        | Execute FX trade                        |
 
 ### 2. Validation
 
@@ -28,6 +28,13 @@ The frontend submits a structured payload to one of the task endpoints:
 - **Payroll** — `PayrollValidationService` checks recipient addresses, amounts, token compatibility. Invalid entries reject the entire payload.
 - **Bridge** — `OrchestratorService.normalizeBridgePayload()` validates chains, addresses, amounts. Rejects same-chain bridges, non-USDC tokens, and invalid execution modes. For `bridgeExecutionMode: "external_signer"`, `walletAddress` is required while `walletId` is optional.
 - **Swap** — Requires `tokenIn`, `tokenOut`, `amountIn`, `recipient`.
+
+Legacy swap and liquidity endpoints are disabled by default during the official
+StableFX cutover. `WIZPAY_ENABLE_LEGACY_FX=true` or
+`WIZPAY_ENABLE_LEGACY_LIQUIDITY=true` must only be used for isolated
+non-production testing. Official StableFX RFQ failures are terminal for the
+request; the backend must not fall back to synthetic pricing or internal
+reserves.
 
 ### 3. Task Creation
 
@@ -60,13 +67,13 @@ QueueService.enqueueTask(route, {
 
 Queue routing is deterministic:
 
-| Task Type | Queue | Backoff |
-|---|---|---|
-| `payroll` | `payroll` | 1s exponential |
-| `swap` | `swap` | 1s exponential |
-| `bridge` | `bridge` | 5s exponential |
-| `liquidity` | `swap` | 1s exponential |
-| `fx` | `swap` | 1s exponential |
+| Task Type   | Queue     | Backoff        |
+| ----------- | --------- | -------------- |
+| `payroll`   | `payroll` | 1s exponential |
+| `swap`      | `swap`    | 1s exponential |
+| `bridge`    | `bridge`  | 5s exponential |
+| `liquidity` | `swap`    | 1s exponential |
+| `fx`        | `swap`    | 1s exponential |
 
 All jobs: 3 attempts, `removeOnComplete: 100`, `removeOnFail: 500`.
 
@@ -122,11 +129,11 @@ TransactionPollerService polls each tx → finalizes when all terminal
 
 Finalization logic:
 
-| Condition | Final Status |
-|---|---|
-| All `completed` | `executed` |
-| All `failed` | `failed` |
-| Mixed | `partial` |
+| Condition       | Final Status |
+| --------------- | ------------ |
+| All `completed` | `executed`   |
+| All `failed`    | `failed`     |
+| Mixed           | `partial`    |
 
 ---
 
@@ -145,18 +152,21 @@ A company pays 50 employees in USDC on ARC-TESTNET.
 **5. Worker** — `PayrollWorker` picks the job. Orchestrator marks `in_progress`.
 
 **6. Agent** — `PayrollAgent` iterates batch 0 (25 recipients):
-  - For each: `CircleService.transfer()` → `TaskService.appendTransaction()` → `QueueService.enqueueTransactionPoll()`
-  - Then batch 1 (25 recipients): same flow.
-  - Agent returns. Task stays `in_progress`.
+
+- For each: `CircleService.transfer()` → `TaskService.appendTransaction()` → `QueueService.enqueueTransactionPoll()`
+- Then batch 1 (25 recipients): same flow.
+- Agent returns. Task stays `in_progress`.
 
 **7. Polling** — `TxPollWorker` processes 50 poll jobs over the next 30–120 seconds:
-  - Each job calls Circle API for tx status.
-  - `completed` → update `TaskTransaction`, check if all terminal.
-  - Still pending → re-enqueue with delay.
+
+- Each job calls Circle API for tx status.
+- `completed` → update `TaskTransaction`, check if all terminal.
+- Still pending → re-enqueue with delay.
 
 **8. Finalization** — When all 50 transactions reach terminal state:
-  - 50/50 completed → task status: `executed`
-  - 48 completed, 2 failed → task status: `partial`
+
+- 50/50 completed → task status: `executed`
+- 48 completed, 2 failed → task status: `partial`
 
 **9. Frontend** — Polls `GET /tasks/:id`. Renders final status with per-recipient tx hashes.
 
@@ -175,6 +185,7 @@ A user bridges 100 USDC from ETH-SEPOLIA to SOLANA-DEVNET.
 **4.** The Bridge Kit's internal timeout (configured at 600s) expires before confirmation completes.
 
 **5.** `CircleBridgeService` throws. The error propagates:
+
 ```
 BridgeAgent.execute() throws
   → OrchestratorService catches
@@ -200,11 +211,12 @@ BridgeAgent.execute() throws
 
 ### Why an idempotency guard instead of BullMQ's built-in deduplication?
 
-BullMQ's `jobId`-based deduplication prevents duplicate *enqueue*, but does not prevent duplicate *execution* after a crash-restart. If a worker crashes after marking a task `in_progress` but before completing execution, BullMQ retries the job. The idempotency guard (check `status === ASSIGNED`) ensures the task is not re-executed if it has already progressed past the assignment phase.
+BullMQ's `jobId`-based deduplication prevents duplicate _enqueue_, but does not prevent duplicate _execution_ after a crash-restart. If a worker crashes after marking a task `in_progress` but before completing execution, BullMQ retries the job. The idempotency guard (check `status === ASSIGNED`) ensures the task is not re-executed if it has already progressed past the assignment phase.
 
 ### Why route through OrchestratorService instead of calling agents directly from workers?
 
 Centralized execution ensures:
+
 - Every task passes through the same idempotency guard
 - Every status transition is logged
 - Error handling is uniform (best-effort status update + re-throw)

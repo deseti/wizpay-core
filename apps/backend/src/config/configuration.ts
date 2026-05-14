@@ -39,7 +39,7 @@ export default (): ApplicationConfig => ({
     ),
   },
   fx: {
-    routingMode: process.env.FX_ROUTING_MODE ?? 'legacy',
+    routingMode: process.env.FX_ROUTING_MODE ?? 'new',
     pollIntervalMs: Number.parseInt(
       process.env.FX_POLL_INTERVAL_MS ?? '3000',
       10,
@@ -51,7 +51,7 @@ export default (): ApplicationConfig => ({
     apiBaseUrl: process.env.STABLEFX_API_BASE_URL ?? '',
     apiKey: process.env.STABLEFX_API_KEY ?? '',
     supportedPairs: process.env.STABLEFX_SUPPORTED_PAIRS ?? '[]',
-    useRealStableFx: process.env.NEXT_PUBLIC_USE_REAL_STABLEFX === 'true',
+    useRealStableFx: process.env.NEXT_PUBLIC_USE_REAL_STABLEFX !== 'false',
     autoUpdateRatesEnabled: process.env.AUTO_UPDATE_RATES_ENABLED !== 'false',
   },
 });

@@ -19,9 +19,24 @@ describe('StableFXRfqClient', () => {
     STABLEFX_API_KEY: 'test-api-key',
     STABLEFX_SUPPORTED_PAIRS: JSON.stringify({
       pairs: [
-        { fromCurrency: 'USDC', toCurrency: 'EURC', minAmount: '10', enabled: true },
-        { fromCurrency: 'EURC', toCurrency: 'USDC', minAmount: '10', enabled: true },
-        { fromCurrency: 'USDC', toCurrency: 'GBP', minAmount: '10', enabled: false },
+        {
+          fromCurrency: 'USDC',
+          toCurrency: 'EURC',
+          minAmount: '10',
+          enabled: true,
+        },
+        {
+          fromCurrency: 'EURC',
+          toCurrency: 'USDC',
+          minAmount: '10',
+          enabled: true,
+        },
+        {
+          fromCurrency: 'USDC',
+          toCurrency: 'GBP',
+          minAmount: '10',
+          enabled: false,
+        },
       ],
       lastUpdated: '2024-01-01T00:00:00.000Z',
     }),
@@ -75,36 +90,48 @@ describe('StableFXRfqClient', () => {
     it('rejects a quote with rate of zero', () => {
       const quote = makeValidQuote({ rate: '0' });
       expect(() => service.validateQuote(quote)).toThrow(StableFxRfqError);
-      expect(() => service.validateQuote(quote)).toThrow(/rate must be non-zero/);
+      expect(() => service.validateQuote(quote)).toThrow(
+        /rate must be non-zero/,
+      );
     });
 
     it('rejects a quote with negative rate', () => {
       const quote = makeValidQuote({ rate: '-0.5' });
-      expect(() => service.validateQuote(quote)).toThrow(/rate must be non-zero/);
+      expect(() => service.validateQuote(quote)).toThrow(
+        /rate must be non-zero/,
+      );
     });
 
     it('rejects a quote with non-numeric rate', () => {
       const quote = makeValidQuote({ rate: 'abc' });
-      expect(() => service.validateQuote(quote)).toThrow(/rate must be non-zero/);
+      expect(() => service.validateQuote(quote)).toThrow(
+        /rate must be non-zero/,
+      );
     });
 
     it('rejects a quote with empty rate', () => {
       const quote = makeValidQuote({ rate: '' });
-      expect(() => service.validateQuote(quote)).toThrow(/rate must be non-zero/);
+      expect(() => service.validateQuote(quote)).toThrow(
+        /rate must be non-zero/,
+      );
     });
 
     it('rejects a quote with expiresAt in the past', () => {
       const quote = makeValidQuote({
         expiresAt: new Date(Date.now() - 10_000).toISOString(),
       });
-      expect(() => service.validateQuote(quote)).toThrow(/expiresAt must be at least 10s/);
+      expect(() => service.validateQuote(quote)).toThrow(
+        /expiresAt must be at least 10s/,
+      );
     });
 
     it('rejects a quote with expiresAt less than 10s in the future', () => {
       const quote = makeValidQuote({
         expiresAt: new Date(Date.now() + 5_000).toISOString(),
       });
-      expect(() => service.validateQuote(quote)).toThrow(/expiresAt must be at least 10s/);
+      expect(() => service.validateQuote(quote)).toThrow(
+        /expiresAt must be at least 10s/,
+      );
     });
 
     it('accepts a quote with expiresAt exactly 10s in the future', () => {
@@ -116,17 +143,23 @@ describe('StableFXRfqClient', () => {
 
     it('rejects a quote with invalid expiresAt timestamp', () => {
       const quote = makeValidQuote({ expiresAt: 'not-a-date' });
-      expect(() => service.validateQuote(quote)).toThrow(/expiresAt must be a valid timestamp/);
+      expect(() => service.validateQuote(quote)).toThrow(
+        /expiresAt must be a valid timestamp/,
+      );
     });
 
     it('rejects a quote with empty quoteId', () => {
       const quote = makeValidQuote({ quoteId: '' });
-      expect(() => service.validateQuote(quote)).toThrow(/quoteId must be non-empty/);
+      expect(() => service.validateQuote(quote)).toThrow(
+        /quoteId must be non-empty/,
+      );
     });
 
     it('rejects a quote with whitespace-only quoteId', () => {
       const quote = makeValidQuote({ quoteId: '   ' });
-      expect(() => service.validateQuote(quote)).toThrow(/quoteId must be non-empty/);
+      expect(() => service.validateQuote(quote)).toThrow(
+        /quoteId must be non-empty/,
+      );
     });
 
     it('reports all validation errors at once', () => {
@@ -248,6 +281,19 @@ describe('StableFXRfqClient', () => {
       });
     });
 
+    it('categorizes Circle StableFX 401 as auth_entitlement_blocked', async () => {
+      mockFetch.mockResolvedValue({
+        ok: false,
+        status: 401,
+        text: () => Promise.resolve('Unauthorized'),
+      });
+
+      await expect(service.requestQuote(validRequest)).rejects.toMatchObject({
+        code: 'auth_entitlement_blocked',
+        message: expect.stringContaining('entitlement or API authentication'),
+      });
+    });
+
     it('categorizes invalid response (missing fields) as invalid_response', async () => {
       mockFetch.mockResolvedValue({
         ok: true,
@@ -280,9 +326,7 @@ describe('StableFXRfqClient', () => {
       const module = await createService({ STABLEFX_API_BASE_URL: undefined });
       const svc = module.get(StableFXRfqClient);
 
-      await expect(
-        svc.requestQuote(validRequest),
-      ).rejects.toMatchObject({
+      await expect(svc.requestQuote(validRequest)).rejects.toMatchObject({
         code: 'api_error',
         message: expect.stringContaining('STABLEFX_API_BASE_URL'),
       });
@@ -292,9 +336,7 @@ describe('StableFXRfqClient', () => {
       const module = await createService({ STABLEFX_API_KEY: undefined });
       const svc = module.get(StableFXRfqClient);
 
-      await expect(
-        svc.requestQuote(validRequest),
-      ).rejects.toMatchObject({
+      await expect(svc.requestQuote(validRequest)).rejects.toMatchObject({
         code: 'api_error',
         message: expect.stringContaining('STABLEFX_API_KEY'),
       });
@@ -309,7 +351,9 @@ describe('StableFXRfqClient', () => {
     let logWarnSpy: jest.SpyInstance;
 
     beforeEach(() => {
-      logWarnSpy = jest.spyOn((service as any).logger, 'warn').mockImplementation();
+      logWarnSpy = jest
+        .spyOn((service as any).logger, 'warn')
+        .mockImplementation();
     });
 
     it('does not warn on first quote (no previous to compare)', () => {
@@ -480,7 +524,16 @@ describe('StableFXRfqClient', () => {
     it('throws on invalid response without any fallback', async () => {
       mockFetch.mockResolvedValue({
         ok: true,
-        json: () => Promise.resolve({ quoteId: '', rate: '0', expiresAt: '', fromAmount: '', toAmount: '', fee: '', tenor: '' }),
+        json: () =>
+          Promise.resolve({
+            quoteId: '',
+            rate: '0',
+            expiresAt: '',
+            fromAmount: '',
+            toAmount: '',
+            fee: '',
+            tenor: '',
+          }),
       });
 
       await expect(service.requestQuote(validRequest)).rejects.toThrow(
@@ -671,8 +724,16 @@ describe('StableFXRfqClient', () => {
       expect(pairs).toHaveLength(2);
       expect(pairs).toEqual(
         expect.arrayContaining([
-          expect.objectContaining({ fromCurrency: 'USDC', toCurrency: 'EURC', enabled: true }),
-          expect.objectContaining({ fromCurrency: 'EURC', toCurrency: 'USDC', enabled: true }),
+          expect.objectContaining({
+            fromCurrency: 'USDC',
+            toCurrency: 'EURC',
+            enabled: true,
+          }),
+          expect.objectContaining({
+            fromCurrency: 'EURC',
+            toCurrency: 'USDC',
+            enabled: true,
+          }),
         ]),
       );
     });
@@ -685,14 +746,22 @@ describe('StableFXRfqClient', () => {
     });
 
     it('uses default registry when config is not set', async () => {
-      const module = await createService({ STABLEFX_SUPPORTED_PAIRS: undefined });
+      const module = await createService({
+        STABLEFX_SUPPORTED_PAIRS: undefined,
+      });
       const svc = module.get(StableFXRfqClient);
 
       const pairs = await svc.getSupportedPairs();
 
       expect(pairs).toHaveLength(2);
-      expect(pairs[0]).toMatchObject({ fromCurrency: 'USDC', toCurrency: 'EURC' });
-      expect(pairs[1]).toMatchObject({ fromCurrency: 'EURC', toCurrency: 'USDC' });
+      expect(pairs[0]).toMatchObject({
+        fromCurrency: 'USDC',
+        toCurrency: 'EURC',
+      });
+      expect(pairs[1]).toMatchObject({
+        fromCurrency: 'EURC',
+        toCurrency: 'USDC',
+      });
     });
   });
 });

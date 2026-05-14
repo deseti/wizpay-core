@@ -5,8 +5,8 @@
  * or the official Circle StableFX + Permit2 + FxEscrow architecture.
  *
  * Set via environment variable:
- *   NEXT_PUBLIC_USE_REAL_STABLEFX=true   → Circle StableFX mode
- *   any other value / omitted            → Legacy adapter mode (default)
+ *   NEXT_PUBLIC_USE_REAL_STABLEFX=false  -> Legacy adapter mode for isolated testing
+ *   any other value / omitted            -> Circle StableFX mode
  */
 
 import {
@@ -19,12 +19,11 @@ export type FxMode = "legacy" | "stablefx";
 
 /**
  * Active FX mode, derived from the environment variable.
- * Defaults to the on-chain adapter flow unless Circle StableFX is explicitly enabled.
+ * Defaults to the official Circle StableFX flow. The legacy adapter must be
+ * explicitly enabled for isolated non-production testing.
  */
 export const fxMode: FxMode =
-  process.env.NEXT_PUBLIC_USE_REAL_STABLEFX === "true"
-    ? "stablefx"
-    : "legacy";
+  process.env.NEXT_PUBLIC_USE_REAL_STABLEFX === "false" ? "legacy" : "stablefx";
 
 /** True when using the official Circle StableFX RFQ flow */
 export const isStableFxMode = fxMode === "stablefx";
