@@ -1,11 +1,23 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
 import { FxRoutingGuard } from './fx-routing-guard.service';
-import { CIRCUIT_BREAKER_THRESHOLD, CIRCUIT_BREAKER_WINDOW } from './fx.constants';
+import {
+  CIRCUIT_BREAKER_THRESHOLD,
+  CIRCUIT_BREAKER_WINDOW,
+} from './fx.constants';
 
 describe('FxRoutingGuard', () => {
   let service: FxRoutingGuard;
   let configService: ConfigService;
+  const originalLegacyFxFlag = process.env.WIZPAY_ENABLE_LEGACY_FX;
+
+  afterEach(() => {
+    if (originalLegacyFxFlag === undefined) {
+      delete process.env.WIZPAY_ENABLE_LEGACY_FX;
+    } else {
+      process.env.WIZPAY_ENABLE_LEGACY_FX = originalLegacyFxFlag;
+    }
+  });
 
   function createService(fxRoutingMode?: string) {
     const module = Test.createTestingModule({
@@ -27,7 +39,16 @@ describe('FxRoutingGuard', () => {
   }
 
   describe('getActiveMode()', () => {
-    it('returns "legacy" when config is set to "legacy"', async () => {
+    it('returns "new" when legacy config is set without explicit test flag', async () => {
+      delete process.env.WIZPAY_ENABLE_LEGACY_FX;
+      const module = await createService('legacy');
+      service = module.get(FxRoutingGuard);
+
+      expect(service.getActiveMode()).toBe('new');
+    });
+
+    it('returns "legacy" when config is set to "legacy" with explicit test flag', async () => {
+      process.env.WIZPAY_ENABLE_LEGACY_FX = 'true';
       const module = await createService('legacy');
       service = module.get(FxRoutingGuard);
 
@@ -41,13 +62,11 @@ describe('FxRoutingGuard', () => {
       expect(service.getActiveMode()).toBe('new');
     });
 
-    it('throws when config is unset (undefined)', async () => {
+    it('defaults to "new" when config is unset', async () => {
       const module = await createService(undefined);
       service = module.get(FxRoutingGuard);
 
-      expect(() => service.getActiveMode()).toThrow(
-        /FX routing configuration is unavailable/,
-      );
+      expect(service.getActiveMode()).toBe('new');
     });
 
     it('throws when config contains an invalid value', async () => {
@@ -83,6 +102,7 @@ describe('FxRoutingGuard', () => {
 
   describe('setMode()', () => {
     beforeEach(async () => {
+      process.env.WIZPAY_ENABLE_LEGACY_FX = 'true';
       const module = await createService('legacy');
       service = module.get(FxRoutingGuard);
     });

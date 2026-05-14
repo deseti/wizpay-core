@@ -1,6 +1,14 @@
 "use client";
 
-import { AlertCircle, Download, Loader2, Plus, Rocket, Upload, Users } from "lucide-react";
+import {
+  AlertCircle,
+  Download,
+  Loader2,
+  Plus,
+  Rocket,
+  Upload,
+  Users,
+} from "lucide-react";
 
 import { RecipientScannerDialog } from "@/components/dashboard/RecipientScannerDialog";
 import { AllRecipientsDialog } from "@/components/dashboard/batch/AllRecipientsDialog";
@@ -28,15 +36,8 @@ import {
 } from "@/components/ui/table";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { PreparedRecipient, QuoteSummary } from "@/lib/types";
-import {
-  activeFxEngineAddress,
-  fxProviderLabel,
-  isStableFxMode,
-  permit2Address,
-} from "@/lib/fx-config";
 import { RECIPIENT_PREVIEW_LIMIT } from "@/lib/batch-csv";
 import {
-  formatCompactAddress,
   formatTokenAmount,
   type RecipientDraft,
   type TokenSymbol,
@@ -114,7 +115,10 @@ export function BatchComposer({
 }: BatchComposerProps) {
   const canSend = smartBatchAvailable && Boolean(handleSmartBatchSubmit);
   const { isProcessing: isSendGuarded, guard: guardSend } = useActionGuard();
-  const visibleRecipients = preparedRecipients.slice(0, RECIPIENT_PREVIEW_LIMIT);
+  const visibleRecipients = preparedRecipients.slice(
+    0,
+    RECIPIENT_PREVIEW_LIMIT,
+  );
   const hiddenRecipientsCount = Math.max(
     0,
     preparedRecipients.length - RECIPIENT_PREVIEW_LIMIT,
@@ -178,16 +182,8 @@ export function BatchComposer({
                 variant="outline"
                 className="font-mono text-[11px] border-primary/20 text-primary/70 bg-primary/5"
               >
-                {`${fxProviderLabel}: ${formatCompactAddress(activeFxEngineAddress)}`}
+                Official StableFX RFQ
               </Badge>
-              {isStableFxMode ? (
-                <Badge
-                  variant="outline"
-                  className="font-mono text-[11px] border-sky-500/20 text-sky-300/80 bg-sky-500/5"
-                >
-                  Permit2: {formatCompactAddress(permit2Address)}
-                </Badge>
-              ) : null}
               <Badge
                 variant="outline"
                 className="border-emerald-500/20 text-emerald-300/80 bg-emerald-500/5"
@@ -252,7 +248,9 @@ export function BatchComposer({
                   </span>
                 </div>
                 <div className="flex items-center justify-between text-sm">
-                  <span className="text-muted-foreground">Estimated receive</span>
+                  <span className="text-muted-foreground">
+                    Estimated receive
+                  </span>
                   {quoteLoading ? (
                     <Skeleton className="h-4 w-24 bg-muted/20" />
                   ) : (
@@ -351,8 +349,8 @@ export function BatchComposer({
             <div className="flex flex-col gap-3 rounded-2xl border border-dashed border-border/40 bg-background/20 p-4 sm:flex-row sm:items-center sm:justify-between">
               <div className="space-y-1">
                 <p className="flex items-center gap-2 text-sm font-medium text-foreground">
-                  <Users className="h-4 w-4 text-primary" />
-                  +{hiddenRecipientsCount} more recipients
+                  <Users className="h-4 w-4 text-primary" />+
+                  {hiddenRecipientsCount} more recipients
                 </p>
                 <p className="text-[11px] text-muted-foreground/65">
                   The composer shows the first {RECIPIENT_PREVIEW_LIMIT} rows so

@@ -16,7 +16,7 @@ import { useState } from "react";
 
 function getTaskMetadataString(
   metadata: Record<string, unknown> | null | undefined,
-  key: string
+  key: string,
 ) {
   const value = metadata?.[key];
   return typeof value === "string" ? value : null;
@@ -24,7 +24,7 @@ function getTaskMetadataString(
 
 function getTaskMetadataNumber(
   metadata: Record<string, unknown> | null | undefined,
-  key: string
+  key: string,
 ) {
   const value = metadata?.[key];
   return typeof value === "number" ? value : null;
@@ -38,9 +38,13 @@ function SendWorkspace() {
   const taskMetadata = wp.payrollTask?.metadata;
   const taskTotalAmount = getTaskMetadataString(taskMetadata, "totalAmount");
   const taskReferenceId = getTaskMetadataString(taskMetadata, "referenceId");
-  const taskRecipientCount = getTaskMetadataNumber(taskMetadata, "totalRecipients");
+  const taskRecipientCount = getTaskMetadataNumber(
+    taskMetadata,
+    "totalRecipients",
+  );
   const taskSubmissionHashes = wp.smartBatchSubmissionHashes;
-  const taskLastHash = taskSubmissionHashes[taskSubmissionHashes.length - 1] ?? null;
+  const taskLastHash =
+    taskSubmissionHashes[taskSubmissionHashes.length - 1] ?? null;
   const successTotalAmount = taskTotalAmount
     ? BigInt(taskTotalAmount)
     : wp.sessionTotalAmount > 0n
@@ -61,7 +65,8 @@ function SendWorkspace() {
               Send
             </h1>
             <p className="text-sm text-muted-foreground/70">
-              Send tokens to one or many recipients. Upload CSV for batch payments.
+              Send tokens to one or many recipients. Upload CSV for batch
+              payments.
             </p>
           </div>
           <div className="flex gap-2">
@@ -87,9 +92,6 @@ function SendWorkspace() {
           walletAddress={walletAddress}
           totalRouted={wp.totalRouted}
           historyCount={wp.history.length}
-          engineBalances={wp.engineBalances}
-          fxEngineData={wp.fxEngineData}
-          engineLoading={wp.engineLoading}
           onClearMessages={() => {
             wp.setStatusMessage(null);
             wp.setErrorMessage(null);

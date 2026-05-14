@@ -4,6 +4,10 @@ import { AgentExecutionResult } from '../agents/agent.interface';
 import { TaskType } from '../task/task-type.enum';
 import { TaskDetails, WalletMode } from '../task/task.types';
 import { PasskeyEngineService } from './passkey-engine.service';
+import {
+  assertLegacyFxEnabled,
+  assertLegacyLiquidityEnabled,
+} from '../fx/stablefx-cutover.guard';
 
 // ─── Service ─────────────────────────────────────────────────────────────────
 
@@ -49,6 +53,14 @@ export class ExecutionRouterService {
    *          always matches the shape expected by OrchestratorService.
    */
   async execute(task: TaskDetails): Promise<AgentExecutionResult> {
+    if (task.type === TaskType.SWAP) {
+      assertLegacyFxEnabled();
+    }
+
+    if (task.type === TaskType.LIQUIDITY) {
+      assertLegacyLiquidityEnabled();
+    }
+
     const walletMode = this.resolveWalletMode(task);
 
     this.logger.log(

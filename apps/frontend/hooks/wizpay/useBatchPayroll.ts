@@ -25,6 +25,12 @@ type BatchPayrollStage =
   | "success"
   | "error";
 
+const OFFICIAL_STABLEFX_AUTH_REQUIRED = "OFFICIAL_STABLEFX_AUTH_REQUIRED";
+
+const OFFICIAL_STABLEFX_AUTH_REQUIRED_MESSAGE =
+  `${OFFICIAL_STABLEFX_AUTH_REQUIRED}: Cross-currency Send supports USDC -> EURC and EURC -> USDC through official Circle StableFX RFQ only. ` +
+  "StableFXAdapter, internal LP liquidity, synthetic pricing, and adapter balances are disabled for default routing until Circle StableFX authentication and entitlement are available.";
+
 interface UseBatchPayrollOptions {
   activeToken: {
     symbol: TokenSymbol;
@@ -39,7 +45,7 @@ interface UseBatchPayrollOptions {
   setErrorMessage: (message: string | null) => void;
   submitCurrentBatch: (
     batchRecipients?: RecipientDraft[],
-    batchReferenceId?: string
+    batchReferenceId?: string,
   ) => Promise<TransactionActionResult>;
   referenceId: string;
 }
@@ -111,16 +117,16 @@ interface BatchPayrollResult extends BatchPayrollTotals {
 
 function normalizeBatches(
   currentRecipients: RecipientDraft[],
-  pendingBatches: RecipientDraft[][]
+  pendingBatches: RecipientDraft[][],
 ) {
   return [currentRecipients, ...pendingBatches].filter(
-    (batch) => batch.length > 0
+    (batch) => batch.length > 0,
   );
 }
 
 function calculateTotals(
   batches: RecipientDraft[][],
-  decimals: number
+  decimals: number,
 ): BatchPayrollTotals {
   const totalDistributed: Record<TokenSymbol, bigint> = {
     USDC: 0n,
@@ -151,10 +157,17 @@ function toRecipientDraftBatch(unit: PayrollTaskUnit): RecipientDraft[] {
 }
 
 function isTaskTerminal(task: BackendTask | null) {
-  return task?.status === "executed" || task?.status === "review" || task?.status === "failed";
+  return (
+    task?.status === "executed" ||
+    task?.status === "review" ||
+    task?.status === "failed"
+  );
 }
 
-function getTaskProgress(task: BackendTask | null, fallbackTotal: number): BatchPayrollProgress {
+function getTaskProgress(
+  task: BackendTask | null,
+  fallbackTotal: number,
+): BatchPayrollProgress {
   const latestLog = task?.logs[task.logs.length - 1];
 
   if (!task) {
@@ -187,6 +200,15 @@ function getSubmissionHashes(task: BackendTask | null) {
     .filter((value): value is string => Boolean(value));
 }
 
+function hasCrossCurrencyRecipients(
+  sourceToken: TokenSymbol,
+  batches: RecipientDraft[][],
+) {
+  return batches.some((batch) =>
+    batch.some((recipient) => recipient.targetToken !== sourceToken),
+  );
+}
+
 // ─── Hook ───────────────────────────────────────────────────────────
 
 /**
@@ -207,11 +229,15 @@ export function useBatchPayroll({
   const { walletAddress } = useActiveWalletAddress();
   const batches = useMemo(
     () => normalizeBatches(recipients, pendingBatches),
-    [pendingBatches, recipients]
+    [pendingBatches, recipients],
   );
   const totals = useMemo(
     () => calculateTotals(batches, activeToken.decimals),
-    [activeToken.decimals, batches]
+    [activeToken.decimals, batches],
+  );
+  const hasCrossCurrency = useMemo(
+    () => hasCrossCurrencyRecipients(activeToken.symbol, batches),
+    [activeToken.symbol, batches],
   );
 
   const [isRunning, setIsRunning] = useState(false);
@@ -245,13 +271,15 @@ export function useBatchPayroll({
 
   const submissionHashes = useMemo(() => getSubmissionHashes(task), [task]);
   const hashes = useMemo(
-    () => (approvalHash ? [approvalHash, ...submissionHashes] : submissionHashes),
-    [approvalHash, submissionHashes]
+    () =>
+      approvalHash ? [approvalHash, ...submissionHashes] : submissionHashes,
+    [approvalHash, submissionHashes],
   );
-  const lastHash = submissionHashes[submissionHashes.length - 1] ?? approvalHash;
+  const lastHash =
+    submissionHashes[submissionHashes.length - 1] ?? approvalHash;
   const progress = useMemo(
     () => getTaskProgress(task, Math.max(1, batches.length)),
-    [batches.length, task]
+    [batches.length, task],
   );
   const isSuccess = task?.status === "executed";
 
@@ -264,27 +292,32 @@ export function useBatchPayroll({
     setErrorMessage(null);
 
     try {
-        const initPlan = await backendFetch<PayrollInitPlan>(
-          "/tasks/payroll/init",
-          {
-            method: "POST",
-            body: JSON.stringify({
-              sourceToken: activeToken.symbol,
-              referenceId,
-              walletAddress,
-              recipients: batches.flat().map((recipient) => ({
-                address: recipient.address,
-                amount: recipient.amount,
-                targetToken: recipient.targetToken,
-              })),
-            }),
-          }
-        );
+      if (hasCrossCurrency) {
+        setErrorMessage(OFFICIAL_STABLEFX_AUTH_REQUIRED_MESSAGE);
+        return;
+      }
 
-        setTaskId(initPlan.taskId);
-        await refreshTask(initPlan.taskId);
+      const initPlan = await backendFetch<PayrollInitPlan>(
+        "/tasks/payroll/init",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            sourceToken: activeToken.symbol,
+            referenceId,
+            walletAddress,
+            recipients: batches.flat().map((recipient) => ({
+              address: recipient.address,
+              amount: recipient.amount,
+              targetToken: recipient.targetToken,
+            })),
+          }),
+        },
+      );
 
-        const totalApprovalAmount = BigInt(initPlan.approvalAmount);
+      setTaskId(initPlan.taskId);
+      await refreshTask(initPlan.taskId);
+
+      const totalApprovalAmount = BigInt(initPlan.approvalAmount);
 
       if (totalApprovalAmount > 0n && currentAllowance < totalApprovalAmount) {
         const approvalResult = await approveBatchAmount(totalApprovalAmount);
@@ -308,26 +341,28 @@ export function useBatchPayroll({
           toRecipientDraftBatch(nextUnit),
           typeof nextUnit.payload.referenceId === "string"
             ? nextUnit.payload.referenceId
-            : initPlan.referenceId
+            : initPlan.referenceId,
         );
 
-        const reportResult: ReportTaskUnitResponse = await backendFetch<ReportTaskUnitResponse>(
-          `/tasks/${initPlan.taskId}/units/${nextUnit.id}/report`,
-          {
-            method: "POST",
-            body: JSON.stringify(
-              result.ok
-                ? {
-                    status: "SUCCESS",
-                    txHash: result.hash,
-                  }
-                : {
-                    status: "FAILED",
-                    error: "Wallet batch execution did not complete successfully.",
-                  }
-            ),
-          }
-        );
+        const reportResult: ReportTaskUnitResponse =
+          await backendFetch<ReportTaskUnitResponse>(
+            `/tasks/${initPlan.taskId}/units/${nextUnit.id}/report`,
+            {
+              method: "POST",
+              body: JSON.stringify(
+                result.ok
+                  ? {
+                      status: "SUCCESS",
+                      txHash: result.hash,
+                    }
+                  : {
+                      status: "FAILED",
+                      error:
+                        "Wallet batch execution did not complete successfully.",
+                    },
+              ),
+            },
+          );
 
         setTask(reportResult.task);
         nextUnit = reportResult.nextUnit;
@@ -345,6 +380,7 @@ export function useBatchPayroll({
     approveBatchAmount,
     batches,
     currentAllowance,
+    hasCrossCurrency,
     walletAddress,
     referenceId,
     refetchAllowance,
@@ -363,8 +399,10 @@ export function useBatchPayroll({
 
   return {
     ...totals,
-    isSupported: true,
-    availabilityReason: null,
+    isSupported: !hasCrossCurrency,
+    availabilityReason: hasCrossCurrency
+      ? OFFICIAL_STABLEFX_AUTH_REQUIRED_MESSAGE
+      : null,
     isRunning,
     isSuccess,
     progress,

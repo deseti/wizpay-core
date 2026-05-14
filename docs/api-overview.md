@@ -28,13 +28,13 @@ Create and enqueue a task for execution.
 
 List tasks with filters.
 
-| Param | Type | Default | Max |
-|---|---|---|---|
-| `type` | string | — | — |
-| `status` | string | — | — |
-| `wallet` | string | — | — |
-| `limit` | number | 50 | 200 |
-| `offset` | number | 0 | — |
+| Param    | Type   | Default | Max |
+| -------- | ------ | ------- | --- |
+| `type`   | string | —       | —   |
+| `status` | string | —       | —   |
+| `wallet` | string | —       | —   |
+| `limit`  | number | 50      | 200 |
+| `offset` | number | 0       | —   |
 
 The `wallet` filter searches across `metadata.walletAddress`, `metadata.recipient`, `metadata.destinationAddress`, `metadata.sourceAddress`, and their `payload` equivalents.
 
@@ -43,6 +43,7 @@ Returns `{ data: { items: TaskDetails[], total: number } }`.
 ### `GET /tasks/:id`
 
 Poll a single task. Returns `TaskDetails` including:
+
 - Status and metadata
 - All `TaskLog` entries (chronological)
 - All `TaskUnit` records with individual statuses
@@ -54,7 +55,9 @@ Validate and batch a payroll run. Does **not** enqueue for execution.
 
 ```json
 {
-  "recipients": [{ "address": "0x...", "amount": "100", "targetToken": "USDC" }],
+  "recipients": [
+    { "address": "0x...", "amount": "100", "targetToken": "USDC" }
+  ],
   "sourceToken": "USDC",
   "walletAddress": "0x...",
   "referenceId": "PAY-001"
@@ -62,6 +65,7 @@ Validate and batch a payroll run. Does **not** enqueue for execution.
 ```
 
 Returns:
+
 ```json
 {
   "taskId": "uuid",
@@ -74,15 +78,23 @@ Returns:
 
 ### `POST /tasks/swap/init`
 
-Create a swap task.
+Create a legacy on-chain swap task.
 
 Required fields: `tokenIn`, `tokenOut`, `amountIn`, `recipient`.
 
+Default/prod behavior: rejected unless `WIZPAY_ENABLE_LEGACY_FX=true` is set
+for isolated non-production testing. Official StableFX RFQ should use the FX
+quote/execute endpoints.
+
 ### `POST /tasks/liquidity/init`
 
-Create a liquidity task.
+Create a legacy LP liquidity task.
 
 Required fields: `operation` (`add` | `remove`), `token`, `amount`.
+
+Default/prod behavior: rejected unless `WIZPAY_ENABLE_LEGACY_LIQUIDITY=true` is
+set for isolated non-production testing. The user-facing liquidity page is
+disabled during the official StableFX migration.
 
 ### `POST /tasks/:taskId/units/:unitId/report`
 
@@ -108,33 +120,33 @@ Execute an FX trade. Required: `quoteId`, `signature`, `senderAddress`.
 
 ## Wallet Endpoints
 
-| Endpoint | Method | Purpose |
-|---|---|---|
-| `/wallets/initialize` | POST | Create wallet set + wallets via Circle W3S |
-| `/wallets/sync` | POST | Sync existing wallets from Circle |
-| `/wallets/ensure` | POST | Get or create wallet for chain (EVM/SOLANA) |
+| Endpoint              | Method | Purpose                                     |
+| --------------------- | ------ | ------------------------------------------- |
+| `/wallets/initialize` | POST   | Create wallet set + wallets via Circle W3S  |
+| `/wallets/sync`       | POST   | Sync existing wallets from Circle           |
+| `/wallets/ensure`     | POST   | Get or create wallet for chain (EVM/SOLANA) |
 
 All require `userToken` in the request body.
 
 ## Treasury Endpoints
 
-| Endpoint | Method | Purpose |
-|---|---|---|
-| `/treasury/init` | POST | Initialize app treasury wallet via Circle |
-| `/treasury/wallet` | GET | Get treasury wallet for a blockchain |
+| Endpoint           | Method | Purpose                                   |
+| ------------------ | ------ | ----------------------------------------- |
+| `/treasury/init`   | POST   | Initialize app treasury wallet via Circle |
+| `/treasury/wallet` | GET    | Get treasury wallet for a blockchain      |
 
 ## External System Interfaces
 
 The backend communicates with these external systems:
 
-| System | Adapter | Protocol | Operations |
-|---|---|---|---|
-| Circle W3S | `CircleService` | REST | Wallet provisioning, transfers, FX trades, tx status |
-| Circle Bridge Kit | `CircleBridgeService` | SDK | CCTP burn+attest+mint |
-| EVM RPCs | `BlockchainService` | JSON-RPC (viem) | ERC-20 transfers, contract calls |
-| Solana RPC | `SolanaService` | JSON-RPC (@solana/web3.js) | SPL transfers, intent building |
-| DEX protocols | `DexService` | Varies | Swap preparation |
-| Telegram | `TelegramService` | REST | Task status notifications |
+| System            | Adapter               | Protocol                   | Operations                                           |
+| ----------------- | --------------------- | -------------------------- | ---------------------------------------------------- |
+| Circle W3S        | `CircleService`       | REST                       | Wallet provisioning, transfers, FX trades, tx status |
+| Circle Bridge Kit | `CircleBridgeService` | SDK                        | CCTP burn+attest+mint                                |
+| EVM RPCs          | `BlockchainService`   | JSON-RPC (viem)            | ERC-20 transfers, contract calls                     |
+| Solana RPC        | `SolanaService`       | JSON-RPC (@solana/web3.js) | SPL transfers, intent building                       |
+| DEX protocols     | `DexService`          | Varies                     | Swap preparation                                     |
+| Telegram          | `TelegramService`     | REST                       | Task status notifications                            |
 
 ## Constraints
 

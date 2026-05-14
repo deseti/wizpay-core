@@ -1,15 +1,12 @@
 import { keepPreviousData } from "@tanstack/react-query";
 import { useEffect, useMemo } from "react";
 import { getAddress, isAddress, type Address, type Hex } from "viem";
-import { usePublicClient, useReadContract, useReadContracts } from "wagmi";
+import { usePublicClient, useReadContract } from "wagmi";
 
 import { useActiveWalletAddress } from "@/hooks/useActiveWalletAddress";
 import { useTransactionExecutor } from "@/hooks/useTransactionExecutor";
 
-import {
-  WIZPAY_ABI,
-  WIZPAY_BATCH_PAYMENT_ROUTED_EVENT,
-} from "@/constants/abi";
+import { WIZPAY_ABI, WIZPAY_BATCH_PAYMENT_ROUTED_EVENT } from "@/constants/abi";
 import { WIZPAY_ADDRESS } from "@/constants/addresses";
 import { ERC20_ABI } from "@/constants/erc20";
 import {
@@ -26,11 +23,7 @@ import type {
   TransactionActionResult,
 } from "@/lib/types";
 import type { useWizPayState } from "./useWizPayState";
-import {
-  isStableFxMode,
-  activeFxEngineAddress,
-  fxProviderLabel,
-} from "@/lib/fx-config";
+import { isStableFxMode, fxProviderLabel } from "@/lib/fx-config";
 import { arcTestnet } from "@/lib/wagmi";
 
 type BaseState = ReturnType<typeof useWizPayState>;
@@ -43,6 +36,10 @@ const EMPTY_QUOTE_SUMMARY: QuoteSummary = {
 
 const MAX_CONFIRMATION_POLLS = 20;
 const POLL_INTERVAL_MS = 1500;
+const OFFICIAL_STABLEFX_AUTH_REQUIRED = "OFFICIAL_STABLEFX_AUTH_REQUIRED";
+const OFFICIAL_STABLEFX_AUTH_REQUIRED_MESSAGE =
+  `${OFFICIAL_STABLEFX_AUTH_REQUIRED}: Cross-currency Send supports USDC -> EURC and EURC -> USDC through official Circle StableFX RFQ only. ` +
+  "StableFXAdapter, internal LP liquidity, synthetic pricing, and adapter balances are disabled for default routing until Circle StableFX authentication and entitlement are available.";
 
 type PreparedBatchRecipient = {
   address: Address;
@@ -140,81 +137,19 @@ export function useWizPayContract({
     refetchAllowance();
   }, [state.currentBatchNumber, refetchAllowance]);
 
-  const { data: fxEngineData, isLoading: fxEngineQueryLoading } =
-    useReadContract({
-      address: WIZPAY_ADDRESS,
-      abi: WIZPAY_ABI,
-      chainId: arcTestnet.id,
-      functionName: "fxEngine",
-      query: {
-        staleTime: 60_000,
-        placeholderData: keepPreviousData,
-      },
-    });
-
-  // ── Liquidity Engine Balances ───────────────────────────────────
-
-  const USDC_A = SUPPORTED_TOKENS["USDC"].address;
-  const EURC_A = SUPPORTED_TOKENS["EURC"].address;
-  const engineAddressForBalances = isStableFxMode
-    ? activeFxEngineAddress
-    : (fxEngineData as Address | undefined);
-
-  const {
-    data: lBalancesData,
-    refetch: refetchEngineBalances,
-    isLoading: engineBalancesQueryLoading,
-  } = useReadContracts({
-    contracts: [
-      {
-        address: USDC_A,
-        abi: ERC20_ABI,
-        chainId: arcTestnet.id,
-        functionName: "balanceOf",
-        args: engineAddressForBalances
-          ? [engineAddressForBalances]
-          : undefined,
-      },
-      {
-        address: EURC_A,
-        abi: ERC20_ABI,
-        chainId: arcTestnet.id,
-        functionName: "balanceOf",
-        args: engineAddressForBalances
-          ? [engineAddressForBalances]
-          : undefined,
-      },
-    ],
-    query: {
-      enabled: !!engineAddressForBalances,
-      refetchInterval: 30_000,
-      refetchIntervalInBackground: false,
-      refetchOnWindowFocus: false,
-      staleTime: 30_000,
-      placeholderData: keepPreviousData,
-    },
-  });
-
   // ── Derived values ──────────────────────────────────────────────
 
   const currentAllowance = currentAllowanceData ?? 0n;
   const currentBalance = currentBalanceData ?? 0n;
   const approvalAmount = batchAmount;
 
-  const engineBalances = useMemo<Record<TokenSymbol, bigint>>(() => {
-    return {
-      USDC: (lBalancesData?.[0].result as bigint | undefined) ?? 0n,
-      EURC: (lBalancesData?.[1].result as bigint | undefined) ?? 0n,
-    };
-  }, [lBalancesData]);
-
   // ── Quote summary (simplified — no longer drives execution) ─────
 
   const rawQuoteEnabled = Boolean(
     walletAddress &&
-      preparedRecipients.length > 0 &&
-      batchAmount > 0n &&
-      preparedRecipients.every((r) => r.amountUnits > 0n)
+    preparedRecipients.length > 0 &&
+    batchAmount > 0n &&
+    preparedRecipients.every((r) => r.amountUnits > 0n),
   );
 
   const {
@@ -228,9 +163,7 @@ export function useWizPayContract({
     functionName: "getBatchEstimatedOutputs",
     args: [
       activeToken.address,
-      preparedRecipients.map(
-        (r) => SUPPORTED_TOKENS[r.targetToken].address
-      ),
+      preparedRecipients.map((r) => SUPPORTED_TOKENS[r.targetToken].address),
       preparedRecipients.map((r) => r.amountUnits),
     ],
     query: {
@@ -259,9 +192,7 @@ export function useWizPayContract({
   const allowanceLoading = Boolean(walletAddress) && allowanceQueryLoading;
   const balanceLoading = Boolean(walletAddress) && balanceQueryLoading;
   const feeLoading = feeQueryLoading;
-  const engineLoading =
-    Boolean(engineAddressForBalances) &&
-    (engineBalancesQueryLoading || fxEngineQueryLoading);
+  const engineLoading = false;
   const quoteLoading = rawQuoteEnabled && rawQuoteLoading;
   const quoteRefreshing = Boolean(rawQuoteFetching && rawQuoteData);
 
@@ -275,7 +206,7 @@ export function useWizPayContract({
   const insufficientBalance = currentBalance < batchAmount;
 
   const prepareBatchRecipients = (
-    batchRecipients?: RecipientDraft[]
+    batchRecipients?: RecipientDraft[],
   ): PreparedBatchRecipient[] => {
     if (!batchRecipients) {
       return preparedRecipients.map((recipient) => ({
@@ -305,7 +236,10 @@ export function useWizPayContract({
     });
   };
 
-  const waitForAllowanceUpdate = async (requiredAmount: bigint, txHash: Hex | null) => {
+  const waitForAllowanceUpdate = async (
+    requiredAmount: bigint,
+    txHash: Hex | null,
+  ) => {
     if (!publicClient) {
       throw new Error("Arc public client is not ready yet.");
     }
@@ -331,7 +265,7 @@ export function useWizPayContract({
     }
 
     throw new Error(
-      "Approval completed, but the allowance did not refresh before the timeout window ended."
+      "Approval completed, but the allowance did not refresh before the timeout window ended.",
     );
   };
 
@@ -370,7 +304,7 @@ export function useWizPayContract({
 
       const matchedLog = logs.find(
         (log) =>
-          Boolean(log.transactionHash) && log.args.referenceId === referenceId
+          Boolean(log.transactionHash) && log.args.referenceId === referenceId,
       );
 
       if (matchedLog?.transactionHash) {
@@ -387,13 +321,13 @@ export function useWizPayContract({
     }
 
     throw new Error(
-      "Circle completed the wallet challenge, but the Arc settlement event did not appear before the timeout window ended."
+      "Circle completed the wallet challenge, but the Arc settlement event did not appear before the timeout window ended.",
     );
   };
 
   const getMinimumAmountsOut = async (
     preparedRecipients: PreparedBatchRecipient[],
-    batchRecipients?: RecipientDraft[]
+    batchRecipients?: RecipientDraft[],
   ) => {
     const canUseCachedQuote =
       (!batchRecipients || batchRecipients === state.recipients) &&
@@ -407,9 +341,7 @@ export function useWizPayContract({
           return 0n;
         }
 
-        return (
-          (estimatedAmountOut * (10000n - PREVIEW_SLIPPAGE_BPS)) / 10000n
-        );
+        return (estimatedAmountOut * (10000n - PREVIEW_SLIPPAGE_BPS)) / 10000n;
       });
     }
 
@@ -424,7 +356,7 @@ export function useWizPayContract({
       args: [
         activeToken.address,
         preparedRecipients.map(
-          (recipient) => SUPPORTED_TOKENS[recipient.targetToken].address
+          (recipient) => SUPPORTED_TOKENS[recipient.targetToken].address,
         ),
         preparedRecipients.map((recipient) => recipient.amountUnits),
       ],
@@ -435,16 +367,14 @@ export function useWizPayContract({
         return 0n;
       }
 
-      return (
-        (estimatedAmountOut * (10000n - PREVIEW_SLIPPAGE_BPS)) / 10000n
-      );
+      return (estimatedAmountOut * (10000n - PREVIEW_SLIPPAGE_BPS)) / 10000n;
     });
   };
 
   const applyBatchSessionTotals = (
     preparedRecipients: PreparedBatchRecipient[],
     batchTotalAmount: bigint,
-    batchValidRecipientCount: number
+    batchValidRecipientCount: number,
   ) => {
     state.setSessionTotalAmount((prev) => prev + batchTotalAmount);
     state.setSessionTotalRecipients((prev) => prev + batchValidRecipientCount);
@@ -462,7 +392,7 @@ export function useWizPayContract({
   // ── Actions (user-controlled wallet execution) ──────────────────
 
   const requestApproval = async (
-    amount = approvalAmount
+    amount = approvalAmount,
   ): Promise<TransactionActionResult> => {
     if (!walletAddress) {
       const message = "Connect the active wallet before approving payroll.";
@@ -480,7 +410,7 @@ export function useWizPayContract({
     state.setApproveTxHash(null);
     state.setErrorMessage(null);
     state.setStatusMessage(
-      `Confirm the ${activeToken.symbol} approval in your wallet.`
+      `Confirm the ${activeToken.symbol} approval in your wallet.`,
     );
 
     try {
@@ -527,14 +457,19 @@ export function useWizPayContract({
    */
   const handleSubmit = async (
     batchRecipients?: RecipientDraft[],
-    batchReferenceId?: string
+    batchReferenceId?: string,
   ): Promise<TransactionActionResult> => {
-    if ((!batchRecipients && !state.validate(preparedRecipients)) || hasRouteIssue) {
+    if (
+      (!batchRecipients && !state.validate(preparedRecipients)) ||
+      hasRouteIssue
+    ) {
       return { ok: false, hash: null };
     }
 
     if (!walletAddress) {
-      state.setErrorMessage("Connect the active wallet before sending payroll.");
+      state.setErrorMessage(
+        "Connect the active wallet before sending payroll.",
+      );
       return { ok: false, hash: null };
     }
 
@@ -544,12 +479,23 @@ export function useWizPayContract({
     }
 
     const batchPreparedRecipients = prepareBatchRecipients(batchRecipients);
+    const hasCrossCurrencyRecipient = batchPreparedRecipients.some(
+      (recipient) => recipient.targetToken !== activeToken.symbol,
+    );
+
+    if (hasCrossCurrencyRecipient) {
+      state.setSubmitState("idle");
+      state.setErrorMessage(OFFICIAL_STABLEFX_AUTH_REQUIRED_MESSAGE);
+      state.setStatusMessage(null);
+      return { ok: false, hash: null };
+    }
+
     const batchTotalAmount = batchPreparedRecipients.reduce(
       (sum, recipient) => sum + recipient.amountUnits,
-      0n
+      0n,
     );
     const batchValidRecipientCount = batchPreparedRecipients.filter(
-      (recipient) => recipient.validAddress
+      (recipient) => recipient.validAddress,
     ).length;
     const referenceId = (batchReferenceId ?? state.referenceId).trim();
 
@@ -559,7 +505,7 @@ export function useWizPayContract({
       batchValidRecipientCount !== batchPreparedRecipients.length
     ) {
       state.setErrorMessage(
-        "Review every payroll recipient before submitting this batch."
+        "Review every payroll recipient before submitting this batch.",
       );
       return { ok: false, hash: null };
     }
@@ -567,7 +513,10 @@ export function useWizPayContract({
     let latestAllowance = currentAllowance;
     let latestBalance = currentBalance;
 
-    if (currentAllowance < batchTotalAmount || currentBalance < batchTotalAmount) {
+    if (
+      currentAllowance < batchTotalAmount ||
+      currentBalance < batchTotalAmount
+    ) {
       const [latestAllowanceResult, latestBalanceResult] = await Promise.all([
         refetchAllowance(),
         refetchBalance(),
@@ -578,36 +527,40 @@ export function useWizPayContract({
     }
 
     if (latestBalance < batchTotalAmount) {
-      state.setErrorMessage("Insufficient token balance for this payroll batch.");
+      state.setErrorMessage(
+        "Insufficient token balance for this payroll batch.",
+      );
       return { ok: false, hash: null };
     }
 
     if (latestAllowance < batchTotalAmount) {
       state.setErrorMessage(
-        `Approve ${activeToken.symbol} before submitting this payroll batch.`
+        `Approve ${activeToken.symbol} before submitting this payroll batch.`,
       );
       return { ok: false, hash: null };
     }
 
     const tokenOuts = batchPreparedRecipients.map(
-      (recipient) => SUPPORTED_TOKENS[recipient.targetToken].address
+      (recipient) => SUPPORTED_TOKENS[recipient.targetToken].address,
     );
     const recipients = batchPreparedRecipients.map(
-      (recipient) => recipient.address
+      (recipient) => recipient.address,
     ) as readonly Address[];
     const amountsIn = batchPreparedRecipients.map(
-      (recipient) => recipient.amountUnits
+      (recipient) => recipient.amountUnits,
     );
 
     state.setSubmitState("simulating");
     state.setSubmitTxHash(null);
     state.setErrorMessage(null);
-    state.setStatusMessage("Preparing the payroll batch for wallet confirmation...");
+    state.setStatusMessage(
+      "Preparing the payroll batch for wallet confirmation...",
+    );
 
     try {
       const minAmountsOut = await getMinimumAmountsOut(
         batchPreparedRecipients,
-        batchRecipients
+        batchRecipients,
       );
 
       if (walletMode !== "circle") {
@@ -664,14 +617,10 @@ export function useWizPayContract({
       applyBatchSessionTotals(
         batchPreparedRecipients,
         batchTotalAmount,
-        batchValidRecipientCount
+        batchValidRecipientCount,
       );
 
-      await Promise.all([
-        refetchAllowance(),
-        refetchBalance(),
-        refetchEngineBalances(),
-      ]);
+      await Promise.all([refetchAllowance(), refetchBalance()]);
 
       return { ok: true, hash: finalHash };
     } catch (error) {
@@ -687,8 +636,8 @@ export function useWizPayContract({
     currentAllowance,
     currentBalance,
     feeBps,
-    fxEngineData,
-    engineBalances,
+    fxEngineData: undefined,
+    engineBalances: { USDC: 0n, EURC: 0n },
     quoteSummary,
     allowanceLoading,
     balanceLoading,
@@ -707,14 +656,12 @@ export function useWizPayContract({
     estimatedGas: null as bigint | null,
     refetchAllowance,
     refetchBalance,
-    refetchEngineBalances,
+    refetchEngineBalances: async () => undefined,
     /** Active FX mode metadata for UI display */
     fxMeta: {
       isStableFxMode,
       providerLabel: fxProviderLabel,
-      engineAddress: isStableFxMode
-        ? activeFxEngineAddress
-        : (fxEngineData as Address | undefined),
+      engineAddress: undefined,
     },
   };
 }

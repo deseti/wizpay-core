@@ -11,16 +11,16 @@ The task system is the persistence and state management layer for all payment op
 
 ### Statuses
 
-| Status | Terminal | Description |
-|---|---|---|
-| `created` | No | Task record exists. No processing has begun. |
-| `assigned` | No | Routed to a queue. Awaiting worker pickup. |
-| `in_progress` | No | Worker has picked up the job. Agent is executing. |
-| `review` | No | At least one unit failed. Requires resolution. |
-| `approved` | No | Review completed. Ready for finalization. |
-| `executed` | **Yes** | All units completed. |
-| `partial` | **Yes** | Some units succeeded, some failed. |
-| `failed` | **Yes** | Task-level failure. |
+| Status        | Terminal | Description                                       |
+| ------------- | -------- | ------------------------------------------------- |
+| `created`     | No       | Task record exists. No processing has begun.      |
+| `assigned`    | No       | Routed to a queue. Awaiting worker pickup.        |
+| `in_progress` | No       | Worker has picked up the job. Agent is executing. |
+| `review`      | No       | At least one unit failed. Requires resolution.    |
+| `approved`    | No       | Review completed. Ready for finalization.         |
+| `executed`    | **Yes**  | All units completed.                              |
+| `partial`     | **Yes**  | Some units succeeded, some failed.                |
+| `failed`      | **Yes**  | Task-level failure.                               |
 
 ### Transition Rules
 
@@ -53,74 +53,78 @@ return IN_PROGRESS;
 
 Root entity. One per execution request.
 
-| Field | Type | Notes |
-|---|---|---|
-| `id` | UUID | Auto-generated |
-| `type` | string | `payroll`, `swap`, `bridge`, `liquidity`, `fx` |
-| `status` | string | Current state machine position |
-| `totalUnits` | number | Total units in this task |
-| `completedUnits` | number | Units that reported `SUCCESS` |
-| `failedUnits` | number | Units that reported `FAILED` |
-| `metadata` | JSON | Normalized parameters (used for filtering) |
-| `payload` | JSON | Raw input as submitted |
-| `result` | JSON | Execution result (populated on completion) |
+| Field            | Type   | Notes                                          |
+| ---------------- | ------ | ---------------------------------------------- |
+| `id`             | UUID   | Auto-generated                                 |
+| `type`           | string | `payroll`, `swap`, `bridge`, `liquidity`, `fx` |
+| `status`         | string | Current state machine position                 |
+| `totalUnits`     | number | Total units in this task                       |
+| `completedUnits` | number | Units that reported `SUCCESS`                  |
+| `failedUnits`    | number | Units that reported `FAILED`                   |
+| `metadata`       | JSON   | Normalized parameters (used for filtering)     |
+| `payload`        | JSON   | Raw input as submitted                         |
+| `result`         | JSON   | Execution result (populated on completion)     |
 
 ### TaskUnit
 
-A discrete unit of work. For payroll: one batch of recipients. For swap/liquidity: a single step.
+A discrete unit of work. For payroll: one batch of recipients. Legacy swap and
+liquidity tasks are single-step records, but both paths are disabled by default
+during the official StableFX cutover.
 
-| Field | Type | Notes |
-|---|---|---|
-| `id` | UUID | |
-| `taskId` | UUID | Parent reference |
-| `type` | string | `batch` or `step` |
-| `index` | number | Order within task (0-indexed) |
-| `status` | string | `PENDING`, `SUCCESS`, `FAILED` |
-| `txHash` | string? | Populated on success |
-| `error` | string? | Populated on failure |
-| `payload` | JSON | Unit-specific data |
+| Field     | Type    | Notes                          |
+| --------- | ------- | ------------------------------ |
+| `id`      | UUID    |                                |
+| `taskId`  | UUID    | Parent reference               |
+| `type`    | string  | `batch` or `step`              |
+| `index`   | number  | Order within task (0-indexed)  |
+| `status`  | string  | `PENDING`, `SUCCESS`, `FAILED` |
+| `txHash`  | string? | Populated on success           |
+| `error`   | string? | Populated on failure           |
+| `payload` | JSON    | Unit-specific data             |
 
 ### TaskTransaction
 
 Tracks individual on-chain transactions. One record per Circle `transfer()` call.
 
-| Field | Type | Notes |
-|---|---|---|
-| `id` | UUID | |
-| `taskId` | UUID | Parent reference |
-| `txId` | string | Circle transaction ID |
-| `recipient` | string | Destination address |
-| `amount` | string | Transfer amount |
-| `currency` | string | Token symbol |
-| `status` | string | `pending`, `completed`, `failed` |
-| `txHash` | string? | On-chain hash (when confirmed) |
-| `errorReason` | string? | Failure reason |
-| `batchIndex` | number | Batch membership |
-| `pollAttempts` | number | Poll count |
+| Field          | Type    | Notes                            |
+| -------------- | ------- | -------------------------------- |
+| `id`           | UUID    |                                  |
+| `taskId`       | UUID    | Parent reference                 |
+| `txId`         | string  | Circle transaction ID            |
+| `recipient`    | string  | Destination address              |
+| `amount`       | string  | Transfer amount                  |
+| `currency`     | string  | Token symbol                     |
+| `status`       | string  | `pending`, `completed`, `failed` |
+| `txHash`       | string? | On-chain hash (when confirmed)   |
+| `errorReason`  | string? | Failure reason                   |
+| `batchIndex`   | number  | Batch membership                 |
+| `pollAttempts` | number  | Poll count                       |
 
 ### TaskLog
 
 Append-only audit log. Every state transition and significant event produces a log entry.
 
-| Field | Type | Notes |
-|---|---|---|
-| `id` | UUID | |
-| `taskId` | UUID | Parent reference |
-| `level` | string | `INFO` or `ERROR` |
-| `step` | string | Machine-readable identifier (e.g., `task.created`, `bridge.completed`) |
-| `status` | string | Task status at time of logging |
-| `message` | string | Human-readable description |
-| `context` | JSON? | Structured contextual data |
+| Field     | Type   | Notes                                                                  |
+| --------- | ------ | ---------------------------------------------------------------------- |
+| `id`      | UUID   |                                                                        |
+| `taskId`  | UUID   | Parent reference                                                       |
+| `level`   | string | `INFO` or `ERROR`                                                      |
+| `step`    | string | Machine-readable identifier (e.g., `task.created`, `bridge.completed`) |
+| `status`  | string | Task status at time of logging                                         |
+| `message` | string | Human-readable description                                             |
+| `context` | JSON?  | Structured contextual data                                             |
 
 ## Retry Semantics
 
 ### BullMQ Level
 
 Task execution jobs:
+
 - **3 attempts** with exponential backoff (1s base, 5s for bridge)
 - On permanent failure: job marked failed, task status set to `failed`
 
 Transaction poll jobs:
+
 - **1 BullMQ attempt** — the poller manages its own re-enqueue logic
 - Each poll checks Circle API, then either finalizes or re-enqueues with delay
 - Maximum poll attempts enforced by `TransactionPollerService`
@@ -136,6 +140,7 @@ if (task.status !== TaskStatus.ASSIGNED) {
 ```
 
 This means:
+
 - If BullMQ retries a job that already executed, it is silently skipped.
 - If the worker crashes after marking `in_progress`, the retry will also skip (status is no longer `assigned`). Manual intervention is required.
 
@@ -178,6 +183,6 @@ The `partial` status is a **terminal state**. It indicates:
 
 Aggregation logic:
 
-| All completed | All failed | Mixed | Any pending |
-|---|---|---|---|
-| `executed` | `failed` | `partial` | `in_progress` |
+| All completed | All failed | Mixed     | Any pending   |
+| ------------- | ---------- | --------- | ------------- |
+| `executed`    | `failed`   | `partial` | `in_progress` |

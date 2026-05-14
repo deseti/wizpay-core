@@ -13,7 +13,11 @@ import {
  * Error codes for categorizing StableFX RFQ failures.
  * No fallback to internal pricing on any failure.
  */
-export type RfqErrorCode = 'network_timeout' | 'api_error' | 'invalid_response';
+export type RfqErrorCode =
+  | 'network_timeout'
+  | 'api_error'
+  | 'auth_entitlement_blocked'
+  | 'invalid_response';
 
 /**
  * Structured error thrown by StableFXRfqClient on any failure.
@@ -368,6 +372,14 @@ export class StableFXRfqClient {
 
       if (!response.ok) {
         const errorBody = await response.text().catch(() => 'unknown');
+        if (response.status === 401) {
+          throw new StableFxRfqError(
+            'auth_entitlement_blocked',
+            'Circle StableFX RFQ returned 401 Unauthorized. StableFX entitlement or API authentication is required before FX execution can continue.',
+            { status: response.status, path, errorBody },
+          );
+        }
+
         throw new StableFxRfqError(
           'api_error',
           `Circle StableFX API returned ${response.status}: ${errorBody}`,
@@ -398,7 +410,10 @@ export class StableFXRfqClient {
       throw new StableFxRfqError(
         'network_timeout',
         `Network error calling ${path}: ${error instanceof Error ? error.message : String(error)}`,
-        { path, originalError: error instanceof Error ? error.message : String(error) },
+        {
+          path,
+          originalError: error instanceof Error ? error.message : String(error),
+        },
       );
     } finally {
       clearTimeout(timeoutId);

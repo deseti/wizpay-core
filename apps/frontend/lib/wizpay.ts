@@ -66,7 +66,7 @@ export function parseAmountToUnits(value: string, decimals: number): bigint {
 export function formatTokenAmount(
   value: bigint,
   decimals: number,
-  maximumFractionDigits = 4
+  maximumFractionDigits = 4,
 ): string {
   return Number(formatUnits(value, decimals)).toLocaleString("en-US", {
     minimumFractionDigits: 2,
@@ -78,7 +78,9 @@ export function formatCompactAddress(address: string): string {
   return `${address.slice(0, 6)}...${address.slice(-4)}`;
 }
 
-export function isTransactionHash(value: string | null | undefined): value is `0x${string}` {
+export function isTransactionHash(
+  value: string | null | undefined,
+): value is `0x${string}` {
   return /^0x[a-fA-F0-9]{64}$/.test(value ?? "");
 }
 
@@ -100,11 +102,17 @@ export function getFriendlyErrorMessage(error: unknown): string {
 
   const message = rawMessage.toLowerCase();
 
-  if (message.includes("user rejected") || message.includes("rejected the request")) {
+  if (
+    message.includes("user rejected") ||
+    message.includes("rejected the request")
+  ) {
     return "Transaction was rejected in your wallet.";
   }
 
-  if (message.includes("insufficient allowance") || message.includes("transferfrom failed")) {
+  if (
+    message.includes("insufficient allowance") ||
+    message.includes("transferfrom failed")
+  ) {
     return "Insufficient allowance. Approve the gross batch amount and wait for on-chain confirmation before sending.";
   }
 
@@ -113,8 +121,15 @@ export function getFriendlyErrorMessage(error: unknown): string {
   }
 
   if (
-    message.includes("standard circle rest api key prefix")
+    message.includes("official_stablefx_auth_required") ||
+    message.includes(
+      "cross-currency send/payroll uses official circle stablefx rfq only",
+    )
   ) {
+    return "OFFICIAL_STABLEFX_AUTH_REQUIRED: Cross-currency Send uses official Circle StableFX RFQ only. StableFXAdapter and internal LP routing are disabled until StableFX authentication and entitlement are available.";
+  }
+
+  if (message.includes("standard circle rest api key prefix")) {
     return "CIRCLE_API_KEY is using the wrong key type. Use a Circle REST API key with TEST_API_KEY or LIVE_API_KEY prefix in the root .env, or in a local frontend override if you are intentionally bypassing the shared root env.";
   }
 

@@ -1,7 +1,6 @@
 "use client";
 
-import { ArrowRightLeft, Coins, History, Wallet } from "lucide-react";
-import type { Address } from "viem";
+import { Coins, History, Wallet } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import {
@@ -18,9 +17,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { fxProviderLabel, activeFxEngineAddress, isStableFxMode } from "@/lib/fx-config";
 import {
-  formatCompactAddress,
   formatTokenAmount,
   TOKEN_OPTIONS,
   type TokenSymbol,
@@ -37,9 +34,6 @@ interface StatsCardsProps {
   walletAddress: string | undefined;
   totalRouted: bigint;
   historyCount: number;
-  engineBalances: Record<TokenSymbol, bigint>;
-  fxEngineData: Address | undefined;
-  engineLoading: boolean;
   onClearMessages: () => void;
 }
 
@@ -47,7 +41,6 @@ const cardAccents = [
   "from-violet-500/10 to-transparent",
   "from-emerald-500/10 to-transparent",
   "from-blue-500/10 to-transparent",
-  "from-amber-500/10 to-transparent",
 ];
 
 export function StatsCards({
@@ -60,16 +53,15 @@ export function StatsCards({
   walletAddress,
   totalRouted,
   historyCount,
-  engineBalances,
-  fxEngineData,
-  engineLoading,
   onClearMessages,
 }: StatsCardsProps) {
   return (
-    <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+    <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
       {/* Input Token */}
       <Card className="glass-card border-border/40 relative overflow-hidden group">
-        <div className={`absolute inset-0 bg-gradient-to-br ${cardAccents[0]} opacity-0 group-hover:opacity-100 transition-opacity duration-500`} />
+        <div
+          className={`absolute inset-0 bg-gradient-to-br ${cardAccents[0]} opacity-0 group-hover:opacity-100 transition-opacity duration-500`}
+        />
         <CardHeader className="relative">
           <CardTitle className="flex items-center gap-2">
             <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-violet-500/15 text-violet-400">
@@ -109,7 +101,9 @@ export function StatsCards({
 
       {/* Token Balance */}
       <Card className="glass-card border-border/40 relative overflow-hidden group">
-        <div className={`absolute inset-0 bg-gradient-to-br ${cardAccents[1]} opacity-0 group-hover:opacity-100 transition-opacity duration-500`} />
+        <div
+          className={`absolute inset-0 bg-gradient-to-br ${cardAccents[1]} opacity-0 group-hover:opacity-100 transition-opacity duration-500`}
+        />
         <CardHeader className="relative">
           <CardTitle className="flex items-center gap-2">
             <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-emerald-500/15 text-emerald-400">
@@ -117,9 +111,7 @@ export function StatsCards({
             </div>
             Token Balance
           </CardTitle>
-          <CardDescription>
-            Refreshed after batch settlement.
-          </CardDescription>
+          <CardDescription>Refreshed after batch settlement.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-2 relative">
           {balanceLoading ? (
@@ -133,9 +125,16 @@ export function StatsCards({
             </p>
           )}
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <Badge variant="outline" className="text-emerald-300/80 border-emerald-500/20 bg-emerald-500/5">{activeToken.symbol}</Badge>
+            <Badge
+              variant="outline"
+              className="text-emerald-300/80 border-emerald-500/20 bg-emerald-500/5"
+            >
+              {activeToken.symbol}
+            </Badge>
             <span className="text-xs font-mono">
-              {walletAddress ? formatCompactAddress(walletAddress) : "-"}
+              {walletAddress
+                ? `${walletAddress.slice(0, 6)}...${walletAddress.slice(-4)}`
+                : "-"}
             </span>
           </div>
         </CardContent>
@@ -143,7 +142,9 @@ export function StatsCards({
 
       {/* Total Routed */}
       <Card className="glass-card border-border/40 relative overflow-hidden group">
-        <div className={`absolute inset-0 bg-gradient-to-br ${cardAccents[2]} opacity-0 group-hover:opacity-100 transition-opacity duration-500`} />
+        <div
+          className={`absolute inset-0 bg-gradient-to-br ${cardAccents[2]} opacity-0 group-hover:opacity-100 transition-opacity duration-500`}
+        />
         <CardHeader className="relative">
           <CardTitle className="flex items-center gap-2">
             <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-blue-500/15 text-blue-400">
@@ -160,55 +161,14 @@ export function StatsCards({
             {formatTokenAmount(totalRouted, activeToken.decimals, 2)}
           </p>
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <Badge variant="outline" className="text-blue-300/80 border-blue-500/20 bg-blue-500/5">{activeToken.symbol}</Badge>
+            <Badge
+              variant="outline"
+              className="text-blue-300/80 border-blue-500/20 bg-blue-500/5"
+            >
+              {activeToken.symbol}
+            </Badge>
             <span className="text-xs">{historyCount} confirmed batches</span>
           </div>
-        </CardContent>
-      </Card>
-
-      {/* FX Engine */}
-      <Card className="glass-card border-border/40 relative overflow-hidden group">
-        <div className={`absolute inset-0 bg-gradient-to-br ${cardAccents[3]} opacity-0 group-hover:opacity-100 transition-opacity duration-500`} />
-        <CardHeader className="pb-3 relative">
-          <CardTitle className="flex items-center gap-2">
-            <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-amber-500/15 text-amber-400">
-              <ArrowRightLeft className="h-3.5 w-3.5" />
-            </div>
-            FX Engine
-          </CardTitle>
-          <CardDescription>
-            {isStableFxMode
-              ? "Circle StableFX institutional rates."
-              : "Live pool liquidity for routing."}
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-2.5 relative">
-          {engineLoading ? (
-            <div className="space-y-2.5">
-              <Skeleton className="h-11 w-full rounded-xl bg-muted/20" />
-              <Skeleton className="h-11 w-full rounded-xl bg-muted/20" />
-            </div>
-          ) : (
-            <>
-              <div className="flex items-center justify-between rounded-xl border border-border/40 bg-background/40 px-3 py-2.5 transition-colors hover:border-primary/20">
-                <span className="text-sm text-muted-foreground">USDC</span>
-                <span className="font-mono text-sm font-medium">
-                  {formatTokenAmount(engineBalances.USDC, 6, 2)}
-                </span>
-              </div>
-              <div className="flex items-center justify-between rounded-xl border border-border/40 bg-background/40 px-3 py-2.5 transition-colors hover:border-primary/20">
-                <span className="text-sm text-muted-foreground">EURC</span>
-                <span className="font-mono text-sm font-medium">
-                  {formatTokenAmount(engineBalances.EURC, 6, 2)}
-                </span>
-              </div>
-            </>
-          )}
-          <p className="text-[11px] text-muted-foreground/60 font-mono">
-            {engineLoading
-              ? "Loading engine liquidity..."
-              : `${fxProviderLabel}: ${fxEngineData ? formatCompactAddress(fxEngineData) : formatCompactAddress(activeFxEngineAddress)}`}
-          </p>
         </CardContent>
       </Card>
     </section>

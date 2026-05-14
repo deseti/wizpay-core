@@ -2,13 +2,12 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { ArrowLeftRight, Coins, Home, User } from "lucide-react";
+import { ArrowLeftRight, Home, User } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const tabs = [
   { href: "/", label: "Home", icon: Home },
   { href: "/swap", label: "Swap", icon: ArrowLeftRight },
-  { href: "/liquidity", label: "Liquidity", icon: Coins },
   { href: "/profile", label: "Profile", icon: User },
 ] as const;
 
@@ -17,10 +16,7 @@ function isActiveDestination(pathname: string, href: string) {
     return pathname === "/";
   }
 
-  return (
-    pathname === href ||
-    pathname.startsWith(`${href}/`)
-  );
+  return pathname === href || pathname.startsWith(`${href}/`);
 }
 
 export function DashboardBottomNav() {
@@ -45,7 +41,7 @@ export function DashboardBottomNav() {
                   "flex h-10 w-10 items-center justify-center rounded-2xl transition-all duration-300",
                   isActive
                     ? "bg-primary/18 text-primary shadow-lg shadow-primary/15"
-                    : "text-muted-foreground hover:bg-muted/30 hover:text-foreground"
+                    : "text-muted-foreground hover:bg-muted/30 hover:text-foreground",
                 )}
               >
                 <Icon
@@ -53,16 +49,14 @@ export function DashboardBottomNav() {
                     "transition-all duration-300",
                     isActive
                       ? "h-[18px] w-[18px] icon-glow"
-                      : "h-5 w-5 group-hover:scale-110"
+                      : "h-5 w-5 group-hover:scale-110",
                   )}
                 />
               </div>
               <span
                 className={cn(
                   "max-w-full truncate px-1 text-[11px] font-semibold leading-none transition-all duration-300",
-                  isActive
-                    ? "text-primary"
-                    : "text-muted-foreground/70"
+                  isActive ? "text-primary" : "text-muted-foreground/70",
                 )}
               >
                 {label}

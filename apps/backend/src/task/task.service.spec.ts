@@ -18,6 +18,9 @@ describe('TaskService', () => {
   let taskUnitService: jest.Mocked<TaskUnitService>;
   let validationService: jest.Mocked<PayrollValidationService>;
   let batchService: jest.Mocked<PayrollBatchService>;
+  const originalLegacyFxFlag = process.env.WIZPAY_ENABLE_LEGACY_FX;
+  const originalLegacyLiquidityFlag =
+    process.env.WIZPAY_ENABLE_LEGACY_LIQUIDITY;
 
   beforeEach(() => {
     prisma = {
@@ -51,7 +54,8 @@ describe('TaskService', () => {
       hasLogStep: jest.fn().mockResolvedValue(false),
     } as unknown as jest.Mocked<TaskLogService>;
 
-    taskTransactionService = {} as unknown as jest.Mocked<TaskTransactionService>;
+    taskTransactionService =
+      {} as unknown as jest.Mocked<TaskTransactionService>;
     taskMapper = {
       mapTask: jest.fn().mockImplementation((task) => task),
       mapJsonObject: jest.fn().mockImplementation((v) => v),
@@ -71,6 +75,20 @@ describe('TaskService', () => {
     );
   });
 
+  afterEach(() => {
+    if (originalLegacyFxFlag === undefined) {
+      delete process.env.WIZPAY_ENABLE_LEGACY_FX;
+    } else {
+      process.env.WIZPAY_ENABLE_LEGACY_FX = originalLegacyFxFlag;
+    }
+
+    if (originalLegacyLiquidityFlag === undefined) {
+      delete process.env.WIZPAY_ENABLE_LEGACY_LIQUIDITY;
+    } else {
+      process.env.WIZPAY_ENABLE_LEGACY_LIQUIDITY = originalLegacyLiquidityFlag;
+    }
+  });
+
   // ════════════════════════════════════════════════════════════════════
   //  FX Step Identifiers
   // ════════════════════════════════════════════════════════════════════
@@ -84,12 +102,75 @@ describe('TaskService', () => {
       expect(FX_STEPS.SETTLEMENT_POLLING).toBe('fx.settlement_polling');
       expect(FX_STEPS.SETTLEMENT_CONFIRMED).toBe('fx.settlement_confirmed');
       expect(FX_STEPS.SETTLEMENT_FAILED).toBe('fx.settlement_failed');
-      expect(FX_STEPS.OUTPUT_VALIDATION_FAILED).toBe('fx.output_validation_failed');
+      expect(FX_STEPS.OUTPUT_VALIDATION_FAILED).toBe(
+        'fx.output_validation_failed',
+      );
       expect(FX_STEPS.RATE_ANOMALY).toBe('fx.rate_anomaly');
     });
 
     it('has exactly 9 FX step identifiers', () => {
       expect(Object.keys(FX_STEPS)).toHaveLength(9);
+    });
+  });
+
+  describe('StableFX cutover guards', () => {
+    it('rejects legacy swap task planning by default', async () => {
+      await expect(
+        taskService.createSwapTask({
+          tokenIn: 'USDC',
+          tokenOut: 'EURC',
+          amountIn: '1000000',
+          minAmountOut: '900000',
+          recipient: '0x1234567890abcdef1234567890abcdef12345678',
+        }),
+      ).rejects.toMatchObject({
+        response: expect.objectContaining({
+          code: 'OFFICIAL_STABLEFX_AUTH_REQUIRED',
+        }),
+      });
+    });
+
+    it('rejects legacy liquidity task planning by default', async () => {
+      await expect(
+        taskService.createLiquidityTask({
+          operation: 'add',
+          token: 'USDC',
+          amount: '1000000',
+        }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('rejects cross-currency payroll task planning by default', async () => {
+      validationService.validate = jest.fn().mockResolvedValue({
+        valid: true,
+        errors: [],
+        recipients: [
+          {
+            address: '0x1234567890abcdef1234567890abcdef12345678',
+            amount: '10',
+            amountUnits: 10_000_000n,
+            targetToken: 'EURC',
+          },
+        ],
+      });
+
+      await expect(
+        taskService.createPayrollTask({
+          sourceToken: 'USDC',
+          referenceId: 'PAYROLL-CROSS-FX',
+          recipients: [
+            {
+              address: '0x1234567890abcdef1234567890abcdef12345678',
+              amount: '10',
+              targetToken: 'EURC',
+            },
+          ],
+        }),
+      ).rejects.toMatchObject({
+        response: expect.objectContaining({
+          code: 'OFFICIAL_STABLEFX_AUTH_REQUIRED',
+        }),
+      });
     });
   });
 
@@ -100,51 +181,75 @@ describe('TaskService', () => {
   describe('State Transition Validation', () => {
     describe('ALLOWED_TRANSITIONS map', () => {
       it('allows created → assigned', () => {
-        expect(ALLOWED_TRANSITIONS[TaskStatus.CREATED]).toContain(TaskStatus.ASSIGNED);
+        expect(ALLOWED_TRANSITIONS[TaskStatus.CREATED]).toContain(
+          TaskStatus.ASSIGNED,
+        );
       });
 
       it('allows created → failed', () => {
-        expect(ALLOWED_TRANSITIONS[TaskStatus.CREATED]).toContain(TaskStatus.FAILED);
+        expect(ALLOWED_TRANSITIONS[TaskStatus.CREATED]).toContain(
+          TaskStatus.FAILED,
+        );
       });
 
       it('allows assigned → in_progress', () => {
-        expect(ALLOWED_TRANSITIONS[TaskStatus.ASSIGNED]).toContain(TaskStatus.IN_PROGRESS);
+        expect(ALLOWED_TRANSITIONS[TaskStatus.ASSIGNED]).toContain(
+          TaskStatus.IN_PROGRESS,
+        );
       });
 
       it('allows assigned → failed', () => {
-        expect(ALLOWED_TRANSITIONS[TaskStatus.ASSIGNED]).toContain(TaskStatus.FAILED);
+        expect(ALLOWED_TRANSITIONS[TaskStatus.ASSIGNED]).toContain(
+          TaskStatus.FAILED,
+        );
       });
 
       it('allows in_progress → review', () => {
-        expect(ALLOWED_TRANSITIONS[TaskStatus.IN_PROGRESS]).toContain(TaskStatus.REVIEW);
+        expect(ALLOWED_TRANSITIONS[TaskStatus.IN_PROGRESS]).toContain(
+          TaskStatus.REVIEW,
+        );
       });
 
       it('allows in_progress → executed', () => {
-        expect(ALLOWED_TRANSITIONS[TaskStatus.IN_PROGRESS]).toContain(TaskStatus.EXECUTED);
+        expect(ALLOWED_TRANSITIONS[TaskStatus.IN_PROGRESS]).toContain(
+          TaskStatus.EXECUTED,
+        );
       });
 
       it('allows in_progress → partial', () => {
-        expect(ALLOWED_TRANSITIONS[TaskStatus.IN_PROGRESS]).toContain(TaskStatus.PARTIAL);
+        expect(ALLOWED_TRANSITIONS[TaskStatus.IN_PROGRESS]).toContain(
+          TaskStatus.PARTIAL,
+        );
       });
 
       it('allows in_progress → failed', () => {
-        expect(ALLOWED_TRANSITIONS[TaskStatus.IN_PROGRESS]).toContain(TaskStatus.FAILED);
+        expect(ALLOWED_TRANSITIONS[TaskStatus.IN_PROGRESS]).toContain(
+          TaskStatus.FAILED,
+        );
       });
 
       it('allows review → approved', () => {
-        expect(ALLOWED_TRANSITIONS[TaskStatus.REVIEW]).toContain(TaskStatus.APPROVED);
+        expect(ALLOWED_TRANSITIONS[TaskStatus.REVIEW]).toContain(
+          TaskStatus.APPROVED,
+        );
       });
 
       it('allows review → failed', () => {
-        expect(ALLOWED_TRANSITIONS[TaskStatus.REVIEW]).toContain(TaskStatus.FAILED);
+        expect(ALLOWED_TRANSITIONS[TaskStatus.REVIEW]).toContain(
+          TaskStatus.FAILED,
+        );
       });
 
       it('allows approved → executed', () => {
-        expect(ALLOWED_TRANSITIONS[TaskStatus.APPROVED]).toContain(TaskStatus.EXECUTED);
+        expect(ALLOWED_TRANSITIONS[TaskStatus.APPROVED]).toContain(
+          TaskStatus.EXECUTED,
+        );
       });
 
       it('allows approved → failed', () => {
-        expect(ALLOWED_TRANSITIONS[TaskStatus.APPROVED]).toContain(TaskStatus.FAILED);
+        expect(ALLOWED_TRANSITIONS[TaskStatus.APPROVED]).toContain(
+          TaskStatus.FAILED,
+        );
       });
 
       it('does not allow transitions from terminal states', () => {
@@ -156,20 +261,56 @@ describe('TaskService', () => {
 
     describe('isValidTransition', () => {
       it('returns true for valid transitions', () => {
-        expect(taskService.isValidTransition(TaskStatus.CREATED, TaskStatus.ASSIGNED)).toBe(true);
-        expect(taskService.isValidTransition(TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS)).toBe(true);
-        expect(taskService.isValidTransition(TaskStatus.IN_PROGRESS, TaskStatus.EXECUTED)).toBe(true);
+        expect(
+          taskService.isValidTransition(
+            TaskStatus.CREATED,
+            TaskStatus.ASSIGNED,
+          ),
+        ).toBe(true);
+        expect(
+          taskService.isValidTransition(
+            TaskStatus.ASSIGNED,
+            TaskStatus.IN_PROGRESS,
+          ),
+        ).toBe(true);
+        expect(
+          taskService.isValidTransition(
+            TaskStatus.IN_PROGRESS,
+            TaskStatus.EXECUTED,
+          ),
+        ).toBe(true);
       });
 
       it('returns false for invalid transitions', () => {
-        expect(taskService.isValidTransition(TaskStatus.CREATED, TaskStatus.EXECUTED)).toBe(false);
-        expect(taskService.isValidTransition(TaskStatus.ASSIGNED, TaskStatus.EXECUTED)).toBe(false);
-        expect(taskService.isValidTransition(TaskStatus.EXECUTED, TaskStatus.CREATED)).toBe(false);
-        expect(taskService.isValidTransition(TaskStatus.FAILED, TaskStatus.CREATED)).toBe(false);
+        expect(
+          taskService.isValidTransition(
+            TaskStatus.CREATED,
+            TaskStatus.EXECUTED,
+          ),
+        ).toBe(false);
+        expect(
+          taskService.isValidTransition(
+            TaskStatus.ASSIGNED,
+            TaskStatus.EXECUTED,
+          ),
+        ).toBe(false);
+        expect(
+          taskService.isValidTransition(
+            TaskStatus.EXECUTED,
+            TaskStatus.CREATED,
+          ),
+        ).toBe(false);
+        expect(
+          taskService.isValidTransition(TaskStatus.FAILED, TaskStatus.CREATED),
+        ).toBe(false);
       });
 
       it('returns false for transitions from terminal states', () => {
-        const terminalStates = [TaskStatus.EXECUTED, TaskStatus.PARTIAL, TaskStatus.FAILED];
+        const terminalStates = [
+          TaskStatus.EXECUTED,
+          TaskStatus.PARTIAL,
+          TaskStatus.FAILED,
+        ];
         const allStatuses = Object.values(TaskStatus);
 
         for (const terminal of terminalStates) {

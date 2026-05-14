@@ -6,7 +6,6 @@ import {
   AtSign,
   ArrowRightLeft,
   ArrowUpRight,
-  Coins,
   Droplet,
   Route,
   TrendingUp,
@@ -14,14 +13,8 @@ import {
 } from "lucide-react";
 
 import { DashboardAppFrame } from "@/components/dashboard/DashboardAppFrame";
-import { FaucetButton } from "@/components/dashboard/FaucetButton";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { SkeletonBalance } from "@/components/ui/skeleton-loaders";
 import { EmptyStateView } from "@/components/ui/empty-state";
 import { useActiveWalletAddress } from "@/hooks/useActiveWalletAddress";
@@ -37,10 +30,28 @@ import { TOKEN_BY_ADDRESS } from "@/constants/erc20";
 import type { UnifiedHistoryItem } from "@/lib/types";
 
 const QUICK_ACTIONS = [
-  { href: "/send", label: "Send", icon: ArrowRightLeft, color: "violet" },
-  { href: "/ans", label: "ANS", icon: AtSign, color: "cyan" },
-  { href: "/bridge", label: "Bridge", icon: Route, color: "emerald" },
-  { href: "/liquidity", label: "LP", icon: Coins, color: "amber" },
+  {
+    href: "/send",
+    label: "Send",
+    icon: ArrowRightLeft,
+    color: "violet",
+    external: false,
+  },
+  { href: "/ans", label: "ANS", icon: AtSign, color: "cyan", external: false },
+  {
+    href: "/bridge",
+    label: "Bridge",
+    icon: Route,
+    color: "emerald",
+    external: false,
+  },
+  {
+    href: "https://faucet.circle.com",
+    label: "Faucet",
+    icon: Droplet,
+    color: "amber",
+    external: true,
+  },
 ] as const;
 
 const COLOR_MAP: Record<string, string> = {
@@ -56,7 +67,6 @@ interface BalanceSnapshotProps {
 }
 
 function TotalBalance({ balances, isLoading }: BalanceSnapshotProps) {
-
   if (isLoading) {
     return <SkeletonBalance />;
   }
@@ -71,12 +81,17 @@ function TotalBalance({ balances, isLoading }: BalanceSnapshotProps) {
         Total Balance
       </p>
       <p className="text-3xl sm:text-4xl font-bold tracking-tight neon-text">
-        ${totalUsd.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+        $
+        {totalUsd.toLocaleString("en-US", {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
+        })}
       </p>
       <div className="flex items-center gap-3 mt-2">
         {TOKEN_OPTIONS.map((token) => (
           <span key={token.symbol} className="text-xs text-muted-foreground/70">
-            {formatTokenAmount(balances[token.symbol], token.decimals)} {token.symbol}
+            {formatTokenAmount(balances[token.symbol], token.decimals)}{" "}
+            {token.symbol}
           </span>
         ))}
       </div>
@@ -87,46 +102,35 @@ function TotalBalance({ balances, isLoading }: BalanceSnapshotProps) {
 function QuickActions() {
   return (
     <div className="grid grid-cols-4 gap-2 sm:gap-3">
-      {QUICK_ACTIONS.map(({ href, label, icon: Icon, color }) => (
-        <Link key={href} href={href}>
-          <div className={`flex flex-col items-center gap-2 rounded-2xl p-3 sm:p-4 transition-all duration-200 active:scale-95 cursor-pointer ${COLOR_MAP[color]}`}>
+      {QUICK_ACTIONS.map(({ href, label, icon: Icon, color, external }) => {
+        const content = (
+          <div
+            className={`flex min-h-[88px] flex-col items-center justify-center gap-2 rounded-2xl p-3 transition-all duration-200 active:scale-95 cursor-pointer sm:min-h-[104px] sm:p-4 ${COLOR_MAP[color]}`}
+          >
             <div className="flex h-10 w-10 sm:h-12 sm:w-12 items-center justify-center rounded-xl bg-current/10">
               <Icon className="h-5 w-5 sm:h-6 sm:w-6" />
             </div>
-            <span className="text-[11px] sm:text-xs font-semibold">{label}</span>
+            <span className="text-[11px] sm:text-xs font-semibold">
+              {label}
+            </span>
           </div>
-        </Link>
-      ))}
+        );
+
+        return external ? (
+          <a key={href} href={href} target="_blank" rel="noopener noreferrer">
+            {content}
+          </a>
+        ) : (
+          <Link key={href} href={href}>
+            {content}
+          </Link>
+        );
+      })}
     </div>
   );
 }
 
-function MobileFaucetCard() {
-  return (
-    <Card className="glass-card border-cyan-400/15 md:hidden">
-      <CardContent className="space-y-4 pt-5">
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <p className="text-sm font-semibold text-foreground">
-              Need testnet funds?
-            </p>
-            <p className="mt-1 text-sm leading-6 text-muted-foreground/75">
-              The faucet is the fastest way to keep mobile flows moving when you
-              need fresh USDC or chain-native test funds.
-            </p>
-          </div>
-          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-cyan-500/12 text-cyan-300 ring-1 ring-cyan-400/20">
-            <Droplet className="h-5 w-5" />
-          </div>
-        </div>
-        <FaucetButton compact />
-      </CardContent>
-    </Card>
-  );
-}
-
 function TokenList({ balances, isLoading }: BalanceSnapshotProps) {
-
   if (isLoading) {
     return (
       <div className="space-y-3">
@@ -161,7 +165,9 @@ function TokenList({ balances, isLoading }: BalanceSnapshotProps) {
                 <p className="text-sm font-semibold">{token.symbol}</p>
                 <p className="text-xs text-muted-foreground/60">{token.name}</p>
               </div>
-              <p className={`text-sm font-mono font-medium ${isEmpty ? "text-muted-foreground/40" : ""}`}>
+              <p
+                className={`text-sm font-mono font-medium ${isEmpty ? "text-muted-foreground/40" : ""}`}
+              >
                 {formattedBalance}
               </p>
             </div>
@@ -232,7 +238,8 @@ function RecentActivity({
       {recent.map((item) => {
         const config = ACTION_LABELS[item.type] ?? ACTION_LABELS.payroll;
         const tokenLabel = item.tokenIn
-          ? (TOKEN_BY_ADDRESS.get(item.tokenIn.toLowerCase())?.symbol ?? "Token")
+          ? (TOKEN_BY_ADDRESS.get(item.tokenIn.toLowerCase())?.symbol ??
+            "Token")
           : "Token";
         const amount = item.totalAmountIn
           ? formatTokenAmount(item.totalAmountIn, 6)
@@ -273,7 +280,9 @@ function RecentActivity({
                 View tx
               </a>
             ) : (
-              <span className="text-[11px] text-muted-foreground/60">Pending hash</span>
+              <span className="text-[11px] text-muted-foreground/60">
+                Pending hash
+              </span>
             )}
           </div>
         );
@@ -323,8 +332,6 @@ function HomeContent() {
         </CardContent>
       </Card>
 
-      <MobileFaucetCard />
-
       {/* Assets Summary */}
       <Card className="glass-card border-border/40">
         <CardHeader className="pb-2">
@@ -334,7 +341,11 @@ function HomeContent() {
               Assets
             </CardTitle>
             <Link href="/assets">
-              <Button variant="ghost" size="sm" className="text-xs text-primary hover:text-primary/80">
+              <Button
+                variant="ghost"
+                size="sm"
+                className="text-xs text-primary hover:text-primary/80"
+              >
                 See All
               </Button>
             </Link>
