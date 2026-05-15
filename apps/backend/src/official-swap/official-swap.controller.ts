@@ -10,6 +10,7 @@ import {
 } from '@nestjs/common';
 import { OfficialSwapExecuteDto } from './dto/official-swap-execute.dto';
 import { OfficialSwapQuoteDto } from './dto/official-swap-quote.dto';
+import { OfficialSwapRuntimeService } from './official-swap-runtime.service';
 import { OfficialSwapOrchestrator } from './official-swap.orchestrator';
 import { OFFICIAL_SWAP_ERROR_CODES } from './official-swap.types';
 
@@ -41,6 +42,7 @@ import { OFFICIAL_SWAP_ERROR_CODES } from './official-swap.types';
 export class OfficialSwapController {
   constructor(
     private readonly officialSwapOrchestrator: OfficialSwapOrchestrator,
+    private readonly officialSwapRuntimeService: OfficialSwapRuntimeService,
   ) {}
 
   @Post('quote')
@@ -54,6 +56,13 @@ export class OfficialSwapController {
   async execute(@Body() body: OfficialSwapExecuteDto) {
     return {
       data: await this.officialSwapOrchestrator.execute(body),
+    };
+  }
+
+  @Get('runtime')
+  async getRuntime() {
+    return {
+      data: await this.officialSwapRuntimeService.getRuntimeStatus(),
     };
   }
 

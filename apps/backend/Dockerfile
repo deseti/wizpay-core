@@ -15,6 +15,8 @@ FROM node:20-alpine AS runner
 
 WORKDIR /app
 
+RUN npm install -g @circle-fin/cli
+
 ENV NODE_ENV=production
 ENV PORT=4000
 

@@ -7,13 +7,12 @@ import { ConfigService } from '@nestjs/config';
 import { CircleAgentWalletSwapExecutor } from './executors/circle-agent-wallet-swap.executor';
 import {
   OFFICIAL_SWAP_ALLOWED_CHAIN,
+  OFFICIAL_SWAP_CIRCLE_AGENT_WALLET_EXECUTOR,
   OFFICIAL_SWAP_ERROR_CODES,
   type OfficialSwapExecuteRequest,
   type OfficialSwapPlaceholderResponse,
   type OfficialSwapQuoteRequest,
 } from './official-swap.types';
-
-const CIRCLE_AGENT_WALLET_EXECUTOR = 'circle-agent-wallet';
 
 @Injectable()
 export class OfficialSwapOrchestrator {
@@ -82,7 +81,7 @@ export class OfficialSwapOrchestrator {
       this.configService.get<string>('WIZPAY_OFFICIAL_SWAP_EXECUTOR') ??
       'disabled';
 
-    if (executor !== CIRCLE_AGENT_WALLET_EXECUTOR) {
+    if (executor !== OFFICIAL_SWAP_CIRCLE_AGENT_WALLET_EXECUTOR) {
       throw new ServiceUnavailableException({
         code: OFFICIAL_SWAP_ERROR_CODES.EXECUTOR_UNAVAILABLE,
         message: 'Official swap executor is unavailable.',

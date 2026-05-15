@@ -1,4 +1,6 @@
 export const OFFICIAL_SWAP_ALLOWED_CHAIN = 'ARC-TESTNET' as const;
+export const OFFICIAL_SWAP_CIRCLE_AGENT_WALLET_EXECUTOR =
+  'circle-agent-wallet' as const;
 
 export const OFFICIAL_SWAP_ERROR_CODES = {
   DISABLED: 'OFFICIAL_SWAP_DISABLED',
@@ -9,6 +11,10 @@ export const OFFICIAL_SWAP_ERROR_CODES = {
 } as const;
 
 export type OfficialSwapChain = typeof OFFICIAL_SWAP_ALLOWED_CHAIN;
+export type OfficialSwapExecutorConfigured =
+  | 'disabled'
+  | typeof OFFICIAL_SWAP_CIRCLE_AGENT_WALLET_EXECUTOR
+  | 'unsupported';
 
 export interface OfficialSwapQuoteRequest {
   sellToken: string;
