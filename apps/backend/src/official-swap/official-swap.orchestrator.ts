@@ -10,8 +10,10 @@ import {
   OFFICIAL_SWAP_CIRCLE_AGENT_WALLET_EXECUTOR,
   OFFICIAL_SWAP_ERROR_CODES,
   type OfficialSwapExecuteRequest,
+  type OfficialSwapExecuteResponse,
   type OfficialSwapPlaceholderResponse,
   type OfficialSwapQuoteRequest,
+  type OfficialSwapQuoteResponse,
 } from './official-swap.types';
 
 @Injectable()
@@ -23,16 +25,19 @@ export class OfficialSwapOrchestrator {
 
   async quote(
     request: OfficialSwapQuoteRequest,
-  ): Promise<OfficialSwapPlaceholderResponse> {
+  ): Promise<OfficialSwapQuoteResponse> {
     this.guardEnabled();
     this.guardChain(request.chain);
 
-    return this.getExecutor().quote(request);
+    const executor = this.getExecutor();
+    this.guardTestnetCliEnabled();
+
+    return executor.quote(request);
   }
 
   async execute(
     request: OfficialSwapExecuteRequest,
-  ): Promise<OfficialSwapPlaceholderResponse> {
+  ): Promise<OfficialSwapExecuteResponse> {
     if (!request.minOutput?.trim()) {
       throw new BadRequestException({
         code: OFFICIAL_SWAP_ERROR_CODES.MIN_OUTPUT_REQUIRED,
@@ -40,10 +45,20 @@ export class OfficialSwapOrchestrator {
       });
     }
 
+    if (!request.walletAddress?.trim()) {
+      throw new BadRequestException({
+        code: OFFICIAL_SWAP_ERROR_CODES.WALLET_ADDRESS_REQUIRED,
+        message: 'walletAddress is required before official swap execution.',
+      });
+    }
+
     this.guardEnabled();
     this.guardChain(request.chain);
 
-    return this.getExecutor().execute(request);
+    const executor = this.getExecutor();
+    this.guardTestnetCliEnabled();
+
+    return executor.execute(request);
   }
 
   getStatus(operationId: string): OfficialSwapPlaceholderResponse {
@@ -89,5 +104,18 @@ export class OfficialSwapOrchestrator {
     }
 
     return this.circleAgentWalletSwapExecutor;
+  }
+
+  private guardTestnetCliEnabled(): void {
+    const testnetCliEnabled =
+      this.configService.get<string>('WIZPAY_OFFICIAL_SWAP_ALLOW_TESTNET_CLI') ===
+      'true';
+
+    if (!testnetCliEnabled) {
+      throw new ServiceUnavailableException({
+        code: OFFICIAL_SWAP_ERROR_CODES.TESTNET_CLI_DISABLED,
+        message: 'Official swap testnet CLI execution is disabled.',
+      });
+    }
   }
 }
