@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { type Address, type Hex } from "viem";
+import { type Hex, formatUnits } from "viem";
 import {
   ArrowRightLeft,
   CheckCircle2,
@@ -9,12 +9,9 @@ import {
   MessageCircle,
   ShieldCheck,
 } from "lucide-react";
-import { usePublicClient, useReadContract } from "wagmi";
+import { usePublicClient, useReadContract, useWalletClient } from "wagmi";
 
-import { useActionGuard } from "@/hooks/useActionGuard";
-import { useDialogState } from "@/hooks/useDialogState";
 import { Button } from "@/components/ui/button";
-import { useTransactionExecutor } from "@/hooks/useTransactionExecutor";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Dialog,
@@ -31,46 +28,47 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { WIZPAY_ABI, WIZPAY_BATCH_PAYMENT_ROUTED_EVENT } from "@/constants/abi";
-import { WIZPAY_ADDRESS } from "@/constants/addresses";
 import { ERC20_ABI } from "@/constants/erc20";
+import { useActionGuard } from "@/hooks/useActionGuard";
 import { useActiveWalletAddress } from "@/hooks/useActiveWalletAddress";
+import { useDialogState } from "@/hooks/useDialogState";
 import { useToast } from "@/hooks/use-toast";
+import { buildXShareUrl } from "@/lib/social";
+import {
+  createArcSwapAdapter,
+  executePreparedArcUserSwap,
+} from "@/lib/circle-swap-kit";
+import {
+  USER_SWAP_CHAIN,
+  prepareUserSwap,
+  quoteUserSwap,
+  type UserSwapPrepareResponse,
+  type UserSwapQuoteResponse,
+} from "@/lib/user-swap-service";
 import {
   EXPLORER_BASE_URL,
   PREVIEW_SLIPPAGE_BPS,
   SUPPORTED_TOKENS,
   formatTokenAmount,
   getFriendlyErrorMessage,
+  isTransactionHash,
   parseAmountToUnits,
   type TokenSymbol,
 } from "@/lib/wizpay";
-import { buildXShareUrl } from "@/lib/social";
 import { arcTestnet } from "@/lib/wagmi";
-import { initSwapTask, reportSwapResult } from "@/lib/swap-service";
 
-const OFFICIAL_STABLEFX_AUTH_REQUIRED_MESSAGE =
-  "OFFICIAL_STABLEFX_AUTH_REQUIRED: Swap uses official Circle StableFX RFQ only. " +
-  "StableFXAdapter, internal LP liquidity, synthetic pricing, and adapter balances are disabled for default routing " +
-  "until Circle StableFX authentication and entitlement are available.";
+const APP_WALLET_SWAP_BLOCK_MESSAGE =
+  "Circle App Wallet swap signing is not enabled yet. Use an external EVM wallet on Arc Testnet.";
 
-const MAX_CONFIRMATION_POLLS = 20;
-const POLL_INTERVAL_MS = 1500;
-
-type SwapEventLog = {
-  transactionHash: Hex | null;
-  args: {
-    referenceId?: string;
-  };
-};
+type RequestStatus = "idle" | "quoting" | "preparing" | "signing";
 
 interface SwapSuccessState {
   amountIn: string;
   amountOut: string | null;
-  explorerUrl?: string;
+  explorerUrl: string;
   tokenIn: TokenSymbol;
   tokenOut: TokenSymbol;
-  txHash: string;
+  txHash: Hex;
 }
 
 function shortenHash(hash: string | undefined) {
@@ -81,357 +79,322 @@ function shortenHash(hash: string | undefined) {
   return `${hash.slice(0, 10)}...${hash.slice(-8)}`;
 }
 
-function isExplorerHash(value: string | null | undefined): value is Hex {
-  return /^0x[a-fA-F0-9]{64}$/.test(value ?? "");
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function waitFor(ms: number) {
-  return new Promise<void>((resolve) => {
-    window.setTimeout(resolve, ms);
-  });
+function getPath(value: unknown, path: string): unknown {
+  return path.split(".").reduce<unknown>((current, key) => {
+    if (Array.isArray(current) && /^\d+$/.test(key)) {
+      return current[Number(key)];
+    }
+
+    if (!isRecord(current)) {
+      return undefined;
+    }
+
+    return current[key];
+  }, value);
+}
+
+function findFirst(value: unknown, paths: string[]): unknown {
+  for (const path of paths) {
+    const found = getPath(value, path);
+
+    if (found !== undefined && found !== null) {
+      return found;
+    }
+  }
+
+  return undefined;
+}
+
+function stringifyAmount(value: unknown): string | null {
+  if (typeof value === "string" && value.trim()) {
+    return value.trim();
+  }
+
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return String(value);
+  }
+
+  if (typeof value === "bigint") {
+    return value.toString();
+  }
+
+  if (isRecord(value)) {
+    return stringifyAmount(value.amount ?? value.value ?? value.toAmount);
+  }
+
+  return null;
+}
+
+function formatBaseUnitAmount(
+  value: unknown,
+  token: TokenSymbol,
+): string | null {
+  const rawAmount = stringifyAmount(value);
+
+  if (!rawAmount) {
+    return null;
+  }
+
+  try {
+    return `${formatUnits(BigInt(rawAmount), SUPPORTED_TOKENS[token].decimals)} ${token}`;
+  } catch {
+    return `${rawAmount} ${token}`;
+  }
+}
+
+function getQuoteExpectedOutput(
+  quote: UserSwapQuoteResponse | null,
+  tokenOut: TokenSymbol,
+) {
+  if (!quote) {
+    return null;
+  }
+
+  return formatBaseUnitAmount(
+    quote.expectedOutput ??
+      findFirst(quote.raw, [
+        "quote.estimatedAmount",
+        "quote.route.steps.0.estimate.toAmount",
+        "estimatedOutput",
+        "amountOut",
+      ]),
+    tokenOut,
+  );
+}
+
+function getQuoteMinimumOutput(
+  quote: UserSwapQuoteResponse | null,
+  tokenOut: TokenSymbol,
+) {
+  if (!quote) {
+    return null;
+  }
+
+  return formatBaseUnitAmount(
+    quote.minimumOutput ??
+      findFirst(quote.raw, ["quote.minAmount", "minimumOutput", "minOutput"]),
+    tokenOut,
+  );
+}
+
+function getPreparedAmountOut(
+  prepared: UserSwapPrepareResponse,
+  tokenOut: TokenSymbol,
+) {
+  return formatBaseUnitAmount(
+    prepared.expectedOutput ??
+      findFirst(prepared.raw, [
+        "quote.estimatedAmount",
+        "quote.route.steps.0.estimate.toAmount",
+        "estimatedOutput",
+        "amountOut",
+      ]),
+    tokenOut,
+  );
 }
 
 export function SwapScreen() {
-  const { walletAddress } = useActiveWalletAddress();
-  const { executeTransaction } = useTransactionExecutor();
+  const { walletAddress, walletMode } = useActiveWalletAddress();
+  const { data: walletClient } = useWalletClient();
   const publicClient = usePublicClient({ chainId: arcTestnet.id });
   const { toast } = useToast();
+  const { isProcessing: isGuarded, guard } = useActionGuard();
+  const { isOpen: isSuccessDialogOpen, setIsOpen: setIsSuccessDialogOpen } =
+    useDialogState();
 
   const [tokenIn, setTokenIn] = useState<TokenSymbol>("USDC");
   const [tokenOut, setTokenOut] = useState<TokenSymbol>("EURC");
   const [amountIn, setAmountIn] = useState("");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [swapStep, setSwapStep] = useState<"idle" | "approving" | "swapping">(
-    "idle",
-  );
-  const { isOpen: isSuccessDialogOpen, setIsOpen: setIsSuccessDialogOpen } =
-    useDialogState();
+  const [requestStatus, setRequestStatus] = useState<RequestStatus>("idle");
+  const [quote, setQuote] = useState<UserSwapQuoteResponse | null>(null);
   const [successState, setSuccessState] = useState<SwapSuccessState | null>(
     null,
   );
 
   const tokenInConfig = SUPPORTED_TOKENS[tokenIn];
-  const tokenOutConfig = SUPPORTED_TOKENS[tokenOut];
   const amountInUnits = useMemo(
     () => parseAmountToUnits(amountIn, tokenInConfig.decimals),
     [amountIn, tokenInConfig.decimals],
   );
-
-  const { data: currentAllowanceData, refetch: refetchAllowance } =
-    useReadContract({
-      address: tokenInConfig.address,
-      abi: ERC20_ABI,
-      chainId: arcTestnet.id,
-      functionName: "allowance",
-      args: walletAddress ? [walletAddress, WIZPAY_ADDRESS] : undefined,
-      query: { enabled: Boolean(walletAddress) },
-    });
-
-  const { data: currentBalanceData, refetch: refetchBalance } = useReadContract(
-    {
-      address: tokenInConfig.address,
-      abi: ERC20_ABI,
-      chainId: arcTestnet.id,
-      functionName: "balanceOf",
-      args: walletAddress ? [walletAddress] : undefined,
-      query: { enabled: Boolean(walletAddress) },
-    },
-  );
-
-  const { data: estimatedOutputData, refetch: refetchQuote } = useReadContract({
-    address: WIZPAY_ADDRESS,
-    abi: WIZPAY_ABI,
+  const amountInBaseUnits = amountInUnits.toString();
+  const { data: currentBalanceData } = useReadContract({
+    address: tokenInConfig.address,
+    abi: ERC20_ABI,
     chainId: arcTestnet.id,
-    functionName: "getEstimatedOutput",
-    args:
-      walletAddress && amountInUnits > 0n && tokenIn !== tokenOut
-        ? [tokenInConfig.address, tokenOutConfig.address, amountInUnits]
-        : undefined,
-    query: {
-      // Official Circle StableFX RFQ is required; disable on-chain quote polling.
-      enabled: false,
-      refetchOnWindowFocus: false,
-      staleTime: 15_000,
-    },
+    functionName: "balanceOf",
+    args: walletAddress ? [walletAddress] : undefined,
+    query: { enabled: Boolean(walletAddress && walletMode === "external") },
   });
-
-  const { data: feeBpsData } = useReadContract({
-    address: WIZPAY_ADDRESS,
-    abi: WIZPAY_ABI,
-    chainId: arcTestnet.id,
-    functionName: "feeBps",
-  });
-
-  const currentAllowance = currentAllowanceData ?? 0n;
   const currentBalance = currentBalanceData ?? 0n;
-  const estimatedOutput = estimatedOutputData ?? 0n;
-  const feeBps = feeBpsData ?? 0n;
-  const estimatedFee = useMemo(
-    () => (amountInUnits * feeBps) / 10000n,
-    [amountInUnits, feeBps],
-  );
-  const minimumOut = useMemo(() => {
-    if (estimatedOutput <= 0n) {
-      return 0n;
-    }
-
-    return (estimatedOutput * (10000n - PREVIEW_SLIPPAGE_BPS)) / 10000n;
-  }, [estimatedOutput]);
-  const needsApproval = amountInUnits > 0n && currentAllowance < amountInUnits;
   const insufficientBalance = amountInUnits > currentBalance;
-  // Swap execution is blocked until official Circle StableFX RFQ auth is available.
-  // Keep the UI visible but prevent submission.
-  const isOfficialRfqAvailable = false;
-  const canSubmit =
-    isOfficialRfqAvailable &&
-    Boolean(walletAddress) &&
-    tokenIn !== tokenOut &&
-    amountInUnits > 0n &&
-    !insufficientBalance;
+  const isExternalWalletMode = walletMode === "external";
+  const isExternalWalletOnArc = walletClient?.chain?.id === arcTestnet.id;
+  const swapAdapter = useMemo(
+    () =>
+      isExternalWalletMode
+        ? createArcSwapAdapter(publicClient, walletClient)
+        : null,
+    [isExternalWalletMode, publicClient, walletClient],
+  );
+  const modeBlockMessage = !isExternalWalletMode
+    ? APP_WALLET_SWAP_BLOCK_MESSAGE
+    : !walletClient
+      ? "Connect an external EVM wallet before starting an Arc Testnet swap."
+      : !isExternalWalletOnArc
+        ? "Switch your external wallet to Arc Testnet before quoting or swapping."
+        : !publicClient
+          ? "Arc Testnet public client is not ready yet."
+          : null;
+  const formInvalid =
+    !walletAddress || tokenIn === tokenOut || amountInUnits <= 0n;
+  const quoteMatchesForm =
+    quote?.tokenIn === tokenIn &&
+    quote.tokenOut === tokenOut &&
+    quote.amountIn === amountInBaseUnits &&
+    quote.fromAddress.toLowerCase() === walletAddress?.toLowerCase();
+  const expectedOutput = quoteMatchesForm
+    ? getQuoteExpectedOutput(quote, tokenOut)
+    : null;
+  const minimumOutput = quoteMatchesForm
+    ? getQuoteMinimumOutput(quote, tokenOut)
+    : null;
+  const busy = requestStatus !== "idle" || isGuarded;
+  const actionDisabled =
+    busy || formInvalid || insufficientBalance || Boolean(modeBlockMessage);
 
   function resetSwapFeedback() {
     setErrorMessage(null);
     setSuccessState(null);
+    setQuote(null);
   }
 
-  async function waitForAllowanceUpdate(txHash: Hex | null) {
-    if (!publicClient) {
-      throw new Error("Arc public client is not ready yet.");
-    }
-
-    if (txHash) {
-      await publicClient.waitForTransactionReceipt({
-        hash: txHash,
-        confirmations: 1,
-      });
-    }
-
-    for (let attempt = 0; attempt < MAX_CONFIRMATION_POLLS; attempt += 1) {
-      const result = await refetchAllowance();
-      const nextAllowance = result.data ?? 0n;
-
-      if (nextAllowance >= amountInUnits) {
-        return;
-      }
-
-      if (attempt < MAX_CONFIRMATION_POLLS - 1) {
-        await waitFor(POLL_INTERVAL_MS);
-      }
-    }
-
-    throw new Error(
-      "Swap approval completed, but the allowance did not refresh before the timeout window ended.",
-    );
-  }
-
-  async function waitForSwapSettlement({
-    startBlock,
-    txHash,
-    referenceId,
-  }: {
-    startBlock: bigint;
-    txHash: Hex | null;
-    referenceId: string;
-  }) {
-    if (!publicClient || !walletAddress) {
-      throw new Error("Arc public client is not ready yet.");
-    }
-
-    if (txHash) {
-      try {
-        await publicClient.waitForTransactionReceipt({
-          hash: txHash,
-          confirmations: 1,
-        });
-        return txHash;
-      } catch {
-        // Fall through to the event-based confirmation path.
-      }
-    }
-
-    for (let attempt = 0; attempt < MAX_CONFIRMATION_POLLS; attempt += 1) {
-      const logs = (await publicClient.getLogs({
-        address: WIZPAY_ADDRESS,
-        event: WIZPAY_BATCH_PAYMENT_ROUTED_EVENT,
-        args: { sender: walletAddress },
-        fromBlock: startBlock,
-      })) as SwapEventLog[];
-
-      const matchedLog = logs.find(
-        (log) =>
-          Boolean(log.transactionHash) && log.args.referenceId === referenceId,
-      );
-
-      if (matchedLog?.transactionHash) {
-        return matchedLog.transactionHash;
-      }
-
-      if (attempt < MAX_CONFIRMATION_POLLS - 1) {
-        await waitFor(POLL_INTERVAL_MS);
-      }
-    }
-
-    if (txHash) {
-      return txHash;
-    }
-
-    throw new Error(
-      "Circle reported the swap challenge complete, but the final settlement event did not appear before the timeout window ended.",
-    );
-  }
-
-  const { isProcessing: isGuarded, guard } = useActionGuard();
-
-  async function handleSwap() {
-    if (!isOfficialRfqAvailable) {
-      setErrorMessage(OFFICIAL_STABLEFX_AUTH_REQUIRED_MESSAGE);
-      return;
-    }
-
-    if (!canSubmit) {
-      setErrorMessage(
-        "Connect the active wallet and enter a valid swap amount first.",
-      );
-      return;
-    }
-
-    if (!publicClient) {
-      setErrorMessage("Arc public client is not ready yet.");
-      return;
-    }
-
+  function getRequestBase() {
     if (!walletAddress) {
-      setErrorMessage(
-        "Connect the active wallet and enter a valid swap amount first.",
-      );
-      return;
+      throw new Error("Connect an external wallet before starting a swap.");
     }
 
-    setSwapStep("idle");
+    return {
+      tokenIn,
+      tokenOut,
+      amountIn: amountInBaseUnits,
+      fromAddress: walletAddress,
+      chain: USER_SWAP_CHAIN,
+    } as const;
+  }
+
+  async function requestQuote() {
+    if (modeBlockMessage) {
+      setErrorMessage(modeBlockMessage);
+      return null;
+    }
+
+    if (formInvalid) {
+      setErrorMessage("Connect a wallet and enter a valid swap amount first.");
+      return null;
+    }
+
+    setRequestStatus("quoting");
     setErrorMessage(null);
 
-    let taskId: string | null = null;
-    let unitId: string | null = null;
+    try {
+      const nextQuote = await quoteUserSwap(getRequestBase());
+      setQuote(nextQuote);
+      return nextQuote;
+    } catch (error) {
+      const message = getFriendlyErrorMessage(error);
+      setErrorMessage(message);
+      toast({
+        title: "Quote unavailable",
+        description: message,
+        variant: "destructive",
+      });
+      return null;
+    } finally {
+      setRequestStatus("idle");
+    }
+  }
+
+  async function handleSwap() {
+    if (modeBlockMessage) {
+      setErrorMessage(modeBlockMessage);
+      return;
+    }
+
+    if (!walletClient) {
+      setErrorMessage("Connect an external EVM wallet before swapping.");
+      return;
+    }
+
+    if (formInvalid) {
+      setErrorMessage("Connect a wallet and enter a valid swap amount first.");
+      return;
+    }
+
+    if (insufficientBalance) {
+      setErrorMessage(`Insufficient ${tokenIn} balance.`);
+      return;
+    }
+
+    setErrorMessage(null);
 
     try {
-      // 1. Approve if needed (inline, no separate button click)
-      if (needsApproval) {
-        setSwapStep("approving");
-        const approvalResult = await executeTransaction({
-          abi: ERC20_ABI,
-          args: [WIZPAY_ADDRESS, amountInUnits],
-          chainId: arcTestnet.id,
-          contractAddress: tokenInConfig.address,
-          functionName: "approve",
-          refId: `SWAP-APPROVE-${Date.now()}`,
-        });
-        await waitForAllowanceUpdate(approvalResult.txHash);
+      if (!quoteMatchesForm) {
+        const activeQuote = await requestQuote();
+
+        if (!activeQuote) {
+          return;
+        }
       }
 
-      setSwapStep("swapping");
-
-      // 2. Register swap task in backend — get a tracked referenceId
-      const plan = await initSwapTask({
-        tokenIn: tokenInConfig.address,
-        tokenOut: tokenOutConfig.address,
-        amountIn: amountInUnits.toString(),
-        minAmountOut: minimumOut.toString(),
-        recipient: walletAddress,
-      });
-      taskId = plan.taskId;
-      unitId = plan.unitId;
-      const referenceId = plan.referenceId;
-      const tokenOuts = [tokenOutConfig.address];
-      const recipients: readonly Address[] = [walletAddress];
-      const amountsIn = [amountInUnits];
-      const minAmountsOut = [minimumOut];
-
-      await publicClient.estimateContractGas({
-        address: WIZPAY_ADDRESS,
-        abi: WIZPAY_ABI,
-        functionName: "batchRouteAndPay",
-        account: walletAddress,
-        args: [
-          tokenInConfig.address,
-          tokenOuts,
-          recipients,
-          amountsIn,
-          minAmountsOut,
-          referenceId,
-        ],
+      setRequestStatus("preparing");
+      const prepared = await prepareUserSwap({
+        ...getRequestBase(),
+        slippageBps: Number(PREVIEW_SLIPPAGE_BPS),
       });
 
-      const executionResult = await executeTransaction({
-        abi: WIZPAY_ABI,
-        args: [
-          tokenInConfig.address,
-          tokenOuts,
-          recipients,
-          amountsIn,
-          minAmountsOut,
-          referenceId,
-        ],
-        chainId: arcTestnet.id,
-        contractAddress: WIZPAY_ADDRESS,
-        functionName: "batchRouteAndPay",
-        refId: referenceId,
+      if (!swapAdapter) {
+        throw new Error("Swap adapter is not ready for the connected external wallet.");
+      }
+
+      setRequestStatus("signing");
+      const txHash = await executePreparedArcUserSwap({
+        adapter: swapAdapter,
+        prepared,
+        tokenIn,
       });
 
-      const confirmedHash = await waitForSwapSettlement({
-        startBlock: executionResult.startBlock,
-        txHash: executionResult.txHash,
-        referenceId,
-      });
-      const finalHash = confirmedHash ?? executionResult.hash;
-
-      // 2. Report success to backend
-      if (taskId && unitId) {
-        await reportSwapResult(taskId, unitId, {
-          status: "SUCCESS",
-          txHash: typeof finalHash === "string" ? finalHash : undefined,
-        });
+      if (!isTransactionHash(txHash)) {
+        throw new Error("Wallet returned an invalid transaction hash.");
       }
 
       setSuccessState({
         amountIn,
-        amountOut:
-          estimatedOutput > 0n
-            ? formatTokenAmount(estimatedOutput, tokenOutConfig.decimals, 6)
-            : null,
-        explorerUrl: isExplorerHash(finalHash)
-          ? `${EXPLORER_BASE_URL}/tx/${finalHash}`
-          : undefined,
+        amountOut: getPreparedAmountOut(prepared, tokenOut),
+        explorerUrl: `${EXPLORER_BASE_URL}/tx/${txHash}`,
         tokenIn,
         tokenOut,
-        txHash: finalHash,
+        txHash,
       });
       setIsSuccessDialogOpen(true);
-
-      await Promise.all([refetchAllowance(), refetchBalance(), refetchQuote()]);
-
       toast({
         title: "Swap submitted",
-        description: `Self-swap routed through WizPay for ${tokenOut}.`,
+        description: `External wallet submitted ${shortenHash(txHash)} on Arc Testnet.`,
       });
     } catch (error) {
       const message = getFriendlyErrorMessage(error);
       setErrorMessage(message);
-
-      // Report failure to backend if task was already created
-      if (taskId && unitId) {
-        reportSwapResult(taskId, unitId, {
-          status: "FAILED",
-          error: message,
-        }).catch(() => undefined);
-      }
-
       toast({
         title: "Swap failed",
         description: message,
         variant: "destructive",
       });
     } finally {
-      setSwapStep("idle");
+      setRequestStatus("idle");
     }
   }
 
@@ -443,15 +406,14 @@ export function SwapScreen() {
             Swap
           </h1>
           <p className="text-sm text-muted-foreground/70">
-            Swap tokens instantly through the WizPay routing engine.
+            External wallet Arc Testnet swap. Signed by connected external
+            wallet.
           </p>
         </div>
 
-        {/* Main Swap Card */}
-        <Card className="glass-card overflow-hidden border-border/40 mx-auto max-w-lg">
+        <Card className="glass-card mx-auto max-w-lg overflow-hidden border-border/40">
           <CardContent className="space-y-4 py-5 sm:space-y-5 sm:py-6">
-            {/* From Token */}
-            <div className="rounded-2xl border border-border/40 bg-background/35 p-4 space-y-3">
+            <div className="space-y-3 rounded-2xl border border-border/40 bg-background/35 p-4">
               <div className="flex items-center justify-between">
                 <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground/60">
                   You pay
@@ -474,7 +436,7 @@ export function SwapScreen() {
                     resetSwapFeedback();
                     setAmountIn(event.target.value);
                   }}
-                  className="h-12 border-0 bg-transparent text-2xl font-bold placeholder:text-muted-foreground/30 focus-visible:ring-0 p-0 flex-1"
+                  className="h-12 flex-1 border-0 bg-transparent p-0 text-2xl font-bold placeholder:text-muted-foreground/30 focus-visible:ring-0"
                 />
                 <Select
                   value={tokenIn}
@@ -489,7 +451,7 @@ export function SwapScreen() {
                     }
                   }}
                 >
-                  <SelectTrigger className="h-10 w-[110px] border-border/40 bg-background/50 rounded-xl">
+                  <SelectTrigger className="h-10 w-[110px] rounded-xl border-border/40 bg-background/50">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -506,31 +468,24 @@ export function SwapScreen() {
               </div>
             </div>
 
-            {/* Swap Direction Icon */}
-            <div className="flex justify-center -my-2 relative z-10">
+            <div className="relative z-10 -my-2 flex justify-center">
               <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-border/40 bg-card/80 text-primary shadow-lg">
                 <ArrowRightLeft className="h-4 w-4 rotate-90" />
               </div>
             </div>
 
-            {/* To Token */}
-            <div className="rounded-2xl border border-border/40 bg-background/35 p-4 space-y-3">
+            <div className="space-y-3 rounded-2xl border border-border/40 bg-background/35 p-4">
               <div className="flex items-center justify-between">
                 <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground/60">
                   You receive
                 </span>
+                <span className="text-xs text-muted-foreground/50">
+                  Backend proxy quote
+                </span>
               </div>
               <div className="flex items-center gap-3">
-                <p className="text-2xl font-bold flex-1 min-w-0">
-                  {amountInUnits > 0n &&
-                  tokenIn !== tokenOut &&
-                  estimatedOutput > 0n
-                    ? formatTokenAmount(
-                        estimatedOutput,
-                        tokenOutConfig.decimals,
-                        6,
-                      )
-                    : "0.0"}
+                <p className="min-w-0 flex-1 text-2xl font-bold">
+                  {expectedOutput ?? "0.0"}
                 </p>
                 <Select
                   value={tokenOut}
@@ -539,7 +494,7 @@ export function SwapScreen() {
                     setTokenOut(value as TokenSymbol);
                   }}
                 >
-                  <SelectTrigger className="h-10 w-[110px] border-border/40 bg-background/50 rounded-xl">
+                  <SelectTrigger className="h-10 w-[110px] rounded-xl border-border/40 bg-background/50">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -558,84 +513,86 @@ export function SwapScreen() {
               </div>
             </div>
 
-            {/* Quote Details (collapsed) */}
-            {amountInUnits > 0n && tokenIn !== tokenOut && (
-              <div className="rounded-xl border border-border/30 bg-background/20 px-4 py-3 space-y-2 text-sm">
-                <div className="flex justify-between text-muted-foreground/70">
-                  <span>Min. received</span>
-                  <span className="font-mono">
-                    {formatTokenAmount(minimumOut, tokenOutConfig.decimals, 6)}{" "}
-                    {tokenOut}
-                  </span>
-                </div>
-                <div className="flex justify-between text-muted-foreground/70">
-                  <span>Fee</span>
-                  <span className="font-mono">
-                    {formatTokenAmount(estimatedFee, tokenInConfig.decimals, 6)}{" "}
-                    {tokenIn}
-                  </span>
-                </div>
-                <div className="flex justify-between text-muted-foreground/70">
-                  <span>Slippage</span>
-                  <span className="font-mono">2%</span>
-                </div>
+            <div className="space-y-2 rounded-xl border border-border/30 bg-background/20 px-4 py-3 text-sm">
+              <div className="flex justify-between gap-3 text-muted-foreground/70">
+                <span>Network</span>
+                <span className="font-mono text-foreground">Arc Testnet</span>
               </div>
-            )}
+              <div className="flex justify-between gap-3 text-muted-foreground/70">
+                <span>Expected output</span>
+                <span className="font-mono text-foreground">
+                  {expectedOutput ?? "-"}
+                </span>
+              </div>
+              <div className="flex justify-between gap-3 text-muted-foreground/70">
+                <span>Minimum output</span>
+                <span className="font-mono text-foreground">
+                  {minimumOutput ?? "-"}
+                </span>
+              </div>
+              <div className="flex justify-between gap-3 text-muted-foreground/70">
+                <span>Slippage</span>
+                <span className="font-mono text-foreground">2%</span>
+              </div>
+            </div>
 
-            {/* Official RFQ blocker notice */}
-            {!isOfficialRfqAvailable && (
+            {modeBlockMessage ? (
               <div className="rounded-xl border border-amber-500/25 bg-amber-500/5 px-4 py-3 text-sm text-amber-200">
-                Swap requires official Circle StableFX RFQ authentication.
-                StableFXAdapter, internal LP liquidity, and legacy routing are
-                disabled until entitlement is available.
+                {modeBlockMessage}
               </div>
-            )}
+            ) : null}
 
             {errorMessage && (
-              <div className="rounded-xl border border-destructive/25 bg-destructive/5 px-4 py-3 text-sm text-destructive flex items-center justify-between gap-2">
+              <div className="flex items-center justify-between gap-2 rounded-xl border border-destructive/25 bg-destructive/5 px-4 py-3 text-sm text-destructive">
                 <span>{errorMessage}</span>
                 <Button
                   variant="ghost"
                   size="sm"
                   onClick={() => setErrorMessage(null)}
-                  className="text-destructive hover:text-destructive/80 shrink-0"
+                  className="shrink-0 text-destructive hover:text-destructive/80"
                 >
                   Dismiss
                 </Button>
               </div>
             )}
 
-            {/* Insufficient balance warning */}
             {insufficientBalance && amountInUnits > 0n && (
               <div className="rounded-xl border border-amber-500/25 bg-amber-500/5 px-4 py-3 text-sm text-amber-300">
-                Insufficient {tokenIn} balance
+                Insufficient {tokenIn} balance.
               </div>
             )}
 
-            {/* Action Button — approve + swap in one click */}
-            <div className="space-y-3">
+            <div className="grid gap-3 sm:grid-cols-2">
+              <Button
+                variant="outline"
+                onClick={() => void requestQuote()}
+                disabled={actionDisabled}
+                className="h-12 text-base"
+              >
+                {requestStatus === "quoting" ? (
+                  <span className="flex items-center gap-2">
+                    <span className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
+                    Quoting...
+                  </span>
+                ) : (
+                  "Preview quote"
+                )}
+              </Button>
               <Button
                 onClick={() => void guard(handleSwap)}
-                disabled={!canSubmit || swapStep !== "idle" || isGuarded}
-                className="w-full h-12 text-base glow-btn bg-gradient-to-r from-primary to-violet-500 text-primary-foreground shadow-lg shadow-primary/20"
+                disabled={actionDisabled}
+                className="glow-btn h-12 bg-gradient-to-r from-primary to-violet-500 text-base text-primary-foreground shadow-lg shadow-primary/20"
               >
-                {swapStep === "approving" ? (
+                {requestStatus === "preparing" || requestStatus === "signing" ? (
                   <span className="flex items-center gap-2">
                     <span className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
-                    Approving {tokenIn}...
+                    {requestStatus === "signing" ? "Signing..." : "Preparing..."}
                   </span>
-                ) : swapStep === "swapping" ? (
-                  <span className="flex items-center gap-2">
-                    <span className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
-                    Swapping...
-                  </span>
-                ) : needsApproval ? (
-                  <>
-                    <ShieldCheck className="h-4 w-4 mr-2" />
-                    Approve &amp; Swap
-                  </>
                 ) : (
-                  "Swap"
+                  <>
+                    <ShieldCheck className="mr-2 h-4 w-4" />
+                    Swap
+                  </>
                 )}
               </Button>
             </div>
@@ -651,8 +608,9 @@ export function SwapScreen() {
           </CardHeader>
           <CardContent className="text-sm text-muted-foreground/80">
             <p>
-              Only Arc Testnet USDC and EURC are available. For batch routing,
-              use the Send page.
+              Only Arc Testnet USDC and EURC are enabled. The backend returns
+              Circle execution parameters; the connected external wallet signs
+              the approval and swap actions.
             </p>
           </CardContent>
         </Card>
@@ -666,9 +624,9 @@ export function SwapScreen() {
               <CheckCircle2 className="h-7 w-7" />
             </div>
             <DialogHeader className="space-y-2">
-              <DialogTitle className="text-xl">Swap Successful</DialogTitle>
+              <DialogTitle className="text-xl">Swap Submitted</DialogTitle>
               <DialogDescription>
-                Your swap has been confirmed on Arc Testnet.
+                Your external wallet submitted the Arc Testnet swap transaction.
               </DialogDescription>
             </DialogHeader>
 
@@ -676,26 +634,22 @@ export function SwapScreen() {
               <div className="mt-6 space-y-4">
                 {(() => {
                   const xShareUrl = buildXShareUrl({
-                    summary: `Swap completed on WizPay: ${successState.amountIn} ${successState.tokenIn} to ${successState.tokenOut}.`,
+                    summary: `WizPay external-wallet swap: ${successState.amountIn} ${successState.tokenIn} to ${successState.tokenOut} on Arc Testnet.`,
                     explorerUrl: successState.explorerUrl,
-                    secondaryText: successState.txHash
-                      ? `Reference: ${successState.txHash}`
-                      : null,
+                    secondaryText: `Reference: ${successState.txHash}`,
                   });
 
                   return (
-                    <div className="flex flex-col gap-3">
-                      <Button
-                        variant="outline"
-                        className="w-full gap-2 border-[#1DA1F2]/50 text-[#1DA1F2] hover:bg-[#1DA1F2]/10"
-                        asChild
-                      >
-                        <a href={xShareUrl} target="_blank" rel="noreferrer">
-                          <MessageCircle className="h-4 w-4" />
-                          Share to X (Twitter)
-                        </a>
-                      </Button>
-                    </div>
+                    <Button
+                      variant="outline"
+                      className="w-full gap-2 border-[#1DA1F2]/50 text-[#1DA1F2] hover:bg-[#1DA1F2]/10"
+                      asChild
+                    >
+                      <a href={xShareUrl} target="_blank" rel="noreferrer">
+                        <MessageCircle className="h-4 w-4" />
+                        Share to X (Twitter)
+                      </a>
+                    </Button>
                   );
                 })()}
 
@@ -717,8 +671,7 @@ export function SwapScreen() {
                       Expected out
                     </span>
                     <span className="font-mono font-medium">
-                      {successState.amountOut ?? "Pending"}{" "}
-                      {successState.tokenOut}
+                      {successState.amountOut ?? "Returned by Circle when available"}
                     </span>
                   </div>
                   <div className="mt-3 flex items-center justify-between gap-3 text-sm">
@@ -732,18 +685,16 @@ export function SwapScreen() {
                 </div>
 
                 <div className="flex flex-col gap-3 sm:flex-row">
-                  {successState.explorerUrl ? (
-                    <Button asChild className="flex-1">
-                      <a
-                        href={successState.explorerUrl}
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        <ExternalLink className="h-4 w-4" />
-                        View transaction
-                      </a>
-                    </Button>
-                  ) : null}
+                  <Button asChild className="flex-1">
+                    <a
+                      href={successState.explorerUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      <ExternalLink className="h-4 w-4" />
+                      View transaction
+                    </a>
+                  </Button>
                   <Button
                     variant="outline"
                     className="flex-1"

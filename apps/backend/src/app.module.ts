@@ -11,6 +11,7 @@ import { OfficialSwapModule } from './official-swap/official-swap.module';
 import { OrchestratorModule } from './orchestrator/orchestrator.module';
 import { QueueModule } from './queue/queue.module';
 import { TaskModule } from './task/task.module';
+import { UserSwapModule } from './user-swap/user-swap.module';
 
 @Module({
   imports: [
@@ -26,6 +27,7 @@ import { TaskModule } from './task/task.module';
     OfficialSwapModule,
     TreasuryModule,
     WalletModule,
+    UserSwapModule,
   ],
 })
 export class AppModule {}
