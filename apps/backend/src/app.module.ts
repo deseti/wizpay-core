@@ -7,6 +7,7 @@ import { DatabaseModule } from './database/database.module';
 import { FxModule } from './fx/fx.module';
 import { IntegrationsModule } from './integrations/integrations.module';
 import { WalletModule } from './modules/wallet/wallet.module';
+import { OfficialSwapModule } from './official-swap/official-swap.module';
 import { OrchestratorModule } from './orchestrator/orchestrator.module';
 import { QueueModule } from './queue/queue.module';
 import { TaskModule } from './task/task.module';
@@ -22,6 +23,7 @@ import { TaskModule } from './task/task.module';
     TaskModule,
     QueueModule,
     OrchestratorModule,
+    OfficialSwapModule,
     TreasuryModule,
     WalletModule,
   ],
