@@ -10,6 +10,7 @@ import {
   APP_WALLET_SWAP_CHAIN,
   APP_WALLET_SWAP_ERROR_CODES,
   APP_WALLET_SWAP_MODE,
+  AppWalletSwapDepositRequest,
   AppWalletSwapOperationRequest,
   AppWalletSwapOperationResponse,
   AppWalletSwapQuoteRequest,
@@ -88,6 +89,58 @@ export class AppWalletSwapService {
     return operation;
   }
 
+  submitDeposit(
+    operationId: string,
+    request: AppWalletSwapDepositRequest,
+  ): AppWalletSwapOperationResponse {
+    const operation = this.getOperation(operationId);
+
+    if (operation.status !== 'awaiting_user_deposit') {
+      throw new BadRequestException({
+        code: APP_WALLET_SWAP_ERROR_CODES.INVALID_REQUEST,
+        message:
+          'App Wallet swap operation is not awaiting a user deposit.',
+      });
+    }
+
+    const depositTxHash = this.normalizeOptionalString(request.depositTxHash);
+    const circleTransactionId = this.normalizeOptionalString(
+      request.circleTransactionId,
+    );
+    const circleReferenceId = this.normalizeOptionalString(
+      request.circleReferenceId,
+    );
+
+    if (!depositTxHash && !circleTransactionId && !circleReferenceId) {
+      throw new BadRequestException({
+        code: APP_WALLET_SWAP_ERROR_CODES.INVALID_REQUEST,
+        message:
+          'Provide depositTxHash, circleTransactionId, or circleReferenceId.',
+      });
+    }
+
+    if (depositTxHash && !/^0x[a-fA-F0-9]{64}$/.test(depositTxHash)) {
+      throw new BadRequestException({
+        code: APP_WALLET_SWAP_ERROR_CODES.INVALID_REQUEST,
+        message: 'depositTxHash must be a 32-byte transaction hash.',
+      });
+    }
+
+    const now = new Date().toISOString();
+    const updatedOperation: AppWalletSwapOperationResponse = {
+      ...operation,
+      status: 'deposit_submitted',
+      ...(depositTxHash ? { depositTxHash } : {}),
+      ...(circleTransactionId ? { circleTransactionId } : {}),
+      ...(circleReferenceId ? { circleReferenceId } : {}),
+      depositSubmittedAt: now,
+      updatedAt: now,
+    };
+
+    this.operations.set(operationId, updatedOperation);
+    return updatedOperation;
+  }
+
   assertExecutionEnabled(): void {
     if (!this.isExecutionEnabled()) {
       throw new ServiceUnavailableException({
@@ -158,6 +211,12 @@ export class AppWalletSwapService {
     }
 
     return normalized;
+  }
+
+  private normalizeOptionalString(value: unknown): string | undefined {
+    return typeof value === 'string' && value.trim()
+      ? value.trim()
+      : undefined;
   }
 
   private getArcTreasuryDepositAddress(): string {

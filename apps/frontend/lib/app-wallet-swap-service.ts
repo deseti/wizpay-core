@@ -30,11 +30,21 @@ export interface AppWalletSwapQuoteResponse {
 export interface AppWalletSwapOperationResponse
   extends Omit<AppWalletSwapQuoteResponse, "status"> {
   operationId: string;
-  status: "awaiting_user_deposit";
+  status: "awaiting_user_deposit" | "deposit_submitted";
   userWalletAddress: string;
+  depositTxHash?: string;
+  circleTransactionId?: string;
+  circleReferenceId?: string;
+  depositSubmittedAt?: string;
   createdAt: string;
   updatedAt: string;
   executionEnabled: boolean;
+}
+
+export interface AppWalletSwapDepositRequest {
+  depositTxHash?: string;
+  circleTransactionId?: string;
+  circleReferenceId?: string;
 }
 
 export async function quoteAppWalletSwap(
@@ -63,5 +73,18 @@ export async function getAppWalletSwapOperation(
 ): Promise<AppWalletSwapOperationResponse> {
   return backendFetch<AppWalletSwapOperationResponse>(
     `/app-wallet-swap/operations/${encodeURIComponent(operationId)}`,
+  );
+}
+
+export async function submitAppWalletSwapDeposit(
+  operationId: string,
+  params: AppWalletSwapDepositRequest,
+): Promise<AppWalletSwapOperationResponse> {
+  return backendFetch<AppWalletSwapOperationResponse>(
+    `/app-wallet-swap/operations/${encodeURIComponent(operationId)}/deposit`,
+    {
+      method: "POST",
+      body: JSON.stringify(params),
+    },
   );
 }

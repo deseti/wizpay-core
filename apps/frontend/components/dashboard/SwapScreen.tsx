@@ -6,6 +6,7 @@ import {
   ArrowRightLeft,
   CheckCircle2,
   Clock3,
+  Copy,
   ExternalLink,
   MessageCircle,
   ShieldCheck,
@@ -30,6 +31,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { ERC20_ABI } from "@/constants/erc20";
+import { useCircleWallet } from "@/components/providers/CircleWalletProvider";
 import { useActionGuard } from "@/hooks/useActionGuard";
 import { useActiveWalletAddress } from "@/hooks/useActiveWalletAddress";
 import { useDialogState } from "@/hooks/useDialogState";
@@ -41,7 +43,10 @@ import {
 } from "@/lib/circle-swap-kit";
 import {
   APP_WALLET_SWAP_CHAIN,
+  createAppWalletSwapOperation,
   quoteAppWalletSwap,
+  submitAppWalletSwapDeposit,
+  type AppWalletSwapOperationResponse,
   type AppWalletSwapQuoteResponse,
 } from "@/lib/app-wallet-swap-service";
 import {
@@ -63,8 +68,27 @@ import {
 } from "@/lib/wizpay";
 import { arcTestnet } from "@/lib/wagmi";
 
-type RequestStatus = "idle" | "quoting" | "preparing" | "signing";
+type RequestStatus =
+  | "idle"
+  | "quoting"
+  | "preparing"
+  | "signing"
+  | "creating"
+  | "depositing";
 type SwapQuoteState = UserSwapQuoteResponse | AppWalletSwapQuoteResponse;
+
+const EXPECTED_OUTPUT_FALLBACK_PATHS = [
+  "quote.estimatedAmount",
+  "quote.route.steps.0.estimate.toAmount",
+  "estimatedOutput",
+  "amountOut",
+] as const;
+
+const MINIMUM_OUTPUT_FALLBACK_PATHS = [
+  "quote.minAmount",
+  "minimumOutput",
+  "minOutput",
+] as const;
 
 interface SwapSuccessState {
   amountIn: string;
@@ -119,6 +143,12 @@ function findFirst(value: unknown, paths: string[]): unknown {
   return undefined;
 }
 
+function findFirstString(value: unknown, paths: string[]) {
+  const found = findFirst(value, paths);
+
+  return typeof found === "string" && found.trim() ? found.trim() : null;
+}
+
 function stringifyAmount(value: unknown): string | null {
   if (typeof value === "string" && value.trim()) {
     return value.trim();
@@ -168,12 +198,7 @@ function getQuoteExpectedOutput(
 
   return formatBaseUnitAmount(
     quote.expectedOutput ??
-      findFirst(rawQuote, [
-        "quote.estimatedAmount",
-        "quote.route.steps.0.estimate.toAmount",
-        "estimatedOutput",
-        "amountOut",
-      ]),
+      findFirst(rawQuote, [...EXPECTED_OUTPUT_FALLBACK_PATHS]),
     tokenOut,
   );
 }
@@ -190,9 +215,90 @@ function getQuoteMinimumOutput(
 
   return formatBaseUnitAmount(
     quote.minimumOutput ??
-      findFirst(rawQuote, ["quote.minAmount", "minimumOutput", "minOutput"]),
+      findFirst(rawQuote, [...MINIMUM_OUTPUT_FALLBACK_PATHS]),
     tokenOut,
   );
+}
+
+function getOperationExpectedOutput(operation: AppWalletSwapOperationResponse) {
+  return formatBaseUnitAmount(
+    operation.expectedOutput ??
+      findFirst(operation.rawQuote, [...EXPECTED_OUTPUT_FALLBACK_PATHS]),
+    operation.tokenOut,
+  );
+}
+
+function getOperationMinimumOutput(operation: AppWalletSwapOperationResponse) {
+  return formatBaseUnitAmount(
+    operation.minimumOutput ??
+      findFirst(operation.rawQuote, [...MINIMUM_OUTPUT_FALLBACK_PATHS]),
+    operation.tokenOut,
+  );
+}
+
+function getCircleTxHash(...values: unknown[]): Hex | null {
+  for (const value of values) {
+    const candidate =
+      findFirstString(value, [
+        "data.txHash",
+        "data.transactionHash",
+        "data.hash",
+        "txHash",
+        "transactionHash",
+        "hash",
+      ]) ?? null;
+
+    if (candidate && isTransactionHash(candidate)) {
+      return candidate as Hex;
+    }
+  }
+
+  return null;
+}
+
+function getCircleTransactionId(...values: unknown[]) {
+  for (const value of values) {
+    const candidate = findFirstString(value, [
+      "data.transactionId",
+      "data.id",
+      "transactionId",
+      "id",
+    ]);
+
+    if (candidate) {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
+function getCircleReferenceId(...values: unknown[]) {
+  for (const value of values) {
+    const candidate = findFirstString(value, [
+      "data.refId",
+      "data.referenceId",
+      "data.id",
+      "refId",
+      "referenceId",
+      "challengeId",
+      "id",
+    ]);
+
+    if (candidate) {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
+function formatTokenUnits(value: string, token: TokenSymbol) {
+  try {
+    return formatUnits(BigInt(value), SUPPORTED_TOKENS[token].decimals);
+  } catch {
+    return value;
+  }
 }
 
 function getPreparedAmountOut(
@@ -213,6 +319,13 @@ function getPreparedAmountOut(
 
 export function SwapScreen() {
   const { walletAddress, walletMode } = useActiveWalletAddress();
+  const {
+    arcWallet,
+    createTransferChallenge,
+    ensureSessionReady,
+    executeChallenge,
+    getWalletBalances,
+  } = useCircleWallet();
   const { data: walletClient } = useWalletClient();
   const publicClient = usePublicClient({ chainId: arcTestnet.id });
   const { toast } = useToast();
@@ -226,6 +339,10 @@ export function SwapScreen() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [requestStatus, setRequestStatus] = useState<RequestStatus>("idle");
   const [quote, setQuote] = useState<SwapQuoteState | null>(null);
+  const [appWalletOperation, setAppWalletOperation] =
+    useState<AppWalletSwapOperationResponse | null>(null);
+  const [isAppWalletOperationOpen, setIsAppWalletOperationOpen] =
+    useState(false);
   const [successState, setSuccessState] = useState<SwapSuccessState | null>(
     null,
   );
@@ -288,11 +405,14 @@ export function SwapScreen() {
     formInvalid ||
     (isExternalWalletMode && insufficientBalance) ||
     Boolean(modeBlockMessage);
-  const swapDisabled = quoteDisabled || isCircleWalletMode;
+  const swapDisabled =
+    quoteDisabled || (isCircleWalletMode && !quoteMatchesForm);
 
   function resetSwapFeedback() {
     setErrorMessage(null);
     setSuccessState(null);
+    setAppWalletOperation(null);
+    setIsAppWalletOperationOpen(false);
     setQuote(null);
   }
 
@@ -347,6 +467,150 @@ export function SwapScreen() {
     }
   }
 
+  async function copyToClipboard(value: string, label: string) {
+    try {
+      await navigator.clipboard.writeText(value);
+      toast({
+        title: "Copied",
+        description: `${label} copied to clipboard.`,
+      });
+    } catch {
+      toast({
+        title: "Copy failed",
+        description: `Could not copy ${label}.`,
+        variant: "destructive",
+      });
+    }
+  }
+
+  async function createAppWalletDepositInstruction() {
+    const activeQuote = quoteMatchesForm ? quote : await requestQuote();
+
+    if (!activeQuote) {
+      return;
+    }
+
+    setRequestStatus("creating");
+    setErrorMessage(null);
+
+    const operation = await createAppWalletSwapOperation({
+      ...getRequestBase(),
+      chain: APP_WALLET_SWAP_CHAIN,
+    });
+
+    setAppWalletOperation(operation);
+    setIsAppWalletOperationOpen(true);
+    toast({
+      title: "Deposit instruction created",
+      description:
+        "Deposit USDC manually to the treasury address. No swap or payout has been executed.",
+    });
+  }
+
+  async function submitAppWalletDeposit() {
+    if (!appWalletOperation) {
+      return;
+    }
+
+    if (appWalletOperation.status !== "awaiting_user_deposit") {
+      setErrorMessage("This operation is not awaiting a user deposit.");
+      return;
+    }
+
+    if (appWalletOperation.tokenIn !== "USDC") {
+      setErrorMessage("Phase 3B only supports manual USDC deposits.");
+      return;
+    }
+
+    if (!arcWallet?.id) {
+      setErrorMessage("Circle App Wallet on Arc Testnet is not ready.");
+      return;
+    }
+
+    setRequestStatus("depositing");
+    setErrorMessage(null);
+
+    try {
+      await ensureSessionReady();
+
+      const balances = await getWalletBalances(arcWallet.id);
+      const tokenConfig = SUPPORTED_TOKENS[appWalletOperation.tokenIn];
+      const tokenBalance = balances.find((balance) => {
+        const symbolMatches = balance.symbol === appWalletOperation.tokenIn;
+        const addressMatches =
+          balance.tokenAddress?.toLowerCase() ===
+          tokenConfig.address.toLowerCase();
+
+        return symbolMatches || addressMatches;
+      });
+
+      if (!tokenBalance?.tokenId) {
+        throw new Error(
+          "USDC tokenId is missing for the Circle App Wallet. Refresh wallet balances and retry.",
+        );
+      }
+
+      const depositAmount = formatTokenUnits(
+        appWalletOperation.amountIn,
+        appWalletOperation.tokenIn,
+      );
+      const transferChallenge = await createTransferChallenge({
+        walletId: arcWallet.id,
+        destinationAddress: appWalletOperation.treasuryDepositAddress,
+        tokenId: tokenBalance.tokenId,
+        amounts: [depositAmount],
+        feeLevel: "HIGH",
+        refId: `APP-WALLET-SWAP-DEPOSIT-${appWalletOperation.operationId}`,
+      });
+      let challengeResult: unknown;
+      setIsAppWalletOperationOpen(false);
+
+      try {
+        challengeResult = await executeChallenge(transferChallenge.challengeId);
+      } finally {
+        setIsAppWalletOperationOpen(true);
+      }
+
+      const depositTxHash = getCircleTxHash(
+        challengeResult,
+        transferChallenge.raw,
+      );
+      const circleTransactionId = getCircleTransactionId(
+        challengeResult,
+        transferChallenge.raw,
+      );
+      const circleReferenceId =
+        getCircleReferenceId(challengeResult, transferChallenge.raw) ??
+        transferChallenge.challengeId;
+
+      const updatedOperation = await submitAppWalletSwapDeposit(
+        appWalletOperation.operationId,
+        {
+          ...(depositTxHash ? { depositTxHash } : {}),
+          ...(circleTransactionId ? { circleTransactionId } : {}),
+          ...(circleReferenceId ? { circleReferenceId } : {}),
+        },
+      );
+
+      setAppWalletOperation(updatedOperation);
+      toast({
+        title: "Deposit submitted",
+        description:
+          "Deposit reference attached. Backend confirmation will be added in Phase 3C.",
+      });
+    } catch (error) {
+      const message = getFriendlyErrorMessage(error);
+      setErrorMessage(message);
+      toast({
+        title: "Deposit failed",
+        description: message,
+        variant: "destructive",
+      });
+    } finally {
+      setRequestStatus("idle");
+    }
+  }
+
   async function handleSwap() {
     if (modeBlockMessage) {
       setErrorMessage(modeBlockMessage);
@@ -382,14 +646,7 @@ export function SwapScreen() {
       setRequestStatus("preparing");
 
       if (isCircleWalletMode) {
-        setErrorMessage(
-          "Treasury-mediated App Wallet swap is experimental and execution is coming soon.",
-        );
-        toast({
-          title: "Coming soon",
-          description:
-            "Treasury-mediated App Wallet swap execution is disabled for this phase.",
-        });
+        await createAppWalletDepositInstruction();
         return;
       }
 
@@ -593,9 +850,11 @@ export function SwapScreen() {
 
             {isCircleWalletMode ? (
               <div className="rounded-xl border border-sky-500/25 bg-sky-500/5 px-4 py-3 text-sm text-sky-100">
-                Treasury-mediated App Wallet swap is experimental. Phase 1
-                supports quoting and operation scaffolding only; deposits,
-                treasury swap execution, and payouts are disabled.
+                Treasury-mediated App Wallet swap is experimental. App Wallet
+                can create a deposit instruction and request a USDC transfer
+                challenge to the treasury. Deposit submission is not deposit
+                confirmation; backend confirmation comes in Phase 3C. Treasury
+                swap, payout, refund, and settlement are not implemented yet.
               </div>
             ) : null}
 
@@ -640,10 +899,14 @@ export function SwapScreen() {
                 disabled={swapDisabled}
                 className="glow-btn h-12 bg-gradient-to-r from-primary to-violet-500 text-base text-primary-foreground shadow-lg shadow-primary/20"
               >
-                {requestStatus === "preparing" || requestStatus === "signing" ? (
+                {requestStatus === "preparing" ||
+                requestStatus === "signing" ||
+                requestStatus === "creating" ? (
                   <span className="flex items-center gap-2">
                     <span className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
-                    {requestStatus === "signing"
+                    {requestStatus === "creating"
+                      ? "Creating..."
+                      : requestStatus === "signing"
                       ? isCircleWalletMode
                         ? "Challenge..."
                         : "Signing..."
@@ -652,7 +915,11 @@ export function SwapScreen() {
                 ) : (
                   <>
                     <ShieldCheck className="mr-2 h-4 w-4" />
-                    {isCircleWalletMode ? "Coming soon" : "Swap"}
+                    {isCircleWalletMode
+                      ? quoteMatchesForm
+                        ? "Create deposit instruction"
+                        : "Preview quote first"
+                      : "Swap"}
                   </>
                 )}
               </Button>
@@ -669,14 +936,231 @@ export function SwapScreen() {
           </CardHeader>
           <CardContent className="text-sm text-muted-foreground/80">
             <p>
-              Only Arc Testnet USDC and EURC are enabled. The backend returns
-              Circle execution parameters; external wallets use the existing
-              Circle/Viem adapter path, while Circle App Wallet uses a new
-              treasury-mediated scaffold with execution disabled.
+              Only Arc Testnet USDC and EURC are enabled. External wallets use
+              the existing Circle/Viem adapter path, while Circle App Wallet
+              creates a treasury deposit instruction and can request a USDC
+              transfer challenge. Deposit submission still waits for future
+              backend confirmation before any treasury swap, payout, refund, or
+              settlement.
             </p>
           </CardContent>
         </Card>
       </div>
+
+      <Dialog
+        open={isAppWalletOperationOpen}
+        onOpenChange={setIsAppWalletOperationOpen}
+      >
+        <DialogContent className="glass-card max-w-lg overflow-hidden border-border/40 bg-background/95 p-0">
+          <div className="relative overflow-hidden p-6">
+            <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-sky-400/40 to-transparent" />
+            <div className="mb-5 flex h-14 w-14 items-center justify-center rounded-2xl bg-sky-500/12 text-sky-300 ring-1 ring-sky-400/20">
+              <Clock3 className="h-7 w-7" />
+            </div>
+            <DialogHeader className="space-y-2">
+              <DialogTitle className="text-xl">
+                Deposit Instruction Created
+              </DialogTitle>
+              <DialogDescription>
+                Treasury-mediated App Wallet swap is waiting for a manual USDC
+                deposit. Settlement is not complete.
+              </DialogDescription>
+            </DialogHeader>
+
+            {appWalletOperation ? (
+              <div className="mt-6 space-y-4">
+                <div className="rounded-2xl border border-sky-500/25 bg-sky-500/5 p-4 text-sm text-sky-100">
+                  {appWalletOperation.status === "deposit_submitted" ? (
+                    <>
+                      Deposit submitted. Backend confirmation will be added in
+                      Phase 3C, so settlement is not complete.
+                    </>
+                  ) : (
+                    <>
+                      Deposit {formatBaseUnitAmount(
+                        appWalletOperation.amountIn,
+                        appWalletOperation.tokenIn,
+                      ) ?? `${appWalletOperation.amountIn} ${appWalletOperation.tokenIn}`}{" "}
+                      to the Arc treasury address below. The deposit action
+                      requests a Circle App Wallet transfer challenge only; it
+                      does not execute the treasury swap, payout, refund, or
+                      settlement.
+                    </>
+                  )}
+                </div>
+
+                <div className="rounded-2xl border border-border/40 bg-background/45 p-4">
+                  <div className="flex items-center justify-between gap-3 text-sm">
+                    <span className="text-muted-foreground/70">
+                      Operation id
+                    </span>
+                    <div className="flex min-w-0 items-center gap-2">
+                      <span className="min-w-0 break-all text-right font-mono font-medium">
+                        {appWalletOperation.operationId}
+                      </span>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7 shrink-0"
+                        onClick={() =>
+                          void copyToClipboard(
+                            appWalletOperation.operationId,
+                            "operation id",
+                          )
+                        }
+                        aria-label="Copy operation id"
+                      >
+                        <Copy className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
+                  </div>
+                  <div className="mt-3 flex items-center justify-between gap-3 text-sm">
+                    <span className="text-muted-foreground/70">Status</span>
+                    <span className="font-mono font-medium text-amber-200">
+                      {appWalletOperation.status}
+                    </span>
+                  </div>
+                  {appWalletOperation.depositTxHash ? (
+                    <div className="mt-3 flex items-center justify-between gap-3 text-sm">
+                      <span className="text-muted-foreground/70">
+                        Deposit txHash
+                      </span>
+                      <span className="min-w-0 break-all text-right font-mono font-medium">
+                        {appWalletOperation.depositTxHash}
+                      </span>
+                    </div>
+                  ) : null}
+                  {appWalletOperation.circleTransactionId ? (
+                    <div className="mt-3 flex items-center justify-between gap-3 text-sm">
+                      <span className="text-muted-foreground/70">
+                        Circle transaction
+                      </span>
+                      <span className="min-w-0 break-all text-right font-mono font-medium">
+                        {appWalletOperation.circleTransactionId}
+                      </span>
+                    </div>
+                  ) : null}
+                  {appWalletOperation.circleReferenceId ? (
+                    <div className="mt-3 flex items-center justify-between gap-3 text-sm">
+                      <span className="text-muted-foreground/70">
+                        Circle reference
+                      </span>
+                      <span className="min-w-0 break-all text-right font-mono font-medium">
+                        {appWalletOperation.circleReferenceId}
+                      </span>
+                    </div>
+                  ) : null}
+                  <div className="mt-3 flex items-center justify-between gap-3 text-sm">
+                    <span className="text-muted-foreground/70">
+                      Treasury deposit address
+                    </span>
+                    <div className="flex min-w-0 items-center gap-2">
+                      <span className="min-w-0 break-all text-right font-mono font-medium">
+                        {appWalletOperation.treasuryDepositAddress}
+                      </span>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7 shrink-0"
+                        onClick={() =>
+                          void copyToClipboard(
+                            appWalletOperation.treasuryDepositAddress,
+                            "treasury address",
+                          )
+                        }
+                        aria-label="Copy treasury deposit address"
+                      >
+                        <Copy className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
+                  </div>
+                  <div className="mt-3 flex items-center justify-between gap-3 text-sm">
+                    <span className="text-muted-foreground/70">Deposit</span>
+                    <span className="font-mono font-medium">
+                      {formatBaseUnitAmount(
+                        appWalletOperation.amountIn,
+                        appWalletOperation.tokenIn,
+                      ) ?? `${appWalletOperation.amountIn} ${appWalletOperation.tokenIn}`}
+                    </span>
+                  </div>
+                  <div className="mt-3 flex items-center justify-between gap-3 text-sm">
+                    <span className="text-muted-foreground/70">Route</span>
+                    <span className="font-medium">
+                      {appWalletOperation.tokenIn} to{" "}
+                      {appWalletOperation.tokenOut}
+                    </span>
+                  </div>
+                  <div className="mt-3 flex items-center justify-between gap-3 text-sm">
+                    <span className="text-muted-foreground/70">
+                      Expected output
+                    </span>
+                    <span className="font-mono font-medium">
+                      {getOperationExpectedOutput(appWalletOperation) ?? "-"}
+                    </span>
+                  </div>
+                  <div className="mt-3 flex items-center justify-between gap-3 text-sm">
+                    <span className="text-muted-foreground/70">
+                      Minimum output
+                    </span>
+                    <span className="font-mono font-medium">
+                      {getOperationMinimumOutput(appWalletOperation) ?? "-"}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border border-amber-500/25 bg-amber-500/5 p-4 text-sm text-amber-100">
+                  {appWalletOperation.status === "deposit_submitted"
+                    ? "Deposit submission is recorded, but it is not confirmed yet. Treasury swap execution is not executed yet. Payout is not executed yet. Settlement is not complete."
+                    : "Treasury swap execution is not executed yet. Payout is not executed yet. Settlement is not complete."}
+                </div>
+
+                <div className="flex flex-col gap-3 sm:flex-row">
+                  {appWalletOperation.status === "awaiting_user_deposit" ? (
+                    <Button
+                      className="flex-1"
+                      onClick={() => void guard(submitAppWalletDeposit)}
+                      disabled={
+                        requestStatus === "depositing" ||
+                        appWalletOperation.tokenIn !== "USDC"
+                      }
+                    >
+                      {requestStatus === "depositing" ? (
+                        <span className="flex items-center gap-2">
+                          <span className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
+                          Depositing...
+                        </span>
+                      ) : (
+                        "Deposit USDC"
+                      )}
+                    </Button>
+                  ) : null}
+                  {appWalletOperation.depositTxHash ? (
+                    <Button asChild variant="outline" className="flex-1">
+                      <a
+                        href={`${EXPLORER_BASE_URL}/tx/${appWalletOperation.depositTxHash}`}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        <ExternalLink className="h-4 w-4" />
+                        View deposit
+                      </a>
+                    </Button>
+                  ) : null}
+                  <Button
+                    variant="outline"
+                    className="flex-1"
+                    onClick={() => setIsAppWalletOperationOpen(false)}
+                  >
+                    Close
+                  </Button>
+                </div>
+              </div>
+            ) : null}
+          </div>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={isSuccessDialogOpen} onOpenChange={setIsSuccessDialogOpen}>
         <DialogContent className="glass-card max-w-md overflow-hidden border-border/40 bg-background/95 p-0">

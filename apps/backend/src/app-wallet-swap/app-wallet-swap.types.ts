@@ -7,7 +7,8 @@ export type AppWalletSwapToken = 'USDC' | 'EURC';
 
 export type AppWalletSwapOperationStatus =
   | 'quoted'
-  | 'awaiting_user_deposit';
+  | 'awaiting_user_deposit'
+  | 'deposit_submitted';
 
 export const APP_WALLET_SWAP_ERROR_CODES = {
   INVALID_REQUEST: 'APP_WALLET_SWAP_INVALID_REQUEST',
@@ -47,9 +48,19 @@ export interface AppWalletSwapOperationRequest
 export interface AppWalletSwapOperationResponse
   extends Omit<AppWalletSwapQuoteResponse, 'status'> {
   operationId: string;
-  status: 'awaiting_user_deposit';
+  status: Exclude<AppWalletSwapOperationStatus, 'quoted'>;
   userWalletAddress: string;
+  depositTxHash?: string;
+  circleTransactionId?: string;
+  circleReferenceId?: string;
+  depositSubmittedAt?: string;
   createdAt: string;
   updatedAt: string;
   executionEnabled: boolean;
+}
+
+export interface AppWalletSwapDepositRequest {
+  depositTxHash?: string;
+  circleTransactionId?: string;
+  circleReferenceId?: string;
 }

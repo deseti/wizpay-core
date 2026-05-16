@@ -8,6 +8,7 @@ import {
   UsePipes,
   ValidationPipe,
 } from '@nestjs/common';
+import { AppWalletSwapDepositDto } from './dto/app-wallet-swap-deposit.dto';
 import { AppWalletSwapOperationDto } from './dto/app-wallet-swap-operation.dto';
 import { AppWalletSwapQuoteDto } from './dto/app-wallet-swap-quote.dto';
 import { AppWalletSwapService } from './app-wallet-swap.service';
@@ -40,6 +41,16 @@ export class AppWalletSwapController {
   async createOperation(@Body() body: AppWalletSwapOperationDto) {
     return {
       data: await this.appWalletSwapService.createOperation(body),
+    };
+  }
+
+  @Post('operations/:id/deposit')
+  submitDeposit(
+    @Param('id') operationId: string,
+    @Body() body: AppWalletSwapDepositDto,
+  ) {
+    return {
+      data: this.appWalletSwapService.submitDeposit(operationId, body),
     };
   }
 
