@@ -5,5 +5,6 @@ import { UserSwapService } from './user-swap.service';
 @Module({
   controllers: [UserSwapController],
   providers: [UserSwapService],
+  exports: [UserSwapService],
 })
 export class UserSwapModule {}

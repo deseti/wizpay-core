@@ -5,6 +5,7 @@ import { type Hex, formatUnits } from "viem";
 import {
   ArrowRightLeft,
   CheckCircle2,
+  Clock3,
   ExternalLink,
   MessageCircle,
   ShieldCheck,
@@ -39,6 +40,11 @@ import {
   executePreparedArcUserSwap,
 } from "@/lib/circle-swap-kit";
 import {
+  APP_WALLET_SWAP_CHAIN,
+  quoteAppWalletSwap,
+  type AppWalletSwapQuoteResponse,
+} from "@/lib/app-wallet-swap-service";
+import {
   USER_SWAP_CHAIN,
   prepareUserSwap,
   quoteUserSwap,
@@ -57,18 +63,22 @@ import {
 } from "@/lib/wizpay";
 import { arcTestnet } from "@/lib/wagmi";
 
-const APP_WALLET_SWAP_BLOCK_MESSAGE =
-  "Circle App Wallet swap signing is not enabled yet. Use an external EVM wallet on Arc Testnet.";
-
 type RequestStatus = "idle" | "quoting" | "preparing" | "signing";
+type SwapQuoteState = UserSwapQuoteResponse | AppWalletSwapQuoteResponse;
 
 interface SwapSuccessState {
   amountIn: string;
   amountOut: string | null;
-  explorerUrl: string;
+  explorerUrl: string | null;
+  instructionCount: number;
+  referenceId: string;
+  status: "pending" | "success";
   tokenIn: TokenSymbol;
   tokenOut: TokenSymbol;
-  txHash: Hex;
+  transactionId: string | null;
+  transactionStatus: string | null;
+  txHash: Hex | null;
+  walletMode: "circle" | "external";
 }
 
 function shortenHash(hash: string | undefined) {
@@ -147,16 +157,18 @@ function formatBaseUnitAmount(
 }
 
 function getQuoteExpectedOutput(
-  quote: UserSwapQuoteResponse | null,
+  quote: SwapQuoteState | null,
   tokenOut: TokenSymbol,
 ) {
   if (!quote) {
     return null;
   }
 
+  const rawQuote = "raw" in quote ? quote.raw : quote.rawQuote;
+
   return formatBaseUnitAmount(
     quote.expectedOutput ??
-      findFirst(quote.raw, [
+      findFirst(rawQuote, [
         "quote.estimatedAmount",
         "quote.route.steps.0.estimate.toAmount",
         "estimatedOutput",
@@ -167,16 +179,18 @@ function getQuoteExpectedOutput(
 }
 
 function getQuoteMinimumOutput(
-  quote: UserSwapQuoteResponse | null,
+  quote: SwapQuoteState | null,
   tokenOut: TokenSymbol,
 ) {
   if (!quote) {
     return null;
   }
 
+  const rawQuote = "raw" in quote ? quote.raw : quote.rawQuote;
+
   return formatBaseUnitAmount(
     quote.minimumOutput ??
-      findFirst(quote.raw, ["quote.minAmount", "minimumOutput", "minOutput"]),
+      findFirst(rawQuote, ["quote.minAmount", "minimumOutput", "minOutput"]),
     tokenOut,
   );
 }
@@ -211,7 +225,7 @@ export function SwapScreen() {
   const [amountIn, setAmountIn] = useState("");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [requestStatus, setRequestStatus] = useState<RequestStatus>("idle");
-  const [quote, setQuote] = useState<UserSwapQuoteResponse | null>(null);
+  const [quote, setQuote] = useState<SwapQuoteState | null>(null);
   const [successState, setSuccessState] = useState<SwapSuccessState | null>(
     null,
   );
@@ -233,6 +247,7 @@ export function SwapScreen() {
   const currentBalance = currentBalanceData ?? 0n;
   const insufficientBalance = amountInUnits > currentBalance;
   const isExternalWalletMode = walletMode === "external";
+  const isCircleWalletMode = walletMode === "circle";
   const isExternalWalletOnArc = walletClient?.chain?.id === arcTestnet.id;
   const swapAdapter = useMemo(
     () =>
@@ -241,22 +256,26 @@ export function SwapScreen() {
         : null,
     [isExternalWalletMode, publicClient, walletClient],
   );
-  const modeBlockMessage = !isExternalWalletMode
-    ? APP_WALLET_SWAP_BLOCK_MESSAGE
-    : !walletClient
-      ? "Connect an external EVM wallet before starting an Arc Testnet swap."
-      : !isExternalWalletOnArc
-        ? "Switch your external wallet to Arc Testnet before quoting or swapping."
-        : !publicClient
-          ? "Arc Testnet public client is not ready yet."
-          : null;
+  const modeBlockMessage = isCircleWalletMode
+    ? null
+    : !isExternalWalletMode
+      ? "Select an external wallet or Circle App Wallet before starting an Arc Testnet swap."
+      : !walletClient
+        ? "Connect an external EVM wallet before starting an Arc Testnet swap."
+        : !isExternalWalletOnArc
+          ? "Switch your external wallet to Arc Testnet before quoting or swapping."
+          : !publicClient
+            ? "Arc Testnet public client is not ready yet."
+            : null;
   const formInvalid =
     !walletAddress || tokenIn === tokenOut || amountInUnits <= 0n;
   const quoteMatchesForm =
-    quote?.tokenIn === tokenIn &&
+    quote !== null &&
+    quote.tokenIn === tokenIn &&
     quote.tokenOut === tokenOut &&
     quote.amountIn === amountInBaseUnits &&
-    quote.fromAddress.toLowerCase() === walletAddress?.toLowerCase();
+    (!("fromAddress" in quote) ||
+      quote.fromAddress.toLowerCase() === walletAddress?.toLowerCase());
   const expectedOutput = quoteMatchesForm
     ? getQuoteExpectedOutput(quote, tokenOut)
     : null;
@@ -264,8 +283,12 @@ export function SwapScreen() {
     ? getQuoteMinimumOutput(quote, tokenOut)
     : null;
   const busy = requestStatus !== "idle" || isGuarded;
-  const actionDisabled =
-    busy || formInvalid || insufficientBalance || Boolean(modeBlockMessage);
+  const quoteDisabled =
+    busy ||
+    formInvalid ||
+    (isExternalWalletMode && insufficientBalance) ||
+    Boolean(modeBlockMessage);
+  const swapDisabled = quoteDisabled || isCircleWalletMode;
 
   function resetSwapFeedback() {
     setErrorMessage(null);
@@ -275,7 +298,7 @@ export function SwapScreen() {
 
   function getRequestBase() {
     if (!walletAddress) {
-      throw new Error("Connect an external wallet before starting a swap.");
+      throw new Error("Connect a wallet before starting a swap.");
     }
 
     return {
@@ -302,7 +325,12 @@ export function SwapScreen() {
     setErrorMessage(null);
 
     try {
-      const nextQuote = await quoteUserSwap(getRequestBase());
+      const nextQuote = isCircleWalletMode
+        ? await quoteAppWalletSwap({
+            ...getRequestBase(),
+            chain: APP_WALLET_SWAP_CHAIN,
+          })
+        : await quoteUserSwap(getRequestBase());
       setQuote(nextQuote);
       return nextQuote;
     } catch (error) {
@@ -325,7 +353,7 @@ export function SwapScreen() {
       return;
     }
 
-    if (!walletClient) {
+    if (isExternalWalletMode && !walletClient) {
       setErrorMessage("Connect an external EVM wallet before swapping.");
       return;
     }
@@ -335,7 +363,7 @@ export function SwapScreen() {
       return;
     }
 
-    if (insufficientBalance) {
+    if (isExternalWalletMode && insufficientBalance) {
       setErrorMessage(`Insufficient ${tokenIn} balance.`);
       return;
     }
@@ -352,16 +380,30 @@ export function SwapScreen() {
       }
 
       setRequestStatus("preparing");
+
+      if (isCircleWalletMode) {
+        setErrorMessage(
+          "Treasury-mediated App Wallet swap is experimental and execution is coming soon.",
+        );
+        toast({
+          title: "Coming soon",
+          description:
+            "Treasury-mediated App Wallet swap execution is disabled for this phase.",
+        });
+        return;
+      }
+
       const prepared = await prepareUserSwap({
         ...getRequestBase(),
         slippageBps: Number(PREVIEW_SLIPPAGE_BPS),
       });
 
+      setRequestStatus("signing");
+
       if (!swapAdapter) {
         throw new Error("Swap adapter is not ready for the connected external wallet.");
       }
 
-      setRequestStatus("signing");
       const txHash = await executePreparedArcUserSwap({
         adapter: swapAdapter,
         prepared,
@@ -376,9 +418,15 @@ export function SwapScreen() {
         amountIn,
         amountOut: getPreparedAmountOut(prepared, tokenOut),
         explorerUrl: `${EXPLORER_BASE_URL}/tx/${txHash}`,
+        instructionCount: 1,
+        referenceId: txHash,
+        status: "success",
         tokenIn,
         tokenOut,
+        transactionId: txHash,
+        transactionStatus: "COMPLETE",
         txHash,
+        walletMode: "external",
       });
       setIsSuccessDialogOpen(true);
       toast({
@@ -406,8 +454,9 @@ export function SwapScreen() {
             Swap
           </h1>
           <p className="text-sm text-muted-foreground/70">
-            External wallet Arc Testnet swap. Signed by connected external
-            wallet.
+            {isCircleWalletMode
+              ? "Treasury-mediated App Wallet swap is experimental."
+              : "External wallet Arc Testnet swap. Signed by connected external wallet."}
           </p>
         </div>
 
@@ -419,9 +468,9 @@ export function SwapScreen() {
                   You pay
                 </span>
                 <span className="text-xs text-muted-foreground/50">
-                  Balance:{" "}
-                  {formatTokenAmount(currentBalance, tokenInConfig.decimals)}{" "}
-                  {tokenIn}
+                  {isExternalWalletMode
+                    ? `Balance: ${formatTokenAmount(currentBalance, tokenInConfig.decimals)} ${tokenIn}`
+                    : "Treasury-mediated deposit flow"}
                 </span>
               </div>
               <div className="flex items-center gap-3">
@@ -542,6 +591,14 @@ export function SwapScreen() {
               </div>
             ) : null}
 
+            {isCircleWalletMode ? (
+              <div className="rounded-xl border border-sky-500/25 bg-sky-500/5 px-4 py-3 text-sm text-sky-100">
+                Treasury-mediated App Wallet swap is experimental. Phase 1
+                supports quoting and operation scaffolding only; deposits,
+                treasury swap execution, and payouts are disabled.
+              </div>
+            ) : null}
+
             {errorMessage && (
               <div className="flex items-center justify-between gap-2 rounded-xl border border-destructive/25 bg-destructive/5 px-4 py-3 text-sm text-destructive">
                 <span>{errorMessage}</span>
@@ -556,7 +613,7 @@ export function SwapScreen() {
               </div>
             )}
 
-            {insufficientBalance && amountInUnits > 0n && (
+            {isExternalWalletMode && insufficientBalance && amountInUnits > 0n && (
               <div className="rounded-xl border border-amber-500/25 bg-amber-500/5 px-4 py-3 text-sm text-amber-300">
                 Insufficient {tokenIn} balance.
               </div>
@@ -566,7 +623,7 @@ export function SwapScreen() {
               <Button
                 variant="outline"
                 onClick={() => void requestQuote()}
-                disabled={actionDisabled}
+                disabled={quoteDisabled}
                 className="h-12 text-base"
               >
                 {requestStatus === "quoting" ? (
@@ -580,18 +637,22 @@ export function SwapScreen() {
               </Button>
               <Button
                 onClick={() => void guard(handleSwap)}
-                disabled={actionDisabled}
+                disabled={swapDisabled}
                 className="glow-btn h-12 bg-gradient-to-r from-primary to-violet-500 text-base text-primary-foreground shadow-lg shadow-primary/20"
               >
                 {requestStatus === "preparing" || requestStatus === "signing" ? (
                   <span className="flex items-center gap-2">
                     <span className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
-                    {requestStatus === "signing" ? "Signing..." : "Preparing..."}
+                    {requestStatus === "signing"
+                      ? isCircleWalletMode
+                        ? "Challenge..."
+                        : "Signing..."
+                      : "Preparing..."}
                   </span>
                 ) : (
                   <>
                     <ShieldCheck className="mr-2 h-4 w-4" />
-                    Swap
+                    {isCircleWalletMode ? "Coming soon" : "Swap"}
                   </>
                 )}
               </Button>
@@ -609,8 +670,9 @@ export function SwapScreen() {
           <CardContent className="text-sm text-muted-foreground/80">
             <p>
               Only Arc Testnet USDC and EURC are enabled. The backend returns
-              Circle execution parameters; the connected external wallet signs
-              the approval and swap actions.
+              Circle execution parameters; external wallets use the existing
+              Circle/Viem adapter path, while Circle App Wallet uses a new
+              treasury-mediated scaffold with execution disabled.
             </p>
           </CardContent>
         </Card>
@@ -620,23 +682,44 @@ export function SwapScreen() {
         <DialogContent className="glass-card max-w-md overflow-hidden border-border/40 bg-background/95 p-0">
           <div className="relative overflow-hidden p-6">
             <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-emerald-400/40 to-transparent" />
-            <div className="mb-5 flex h-14 w-14 items-center justify-center rounded-2xl bg-emerald-500/12 text-emerald-400 ring-1 ring-emerald-400/20">
-              <CheckCircle2 className="h-7 w-7" />
+            <div
+              className={`mb-5 flex h-14 w-14 items-center justify-center rounded-2xl ring-1 ${
+                successState?.status === "pending"
+                  ? "bg-amber-500/12 text-amber-300 ring-amber-400/20"
+                  : "bg-emerald-500/12 text-emerald-400 ring-emerald-400/20"
+              }`}
+            >
+              {successState?.status === "pending" ? (
+                <Clock3 className="h-7 w-7" />
+              ) : (
+                <CheckCircle2 className="h-7 w-7" />
+              )}
             </div>
             <DialogHeader className="space-y-2">
-              <DialogTitle className="text-xl">Swap Submitted</DialogTitle>
+              <DialogTitle className="text-xl">
+                {successState?.status === "pending"
+                  ? "Swap Pending"
+                  : "Swap Confirmed"}
+              </DialogTitle>
               <DialogDescription>
-                Your external wallet submitted the Arc Testnet swap transaction.
+                {successState?.status === "pending"
+                  ? "Circle App Wallet transaction submitted. Waiting for settlement confirmation."
+                  : successState?.walletMode === "circle"
+                  ? "Signed through Circle App Wallet challenge on Arc Testnet."
+                  : "Your external wallet submitted the Arc Testnet swap transaction."}
               </DialogDescription>
             </DialogHeader>
 
             {successState ? (
               <div className="mt-6 space-y-4">
-                {(() => {
+                {successState.status === "success" ? (() => {
                   const xShareUrl = buildXShareUrl({
-                    summary: `WizPay external-wallet swap: ${successState.amountIn} ${successState.tokenIn} to ${successState.tokenOut} on Arc Testnet.`,
-                    explorerUrl: successState.explorerUrl,
-                    secondaryText: `Reference: ${successState.txHash}`,
+                    summary:
+                      successState.walletMode === "circle"
+                        ? `WizPay Circle App Wallet swap: ${successState.amountIn} ${successState.tokenIn} to ${successState.tokenOut} on Arc Testnet.`
+                        : `WizPay external-wallet swap: ${successState.amountIn} ${successState.tokenIn} to ${successState.tokenOut} on Arc Testnet.`,
+                    explorerUrl: successState.explorerUrl ?? undefined,
+                    secondaryText: `Reference: ${successState.txHash ?? successState.referenceId}`,
                   });
 
                   return (
@@ -651,7 +734,7 @@ export function SwapScreen() {
                       </a>
                     </Button>
                   );
-                })()}
+                })() : null}
 
                 <div className="rounded-2xl border border-border/40 bg-background/45 p-4">
                   <div className="flex items-center justify-between gap-3 text-sm">
@@ -676,25 +759,80 @@ export function SwapScreen() {
                   </div>
                   <div className="mt-3 flex items-center justify-between gap-3 text-sm">
                     <span className="text-muted-foreground/70">
+                      Execution
+                    </span>
+                    <span className="text-right font-medium">
+                      {successState.walletMode === "circle"
+                        ? "Circle App Wallet challenge"
+                        : "External wallet"}
+                    </span>
+                  </div>
+                  <div className="mt-3 flex items-center justify-between gap-3 text-sm">
+                    <span className="text-muted-foreground/70">
+                      Instructions
+                    </span>
+                    <span className="font-mono font-medium">
+                      {successState.instructionCount}
+                    </span>
+                  </div>
+                  <div className="mt-3 flex items-center justify-between gap-3 text-sm">
+                    <span className="text-muted-foreground/70">
                       Transaction
                     </span>
                     <span className="font-mono font-medium">
-                      {shortenHash(successState.txHash)}
+                      {successState.txHash
+                        ? shortenHash(successState.txHash)
+                        : "Pending by reference"}
                     </span>
                   </div>
+                  <div className="mt-3 flex items-center justify-between gap-3 text-sm">
+                    <span className="text-muted-foreground/70">
+                      Circle status
+                    </span>
+                    <span className="font-mono font-medium">
+                      {successState.transactionStatus ?? "-"}
+                    </span>
+                  </div>
+                  {successState.transactionId ? (
+                    <div className="mt-3 flex items-center justify-between gap-3 text-sm">
+                      <span className="text-muted-foreground/70">
+                        Transaction id
+                      </span>
+                      <span className="min-w-0 break-all text-right font-mono font-medium">
+                        {successState.transactionId}
+                      </span>
+                    </div>
+                  ) : null}
+                  <div className="mt-3 flex items-center justify-between gap-3 text-sm">
+                    <span className="text-muted-foreground/70">
+                      Reference
+                    </span>
+                    <span className="min-w-0 break-all text-right font-mono font-medium">
+                      {successState.referenceId}
+                    </span>
+                  </div>
+                  {!successState.txHash ? (
+                    <p className="mt-3 text-xs text-muted-foreground/70">
+                      Circle returned a referenceId but no txHash. The
+                      transaction is not shown as settled until Circle returns a
+                      txHash.
+                    </p>
+                  ) : null}
                 </div>
 
                 <div className="flex flex-col gap-3 sm:flex-row">
-                  <Button asChild className="flex-1">
-                    <a
-                      href={successState.explorerUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      <ExternalLink className="h-4 w-4" />
-                      View transaction
-                    </a>
-                  </Button>
+                  {successState.explorerUrl ? (
+                    <Button asChild className="flex-1">
+                      <a
+                        href={successState.explorerUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        <ExternalLink className="h-4 w-4" />
+                        View transaction
+                      </a>
+                    </Button>
+                  ) : null}
                   <Button
                     variant="outline"
                     className="flex-1"

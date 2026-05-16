@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { AppWalletSwapModule } from './app-wallet-swap/app-wallet-swap.module';
 import { TreasuryModule } from './treasury/treasury.module';
 import { AdaptersModule } from './adapters/adapters.module';
 import { AgentsModule } from './agents/agents.module';
@@ -28,6 +29,7 @@ import { UserSwapModule } from './user-swap/user-swap.module';
     TreasuryModule,
     WalletModule,
     UserSwapModule,
+    AppWalletSwapModule,
   ],
 })
 export class AppModule {}
