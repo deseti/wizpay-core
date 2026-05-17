@@ -105,6 +105,57 @@ model UserWallet {
   @@unique([userId, blockchain])
 }
 
+model AppWalletSwapOperation {
+  operationId              String   @id @db.Uuid
+  operationMode            String
+  sourceChain              String
+  tokenIn                  String
+  tokenOut                 String
+  amountIn                 String
+  userWalletAddress        String
+  treasuryDepositAddress   String
+  expectedOutput           Json?
+  minimumOutput            Json?
+  expiresAt                String
+  status                   String
+  quoteId                  Json?
+  rawQuote                 Json?
+  depositTxHash            String?
+  circleTransactionId      String?
+  circleReferenceId        String?
+  circleWalletId           String?
+  depositSubmittedAt       DateTime?
+  depositConfirmedAt       DateTime?
+  depositConfirmedAmount   String?
+  depositConfirmationError String?
+  executionEnabled         Boolean  @default(false)
+  treasurySwapId           String?
+  treasurySwapQuoteId      String?
+  treasurySwapTxHash       String?
+  treasurySwapSubmittedAt  DateTime?
+  treasurySwapConfirmedAt  DateTime?
+  treasurySwapExpectedOutput Json?
+  treasurySwapActualOutput String?
+  rawTreasurySwap          Json?
+  payoutTxHash             String?
+  payoutAmount             String?
+  payoutSubmittedAt        DateTime?
+  payoutConfirmedAt        DateTime?
+  rawPayout                Json?
+  completedAt              DateTime?
+  executionError           String?
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @updatedAt
+
+  @@index([status])
+  @@index([circleTransactionId])
+  @@index([circleReferenceId])
+  @@index([depositTxHash])
+  @@index([treasurySwapId])
+  @@index([treasurySwapTxHash])
+  @@index([payoutTxHash])
+}
+
 model BridgeTransaction {
   id            String   @id @default(uuid())
   taskId        String   @unique

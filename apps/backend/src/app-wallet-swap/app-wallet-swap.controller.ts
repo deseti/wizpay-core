@@ -9,6 +9,7 @@ import {
   ValidationPipe,
 } from '@nestjs/common';
 import { AppWalletSwapDepositDto } from './dto/app-wallet-swap-deposit.dto';
+import { AppWalletSwapDepositTxHashDto } from './dto/app-wallet-swap-deposit-txhash.dto';
 import { AppWalletSwapOperationDto } from './dto/app-wallet-swap-operation.dto';
 import { AppWalletSwapQuoteDto } from './dto/app-wallet-swap-quote.dto';
 import { AppWalletSwapService } from './app-wallet-swap.service';
@@ -45,19 +46,53 @@ export class AppWalletSwapController {
   }
 
   @Post('operations/:id/deposit')
-  submitDeposit(
+  async submitDeposit(
     @Param('id') operationId: string,
     @Body() body: AppWalletSwapDepositDto,
   ) {
     return {
-      data: this.appWalletSwapService.submitDeposit(operationId, body),
+      data: await this.appWalletSwapService.submitDeposit(operationId, body),
+    };
+  }
+
+  @Post('operations/:id/deposit-txhash')
+  async attachDepositTxHash(
+    @Param('id') operationId: string,
+    @Body() body: AppWalletSwapDepositTxHashDto,
+  ) {
+    return {
+      data: await this.appWalletSwapService.attachDepositTxHash(
+        operationId,
+        body,
+      ),
+    };
+  }
+
+  @Post('operations/:id/resolve-deposit-txhash')
+  async resolveDepositTxHash(@Param('id') operationId: string) {
+    return {
+      data: await this.appWalletSwapService.resolveDepositTxHash(operationId),
+    };
+  }
+
+  @Post('operations/:id/confirm-deposit')
+  async confirmDeposit(@Param('id') operationId: string) {
+    return {
+      data: await this.appWalletSwapService.confirmDeposit(operationId),
+    };
+  }
+
+  @Post('operations/:id/execute')
+  async execute(@Param('id') operationId: string) {
+    return {
+      data: await this.appWalletSwapService.execute(operationId),
     };
   }
 
   @Get('operations/:id')
-  getOperation(@Param('id') operationId: string) {
+  async getOperation(@Param('id') operationId: string) {
     return {
-      data: this.appWalletSwapService.getOperation(operationId),
+      data: await this.appWalletSwapService.getOperation(operationId),
     };
   }
 }

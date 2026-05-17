@@ -43,8 +43,12 @@ import {
 } from "@/lib/circle-swap-kit";
 import {
   APP_WALLET_SWAP_CHAIN,
+  attachAppWalletSwapDepositTxHash,
+  confirmAppWalletSwapDeposit,
   createAppWalletSwapOperation,
+  executeAppWalletSwapOperation,
   quoteAppWalletSwap,
+  resolveAppWalletSwapDepositTxHash,
   submitAppWalletSwapDeposit,
   type AppWalletSwapOperationResponse,
   type AppWalletSwapQuoteResponse,
@@ -74,7 +78,10 @@ type RequestStatus =
   | "preparing"
   | "signing"
   | "creating"
-  | "depositing";
+  | "depositing"
+  | "confirming"
+  | "resolving"
+  | "executing";
 type SwapQuoteState = UserSwapQuoteResponse | AppWalletSwapQuoteResponse;
 
 const EXPECTED_OUTPUT_FALLBACK_PATHS = [
@@ -236,6 +243,59 @@ function getOperationMinimumOutput(operation: AppWalletSwapOperationResponse) {
   );
 }
 
+function isAppWalletExecutionStatus(
+  status: AppWalletSwapOperationResponse["status"],
+) {
+  return [
+    "treasury_swap_pending",
+    "treasury_swap_submitted",
+    "treasury_swap_confirmed",
+    "payout_pending",
+    "payout_submitted",
+    "payout_confirmed",
+  ].includes(status);
+}
+
+function canExecuteAppWalletOperation(
+  operation: AppWalletSwapOperationResponse,
+) {
+  return (
+    operation.status === "deposit_confirmed" ||
+    operation.status === "execution_failed" ||
+    isAppWalletExecutionStatus(operation.status)
+  );
+}
+
+function getAppWalletOperationMessage(
+  operation: AppWalletSwapOperationResponse,
+) {
+  switch (operation.status) {
+    case "deposit_confirmed":
+      return `Deposit confirmed on-chain. Treasury swap and ${operation.tokenOut} payout are still pending.`;
+    case "treasury_swap_pending":
+      return "Treasury swap is being prepared. Settlement is not complete.";
+    case "treasury_swap_submitted":
+      return "Treasury swap has been submitted. Waiting for swap confirmation before payout.";
+    case "treasury_swap_confirmed":
+      return `Treasury swap is confirmed. ${operation.tokenOut} payout is still pending.`;
+    case "payout_pending":
+      return `${operation.tokenOut} payout is being prepared. Settlement is not complete.`;
+    case "payout_submitted":
+      return `${operation.tokenOut} payout has been submitted. Waiting for payout confirmation.`;
+    case "payout_confirmed":
+    case "completed":
+      return `Swap completed. ${operation.tokenOut} payout is confirmed.`;
+    case "execution_failed":
+      return "Execution failed before completion. Review the error and retry when safe.";
+    case "deposit_submitted":
+      return operation.depositTxHash
+        ? "Deposit submitted with a txHash. Verify deposit before treasury swap and payout."
+        : "Deposit submitted. Waiting for deposit txHash before on-chain verification.";
+    default:
+      return `Deposit ${operation.tokenIn} to the Arc treasury address below. Settlement is not complete.`;
+  }
+}
+
 function getCircleTxHash(...values: unknown[]): Hex | null {
   for (const value of values) {
     const candidate =
@@ -243,6 +303,18 @@ function getCircleTxHash(...values: unknown[]): Hex | null {
         "data.txHash",
         "data.transactionHash",
         "data.hash",
+        "data.transaction.txHash",
+        "data.transaction.transactionHash",
+        "data.transaction.hash",
+        "data.transactions.0.txHash",
+        "data.transactions.0.transactionHash",
+        "data.transactions.0.hash",
+        "transaction.txHash",
+        "transaction.transactionHash",
+        "transaction.hash",
+        "transactions.0.txHash",
+        "transactions.0.transactionHash",
+        "transactions.0.hash",
         "txHash",
         "transactionHash",
         "hash",
@@ -502,8 +574,7 @@ export function SwapScreen() {
     setIsAppWalletOperationOpen(true);
     toast({
       title: "Deposit instruction created",
-      description:
-        "Deposit USDC manually to the treasury address. No swap or payout has been executed.",
+      description: `Deposit ${operation.tokenIn} manually to the treasury address. No swap or payout has been executed.`,
     });
   }
 
@@ -514,11 +585,6 @@ export function SwapScreen() {
 
     if (appWalletOperation.status !== "awaiting_user_deposit") {
       setErrorMessage("This operation is not awaiting a user deposit.");
-      return;
-    }
-
-    if (appWalletOperation.tokenIn !== "USDC") {
-      setErrorMessage("Phase 3B only supports manual USDC deposits.");
       return;
     }
 
@@ -546,7 +612,7 @@ export function SwapScreen() {
 
       if (!tokenBalance?.tokenId) {
         throw new Error(
-          "USDC tokenId is missing for the Circle App Wallet. Refresh wallet balances and retry.",
+          `${appWalletOperation.tokenIn} token metadata is missing for App Wallet deposit.`,
         );
       }
 
@@ -571,7 +637,7 @@ export function SwapScreen() {
         setIsAppWalletOperationOpen(true);
       }
 
-      const depositTxHash = getCircleTxHash(
+      const resolvedDepositTxHash = getCircleTxHash(
         challengeResult,
         transferChallenge.raw,
       );
@@ -586,23 +652,211 @@ export function SwapScreen() {
       const updatedOperation = await submitAppWalletSwapDeposit(
         appWalletOperation.operationId,
         {
-          ...(depositTxHash ? { depositTxHash } : {}),
           ...(circleTransactionId ? { circleTransactionId } : {}),
           ...(circleReferenceId ? { circleReferenceId } : {}),
+          circleWalletId: arcWallet.id,
         },
       );
+      const operationWithTxHash = resolvedDepositTxHash
+        ? await attachAppWalletSwapDepositTxHash(updatedOperation.operationId, {
+            depositTxHash: resolvedDepositTxHash,
+          })
+        : updatedOperation;
 
-      setAppWalletOperation(updatedOperation);
+      setAppWalletOperation(operationWithTxHash);
       toast({
         title: "Deposit submitted",
-        description:
-          "Deposit reference attached. Backend confirmation will be added in Phase 3C.",
+        description: operationWithTxHash.depositTxHash
+          ? "Deposit txHash attached. You can verify the deposit on-chain."
+          : "Deposit submitted. Waiting for deposit txHash before on-chain verification.",
       });
     } catch (error) {
       const message = getFriendlyErrorMessage(error);
       setErrorMessage(message);
       toast({
         title: "Deposit failed",
+        description: message,
+        variant: "destructive",
+      });
+    } finally {
+      setRequestStatus("idle");
+    }
+  }
+
+  async function confirmAppWalletDeposit() {
+    if (!appWalletOperation) {
+      return;
+    }
+
+    if (appWalletOperation.status !== "deposit_submitted") {
+      setErrorMessage("This operation is not ready for deposit confirmation.");
+      return;
+    }
+
+    if (!appWalletOperation.depositTxHash) {
+      const message =
+        "Deposit submitted. Waiting for deposit txHash before on-chain verification.";
+      setErrorMessage(message);
+      toast({
+        title: "Deposit txHash unavailable",
+        description: message,
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setRequestStatus("confirming");
+    setErrorMessage(null);
+
+    try {
+      const updatedOperation = await confirmAppWalletSwapDeposit(
+        appWalletOperation.operationId,
+      );
+
+      setAppWalletOperation(updatedOperation);
+
+      if (updatedOperation.status === "deposit_confirmed") {
+        toast({
+          title: "Deposit confirmed",
+          description: `${updatedOperation.tokenIn} deposit is confirmed on-chain. Starting treasury swap and ${updatedOperation.tokenOut} payout.`,
+        });
+        setRequestStatus("executing");
+        await executeAppWalletOperation(updatedOperation);
+        return;
+      }
+
+      const message =
+        updatedOperation.depositConfirmationError ??
+        "Deposit submitted by Circle reference, waiting for txHash/on-chain confirmation support.";
+      setErrorMessage(message);
+      toast({
+        title: "Deposit not confirmed",
+        description: message,
+        variant: "destructive",
+      });
+    } catch (error) {
+      const message = getFriendlyErrorMessage(error);
+      setErrorMessage(message);
+      toast({
+        title: "Deposit confirmation failed",
+        description: message,
+        variant: "destructive",
+      });
+    } finally {
+      setRequestStatus("idle");
+    }
+  }
+
+  async function resolveAppWalletDepositTxHash() {
+    if (!appWalletOperation) {
+      return;
+    }
+
+    if (appWalletOperation.status !== "deposit_submitted") {
+      setErrorMessage("This operation is not ready for txHash resolution.");
+      return;
+    }
+
+    setRequestStatus("resolving");
+    setErrorMessage(null);
+
+    try {
+      const updatedOperation = await resolveAppWalletSwapDepositTxHash(
+        appWalletOperation.operationId,
+      );
+
+      setAppWalletOperation(updatedOperation);
+
+      if (updatedOperation.depositTxHash) {
+        toast({
+          title: "Deposit txHash resolved",
+          description: "You can now verify the deposit on-chain.",
+        });
+        return;
+      }
+
+      const message =
+        updatedOperation.depositConfirmationError ??
+        "Deposit txHash is not available from Circle yet. Retry shortly.";
+      setErrorMessage(message);
+      toast({
+        title: "Deposit txHash unavailable",
+        description: message,
+        variant: "destructive",
+      });
+    } catch (error) {
+      const message = getFriendlyErrorMessage(error);
+      setErrorMessage(message);
+      toast({
+        title: "Deposit txHash resolution failed",
+        description: message,
+        variant: "destructive",
+      });
+    } finally {
+      setRequestStatus("idle");
+    }
+  }
+
+  async function executeAppWalletOperation(
+    operation: AppWalletSwapOperationResponse,
+  ) {
+    const updatedOperation = await executeAppWalletSwapOperation(
+      operation.operationId,
+    );
+
+    setAppWalletOperation(updatedOperation);
+
+    if (updatedOperation.status === "completed") {
+      if (arcWallet?.id) {
+        void getWalletBalances(arcWallet.id).catch(() => null);
+      }
+
+      toast({
+        title: "Swap completed",
+        description: `${updatedOperation.tokenOut} payout is confirmed in your App Wallet.`,
+      });
+      return;
+    }
+
+    if (updatedOperation.status === "execution_failed") {
+      const message =
+        updatedOperation.executionError ??
+        "Treasury swap execution failed before completion.";
+      setErrorMessage(message);
+      toast({
+        title: "Execution failed",
+        description: message,
+        variant: "destructive",
+      });
+      return;
+    }
+
+    toast({
+      title: "Execution updated",
+      description: getAppWalletOperationMessage(updatedOperation),
+    });
+  }
+
+  async function executeAppWalletSwap() {
+    if (!appWalletOperation) {
+      return;
+    }
+
+    if (!canExecuteAppWalletOperation(appWalletOperation)) {
+      setErrorMessage("This operation is not ready for treasury execution.");
+      return;
+    }
+
+    setRequestStatus("executing");
+    setErrorMessage(null);
+
+    try {
+      await executeAppWalletOperation(appWalletOperation);
+    } catch (error) {
+      const message = getFriendlyErrorMessage(error);
+      setErrorMessage(message);
+      toast({
+        title: "Execution failed",
         description: message,
         variant: "destructive",
       });
@@ -851,10 +1105,10 @@ export function SwapScreen() {
             {isCircleWalletMode ? (
               <div className="rounded-xl border border-sky-500/25 bg-sky-500/5 px-4 py-3 text-sm text-sky-100">
                 Treasury-mediated App Wallet swap is experimental. App Wallet
-                can create a deposit instruction and request a USDC transfer
-                challenge to the treasury. Deposit submission is not deposit
-                confirmation; backend confirmation comes in Phase 3C. Treasury
-                swap, payout, refund, and settlement are not implemented yet.
+                can create a deposit instruction, request a token transfer
+                challenge to the treasury, verify the deposit on-chain, then
+                execute treasury swap and payout when backend treasury
+                execution is configured.
               </div>
             ) : null}
 
@@ -939,9 +1193,8 @@ export function SwapScreen() {
               Only Arc Testnet USDC and EURC are enabled. External wallets use
               the existing Circle/Viem adapter path, while Circle App Wallet
               creates a treasury deposit instruction and can request a USDC
-              transfer challenge. Deposit submission still waits for future
-              backend confirmation before any treasury swap, payout, refund, or
-              settlement.
+              transfer challenge. Deposit verification requires a txHash and
+              on-chain evidence before treasury swap and payout execution.
             </p>
           </CardContent>
         </Card>
@@ -970,23 +1223,7 @@ export function SwapScreen() {
             {appWalletOperation ? (
               <div className="mt-6 space-y-4">
                 <div className="rounded-2xl border border-sky-500/25 bg-sky-500/5 p-4 text-sm text-sky-100">
-                  {appWalletOperation.status === "deposit_submitted" ? (
-                    <>
-                      Deposit submitted. Backend confirmation will be added in
-                      Phase 3C, so settlement is not complete.
-                    </>
-                  ) : (
-                    <>
-                      Deposit {formatBaseUnitAmount(
-                        appWalletOperation.amountIn,
-                        appWalletOperation.tokenIn,
-                      ) ?? `${appWalletOperation.amountIn} ${appWalletOperation.tokenIn}`}{" "}
-                      to the Arc treasury address below. The deposit action
-                      requests a Circle App Wallet transfer challenge only; it
-                      does not execute the treasury swap, payout, refund, or
-                      settlement.
-                    </>
-                  )}
+                  {getAppWalletOperationMessage(appWalletOperation)}
                 </div>
 
                 <div className="rounded-2xl border border-border/40 bg-background/45 p-4">
@@ -1051,6 +1288,40 @@ export function SwapScreen() {
                       </span>
                     </div>
                   ) : null}
+                  {appWalletOperation.depositConfirmedAmount ? (
+                    <div className="mt-3 flex items-center justify-between gap-3 text-sm">
+                      <span className="text-muted-foreground/70">
+                        Confirmed deposit
+                      </span>
+                      <span className="font-mono font-medium">
+                        {formatBaseUnitAmount(
+                          appWalletOperation.depositConfirmedAmount,
+                          appWalletOperation.tokenIn,
+                        ) ??
+                          `${appWalletOperation.depositConfirmedAmount} ${appWalletOperation.tokenIn}`}
+                      </span>
+                    </div>
+                  ) : null}
+                  {appWalletOperation.depositConfirmedAt ? (
+                    <div className="mt-3 flex items-center justify-between gap-3 text-sm">
+                      <span className="text-muted-foreground/70">
+                        Confirmed at
+                      </span>
+                      <span className="min-w-0 break-all text-right font-mono font-medium">
+                        {appWalletOperation.depositConfirmedAt}
+                      </span>
+                    </div>
+                  ) : null}
+                  {appWalletOperation.depositConfirmationError ? (
+                    <div className="mt-3 rounded-xl border border-amber-500/25 bg-amber-500/5 px-3 py-2 text-sm text-amber-100">
+                      {appWalletOperation.depositConfirmationError}
+                    </div>
+                  ) : null}
+                  {appWalletOperation.executionError ? (
+                    <div className="mt-3 rounded-xl border border-red-500/25 bg-red-500/5 px-3 py-2 text-sm text-red-100">
+                      {appWalletOperation.executionError}
+                    </div>
+                  ) : null}
                   <div className="mt-3 flex items-center justify-between gap-3 text-sm">
                     <span className="text-muted-foreground/70">
                       Treasury deposit address
@@ -1108,12 +1379,60 @@ export function SwapScreen() {
                       {getOperationMinimumOutput(appWalletOperation) ?? "-"}
                     </span>
                   </div>
+                  {appWalletOperation.treasurySwapTxHash ? (
+                    <div className="mt-3 flex items-center justify-between gap-3 text-sm">
+                      <span className="text-muted-foreground/70">
+                        Treasury swap tx
+                      </span>
+                      <span className="min-w-0 break-all text-right font-mono font-medium">
+                        {appWalletOperation.treasurySwapTxHash}
+                      </span>
+                    </div>
+                  ) : null}
+                  {appWalletOperation.treasurySwapActualOutput ? (
+                    <div className="mt-3 flex items-center justify-between gap-3 text-sm">
+                      <span className="text-muted-foreground/70">
+                        Swap output
+                      </span>
+                      <span className="font-mono font-medium">
+                        {formatBaseUnitAmount(
+                          appWalletOperation.treasurySwapActualOutput,
+                          appWalletOperation.tokenOut,
+                        ) ??
+                          `${appWalletOperation.treasurySwapActualOutput} ${appWalletOperation.tokenOut}`}
+                      </span>
+                    </div>
+                  ) : null}
+                  {appWalletOperation.payoutAmount ? (
+                    <div className="mt-3 flex items-center justify-between gap-3 text-sm">
+                      <span className="text-muted-foreground/70">
+                        Payout amount
+                      </span>
+                      <span className="font-mono font-medium">
+                        {formatBaseUnitAmount(
+                          appWalletOperation.payoutAmount,
+                          appWalletOperation.tokenOut,
+                        ) ??
+                          `${appWalletOperation.payoutAmount} ${appWalletOperation.tokenOut}`}
+                      </span>
+                    </div>
+                  ) : null}
+                  {appWalletOperation.payoutTxHash ? (
+                    <div className="mt-3 flex items-center justify-between gap-3 text-sm">
+                      <span className="text-muted-foreground/70">
+                        Payout tx
+                      </span>
+                      <span className="min-w-0 break-all text-right font-mono font-medium">
+                        {appWalletOperation.payoutTxHash}
+                      </span>
+                    </div>
+                  ) : null}
                 </div>
 
                 <div className="rounded-2xl border border-amber-500/25 bg-amber-500/5 p-4 text-sm text-amber-100">
-                  {appWalletOperation.status === "deposit_submitted"
-                    ? "Deposit submission is recorded, but it is not confirmed yet. Treasury swap execution is not executed yet. Payout is not executed yet. Settlement is not complete."
-                    : "Treasury swap execution is not executed yet. Payout is not executed yet. Settlement is not complete."}
+                  {appWalletOperation.status === "completed"
+                    ? `${appWalletOperation.tokenOut} payout is confirmed. App Wallet swap is complete.`
+                    : `Final success is shown only after ${appWalletOperation.tokenOut} payout is confirmed. Deposit or treasury swap confirmation alone is not completion.`}
                 </div>
 
                 <div className="flex flex-col gap-3 sm:flex-row">
@@ -1121,10 +1440,7 @@ export function SwapScreen() {
                     <Button
                       className="flex-1"
                       onClick={() => void guard(submitAppWalletDeposit)}
-                      disabled={
-                        requestStatus === "depositing" ||
-                        appWalletOperation.tokenIn !== "USDC"
-                      }
+                      disabled={requestStatus === "depositing"}
                     >
                       {requestStatus === "depositing" ? (
                         <span className="flex items-center gap-2">
@@ -1132,7 +1448,64 @@ export function SwapScreen() {
                           Depositing...
                         </span>
                       ) : (
-                        "Deposit USDC"
+                        `Deposit ${appWalletOperation.tokenIn}`
+                      )}
+                    </Button>
+                  ) : null}
+                  {appWalletOperation.status === "deposit_submitted" ? (
+                    !appWalletOperation.depositTxHash ? (
+                      <Button
+                        className="flex-1"
+                        onClick={() =>
+                          void guard(resolveAppWalletDepositTxHash)
+                        }
+                        disabled={requestStatus === "resolving"}
+                      >
+                        {requestStatus === "resolving" ? (
+                          <span className="flex items-center gap-2">
+                            <span className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
+                            Resolving...
+                          </span>
+                        ) : (
+                          "Resolve txHash"
+                        )}
+                      </Button>
+                    ) : null
+                  ) : null}
+                  {appWalletOperation.status === "deposit_submitted" ? (
+                    <Button
+                      className="flex-1"
+                      onClick={() => void guard(confirmAppWalletDeposit)}
+                      disabled={
+                        requestStatus === "confirming" ||
+                        !appWalletOperation.depositTxHash
+                      }
+                    >
+                      {requestStatus === "confirming" ? (
+                        <span className="flex items-center gap-2">
+                          <span className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
+                          Verifying...
+                        </span>
+                      ) : (
+                        "Verify deposit"
+                      )}
+                    </Button>
+                  ) : null}
+                  {canExecuteAppWalletOperation(appWalletOperation) ? (
+                    <Button
+                      className="flex-1"
+                      onClick={() => void guard(executeAppWalletSwap)}
+                      disabled={requestStatus === "executing"}
+                    >
+                      {requestStatus === "executing" ? (
+                        <span className="flex items-center gap-2">
+                          <span className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
+                          Executing...
+                        </span>
+                      ) : appWalletOperation.status === "execution_failed" ? (
+                        "Retry execution"
+                      ) : (
+                        "Execute swap"
                       )}
                     </Button>
                   ) : null}
@@ -1145,6 +1518,18 @@ export function SwapScreen() {
                       >
                         <ExternalLink className="h-4 w-4" />
                         View deposit
+                      </a>
+                    </Button>
+                  ) : null}
+                  {appWalletOperation.payoutTxHash ? (
+                    <Button asChild variant="outline" className="flex-1">
+                      <a
+                        href={`${EXPLORER_BASE_URL}/tx/${appWalletOperation.payoutTxHash}`}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        <ExternalLink className="h-4 w-4" />
+                        View payout
                       </a>
                     </Button>
                   ) : null}
@@ -1183,13 +1568,17 @@ export function SwapScreen() {
               <DialogTitle className="text-xl">
                 {successState?.status === "pending"
                   ? "Swap Pending"
-                  : "Swap Confirmed"}
+                  : successState?.walletMode === "circle"
+                    ? "Payout Confirmed"
+                    : "Swap Confirmed"}
               </DialogTitle>
               <DialogDescription>
                 {successState?.status === "pending"
-                  ? "Circle App Wallet transaction submitted. Waiting for settlement confirmation."
+                  ? successState.walletMode === "circle"
+                    ? "App Wallet swap is waiting for confirmed payout."
+                    : "Transaction submitted. Waiting for confirmation."
                   : successState?.walletMode === "circle"
-                  ? "Signed through Circle App Wallet challenge on Arc Testnet."
+                  ? "Payout is confirmed on Arc Testnet."
                   : "Your external wallet submitted the Arc Testnet swap transaction."}
               </DialogDescription>
             </DialogHeader>

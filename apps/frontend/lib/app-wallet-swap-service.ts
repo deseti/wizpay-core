@@ -30,12 +30,42 @@ export interface AppWalletSwapQuoteResponse {
 export interface AppWalletSwapOperationResponse
   extends Omit<AppWalletSwapQuoteResponse, "status"> {
   operationId: string;
-  status: "awaiting_user_deposit" | "deposit_submitted";
+  status:
+    | "awaiting_user_deposit"
+    | "deposit_submitted"
+    | "deposit_confirmed"
+    | "treasury_swap_pending"
+    | "treasury_swap_submitted"
+    | "treasury_swap_confirmed"
+    | "payout_pending"
+    | "payout_submitted"
+    | "payout_confirmed"
+    | "completed"
+    | "execution_failed";
   userWalletAddress: string;
+  circleWalletId?: string;
   depositTxHash?: string;
   circleTransactionId?: string;
   circleReferenceId?: string;
   depositSubmittedAt?: string;
+  depositConfirmedAt?: string;
+  depositConfirmedAmount?: string;
+  depositConfirmationError?: string;
+  treasurySwapId?: string;
+  treasurySwapQuoteId?: string;
+  treasurySwapTxHash?: string;
+  treasurySwapSubmittedAt?: string;
+  treasurySwapConfirmedAt?: string;
+  treasurySwapExpectedOutput?: unknown;
+  treasurySwapActualOutput?: string;
+  rawTreasurySwap?: unknown;
+  payoutTxHash?: string;
+  payoutAmount?: string;
+  payoutSubmittedAt?: string;
+  payoutConfirmedAt?: string;
+  rawPayout?: unknown;
+  completedAt?: string;
+  executionError?: string;
   createdAt: string;
   updatedAt: string;
   executionEnabled: boolean;
@@ -43,8 +73,13 @@ export interface AppWalletSwapOperationResponse
 
 export interface AppWalletSwapDepositRequest {
   depositTxHash?: string;
+  circleWalletId?: string;
   circleTransactionId?: string;
   circleReferenceId?: string;
+}
+
+export interface AppWalletSwapDepositTxHashRequest {
+  depositTxHash: string;
 }
 
 export async function quoteAppWalletSwap(
@@ -85,6 +120,52 @@ export async function submitAppWalletSwapDeposit(
     {
       method: "POST",
       body: JSON.stringify(params),
+    },
+  );
+}
+
+export async function attachAppWalletSwapDepositTxHash(
+  operationId: string,
+  params: AppWalletSwapDepositTxHashRequest,
+): Promise<AppWalletSwapOperationResponse> {
+  return backendFetch<AppWalletSwapOperationResponse>(
+    `/app-wallet-swap/operations/${encodeURIComponent(operationId)}/deposit-txhash`,
+    {
+      method: "POST",
+      body: JSON.stringify(params),
+    },
+  );
+}
+
+export async function resolveAppWalletSwapDepositTxHash(
+  operationId: string,
+): Promise<AppWalletSwapOperationResponse> {
+  return backendFetch<AppWalletSwapOperationResponse>(
+    `/app-wallet-swap/operations/${encodeURIComponent(operationId)}/resolve-deposit-txhash`,
+    {
+      method: "POST",
+    },
+  );
+}
+
+export async function confirmAppWalletSwapDeposit(
+  operationId: string,
+): Promise<AppWalletSwapOperationResponse> {
+  return backendFetch<AppWalletSwapOperationResponse>(
+    `/app-wallet-swap/operations/${encodeURIComponent(operationId)}/confirm-deposit`,
+    {
+      method: "POST",
+    },
+  );
+}
+
+export async function executeAppWalletSwapOperation(
+  operationId: string,
+): Promise<AppWalletSwapOperationResponse> {
+  return backendFetch<AppWalletSwapOperationResponse>(
+    `/app-wallet-swap/operations/${encodeURIComponent(operationId)}/execute`,
+    {
+      method: "POST",
     },
   );
 }

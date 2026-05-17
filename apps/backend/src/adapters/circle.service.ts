@@ -4,6 +4,7 @@ import { randomUUID } from 'crypto';
 import {
   initiateDeveloperControlledWalletsClient,
   type CircleDeveloperControlledWalletsClient,
+  type CreateContractExecutionTransactionInput,
   type FeeLevel,
   type TokenBlockchain,
 } from '@circle-fin/developer-controlled-wallets';
@@ -32,6 +33,23 @@ export interface CircleTransferResult {
   status: CircleTransactionStatus;
   /** On-chain tx hash (null until confirmed) */
   txHash: string | null;
+}
+
+export interface CircleContractExecutionInput {
+  walletId?: string;
+  contractAddress: string;
+  callData: `0x${string}`;
+  network?: string;
+  amount?: string;
+  refId?: string;
+  idempotencyKey?: string;
+}
+
+export interface CircleContractExecutionResult {
+  txId: string;
+  status: CircleTransactionStatus;
+  txHash: string | null;
+  raw: unknown;
 }
 
 export type CircleTransactionStatus =
@@ -358,6 +376,7 @@ export class CircleService {
         type: 'level' as const,
         config: { feeLevel: this.feeLevel },
       },
+      idempotencyKey,
       xRequestId: idempotencyKey,
     };
 
@@ -400,6 +419,52 @@ export class CircleService {
    * Terminal states: COMPLETE, FAILED, CANCELLED, DENIED
    * Non-terminal: INITIATED, QUEUED, PENDING_RISK_SCREENING, SENT, CONFIRMED
    */
+  async executeContract(
+    input: CircleContractExecutionInput,
+  ): Promise<CircleContractExecutionResult> {
+    const blockchain = this.resolveBlockchain(input.network);
+    const walletId = input.walletId || this.getDefaultWalletId(blockchain);
+    const idempotencyKey = input.idempotencyKey || randomUUID();
+    const client = this.getWalletClient();
+
+    const payload: CreateContractExecutionTransactionInput = {
+      walletId,
+      contractAddress: input.contractAddress,
+      callData: input.callData,
+      ...(input.amount ? { amount: input.amount } : {}),
+      ...(input.refId ? { refId: input.refId } : {}),
+      fee: {
+        type: 'level' as const,
+        config: { feeLevel: this.feeLevel },
+      },
+      idempotencyKey,
+      xRequestId: idempotencyKey,
+    };
+
+    this.logger.log(
+      `Contract execution - wallet=${walletId} contract=${input.contractAddress} blockchain=${blockchain} idempotencyKey=${idempotencyKey}`,
+    );
+
+    const response = await client.createContractExecutionTransaction(payload);
+    const tx = response.data;
+
+    if (!tx?.id || !tx.state) {
+      this.logger.error(
+        `Circle createContractExecutionTransaction returned an empty response - wallet=${walletId} contract=${input.contractAddress}`,
+      );
+      throw new Error(
+        'Circle did not return a transaction identifier. The contract execution may not have been created.',
+      );
+    }
+
+    return {
+      txId: tx.id,
+      status: tx.state as CircleTransactionStatus,
+      txHash: (tx as { txHash?: string }).txHash ?? null,
+      raw: tx,
+    };
+  }
+
   async getTransactionStatus(
     txId: string,
   ): Promise<CircleTransactionStatusResult> {

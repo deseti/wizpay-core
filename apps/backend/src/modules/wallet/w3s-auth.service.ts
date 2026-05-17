@@ -131,18 +131,20 @@ export class W3sAuthService {
     }
 
     const raw = await res.text();
-    this.logger.log(`CIRCLE RAW [${res.status}]: ${raw}`);
+    this.logger.log(
+      `Circle response status: ${res.status} | body length: ${raw.length}`,
+    );
 
     if (!res.ok) {
-      this.logger.error(`Circle API error [${res.status}]:`, raw);
-      throw new Error(`Circle API error (${res.status}): ${raw}`);
+      this.logger.error(`Circle API error [${res.status}]`);
+      throw new Error(`Circle API error (${res.status})`);
     }
 
     let json: { data?: { deviceToken?: string; deviceEncryptionKey?: string } };
     try {
       json = JSON.parse(raw);
     } catch {
-      this.logger.error('Circle response is not valid JSON:', raw);
+      this.logger.error('Circle response is not valid JSON.');
       throw new Error('Circle returned invalid JSON');
     }
 
@@ -152,7 +154,6 @@ export class W3sAuthService {
       this.logger.error('Invalid Circle response shape:', {
         hasData: !!data,
         keys: data ? Object.keys(data) : [],
-        raw: raw.slice(0, 500),
       });
       throw new Error(
         `Invalid Circle response. ` +
@@ -248,6 +249,52 @@ export class W3sAuthService {
       supportedEndpoint: '/tasks',
       expectedTaskPayload: normalized,
     };
+  }
+
+  /**
+   * Read a Circle W3S transaction by id. This is read-only and returns the
+   * raw transaction payload so callers can decide whether a txHash is usable.
+   */
+  async getTransaction(transactionId: string): Promise<W3sActionResult> {
+    const normalizedTransactionId = transactionId.trim();
+
+    if (!normalizedTransactionId) {
+      throw new Error('Missing required field: transactionId');
+    }
+
+    return this.circleServerRequest<W3sActionResult>({
+      method: 'GET',
+      path: `/v1/w3s/transactions/${encodeURIComponent(normalizedTransactionId)}`,
+    });
+  }
+
+  /**
+   * List Circle W3S transactions with documented read-only filters. Callers
+   * must still match the returned transaction fields before trusting a txHash.
+   */
+  async listTransactions(params: {
+    blockchain?: string;
+    destinationAddress?: string;
+    walletIds?: string;
+  }): Promise<W3sActionResult> {
+    const query = new URLSearchParams();
+
+    if (params.blockchain?.trim()) {
+      query.set('blockchain', params.blockchain.trim());
+    }
+
+    if (params.destinationAddress?.trim()) {
+      query.set('destinationAddress', params.destinationAddress.trim());
+    }
+
+    if (params.walletIds?.trim()) {
+      query.set('walletIds', params.walletIds.trim());
+    }
+
+    return this.circleServerRequest<W3sActionResult>({
+      method: 'GET',
+      path: `/v1/w3s/transactions${query.size ? `?${query.toString()}` : ''}`,
+    });
   }
 
   /**
@@ -353,7 +400,7 @@ export class W3sAuthService {
       this.logger.error(`Circle API error [${response.status}]: ${message}`, {
         path: input.path,
         code: payload.code,
-        fullResponse: rawText.slice(0, 1000),
+        bodyLength: rawText.length,
       });
       const error = new Error(message) as Error & {
         code?: string | number;
@@ -363,9 +410,6 @@ export class W3sAuthService {
       error.status = response.status;
       throw error;
     }
-
-    // Log the full payload for debugging
-    this.logger.debug(`Circle RAW payload: ${rawText.slice(0, 500)}`);
 
     return payload.data ?? (payload as T);
   }

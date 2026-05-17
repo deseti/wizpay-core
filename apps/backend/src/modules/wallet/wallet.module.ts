@@ -9,6 +9,6 @@ import { WalletService } from './wallet.service';
   imports: [DatabaseModule],
   controllers: [WalletController, W3sAuthController],
   providers: [WalletService, W3sAuthService],
-  exports: [WalletService],
+  exports: [WalletService, W3sAuthService],
 })
 export class WalletModule {}

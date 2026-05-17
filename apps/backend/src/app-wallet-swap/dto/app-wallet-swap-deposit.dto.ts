@@ -7,6 +7,10 @@ export class AppWalletSwapDepositDto {
 
   @IsOptional()
   @IsString()
+  circleWalletId?: string;
+
+  @IsOptional()
+  @IsString()
   circleTransactionId?: string;
 
   @IsOptional()
