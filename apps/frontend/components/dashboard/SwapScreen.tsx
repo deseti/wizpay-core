@@ -1,13 +1,16 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { type Hex, formatUnits } from "viem";
 import {
   ArrowRightLeft,
   CheckCircle2,
+  ChevronDown,
+  ChevronRight,
   Clock3,
   Copy,
   ExternalLink,
+  Loader2,
   MessageCircle,
   ShieldCheck,
 } from "lucide-react";
@@ -47,6 +50,7 @@ import {
   confirmAppWalletSwapDeposit,
   createAppWalletSwapOperation,
   executeAppWalletSwapOperation,
+  getAppWalletSwapOperation,
   quoteAppWalletSwap,
   resolveAppWalletSwapDepositTxHash,
   submitAppWalletSwapDeposit,
@@ -271,29 +275,145 @@ function getAppWalletOperationMessage(
 ) {
   switch (operation.status) {
     case "deposit_confirmed":
-      return `Deposit confirmed on-chain. Treasury swap and ${operation.tokenOut} payout are still pending.`;
     case "treasury_swap_pending":
-      return "Treasury swap is being prepared. Settlement is not complete.";
     case "treasury_swap_submitted":
-      return "Treasury swap has been submitted. Waiting for swap confirmation before payout.";
     case "treasury_swap_confirmed":
-      return `Treasury swap is confirmed. ${operation.tokenOut} payout is still pending.`;
     case "payout_pending":
-      return `${operation.tokenOut} payout is being prepared. Settlement is not complete.`;
+      return "WizPay is securely settling your swap. This can take a few minutes.";
     case "payout_submitted":
-      return `${operation.tokenOut} payout has been submitted. Waiting for payout confirmation.`;
     case "payout_confirmed":
+      return "Your output token is being sent back to your App Wallet.";
     case "completed":
-      return `Swap completed. ${operation.tokenOut} payout is confirmed.`;
+      return `Swap completed. ${operation.tokenOut} is in your App Wallet.`;
     case "execution_failed":
-      return "Execution failed before completion. Review the error and retry when safe.";
+      return "Something went wrong during settlement. You can retry the status check.";
     case "deposit_submitted":
-      return operation.depositTxHash
-        ? "Deposit submitted with a txHash. Verify deposit before treasury swap and payout."
-        : "Deposit submitted. Waiting for deposit txHash before on-chain verification.";
+      return "Deposit received. Waiting for network confirmation.";
     default:
-      return `Deposit ${operation.tokenIn} to the Arc treasury address below. Settlement is not complete.`;
+      return "Approve the deposit from your App Wallet to start the swap.";
   }
+}
+
+type AppWalletSwapPhase =
+  | "confirm_deposit"
+  | "processing_swap"
+  | "receiving_payout"
+  | "completed"
+  | "failed";
+
+function getAppWalletSwapPhase(
+  operation: AppWalletSwapOperationResponse | null,
+): AppWalletSwapPhase {
+  if (!operation) return "confirm_deposit";
+  switch (operation.status) {
+    case "awaiting_user_deposit":
+      return "confirm_deposit";
+    case "deposit_submitted":
+    case "deposit_confirmed":
+    case "treasury_swap_pending":
+    case "treasury_swap_submitted":
+    case "treasury_swap_confirmed":
+    case "payout_pending":
+      return "processing_swap";
+    case "payout_submitted":
+    case "payout_confirmed":
+      return "receiving_payout";
+    case "completed":
+      return "completed";
+    case "execution_failed":
+      return "failed";
+    default:
+      return "confirm_deposit";
+  }
+}
+
+function getPhaseTitle(phase: AppWalletSwapPhase): string {
+  switch (phase) {
+    case "confirm_deposit":
+      return "Confirm swap";
+    case "processing_swap":
+      return "Processing your swap";
+    case "receiving_payout":
+      return "Sending funds to your wallet";
+    case "completed":
+      return "Swap completed";
+    case "failed":
+      return "Swap needs attention";
+  }
+}
+
+function getPhaseDescription(
+  phase: AppWalletSwapPhase,
+  operation: AppWalletSwapOperationResponse | null,
+): string {
+  switch (phase) {
+    case "confirm_deposit":
+      return "Approve the deposit from your App Wallet to start the swap.";
+    case "processing_swap":
+      return "WizPay is securely settling your swap. This can take a few minutes.";
+    case "receiving_payout":
+      return "Your output token is being sent back to your App Wallet.";
+    case "completed":
+      return operation
+        ? `You received ${formatBaseUnitAmount(operation.payoutAmount ?? operation.treasurySwapActualOutput, operation.tokenOut) ?? operation.tokenOut} in your App Wallet.`
+        : "Swap is complete.";
+    case "failed":
+      return "Something went wrong during settlement. You can retry the status check.";
+  }
+}
+
+function isTerminalFailure(operation: AppWalletSwapOperationResponse): boolean {
+  return (
+    operation.status === "execution_failed" &&
+    Boolean(operation.executionError)
+  );
+}
+
+function ProgressStep({ label, status }: { label: string; status: "pending" | "active" | "done" }) {
+  return (
+    <div className="flex items-center gap-3 text-sm">
+      <div className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full ${
+        status === "done"
+          ? "bg-emerald-500/20 text-emerald-400"
+          : status === "active"
+            ? "bg-sky-500/20 text-sky-300"
+            : "bg-muted/20 text-muted-foreground/40"
+      }`}>
+        {status === "done" ? (
+          <CheckCircle2 className="h-3.5 w-3.5" />
+        ) : status === "active" ? (
+          <Loader2 className="h-3 w-3 animate-spin" />
+        ) : (
+          <div className="h-1.5 w-1.5 rounded-full bg-current" />
+        )}
+      </div>
+      <span className={
+        status === "done"
+          ? "text-emerald-400"
+          : status === "active"
+            ? "text-foreground font-medium"
+            : "text-muted-foreground/50"
+      }>
+        {label}
+      </span>
+    </div>
+  );
+}
+
+function DetailRow({ label, value, onCopy }: { label: string; value: string; onCopy?: () => void }) {
+  return (
+    <div className="flex items-start justify-between gap-2">
+      <span className="shrink-0 text-muted-foreground/60">{label}</span>
+      <div className="flex min-w-0 items-center gap-1">
+        <span className="min-w-0 break-all text-right text-foreground/80">{value}</span>
+        {onCopy && (
+          <button type="button" onClick={onCopy} className="shrink-0 text-muted-foreground/40 hover:text-muted-foreground/70">
+            <Copy className="h-3 w-3" />
+          </button>
+        )}
+      </div>
+    </div>
+  );
 }
 
 function getCircleTxHash(...values: unknown[]): Hex | null {
@@ -418,6 +538,9 @@ export function SwapScreen() {
   const [successState, setSuccessState] = useState<SwapSuccessState | null>(
     null,
   );
+  const [advancedDetailsOpen, setAdvancedDetailsOpen] = useState(false);
+  const autoProgressRef = useRef(false);
+  const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const tokenInConfig = SUPPORTED_TOKENS[tokenIn];
   const amountInUnits = useMemo(
@@ -478,7 +601,7 @@ export function SwapScreen() {
     (isExternalWalletMode && insufficientBalance) ||
     Boolean(modeBlockMessage);
   const swapDisabled =
-    quoteDisabled || (isCircleWalletMode && !quoteMatchesForm);
+    quoteDisabled || (isCircleWalletMode && !quoteMatchesForm && requestStatus !== "idle");
 
   function resetSwapFeedback() {
     setErrorMessage(null);
@@ -573,8 +696,8 @@ export function SwapScreen() {
     setAppWalletOperation(operation);
     setIsAppWalletOperationOpen(true);
     toast({
-      title: "Deposit instruction created",
-      description: `Deposit ${operation.tokenIn} manually to the treasury address. No swap or payout has been executed.`,
+      title: "Ready to swap",
+      description: `Approve the ${operation.tokenIn} deposit to start your swap.`,
     });
   }
 
@@ -666,10 +789,11 @@ export function SwapScreen() {
       setAppWalletOperation(operationWithTxHash);
       toast({
         title: "Deposit submitted",
-        description: operationWithTxHash.depositTxHash
-          ? "Deposit txHash attached. You can verify the deposit on-chain."
-          : "Deposit submitted. Waiting for deposit txHash before on-chain verification.",
+        description: "Your swap is being processed.",
       });
+
+      // Auto-progress after deposit
+      void progressAppWalletOperation(operationWithTxHash);
     } catch (error) {
       const message = getFriendlyErrorMessage(error);
       setErrorMessage(message);
@@ -843,7 +967,7 @@ export function SwapScreen() {
     }
 
     if (!canExecuteAppWalletOperation(appWalletOperation)) {
-      setErrorMessage("This operation is not ready for treasury execution.");
+      setErrorMessage("This operation is not ready for settlement execution.");
       return;
     }
 
@@ -864,6 +988,122 @@ export function SwapScreen() {
       setRequestStatus("idle");
     }
   }
+
+  const progressAppWalletOperation = useCallback(
+    async (operation: AppWalletSwapOperationResponse) => {
+      if (autoProgressRef.current) return;
+      autoProgressRef.current = true;
+
+      try {
+        let current = operation;
+
+        // Phase 1: If deposit_submitted without txHash, try to resolve it
+        if (
+          current.status === "deposit_submitted" &&
+          !current.depositTxHash
+        ) {
+          for (let attempt = 0; attempt < 10; attempt++) {
+            try {
+              const resolved = await resolveAppWalletSwapDepositTxHash(
+                current.operationId,
+              );
+              current = resolved;
+              setAppWalletOperation(resolved);
+              if (resolved.depositTxHash) break;
+            } catch {
+              // Ignore resolve errors during auto-progression
+            }
+            await new Promise((r) => setTimeout(r, 3000));
+          }
+        }
+
+        // Phase 2: If deposit_submitted with txHash, confirm it
+        if (
+          current.status === "deposit_submitted" &&
+          current.depositTxHash
+        ) {
+          try {
+            const confirmed = await confirmAppWalletSwapDeposit(
+              current.operationId,
+            );
+            current = confirmed;
+            setAppWalletOperation(confirmed);
+          } catch {
+            // Will retry on next poll
+          }
+        }
+
+        // Phase 3: If deposit_confirmed or execution states, execute
+        if (canExecuteAppWalletOperation(current)) {
+          try {
+            const executed = await executeAppWalletSwapOperation(
+              current.operationId,
+            );
+            current = executed;
+            setAppWalletOperation(executed);
+
+            if (executed.status === "completed") {
+              if (arcWallet?.id) {
+                void getWalletBalances(arcWallet.id).catch(() => null);
+              }
+              toast({
+                title: "Swap completed",
+                description: `${executed.tokenOut} is now in your App Wallet.`,
+              });
+              return;
+            }
+          } catch {
+            // Will retry on next poll
+          }
+        }
+
+        // Phase 4: If not completed, poll for status updates
+        if (
+          current.status !== "completed" &&
+          current.status !== "execution_failed"
+        ) {
+          pollTimerRef.current = setTimeout(async () => {
+            autoProgressRef.current = false;
+            try {
+              const polled = await getAppWalletSwapOperation(
+                current.operationId,
+              );
+              setAppWalletOperation(polled);
+              if (
+                polled.status !== "completed" &&
+                polled.status !== "execution_failed"
+              ) {
+                void progressAppWalletOperation(polled);
+              } else if (polled.status === "completed") {
+                if (arcWallet?.id) {
+                  void getWalletBalances(arcWallet.id).catch(() => null);
+                }
+                toast({
+                  title: "Swap completed",
+                  description: `${polled.tokenOut} is now in your App Wallet.`,
+                });
+              }
+            } catch {
+              // Silently retry
+              autoProgressRef.current = false;
+            }
+          }, 5000);
+        }
+      } finally {
+        autoProgressRef.current = false;
+      }
+    },
+    [arcWallet?.id, getWalletBalances, toast],
+  );
+
+  // Cleanup poll timer on unmount
+  useEffect(() => {
+    return () => {
+      if (pollTimerRef.current) {
+        clearTimeout(pollTimerRef.current);
+      }
+    };
+  }, []);
 
   async function handleSwap() {
     if (modeBlockMessage) {
@@ -966,7 +1206,7 @@ export function SwapScreen() {
           </h1>
           <p className="text-sm text-muted-foreground/70">
             {isCircleWalletMode
-              ? "Treasury-mediated App Wallet swap is experimental."
+              ? "Swap tokens using your App Wallet on Arc Testnet."
               : "External wallet Arc Testnet swap. Signed by connected external wallet."}
           </p>
         </div>
@@ -981,7 +1221,7 @@ export function SwapScreen() {
                 <span className="text-xs text-muted-foreground/50">
                   {isExternalWalletMode
                     ? `Balance: ${formatTokenAmount(currentBalance, tokenInConfig.decimals)} ${tokenIn}`
-                    : "Treasury-mediated deposit flow"}
+                    : "App Wallet swap"}
                 </span>
               </div>
               <div className="flex items-center gap-3">
@@ -1104,11 +1344,8 @@ export function SwapScreen() {
 
             {isCircleWalletMode ? (
               <div className="rounded-xl border border-sky-500/25 bg-sky-500/5 px-4 py-3 text-sm text-sky-100">
-                Treasury-mediated App Wallet swap is experimental. App Wallet
-                can create a deposit instruction, request a token transfer
-                challenge to the treasury, verify the deposit on-chain, then
-                execute treasury swap and payout when backend treasury
-                execution is configured.
+                App Wallet swap settles securely through WizPay. Approve the
+                deposit and your swap will complete automatically.
               </div>
             ) : null}
 
@@ -1159,10 +1396,10 @@ export function SwapScreen() {
                   <span className="flex items-center gap-2">
                     <span className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
                     {requestStatus === "creating"
-                      ? "Creating..."
+                      ? "Preparing..."
                       : requestStatus === "signing"
                       ? isCircleWalletMode
-                        ? "Challenge..."
+                        ? "Waiting for confirmation..."
                         : "Signing..."
                       : "Preparing..."}
                   </span>
@@ -1170,9 +1407,7 @@ export function SwapScreen() {
                   <>
                     <ShieldCheck className="mr-2 h-4 w-4" />
                     {isCircleWalletMode
-                      ? quoteMatchesForm
-                        ? "Create deposit instruction"
-                        : "Preview quote first"
+                      ? "Confirm swap"
                       : "Swap"}
                   </>
                 )}
@@ -1190,11 +1425,9 @@ export function SwapScreen() {
           </CardHeader>
           <CardContent className="text-sm text-muted-foreground/80">
             <p>
-              Only Arc Testnet USDC and EURC are enabled. External wallets use
-              the existing Circle/Viem adapter path, while Circle App Wallet
-              creates a treasury deposit instruction and can request a USDC
-              transfer challenge. Deposit verification requires a txHash and
-              on-chain evidence before treasury swap and payout execution.
+              Only Arc Testnet USDC and EURC are enabled. External wallets
+              sign directly via the connected browser wallet. App Wallet swaps
+              are settled securely by WizPay after you approve the deposit.
             </p>
           </CardContent>
         </Card>
@@ -1207,342 +1440,258 @@ export function SwapScreen() {
         <DialogContent className="glass-card max-w-lg overflow-hidden border-border/40 bg-background/95 p-0">
           <div className="relative overflow-hidden p-6">
             <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-sky-400/40 to-transparent" />
-            <div className="mb-5 flex h-14 w-14 items-center justify-center rounded-2xl bg-sky-500/12 text-sky-300 ring-1 ring-sky-400/20">
-              <Clock3 className="h-7 w-7" />
-            </div>
-            <DialogHeader className="space-y-2">
-              <DialogTitle className="text-xl">
-                Deposit Instruction Created
-              </DialogTitle>
-              <DialogDescription>
-                Treasury-mediated App Wallet swap is waiting for a manual USDC
-                deposit. Settlement is not complete.
-              </DialogDescription>
-            </DialogHeader>
 
-            {appWalletOperation ? (
-              <div className="mt-6 space-y-4">
-                <div className="rounded-2xl border border-sky-500/25 bg-sky-500/5 p-4 text-sm text-sky-100">
-                  {getAppWalletOperationMessage(appWalletOperation)}
-                </div>
+            {appWalletOperation ? (() => {
+              const phase = getAppWalletSwapPhase(appWalletOperation);
+              const phaseTitle = getPhaseTitle(phase);
+              const phaseDescription = getPhaseDescription(phase, appWalletOperation);
+              const isInProgress = phase === "processing_swap" || phase === "receiving_payout";
+              const isComplete = phase === "completed";
+              const isFailed = phase === "failed";
 
-                <div className="rounded-2xl border border-border/40 bg-background/45 p-4">
-                  <div className="flex items-center justify-between gap-3 text-sm">
-                    <span className="text-muted-foreground/70">
-                      Operation id
-                    </span>
-                    <div className="flex min-w-0 items-center gap-2">
-                      <span className="min-w-0 break-all text-right font-mono font-medium">
-                        {appWalletOperation.operationId}
-                      </span>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon"
-                        className="h-7 w-7 shrink-0"
-                        onClick={() =>
-                          void copyToClipboard(
-                            appWalletOperation.operationId,
-                            "operation id",
-                          )
-                        }
-                        aria-label="Copy operation id"
-                      >
-                        <Copy className="h-3.5 w-3.5" />
-                      </Button>
-                    </div>
+              return (
+                <div className="space-y-5">
+                  {/* Phase icon */}
+                  <div className={`flex h-14 w-14 items-center justify-center rounded-2xl ring-1 ${
+                    isComplete
+                      ? "bg-emerald-500/12 text-emerald-400 ring-emerald-400/20"
+                      : isFailed
+                        ? "bg-red-500/12 text-red-400 ring-red-400/20"
+                        : "bg-sky-500/12 text-sky-300 ring-sky-400/20"
+                  }`}>
+                    {isComplete ? (
+                      <CheckCircle2 className="h-7 w-7" />
+                    ) : isInProgress ? (
+                      <Loader2 className="h-7 w-7 animate-spin" />
+                    ) : (
+                      <Clock3 className="h-7 w-7" />
+                    )}
                   </div>
-                  <div className="mt-3 flex items-center justify-between gap-3 text-sm">
-                    <span className="text-muted-foreground/70">Status</span>
-                    <span className="font-mono font-medium text-amber-200">
-                      {appWalletOperation.status}
-                    </span>
+
+                  {/* Phase header */}
+                  <DialogHeader className="space-y-2">
+                    <DialogTitle className="text-xl">{phaseTitle}</DialogTitle>
+                    <DialogDescription>{phaseDescription}</DialogDescription>
+                  </DialogHeader>
+
+                  {/* Progress steps */}
+                  <div className="space-y-2">
+                    <ProgressStep
+                      label="Confirm deposit"
+                      status={
+                        phase === "confirm_deposit"
+                          ? "active"
+                          : "done"
+                      }
+                    />
+                    <ProgressStep
+                      label="Processing swap"
+                      status={
+                        phase === "processing_swap"
+                          ? "active"
+                          : phase === "confirm_deposit"
+                            ? "pending"
+                            : "done"
+                      }
+                    />
+                    <ProgressStep
+                      label="Sending funds to your wallet"
+                      status={
+                        phase === "receiving_payout"
+                          ? "active"
+                          : phase === "completed"
+                            ? "done"
+                            : "pending"
+                      }
+                    />
+                    <ProgressStep
+                      label="Completed"
+                      status={phase === "completed" ? "done" : "pending"}
+                    />
                   </div>
-                  {appWalletOperation.depositTxHash ? (
-                    <div className="mt-3 flex items-center justify-between gap-3 text-sm">
-                      <span className="text-muted-foreground/70">
-                        Deposit txHash
-                      </span>
-                      <span className="min-w-0 break-all text-right font-mono font-medium">
-                        {appWalletOperation.depositTxHash}
-                      </span>
-                    </div>
-                  ) : null}
-                  {appWalletOperation.circleTransactionId ? (
-                    <div className="mt-3 flex items-center justify-between gap-3 text-sm">
-                      <span className="text-muted-foreground/70">
-                        Circle transaction
-                      </span>
-                      <span className="min-w-0 break-all text-right font-mono font-medium">
-                        {appWalletOperation.circleTransactionId}
+
+                  {/* Swap summary */}
+                  <div className="rounded-xl border border-border/40 bg-background/45 p-4 space-y-2 text-sm">
+                    <div className="flex justify-between gap-3">
+                      <span className="text-muted-foreground/70">Swap</span>
+                      <span className="font-medium">
+                        {formatBaseUnitAmount(appWalletOperation.amountIn, appWalletOperation.tokenIn) ?? `${appWalletOperation.amountIn} ${appWalletOperation.tokenIn}`}
+                        {" → "}
+                        {appWalletOperation.tokenOut}
                       </span>
                     </div>
-                  ) : null}
-                  {appWalletOperation.circleReferenceId ? (
-                    <div className="mt-3 flex items-center justify-between gap-3 text-sm">
-                      <span className="text-muted-foreground/70">
-                        Circle reference
-                      </span>
-                      <span className="min-w-0 break-all text-right font-mono font-medium">
-                        {appWalletOperation.circleReferenceId}
-                      </span>
-                    </div>
-                  ) : null}
-                  {appWalletOperation.depositConfirmedAmount ? (
-                    <div className="mt-3 flex items-center justify-between gap-3 text-sm">
-                      <span className="text-muted-foreground/70">
-                        Confirmed deposit
-                      </span>
-                      <span className="font-mono font-medium">
-                        {formatBaseUnitAmount(
-                          appWalletOperation.depositConfirmedAmount,
-                          appWalletOperation.tokenIn,
-                        ) ??
-                          `${appWalletOperation.depositConfirmedAmount} ${appWalletOperation.tokenIn}`}
-                      </span>
-                    </div>
-                  ) : null}
-                  {appWalletOperation.depositConfirmedAt ? (
-                    <div className="mt-3 flex items-center justify-between gap-3 text-sm">
-                      <span className="text-muted-foreground/70">
-                        Confirmed at
-                      </span>
-                      <span className="min-w-0 break-all text-right font-mono font-medium">
-                        {appWalletOperation.depositConfirmedAt}
-                      </span>
-                    </div>
-                  ) : null}
-                  {appWalletOperation.depositConfirmationError ? (
-                    <div className="mt-3 rounded-xl border border-amber-500/25 bg-amber-500/5 px-3 py-2 text-sm text-amber-100">
-                      {appWalletOperation.depositConfirmationError}
-                    </div>
-                  ) : null}
-                  {appWalletOperation.executionError ? (
-                    <div className="mt-3 rounded-xl border border-red-500/25 bg-red-500/5 px-3 py-2 text-sm text-red-100">
+                    {(appWalletOperation.payoutAmount || appWalletOperation.treasurySwapActualOutput) && (
+                      <div className="flex justify-between gap-3">
+                        <span className="text-muted-foreground/70">Received</span>
+                        <span className="font-mono font-medium text-emerald-400">
+                          {formatBaseUnitAmount(
+                            appWalletOperation.payoutAmount ?? appWalletOperation.treasurySwapActualOutput,
+                            appWalletOperation.tokenOut,
+                          )}
+                        </span>
+                      </div>
+                    )}
+                    {!appWalletOperation.payoutAmount && !appWalletOperation.treasurySwapActualOutput && getOperationExpectedOutput(appWalletOperation) && (
+                      <div className="flex justify-between gap-3">
+                        <span className="text-muted-foreground/70">Expected</span>
+                        <span className="font-mono font-medium">
+                          {getOperationExpectedOutput(appWalletOperation)}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Error display — only for true failures */}
+                  {isFailed && appWalletOperation.executionError && (
+                    <div className="rounded-xl border border-red-500/25 bg-red-500/5 px-4 py-3 text-sm text-red-200">
                       {appWalletOperation.executionError}
                     </div>
-                  ) : null}
-                  <div className="mt-3 flex items-center justify-between gap-3 text-sm">
-                    <span className="text-muted-foreground/70">
-                      Treasury deposit address
-                    </span>
-                    <div className="flex min-w-0 items-center gap-2">
-                      <span className="min-w-0 break-all text-right font-mono font-medium">
-                        {appWalletOperation.treasuryDepositAddress}
-                      </span>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon"
-                        className="h-7 w-7 shrink-0"
-                        onClick={() =>
-                          void copyToClipboard(
-                            appWalletOperation.treasuryDepositAddress,
-                            "treasury address",
-                          )
-                        }
-                        aria-label="Copy treasury deposit address"
-                      >
-                        <Copy className="h-3.5 w-3.5" />
-                      </Button>
-                    </div>
-                  </div>
-                  <div className="mt-3 flex items-center justify-between gap-3 text-sm">
-                    <span className="text-muted-foreground/70">Deposit</span>
-                    <span className="font-mono font-medium">
-                      {formatBaseUnitAmount(
-                        appWalletOperation.amountIn,
-                        appWalletOperation.tokenIn,
-                      ) ?? `${appWalletOperation.amountIn} ${appWalletOperation.tokenIn}`}
-                    </span>
-                  </div>
-                  <div className="mt-3 flex items-center justify-between gap-3 text-sm">
-                    <span className="text-muted-foreground/70">Route</span>
-                    <span className="font-medium">
-                      {appWalletOperation.tokenIn} to{" "}
-                      {appWalletOperation.tokenOut}
-                    </span>
-                  </div>
-                  <div className="mt-3 flex items-center justify-between gap-3 text-sm">
-                    <span className="text-muted-foreground/70">
-                      Expected output
-                    </span>
-                    <span className="font-mono font-medium">
-                      {getOperationExpectedOutput(appWalletOperation) ?? "-"}
-                    </span>
-                  </div>
-                  <div className="mt-3 flex items-center justify-between gap-3 text-sm">
-                    <span className="text-muted-foreground/70">
-                      Minimum output
-                    </span>
-                    <span className="font-mono font-medium">
-                      {getOperationMinimumOutput(appWalletOperation) ?? "-"}
-                    </span>
-                  </div>
-                  {appWalletOperation.treasurySwapTxHash ? (
-                    <div className="mt-3 flex items-center justify-between gap-3 text-sm">
-                      <span className="text-muted-foreground/70">
-                        Treasury swap tx
-                      </span>
-                      <span className="min-w-0 break-all text-right font-mono font-medium">
-                        {appWalletOperation.treasurySwapTxHash}
-                      </span>
-                    </div>
-                  ) : null}
-                  {appWalletOperation.treasurySwapActualOutput ? (
-                    <div className="mt-3 flex items-center justify-between gap-3 text-sm">
-                      <span className="text-muted-foreground/70">
-                        Swap output
-                      </span>
-                      <span className="font-mono font-medium">
-                        {formatBaseUnitAmount(
-                          appWalletOperation.treasurySwapActualOutput,
-                          appWalletOperation.tokenOut,
-                        ) ??
-                          `${appWalletOperation.treasurySwapActualOutput} ${appWalletOperation.tokenOut}`}
-                      </span>
-                    </div>
-                  ) : null}
-                  {appWalletOperation.payoutAmount ? (
-                    <div className="mt-3 flex items-center justify-between gap-3 text-sm">
-                      <span className="text-muted-foreground/70">
-                        Payout amount
-                      </span>
-                      <span className="font-mono font-medium">
-                        {formatBaseUnitAmount(
-                          appWalletOperation.payoutAmount,
-                          appWalletOperation.tokenOut,
-                        ) ??
-                          `${appWalletOperation.payoutAmount} ${appWalletOperation.tokenOut}`}
-                      </span>
-                    </div>
-                  ) : null}
-                  {appWalletOperation.payoutTxHash ? (
-                    <div className="mt-3 flex items-center justify-between gap-3 text-sm">
-                      <span className="text-muted-foreground/70">
-                        Payout tx
-                      </span>
-                      <span className="min-w-0 break-all text-right font-mono font-medium">
-                        {appWalletOperation.payoutTxHash}
-                      </span>
-                    </div>
-                  ) : null}
-                </div>
+                  )}
 
-                <div className="rounded-2xl border border-amber-500/25 bg-amber-500/5 p-4 text-sm text-amber-100">
-                  {appWalletOperation.status === "completed"
-                    ? `${appWalletOperation.tokenOut} payout is confirmed. App Wallet swap is complete.`
-                    : `Final success is shown only after ${appWalletOperation.tokenOut} payout is confirmed. Deposit or treasury swap confirmation alone is not completion.`}
-                </div>
+                  {/* Pending status messages — not errors */}
+                  {isInProgress && (
+                    <div className="rounded-xl border border-sky-500/25 bg-sky-500/5 px-4 py-3 text-sm text-sky-100">
+                      {appWalletOperation.status === "deposit_submitted" && !appWalletOperation.depositTxHash
+                        ? "Deposit received. Waiting for network confirmation."
+                        : appWalletOperation.status === "payout_pending" || appWalletOperation.status === "treasury_swap_confirmed"
+                          ? "Final wallet transfer is being confirmed."
+                          : "WizPay is securely settling your swap. This can take a few minutes."}
+                    </div>
+                  )}
 
-                <div className="flex flex-col gap-3 sm:flex-row">
-                  {appWalletOperation.status === "awaiting_user_deposit" ? (
-                    <Button
-                      className="flex-1"
-                      onClick={() => void guard(submitAppWalletDeposit)}
-                      disabled={requestStatus === "depositing"}
-                    >
-                      {requestStatus === "depositing" ? (
-                        <span className="flex items-center gap-2">
-                          <span className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
-                          Depositing...
-                        </span>
-                      ) : (
-                        `Deposit ${appWalletOperation.tokenIn}`
-                      )}
-                    </Button>
-                  ) : null}
-                  {appWalletOperation.status === "deposit_submitted" ? (
-                    !appWalletOperation.depositTxHash ? (
+                  {/* Action buttons */}
+                  <div className="flex flex-col gap-3 sm:flex-row">
+                    {phase === "confirm_deposit" && (
                       <Button
-                        className="flex-1"
-                        onClick={() =>
-                          void guard(resolveAppWalletDepositTxHash)
-                        }
-                        disabled={requestStatus === "resolving"}
+                        className="flex-1 glow-btn bg-gradient-to-r from-primary to-violet-500 text-primary-foreground"
+                        onClick={() => void guard(submitAppWalletDeposit)}
+                        disabled={requestStatus === "depositing"}
                       >
-                        {requestStatus === "resolving" ? (
+                        {requestStatus === "depositing" ? (
                           <span className="flex items-center gap-2">
                             <span className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
-                            Resolving...
+                            Waiting for confirmation...
                           </span>
                         ) : (
-                          "Resolve txHash"
+                          "Confirm swap"
                         )}
                       </Button>
-                    ) : null
-                  ) : null}
-                  {appWalletOperation.status === "deposit_submitted" ? (
-                    <Button
-                      className="flex-1"
-                      onClick={() => void guard(confirmAppWalletDeposit)}
-                      disabled={
-                        requestStatus === "confirming" ||
-                        !appWalletOperation.depositTxHash
-                      }
-                    >
-                      {requestStatus === "confirming" ? (
-                        <span className="flex items-center gap-2">
-                          <span className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
-                          Verifying...
-                        </span>
-                      ) : (
-                        "Verify deposit"
-                      )}
-                    </Button>
-                  ) : null}
-                  {canExecuteAppWalletOperation(appWalletOperation) ? (
-                    <Button
-                      className="flex-1"
-                      onClick={() => void guard(executeAppWalletSwap)}
-                      disabled={requestStatus === "executing"}
-                    >
-                      {requestStatus === "executing" ? (
-                        <span className="flex items-center gap-2">
-                          <span className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
-                          Executing...
-                        </span>
-                      ) : appWalletOperation.status === "execution_failed" ? (
-                        "Retry execution"
-                      ) : (
-                        "Execute swap"
-                      )}
-                    </Button>
-                  ) : null}
-                  {appWalletOperation.depositTxHash ? (
-                    <Button asChild variant="outline" className="flex-1">
-                      <a
-                        href={`${EXPLORER_BASE_URL}/tx/${appWalletOperation.depositTxHash}`}
-                        target="_blank"
-                        rel="noreferrer"
+                    )}
+                    {isInProgress && (
+                      <Button
+                        className="flex-1"
+                        disabled
                       >
-                        <ExternalLink className="h-4 w-4" />
-                        View deposit
-                      </a>
-                    </Button>
-                  ) : null}
-                  {appWalletOperation.payoutTxHash ? (
-                    <Button asChild variant="outline" className="flex-1">
-                      <a
-                        href={`${EXPLORER_BASE_URL}/tx/${appWalletOperation.payoutTxHash}`}
-                        target="_blank"
-                        rel="noreferrer"
+                        <span className="flex items-center gap-2">
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                          Processing swap...
+                        </span>
+                      </Button>
+                    )}
+                    {phase === "receiving_payout" && (
+                      <Button className="flex-1" disabled>
+                        <span className="flex items-center gap-2">
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                          Sending funds to your wallet...
+                        </span>
+                      </Button>
+                    )}
+                    {isComplete && (
+                      <Button
+                        className="flex-1"
+                        onClick={() => {
+                          setIsAppWalletOperationOpen(false);
+                          resetSwapFeedback();
+                        }}
                       >
-                        <ExternalLink className="h-4 w-4" />
-                        View payout
-                      </a>
-                    </Button>
-                  ) : null}
-                  <Button
-                    variant="outline"
-                    className="flex-1"
-                    onClick={() => setIsAppWalletOperationOpen(false)}
-                  >
-                    Close
-                  </Button>
+                        Done
+                      </Button>
+                    )}
+                    {isFailed && (
+                      <Button
+                        className="flex-1"
+                        onClick={() => void guard(executeAppWalletSwap)}
+                        disabled={requestStatus === "executing"}
+                      >
+                        {requestStatus === "executing" ? (
+                          <span className="flex items-center gap-2">
+                            <span className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
+                            Retrying...
+                          </span>
+                        ) : (
+                          "Retry status check"
+                        )}
+                      </Button>
+                    )}
+                    {appWalletOperation.payoutTxHash && (
+                      <Button asChild variant="outline" className="flex-1">
+                        <a
+                          href={`${EXPLORER_BASE_URL}/tx/${appWalletOperation.payoutTxHash}`}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          <ExternalLink className="h-4 w-4" />
+                          View transaction
+                        </a>
+                      </Button>
+                    )}
+                    {!isComplete && !isFailed && phase !== "confirm_deposit" ? null : (
+                      <Button
+                        variant="outline"
+                        className="flex-1"
+                        onClick={() => setIsAppWalletOperationOpen(false)}
+                      >
+                        Close
+                      </Button>
+                    )}
+                  </div>
+
+                  {/* Advanced details — collapsible */}
+                  <div className="border-t border-border/30 pt-3">
+                    <button
+                      type="button"
+                      className="flex w-full items-center gap-2 text-xs text-muted-foreground/60 hover:text-muted-foreground/80 transition-colors"
+                      onClick={() => setAdvancedDetailsOpen(!advancedDetailsOpen)}
+                    >
+                      {advancedDetailsOpen ? (
+                        <ChevronDown className="h-3 w-3" />
+                      ) : (
+                        <ChevronRight className="h-3 w-3" />
+                      )}
+                      Advanced details
+                    </button>
+                    {advancedDetailsOpen && (
+                      <div className="mt-3 space-y-2 rounded-xl border border-border/30 bg-background/30 p-3 text-xs font-mono">
+                        <DetailRow label="Operation ID" value={appWalletOperation.operationId} onCopy={() => void copyToClipboard(appWalletOperation.operationId, "operation ID")} />
+                        <DetailRow label="Internal status" value={appWalletOperation.status} />
+                        {appWalletOperation.depositTxHash && (
+                          <DetailRow label="Deposit txHash" value={appWalletOperation.depositTxHash} />
+                        )}
+                        {appWalletOperation.treasurySwapTxHash && (
+                          <DetailRow label="Settlement txHash" value={appWalletOperation.treasurySwapTxHash} />
+                        )}
+                        {appWalletOperation.payoutTxHash && (
+                          <DetailRow label="Payout txHash" value={appWalletOperation.payoutTxHash} />
+                        )}
+                        {appWalletOperation.circleTransactionId && (
+                          <DetailRow label="Circle transaction" value={appWalletOperation.circleTransactionId} />
+                        )}
+                        {appWalletOperation.circleReferenceId && (
+                          <DetailRow label="Circle reference" value={appWalletOperation.circleReferenceId} />
+                        )}
+                        {appWalletOperation.executionError && (
+                          <DetailRow label="Error" value={appWalletOperation.executionError} />
+                        )}
+                        {appWalletOperation.depositConfirmationError && (
+                          <DetailRow label="Deposit note" value={appWalletOperation.depositConfirmationError} />
+                        )}
+                        <DetailRow label="Settlement address" value={appWalletOperation.treasuryDepositAddress} />
+                      </div>
+                    )}
+                  </div>
                 </div>
-              </div>
-            ) : null}
+              );
+            })() : null}
           </div>
         </DialogContent>
       </Dialog>
