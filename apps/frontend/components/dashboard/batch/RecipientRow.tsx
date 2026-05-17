@@ -13,7 +13,12 @@ import {
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { TableCell, TableRow } from "@/components/ui/table";
-import { formatCompactAddress, formatTokenAmount, TOKEN_OPTIONS } from "@/lib/wizpay";
+import {
+  formatCompactAddress,
+  formatTokenAmount,
+  SUPPORTED_TOKENS,
+  TOKEN_OPTIONS,
+} from "@/lib/wizpay";
 import type { PreparedRecipient } from "@/lib/types";
 import type { RecipientDraft, TokenSymbol } from "@/lib/wizpay";
 
@@ -157,7 +162,11 @@ export function RecipientRow({
             <Skeleton className="h-4 w-24 bg-muted/20" />
           ) : (
             <p className="font-mono text-sm">
-              {formatTokenAmount(estimatedOut, 6)} {recipient.targetToken}
+              {formatTokenAmount(
+                estimatedOut,
+                SUPPORTED_TOKENS[recipient.targetToken].decimals,
+              )}{" "}
+              {recipient.targetToken}
             </p>
           )}
           {diagnostic ? (
@@ -168,7 +177,9 @@ export function RecipientRow({
                 ? "Loading quote..."
                 : quoteRefreshing
                   ? "Refreshing quote..."
-                  : "Live quote from chain"}
+                  : routeIsDirect
+                    ? "Same-token payout"
+                    : "Official adapter quote"}
             </p>
           )}
         </div>
@@ -182,7 +193,7 @@ export function RecipientRow({
               : "border-amber-500/20 text-amber-300/80 bg-amber-500/5"
           }
         >
-          {routeIsDirect ? "Direct" : "Swap"}
+          {routeIsDirect ? "Direct" : "Official adapter"}
         </Badge>
       </TableCell>
       <TableCell className="text-right">

@@ -19,7 +19,6 @@ import { FxOperationPayload } from '../fx/fx.types';
 import {
   assertLegacyFxEnabled,
   assertLegacyLiquidityEnabled,
-  throwOfficialStableFxAuthRequired,
 } from '../fx/stablefx-cutover.guard';
 
 type BridgeExecutionMode = 'app_treasury' | 'external_signer';
@@ -50,10 +49,6 @@ export class OrchestratorService {
 
     if (type === TaskType.LIQUIDITY) {
       assertLegacyLiquidityEnabled();
-    }
-
-    if (type === TaskType.PAYROLL && this.hasCrossCurrencyPayroll(payload)) {
-      throwOfficialStableFxAuthRequired();
     }
 
     const route = TASK_QUEUE_MAP[type];
@@ -318,25 +313,6 @@ export class OrchestratorService {
    */
   private generateOperationId(): string {
     return `fx_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
-  }
-
-  private hasCrossCurrencyPayroll(payload: TaskPayload): boolean {
-    const sourceToken =
-      typeof payload.sourceToken === 'string' && payload.sourceToken.trim()
-        ? payload.sourceToken.trim()
-        : 'USDC';
-    const recipients = Array.isArray(payload.recipients)
-      ? payload.recipients
-      : [];
-
-    return recipients.some((recipient) => {
-      if (!recipient || typeof recipient !== 'object') {
-        return false;
-      }
-
-      const targetToken = (recipient as Record<string, unknown>).targetToken;
-      return typeof targetToken === 'string' && targetToken !== sourceToken;
-    });
   }
 
   // ─────────────────────────────────────────────────────────────────────────────

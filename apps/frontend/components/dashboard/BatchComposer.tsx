@@ -182,7 +182,7 @@ export function BatchComposer({
                 variant="outline"
                 className="font-mono text-[11px] border-primary/20 text-primary/70 bg-primary/5"
               >
-                Official StableFX RFQ
+                Official adapter route
               </Badge>
               <Badge
                 variant="outline"

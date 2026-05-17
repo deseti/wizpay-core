@@ -65,6 +65,13 @@ import {
   type UserSwapQuoteResponse,
 } from "@/lib/user-swap-service";
 import {
+  findFirstString,
+  formatUserSwapQuoteAmount,
+  getUserSwapExpectedOutputDisplay,
+  getUserSwapExpectedOutputValue,
+  getUserSwapMinimumOutputDisplay,
+} from "@/lib/user-swap-quote-parser";
+import {
   EXPLORER_BASE_URL,
   PREVIEW_SLIPPAGE_BPS,
   SUPPORTED_TOKENS,
@@ -87,19 +94,6 @@ type RequestStatus =
   | "resolving"
   | "executing";
 type SwapQuoteState = UserSwapQuoteResponse | AppWalletSwapQuoteResponse;
-
-const EXPECTED_OUTPUT_FALLBACK_PATHS = [
-  "quote.estimatedAmount",
-  "quote.route.steps.0.estimate.toAmount",
-  "estimatedOutput",
-  "amountOut",
-] as const;
-
-const MINIMUM_OUTPUT_FALLBACK_PATHS = [
-  "quote.minAmount",
-  "minimumOutput",
-  "minOutput",
-] as const;
 
 interface SwapSuccessState {
   amountIn: string;
@@ -124,125 +118,22 @@ function shortenHash(hash: string | undefined) {
   return `${hash.slice(0, 10)}...${hash.slice(-8)}`;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function getPath(value: unknown, path: string): unknown {
-  return path.split(".").reduce<unknown>((current, key) => {
-    if (Array.isArray(current) && /^\d+$/.test(key)) {
-      return current[Number(key)];
-    }
-
-    if (!isRecord(current)) {
-      return undefined;
-    }
-
-    return current[key];
-  }, value);
-}
-
-function findFirst(value: unknown, paths: string[]): unknown {
-  for (const path of paths) {
-    const found = getPath(value, path);
-
-    if (found !== undefined && found !== null) {
-      return found;
-    }
-  }
-
-  return undefined;
-}
-
-function findFirstString(value: unknown, paths: string[]) {
-  const found = findFirst(value, paths);
-
-  return typeof found === "string" && found.trim() ? found.trim() : null;
-}
-
-function stringifyAmount(value: unknown): string | null {
-  if (typeof value === "string" && value.trim()) {
-    return value.trim();
-  }
-
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return String(value);
-  }
-
-  if (typeof value === "bigint") {
-    return value.toString();
-  }
-
-  if (isRecord(value)) {
-    return stringifyAmount(value.amount ?? value.value ?? value.toAmount);
-  }
-
-  return null;
-}
-
-function formatBaseUnitAmount(
-  value: unknown,
-  token: TokenSymbol,
-): string | null {
-  const rawAmount = stringifyAmount(value);
-
-  if (!rawAmount) {
-    return null;
-  }
-
-  try {
-    return `${formatUnits(BigInt(rawAmount), SUPPORTED_TOKENS[token].decimals)} ${token}`;
-  } catch {
-    return `${rawAmount} ${token}`;
-  }
-}
-
-function getQuoteExpectedOutput(
-  quote: SwapQuoteState | null,
-  tokenOut: TokenSymbol,
-) {
-  if (!quote) {
-    return null;
-  }
-
-  const rawQuote = "raw" in quote ? quote.raw : quote.rawQuote;
-
-  return formatBaseUnitAmount(
-    quote.expectedOutput ??
-      findFirst(rawQuote, [...EXPECTED_OUTPUT_FALLBACK_PATHS]),
-    tokenOut,
-  );
-}
-
-function getQuoteMinimumOutput(
-  quote: SwapQuoteState | null,
-  tokenOut: TokenSymbol,
-) {
-  if (!quote) {
-    return null;
-  }
-
-  const rawQuote = "raw" in quote ? quote.raw : quote.rawQuote;
-
-  return formatBaseUnitAmount(
-    quote.minimumOutput ??
-      findFirst(rawQuote, [...MINIMUM_OUTPUT_FALLBACK_PATHS]),
-    tokenOut,
-  );
-}
-
 function getOperationExpectedOutput(operation: AppWalletSwapOperationResponse) {
-  return formatBaseUnitAmount(
-    operation.expectedOutput ??
-      findFirst(operation.rawQuote, [...EXPECTED_OUTPUT_FALLBACK_PATHS]),
+  return getUserSwapExpectedOutputDisplay(
+    {
+      expectedOutput: operation.expectedOutput,
+      rawQuote: operation.rawQuote,
+    },
     operation.tokenOut,
   );
 }
 
 function getOperationMinimumOutput(operation: AppWalletSwapOperationResponse) {
-  return formatBaseUnitAmount(
-    operation.minimumOutput ??
-      findFirst(operation.rawQuote, [...MINIMUM_OUTPUT_FALLBACK_PATHS]),
+  return getUserSwapMinimumOutputDisplay(
+    {
+      minimumOutput: operation.minimumOutput,
+      rawQuote: operation.rawQuote,
+    },
     operation.tokenOut,
   );
 }
@@ -355,7 +246,7 @@ function getPhaseDescription(
       return "Your output token is being sent back to your App Wallet.";
     case "completed":
       return operation
-        ? `You received ${formatBaseUnitAmount(operation.payoutAmount ?? operation.treasurySwapActualOutput, operation.tokenOut) ?? operation.tokenOut} in your App Wallet.`
+        ? `You received ${formatUserSwapQuoteAmount(operation.payoutAmount ?? operation.treasurySwapActualOutput, operation.tokenOut) ?? operation.tokenOut} in your App Wallet.`
         : "Swap is complete.";
     case "failed":
       return "Something went wrong during settlement. You can retry the status check.";
@@ -497,14 +388,8 @@ function getPreparedAmountOut(
   prepared: UserSwapPrepareResponse,
   tokenOut: TokenSymbol,
 ) {
-  return formatBaseUnitAmount(
-    prepared.expectedOutput ??
-      findFirst(prepared.raw, [
-        "quote.estimatedAmount",
-        "quote.route.steps.0.estimate.toAmount",
-        "estimatedOutput",
-        "amountOut",
-      ]),
+  return formatUserSwapQuoteAmount(
+    getUserSwapExpectedOutputValue(prepared),
     tokenOut,
   );
 }
@@ -589,10 +474,10 @@ export function SwapScreen() {
     (!("fromAddress" in quote) ||
       quote.fromAddress.toLowerCase() === walletAddress?.toLowerCase());
   const expectedOutput = quoteMatchesForm
-    ? getQuoteExpectedOutput(quote, tokenOut)
+    ? getUserSwapExpectedOutputDisplay(quote, tokenOut)
     : null;
   const minimumOutput = quoteMatchesForm
-    ? getQuoteMinimumOutput(quote, tokenOut)
+    ? getUserSwapMinimumOutputDisplay(quote, tokenOut)
     : null;
   const busy = requestStatus !== "idle" || isGuarded;
   const quoteDisabled =
@@ -1515,7 +1400,7 @@ export function SwapScreen() {
                     <div className="flex justify-between gap-3">
                       <span className="text-muted-foreground/70">Swap</span>
                       <span className="font-medium">
-                        {formatBaseUnitAmount(appWalletOperation.amountIn, appWalletOperation.tokenIn) ?? `${appWalletOperation.amountIn} ${appWalletOperation.tokenIn}`}
+                        {formatUserSwapQuoteAmount(appWalletOperation.amountIn, appWalletOperation.tokenIn) ?? `${appWalletOperation.amountIn} ${appWalletOperation.tokenIn}`}
                         {" → "}
                         {appWalletOperation.tokenOut}
                       </span>
@@ -1524,7 +1409,7 @@ export function SwapScreen() {
                       <div className="flex justify-between gap-3">
                         <span className="text-muted-foreground/70">Received</span>
                         <span className="font-mono font-medium text-emerald-400">
-                          {formatBaseUnitAmount(
+                          {formatUserSwapQuoteAmount(
                             appWalletOperation.payoutAmount ?? appWalletOperation.treasurySwapActualOutput,
                             appWalletOperation.tokenOut,
                           )}

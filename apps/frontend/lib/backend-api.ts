@@ -3,7 +3,8 @@ export class BackendApiError extends Error {
     message: string,
     public readonly status: number,
     public readonly code?: string,
-    public readonly details?: string
+    public readonly details?: string,
+    public readonly responseBody?: unknown,
   ) {
     super(message);
     this.name = "BackendApiError";
@@ -38,7 +39,8 @@ export async function backendFetch<T>(
       getString(errorPayload.error) || `Backend request failed with status ${response.status}`,
       response.status,
       getString(errorPayload.code),
-      getString(errorPayload.details)
+      getString(errorPayload.details),
+      errorPayload,
     );
   }
 
@@ -46,7 +48,9 @@ export async function backendFetch<T>(
     throw new BackendApiError(
       "Backend response did not include a data payload.",
       502,
-      "BACKEND_EMPTY_RESPONSE"
+      "BACKEND_EMPTY_RESPONSE",
+      undefined,
+      payload,
     );
   }
 

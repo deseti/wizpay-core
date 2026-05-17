@@ -1,12 +1,14 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { formatUnits } from "viem";
 
 import { backendFetch } from "@/lib/backend-api";
 import { useActiveWalletAddress } from "@/hooks/useActiveWalletAddress";
 import {
   getFriendlyErrorMessage,
   parseAmountToUnits,
+  SUPPORTED_TOKENS,
   type RecipientDraft,
   type TokenSymbol,
 } from "@/lib/wizpay";
@@ -25,11 +27,20 @@ type BatchPayrollStage =
   | "success"
   | "error";
 
-const OFFICIAL_STABLEFX_AUTH_REQUIRED = "OFFICIAL_STABLEFX_AUTH_REQUIRED";
+export interface PreSwapResult {
+  /** The token the wallet now holds after the swap */
+  settledToken: TokenSymbol;
+  /** Swap transaction hash */
+  txHash: string | null;
+}
 
-const OFFICIAL_STABLEFX_AUTH_REQUIRED_MESSAGE =
-  `${OFFICIAL_STABLEFX_AUTH_REQUIRED}: Cross-currency Send supports USDC -> EURC and EURC -> USDC through official Circle StableFX RFQ only. ` +
-  "StableFXAdapter, internal LP liquidity, synthetic pricing, and adapter balances are disabled for default routing until Circle StableFX authentication and entitlement are available.";
+function logPayrollRouteDiagnostic(label: string, value: unknown) {
+  if (process.env.NODE_ENV === "production") {
+    return;
+  }
+
+  console.info(label, value);
+}
 
 interface UseBatchPayrollOptions {
   activeToken: {
@@ -48,6 +59,25 @@ interface UseBatchPayrollOptions {
     batchReferenceId?: string,
   ) => Promise<TransactionActionResult>;
   referenceId: string;
+  /**
+   * Optional: execute a pre-swap for cross-currency payroll.
+   * Called when recipients have a different targetToken than activeToken.
+   * The external wallet signs the official adapter swap.
+   * After this resolves, the wallet holds the target token and payroll
+   * proceeds as same-token payout.
+   */
+  executePreSwap?: (params: {
+    sourceToken: TokenSymbol;
+    targetToken: TokenSymbol;
+    /** Aggregate source amount in the same base-unit shape used by /swap */
+    amount: string;
+  }) => Promise<PreSwapResult>;
+  getPreSwapPayoutAmounts?: (
+    targetToken: TokenSymbol,
+  ) => Map<string, string> | null;
+  officialQuoteRequired?: boolean;
+  officialQuoteReady?: boolean;
+  officialQuoteError?: string | null;
 }
 
 interface PayrollInitRecipient {
@@ -200,19 +230,65 @@ function getSubmissionHashes(task: BackendTask | null) {
     .filter((value): value is string => Boolean(value));
 }
 
-function hasCrossCurrencyRecipients(
+/**
+ * Detect unique cross-currency target tokens.
+ * Returns null if all recipients match sourceToken (same-token payroll).
+ */
+function detectCrossCurrencyTargets(
   sourceToken: TokenSymbol,
   batches: RecipientDraft[][],
-) {
-  return batches.some((batch) =>
-    batch.some((recipient) => recipient.targetToken !== sourceToken),
-  );
+): TokenSymbol[] | null {
+  const targets = new Set<TokenSymbol>();
+
+  for (const batch of batches) {
+    for (const recipient of batch) {
+      if (recipient.targetToken !== sourceToken) {
+        targets.add(recipient.targetToken);
+      }
+    }
+  }
+
+  return targets.size > 0 ? Array.from(targets) : null;
+}
+
+/**
+ * Sum amounts for recipients matching a specific targetToken.
+ */
+function sumAmountsForToken(
+  batches: RecipientDraft[][],
+  targetToken: TokenSymbol,
+  decimals: number,
+): string {
+  let totalUnits = 0n;
+
+  for (const batch of batches) {
+    for (const recipient of batch) {
+      if (recipient.targetToken === targetToken) {
+        try {
+          const parsedUnits = parseAmountToUnits(recipient.amount, decimals);
+          if (parsedUnits > 0n) {
+            totalUnits += parsedUnits;
+          }
+        } catch {
+          // Draft validation owns invalid amount errors before execution starts.
+        }
+      }
+    }
+  }
+
+  return totalUnits.toString();
 }
 
 // ─── Hook ───────────────────────────────────────────────────────────
 
 /**
  * useBatchPayroll — Orchestrate approval + multi-batch payroll client-side.
+ *
+ * For cross-currency payroll (External Wallet):
+ *   1. Detects cross-currency recipients
+ *   2. Calls executePreSwap() to swap sourceToken -> targetToken via official adapter
+ *   3. After swap, submits payroll as same-token (targetToken -> targetToken)
+ *   4. No legacy FX route interaction on-chain
  */
 export function useBatchPayroll({
   activeToken,
@@ -225,6 +301,11 @@ export function useBatchPayroll({
   setErrorMessage,
   setStatusMessage,
   submitCurrentBatch,
+  executePreSwap,
+  getPreSwapPayoutAmounts,
+  officialQuoteRequired = false,
+  officialQuoteReady = false,
+  officialQuoteError = null,
 }: UseBatchPayrollOptions): BatchPayrollResult {
   const { walletAddress } = useActiveWalletAddress();
   const batches = useMemo(
@@ -234,10 +315,6 @@ export function useBatchPayroll({
   const totals = useMemo(
     () => calculateTotals(batches, activeToken.decimals),
     [activeToken.decimals, batches],
-  );
-  const hasCrossCurrency = useMemo(
-    () => hasCrossCurrencyRecipients(activeToken.symbol, batches),
-    [activeToken.symbol, batches],
   );
 
   const [isRunning, setIsRunning] = useState(false);
@@ -292,11 +369,181 @@ export function useBatchPayroll({
     setErrorMessage(null);
 
     try {
-      if (hasCrossCurrency) {
-        setErrorMessage(OFFICIAL_STABLEFX_AUTH_REQUIRED_MESSAGE);
-        return;
+      // ── Detect cross-currency groups ─────────────────────────────
+      const crossTargets = detectCrossCurrencyTargets(
+        activeToken.symbol,
+        batches,
+      );
+
+      const allRecipients = batches.flat();
+
+      logPayrollRouteDiagnostic(
+        "[official-payroll-route] multi-recipient grouping",
+        {
+          recipientCount: allRecipients.length,
+          crossTargets,
+          sameTokenCount: allRecipients.filter(
+            (r) => r.targetToken === activeToken.symbol,
+          ).length,
+          crossTokenCounts: crossTargets
+            ? Object.fromEntries(
+                crossTargets.map((t) => [
+                  t,
+                  allRecipients.filter((r) => r.targetToken === t).length,
+                ]),
+              )
+            : {},
+        },
+      );
+
+      // Validate cross-currency quote availability for each cross-token group
+      if (crossTargets && crossTargets.length > 0 && officialQuoteRequired) {
+        if (!officialQuoteReady) {
+          setErrorMessage(
+            officialQuoteError ??
+              "Official payroll route quote unavailable. Payroll cannot proceed.",
+          );
+          return;
+        }
       }
 
+      // ── Build effective recipients (mixed-token aware) ───────────
+      // Same-token recipients pass through unchanged.
+      // Cross-token recipients get swapped and rewritten.
+      let effectiveRecipients: {
+        address: string;
+        amount: string;
+        targetToken: TokenSymbol;
+      }[] = [];
+      let didSwap = false;
+
+      if (crossTargets && crossTargets.length > 0 && executePreSwap) {
+        // Process each cross-currency target group
+        for (const targetToken of crossTargets) {
+          const crossAmount = sumAmountsForToken(
+            batches,
+            targetToken,
+            activeToken.decimals,
+          );
+          const payoutAmounts = getPreSwapPayoutAmounts?.(targetToken);
+
+          if (!payoutAmounts) {
+            setErrorMessage(
+              `Official quote unavailable for ${activeToken.symbol} -> ${targetToken} aggregate amount ${crossAmount}.`,
+            );
+            return;
+          }
+
+          const quotedTargetAmount = Array.from(payoutAmounts.values()).reduce(
+            (sum, amount) => sum + BigInt(amount),
+            0n,
+          );
+
+          if (quotedTargetAmount <= 0n) {
+            setErrorMessage(
+              `Official quote unavailable for ${activeToken.symbol} -> ${targetToken} aggregate amount ${crossAmount}.`,
+            );
+            return;
+          }
+
+          logPayrollRouteDiagnostic(
+            "[official-payroll-route] cross-token group",
+            {
+              targetToken,
+              aggregateSourceAmount: crossAmount,
+              quotedTargetAmount: quotedTargetAmount.toString(),
+              recipientCount: allRecipients.filter(
+                (r) => r.targetToken === targetToken,
+              ).length,
+            },
+          );
+
+          setStatusMessage(
+            `Swapping ${activeToken.symbol} -> ${targetToken} via official adapter...`,
+          );
+
+          const swapResult = await executePreSwap({
+            sourceToken: activeToken.symbol,
+            targetToken,
+            amount: crossAmount,
+          });
+
+          if (swapResult.txHash) {
+            setApprovalHash(swapResult.txHash);
+          }
+
+          didSwap = true;
+
+          logPayrollRouteDiagnostic(
+            "[official-payroll-route] swap completed for group",
+            { targetToken, txHash: swapResult.txHash },
+          );
+        }
+
+        setStatusMessage("Swap confirmed. Submitting payroll...");
+        await refetchAllowance();
+
+        // Build effective recipients: same-token unchanged, cross-token rewritten
+        effectiveRecipients = allRecipients.map((recipient) => {
+          if (recipient.targetToken === activeToken.symbol) {
+            // Same-token: pass through unchanged
+            return {
+              address: recipient.address,
+              amount: recipient.amount,
+              targetToken: recipient.targetToken,
+            };
+          }
+
+          // Cross-token: use allocated payout amount from quote
+          const payoutAmounts = getPreSwapPayoutAmounts?.(
+            recipient.targetToken,
+          );
+          const payoutAmount = payoutAmounts?.get(recipient.id);
+
+          return {
+            address: recipient.address,
+            amount: payoutAmount
+              ? formatUnits(
+                  BigInt(payoutAmount),
+                  SUPPORTED_TOKENS[recipient.targetToken].decimals,
+                )
+              : recipient.amount,
+            targetToken: recipient.targetToken,
+          };
+        });
+
+        logPayrollRouteDiagnostic(
+          "[official-payroll-route] rewritten recipients after pre-swap",
+          effectiveRecipients.map((recipient) => ({
+            address: recipient.address,
+            amount: recipient.amount,
+            targetToken: recipient.targetToken,
+            amountUnits: parseAmountToUnits(
+              recipient.amount,
+              SUPPORTED_TOKENS[recipient.targetToken].decimals,
+            ).toString(),
+          })),
+        );
+      } else if (crossTargets && crossTargets.length > 0 && !executePreSwap) {
+        // Cross-currency detected but no pre-swap handler available
+        setErrorMessage(
+          "Cross-currency payroll requires the External Wallet swap adapter. " +
+            "Connect an external wallet to enable cross-currency payroll.",
+        );
+        return;
+      } else {
+        // Pure same-token payroll
+        effectiveRecipients = allRecipients.map((recipient) => ({
+          address: recipient.address,
+          amount: recipient.amount,
+          targetToken: recipient.targetToken,
+        }));
+      }
+
+      // ── Call payroll init ──────────────────────────────────────────
+      // sourceToken is always the user's selected token (e.g. USDC).
+      // The backend sees each recipient's targetToken to know which are
+      // same-token (USDC->USDC) vs rewritten cross-token (EURC->EURC).
       const initPlan = await backendFetch<PayrollInitPlan>(
         "/tasks/payroll/init",
         {
@@ -305,11 +552,7 @@ export function useBatchPayroll({
             sourceToken: activeToken.symbol,
             referenceId,
             walletAddress,
-            recipients: batches.flat().map((recipient) => ({
-              address: recipient.address,
-              amount: recipient.amount,
-              targetToken: recipient.targetToken,
-            })),
+            recipients: effectiveRecipients,
           }),
         },
       );
@@ -319,6 +562,7 @@ export function useBatchPayroll({
 
       const totalApprovalAmount = BigInt(initPlan.approvalAmount);
 
+      // Approve the source token (USDC) for same-token payout batches
       if (totalApprovalAmount > 0n && currentAllowance < totalApprovalAmount) {
         const approvalResult = await approveBatchAmount(totalApprovalAmount);
 
@@ -334,9 +578,21 @@ export function useBatchPayroll({
         await refetchAllowance();
       }
 
+      // ── Execute task units ─────────────────────────────────────────
       let nextUnit: PayrollTaskUnit | null = initPlan.units[0] ?? null;
 
       while (nextUnit) {
+        logPayrollRouteDiagnostic(
+          "[official-payroll-route] executing unit",
+          {
+            unitId: nextUnit.id,
+            index: nextUnit.index,
+            sourceToken: nextUnit.payload.sourceToken,
+            recipientCount: nextUnit.payload.recipientCount,
+            totalAmount: nextUnit.payload.totalAmount,
+          },
+        );
+
         const result = await submitCurrentBatch(
           toRecipientDraftBatch(nextUnit),
           typeof nextUnit.payload.referenceId === "string"
@@ -344,23 +600,36 @@ export function useBatchPayroll({
             : initPlan.referenceId,
         );
 
+        logPayrollRouteDiagnostic(
+          "[official-payroll-route] submitCurrentBatch result",
+          {
+            unitId: nextUnit.id,
+            ok: result.ok,
+            hash: result.hash,
+            error: result.error ?? null,
+          },
+        );
+
+        const reportPayload = result.ok
+          ? { status: "SUCCESS" as const, txHash: result.hash }
+          : {
+              status: "FAILED" as const,
+              error:
+                result.error ??
+                "Wallet batch execution did not complete successfully.",
+            };
+
+        logPayrollRouteDiagnostic(
+          "[official-payroll-route] reportUnit payload",
+          { unitId: nextUnit.id, ...reportPayload },
+        );
+
         const reportResult: ReportTaskUnitResponse =
           await backendFetch<ReportTaskUnitResponse>(
             `/tasks/${initPlan.taskId}/units/${nextUnit.id}/report`,
             {
               method: "POST",
-              body: JSON.stringify(
-                result.ok
-                  ? {
-                      status: "SUCCESS",
-                      txHash: result.hash,
-                    }
-                  : {
-                      status: "FAILED",
-                      error:
-                        "Wallet batch execution did not complete successfully.",
-                    },
-              ),
+              body: JSON.stringify(reportPayload),
             },
           );
 
@@ -368,7 +637,19 @@ export function useBatchPayroll({
         nextUnit = reportResult.nextUnit;
       }
 
-      await refreshTask(initPlan.taskId);
+      // After all units processed, check if swap succeeded but payout failed.
+      // This is a recoverable state: the user's wallet holds the target token.
+      const finalTask = await refreshTask(initPlan.taskId);
+      const hasFailedUnits = (finalTask?.units ?? []).some(
+        (u) => u.status === "FAILED",
+      );
+
+      if (hasFailedUnits && didSwap && crossTargets && crossTargets.length > 0) {
+        const targetTokens = crossTargets.join(", ");
+        setErrorMessage(
+          `Swap completed; ${targetTokens} is in your wallet. Payroll payout failed — you can retry or manually transfer.`,
+        );
+      }
     } catch (error) {
       const message = getFriendlyErrorMessage(error);
       setErrorMessage(message);
@@ -377,10 +658,15 @@ export function useBatchPayroll({
     }
   }, [
     activeToken.symbol,
+    activeToken.decimals,
     approveBatchAmount,
     batches,
     currentAllowance,
-    hasCrossCurrency,
+    executePreSwap,
+    getPreSwapPayoutAmounts,
+    officialQuoteError,
+    officialQuoteReady,
+    officialQuoteRequired,
     walletAddress,
     referenceId,
     refetchAllowance,
@@ -399,10 +685,12 @@ export function useBatchPayroll({
 
   return {
     ...totals,
-    isSupported: !hasCrossCurrency,
-    availabilityReason: hasCrossCurrency
-      ? OFFICIAL_STABLEFX_AUTH_REQUIRED_MESSAGE
-      : null,
+    isSupported: !officialQuoteRequired || officialQuoteReady,
+    availabilityReason:
+      officialQuoteRequired && !officialQuoteReady
+        ? officialQuoteError ??
+          "Official payroll route quote unavailable. Payroll cannot proceed."
+        : null,
     isRunning,
     isSuccess,
     progress,

@@ -1,7 +1,6 @@
 "use client";
 
 import { ScanLine, Trash2 } from "lucide-react";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -19,7 +18,12 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
-import { formatCompactAddress, formatTokenAmount, TOKEN_OPTIONS } from "@/lib/wizpay";
+import {
+  formatCompactAddress,
+  formatTokenAmount,
+  SUPPORTED_TOKENS,
+  TOKEN_OPTIONS,
+} from "@/lib/wizpay";
 import type { PreparedRecipient } from "@/lib/types";
 import type { RecipientDraft, TokenSymbol } from "@/lib/wizpay";
 
@@ -68,7 +72,7 @@ export function RecipientMobileCard({
             <CardDescription>
               {recipient.targetToken === selectedToken
                 ? "Direct payout"
-                : "FX swap payout"}
+                : "Official adapter payout"}
             </CardDescription>
           </div>
           <Button
@@ -188,7 +192,11 @@ export function RecipientMobileCard({
               <Skeleton className="h-4 w-24 bg-muted/20" />
             ) : (
               <span className="font-mono text-sm font-medium">
-                {formatTokenAmount(estimatedOut, 6)} {recipient.targetToken}
+                {formatTokenAmount(
+                  estimatedOut,
+                  SUPPORTED_TOKENS[recipient.targetToken].decimals,
+                )}{" "}
+                {recipient.targetToken}
               </span>
             )}
           </div>
@@ -202,7 +210,9 @@ export function RecipientMobileCard({
                 ? "Loading quote..."
                 : quoteRefreshing
                   ? "Refreshing quote..."
-                  : "Quote from live contract reads.")}
+                  : recipient.targetToken === selectedToken
+                    ? "Same-token payout."
+                    : "Official adapter quote.")}
           </p>
         </div>
       </CardContent>

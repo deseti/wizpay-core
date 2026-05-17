@@ -12,6 +12,7 @@ import { ReceiveModal } from "@/components/dashboard/ReceiveModal";
 import { Button } from "@/components/ui/button";
 import { useActiveWalletAddress } from "@/hooks/useActiveWalletAddress";
 import { useWizPay } from "@/hooks/wizpay";
+import { SUPPORTED_TOKENS, type TokenSymbol } from "@/lib/wizpay";
 import { useState } from "react";
 
 function getTaskMetadataString(
@@ -30,6 +31,14 @@ function getTaskMetadataNumber(
   return typeof value === "number" ? value : null;
 }
 
+function getTaskMetadataToken(
+  metadata: Record<string, unknown> | null | undefined,
+  key: string,
+): TokenSymbol | null {
+  const value = getTaskMetadataString(metadata, key);
+  return value === "USDC" || value === "EURC" ? value : null;
+}
+
 function SendWorkspace() {
   const wp = useWizPay();
   const { walletAddress } = useActiveWalletAddress();
@@ -37,6 +46,7 @@ function SendWorkspace() {
   const showSuccessModal = wp.payrollTask?.status === "executed";
   const taskMetadata = wp.payrollTask?.metadata;
   const taskTotalAmount = getTaskMetadataString(taskMetadata, "totalAmount");
+  const taskSourceToken = getTaskMetadataToken(taskMetadata, "sourceToken");
   const taskReferenceId = getTaskMetadataString(taskMetadata, "referenceId");
   const taskRecipientCount = getTaskMetadataNumber(
     taskMetadata,
@@ -50,6 +60,8 @@ function SendWorkspace() {
     : wp.sessionTotalAmount > 0n
       ? wp.sessionTotalAmount
       : wp.batchAmount;
+  const successTokenSymbol = taskSourceToken ?? wp.activeToken.symbol;
+  const successTokenDecimals = SUPPORTED_TOKENS[successTokenSymbol].decimals;
   const successRecipientCount =
     taskRecipientCount ??
     (wp.sessionTotalRecipients > 0
@@ -159,8 +171,8 @@ function SendWorkspace() {
         approvalTxHash={wp.approveTxHash}
         txHashes={taskSubmissionHashes}
         totalAmount={successTotalAmount}
-        tokenSymbol={wp.activeToken.symbol}
-        decimals={wp.activeToken.decimals}
+        tokenSymbol={successTokenSymbol}
+        decimals={successTokenDecimals}
         recipientCount={successRecipientCount}
         isMultiBatch={(wp.payrollTask?.totalUnits ?? wp.totalBatches) > 1}
         referenceId={taskReferenceId ?? wp.referenceId}

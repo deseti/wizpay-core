@@ -140,7 +140,7 @@ describe('TaskService', () => {
       ).rejects.toThrow(BadRequestException);
     });
 
-    it('rejects cross-currency payroll task planning by default', async () => {
+    it('accepts cross-currency payroll task planning (FX settlement handled upstream)', async () => {
       validationService.validate = jest.fn().mockResolvedValue({
         valid: true,
         errors: [],
@@ -154,10 +154,15 @@ describe('TaskService', () => {
         ],
       });
 
+      // Cross-currency recipients are now allowed in createPayrollTask
+      // because FX settlement is handled upstream by PayrollInitService.
+      // The method should proceed to batching (which will fail here due to
+      // missing mock, but the point is it no longer throws OFFICIAL_STABLEFX_AUTH_REQUIRED).
       await expect(
         taskService.createPayrollTask({
           sourceToken: 'USDC',
           referenceId: 'PAYROLL-CROSS-FX',
+          crossCurrencySettled: true,
           recipients: [
             {
               address: '0x1234567890abcdef1234567890abcdef12345678',
@@ -166,7 +171,7 @@ describe('TaskService', () => {
             },
           ],
         }),
-      ).rejects.toMatchObject({
+      ).rejects.not.toMatchObject({
         response: expect.objectContaining({
           code: 'OFFICIAL_STABLEFX_AUTH_REQUIRED',
         }),

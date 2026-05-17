@@ -1,6 +1,6 @@
 import { keepPreviousData } from "@tanstack/react-query";
 import { useEffect, useMemo } from "react";
-import { getAddress, isAddress, type Address, type Hex } from "viem";
+import { formatUnits, getAddress, isAddress, type Address, type Hex } from "viem";
 import { usePublicClient, useReadContract } from "wagmi";
 
 import { useActiveWalletAddress } from "@/hooks/useActiveWalletAddress";
@@ -36,10 +36,6 @@ const EMPTY_QUOTE_SUMMARY: QuoteSummary = {
 
 const MAX_CONFIRMATION_POLLS = 20;
 const POLL_INTERVAL_MS = 1500;
-const OFFICIAL_STABLEFX_AUTH_REQUIRED = "OFFICIAL_STABLEFX_AUTH_REQUIRED";
-const OFFICIAL_STABLEFX_AUTH_REQUIRED_MESSAGE =
-  `${OFFICIAL_STABLEFX_AUTH_REQUIRED}: Cross-currency Send supports USDC -> EURC and EURC -> USDC through official Circle StableFX RFQ only. ` +
-  "StableFXAdapter, internal LP liquidity, synthetic pricing, and adapter balances are disabled for default routing until Circle StableFX authentication and entitlement are available.";
 
 type PreparedBatchRecipient = {
   address: Address;
@@ -60,6 +56,23 @@ function waitFor(ms: number) {
   return new Promise<void>((resolve) => {
     window.setTimeout(resolve, ms);
   });
+}
+
+function logPayrollRouteDiagnostic(label: string, value: unknown) {
+  if (process.env.NODE_ENV === "production") {
+    return;
+  }
+
+  console.info(label, value);
+}
+
+function getTokenSymbolByAddress(address: Address): TokenSymbol | null {
+  const normalizedAddress = address.toLowerCase();
+  const match = Object.values(SUPPORTED_TOKENS).find(
+    (token) => token.address.toLowerCase() === normalizedAddress,
+  );
+
+  return match?.symbol ?? null;
 }
 
 /**
@@ -149,7 +162,8 @@ export function useWizPayContract({
     walletAddress &&
     preparedRecipients.length > 0 &&
     batchAmount > 0n &&
-    preparedRecipients.every((r) => r.amountUnits > 0n),
+    preparedRecipients.every((r) => r.amountUnits > 0n) &&
+    preparedRecipients.every((r) => r.targetToken === activeToken.symbol),
   );
 
   const {
@@ -225,10 +239,11 @@ export function useWizPayContract({
       const normalizedAddress = isAddress(trimmedAddress)
         ? getAddress(trimmedAddress)
         : null;
+      const amountDecimals = SUPPORTED_TOKENS[recipient.targetToken].decimals;
 
       return {
         address: (normalizedAddress ?? trimmedAddress) as Address,
-        amountUnits: parseAmountToUnits(recipient.amount, activeToken.decimals),
+        amountUnits: parseAmountToUnits(recipient.amount, amountDecimals),
         id: recipient.id,
         targetToken: recipient.targetToken,
         validAddress: Boolean(normalizedAddress),
@@ -479,16 +494,6 @@ export function useWizPayContract({
     }
 
     const batchPreparedRecipients = prepareBatchRecipients(batchRecipients);
-    const hasCrossCurrencyRecipient = batchPreparedRecipients.some(
-      (recipient) => recipient.targetToken !== activeToken.symbol,
-    );
-
-    if (hasCrossCurrencyRecipient) {
-      state.setSubmitState("idle");
-      state.setErrorMessage(OFFICIAL_STABLEFX_AUTH_REQUIRED_MESSAGE);
-      state.setStatusMessage(null);
-      return { ok: false, hash: null };
-    }
 
     const batchTotalAmount = batchPreparedRecipients.reduce(
       (sum, recipient) => sum + recipient.amountUnits,
@@ -510,10 +515,64 @@ export function useWizPayContract({
       return { ok: false, hash: null };
     }
 
+    // Determine the effective input token for batchRouteAndPay.
+    // When all recipients target the same token AND it differs from activeToken,
+    // it means a pre-swap has already been executed and the wallet now holds
+    // the target token. Use the target token as input for same-token payout.
+    const allSameTarget = batchPreparedRecipients.every(
+      (r) => r.targetToken === batchPreparedRecipients[0].targetToken,
+    );
+    const batchTargetToken = batchPreparedRecipients[0]?.targetToken;
+    const effectiveTokenIn =
+      allSameTarget && batchTargetToken && batchTargetToken !== activeToken.symbol
+        ? SUPPORTED_TOKENS[batchTargetToken].address
+        : activeToken.address;
+    const effectiveTokenInSymbol =
+      getTokenSymbolByAddress(effectiveTokenIn) ?? activeToken.symbol;
+
+    logPayrollRouteDiagnostic(
+      "[official-payroll-route] final payout effectiveTokenIn",
+      {
+        symbol: effectiveTokenInSymbol,
+        address: effectiveTokenIn,
+      },
+    );
+
     let latestAllowance = currentAllowance;
     let latestBalance = currentBalance;
 
-    if (
+    // When the effective input token differs from activeToken (post-swap scenario),
+    // read allowance and balance directly for the effective token.
+    if (effectiveTokenIn !== activeToken.address) {
+      const [onChainAllowance, onChainBalance] = await Promise.all([
+        publicClient.readContract({
+          address: effectiveTokenIn,
+          abi: ERC20_ABI,
+          functionName: "allowance",
+          args: [walletAddress, allowanceSpender],
+        }) as Promise<bigint>,
+        publicClient.readContract({
+          address: effectiveTokenIn,
+          abi: ERC20_ABI,
+          functionName: "balanceOf",
+          args: [walletAddress],
+        }) as Promise<bigint>,
+      ]);
+      latestAllowance = onChainAllowance;
+      latestBalance = onChainBalance;
+
+      logPayrollRouteDiagnostic(
+        "[official-payroll-route] post-swap wallet state",
+        {
+          token: effectiveTokenInSymbol,
+          balance: latestBalance.toString(),
+          allowanceToWizPay: latestAllowance.toString(),
+          requiredAmount: batchTotalAmount.toString(),
+          needsApproval: latestAllowance < batchTotalAmount,
+          insufficientBalance: latestBalance < batchTotalAmount,
+        },
+      );
+    } else if (
       currentAllowance < batchTotalAmount ||
       currentBalance < batchTotalAmount
     ) {
@@ -527,17 +586,89 @@ export function useWizPayContract({
     }
 
     if (latestBalance < batchTotalAmount) {
-      state.setErrorMessage(
-        "Insufficient token balance for this payroll batch.",
-      );
-      return { ok: false, hash: null };
+      const message = `Insufficient ${effectiveTokenInSymbol} balance for this payroll batch. Have ${latestBalance.toString()}, need ${batchTotalAmount.toString()}.`;
+      state.setErrorMessage(message);
+      return { ok: false, hash: null, error: message };
     }
 
     if (latestAllowance < batchTotalAmount) {
-      state.setErrorMessage(
-        `Approve ${activeToken.symbol} before submitting this payroll batch.`,
-      );
-      return { ok: false, hash: null };
+      // If effective token differs, auto-approve for the target token
+      if (effectiveTokenIn !== activeToken.address) {
+        logPayrollRouteDiagnostic(
+          "[official-payroll-route] auto-approving post-swap token",
+          {
+            token: batchTargetToken,
+            amount: batchTotalAmount.toString(),
+            spender: WIZPAY_ADDRESS,
+          },
+        );
+        state.setStatusMessage(
+          `Approving ${batchTargetToken} for payroll payout...`,
+        );
+        try {
+          const approvalResult = await executeTransaction({
+            abi: ERC20_ABI,
+            args: [WIZPAY_ADDRESS, batchTotalAmount],
+            chainId: arcTestnet.id,
+            contractAddress: effectiveTokenIn,
+            functionName: "approve",
+            refId: `PAYROLL-APPROVE-${batchTargetToken}-${Date.now()}`,
+          });
+          if (!approvalResult.hash && !approvalResult.txHash) {
+            const message = `Approval for ${batchTargetToken} was not confirmed.`;
+            state.setErrorMessage(message);
+            return { ok: false, hash: null, error: message };
+          }
+          const approvalHash = approvalResult.txHash ?? approvalResult.hash;
+
+          logPayrollRouteDiagnostic(
+            "[official-payroll-route] approval tx submitted",
+            { token: batchTargetToken, txHash: approvalHash },
+          );
+
+          if (approvalHash) {
+            state.setStatusMessage(
+              `Waiting for ${batchTargetToken} approval confirmation on Arc...`,
+            );
+            await publicClient.waitForTransactionReceipt({
+              hash: approvalHash as Hex,
+              confirmations: 1,
+            });
+          }
+
+          for (let attempt = 0; attempt < MAX_CONFIRMATION_POLLS; attempt += 1) {
+            const nextAllowance = (await publicClient.readContract({
+              address: effectiveTokenIn,
+              abi: ERC20_ABI,
+              functionName: "allowance",
+              args: [walletAddress, allowanceSpender],
+            })) as bigint;
+
+            if (nextAllowance >= batchTotalAmount) {
+              latestAllowance = nextAllowance;
+              break;
+            }
+
+            if (attempt < MAX_CONFIRMATION_POLLS - 1) {
+              await waitFor(POLL_INTERVAL_MS);
+            }
+          }
+
+          if (latestAllowance < batchTotalAmount) {
+            const message = `Approval for ${batchTargetToken} did not update before the timeout window ended.`;
+            state.setErrorMessage(message);
+            return { ok: false, hash: null, error: message };
+          }
+        } catch (approvalError) {
+          const message = `Failed to approve ${batchTargetToken}: ${getFriendlyErrorMessage(approvalError)}`;
+          state.setErrorMessage(message);
+          return { ok: false, hash: null, error: message };
+        }
+      } else {
+        const message = `Approve ${activeToken.symbol} before submitting this payroll batch.`;
+        state.setErrorMessage(message);
+        return { ok: false, hash: null, error: message };
+      }
     }
 
     const tokenOuts = batchPreparedRecipients.map(
@@ -558,9 +689,49 @@ export function useWizPayContract({
     );
 
     try {
-      const minAmountsOut = await getMinimumAmountsOut(
-        batchPreparedRecipients,
-        batchRecipients,
+      // For same-token payout after pre-swap, minimum amounts must account for
+      // the on-chain fee deduction. The contract calculates:
+      //   amountAfterFee = amountIn - (amountIn * feeBps / 10000)
+      // and reverts with DirectTransferBelowMinimum if amountAfterFee < minAmountOut.
+      const isSameTokenPayout = batchPreparedRecipients.every(
+        (recipient) =>
+          SUPPORTED_TOKENS[recipient.targetToken].address === effectiveTokenIn,
+      );
+      const minAmountsOut = isSameTokenPayout
+        ? amountsIn.map((a) => {
+            if (feeBps <= 0n) return a;
+            // Floor: amount after fee deduction
+            return (a * (10000n - feeBps)) / 10000n;
+          })
+        : await getMinimumAmountsOut(
+            batchPreparedRecipients,
+            batchRecipients,
+          );
+
+      logPayrollRouteDiagnostic(
+        "[official-payroll-route] batchRouteAndPay args",
+        {
+          tokenIn: {
+            symbol: effectiveTokenInSymbol,
+            address: effectiveTokenIn,
+          },
+          tokenOuts: tokenOuts.map((address) => ({
+            symbol: getTokenSymbolByAddress(address),
+            address,
+          })),
+          amounts: amountsIn.map((amount, index) => {
+            const token = batchPreparedRecipients[index]?.targetToken;
+            const decimals = token ? SUPPORTED_TOKENS[token].decimals : 0;
+
+            return {
+              amountUnits: amount.toString(),
+              humanAmount: token ? formatUnits(amount, decimals) : null,
+              token: token ?? null,
+            };
+          }),
+          minAmountsOut: minAmountsOut.map((amount) => amount.toString()),
+          referenceId,
+        },
       );
 
       if (walletMode !== "circle") {
@@ -570,7 +741,7 @@ export function useWizPayContract({
           account: walletAddress,
           functionName: "batchRouteAndPay",
           args: [
-            activeToken.address,
+            effectiveTokenIn,
             tokenOuts,
             recipients,
             amountsIn,
@@ -586,7 +757,7 @@ export function useWizPayContract({
       const executionResult = await executeTransaction({
         abi: WIZPAY_ABI,
         args: [
-          activeToken.address,
+          effectiveTokenIn,
           tokenOuts,
           recipients,
           amountsIn,
@@ -624,10 +795,15 @@ export function useWizPayContract({
 
       return { ok: true, hash: finalHash };
     } catch (error) {
+      const message = getFriendlyErrorMessage(error);
       state.setSubmitState("idle");
-      state.setErrorMessage(getFriendlyErrorMessage(error));
+      state.setErrorMessage(message);
       state.setStatusMessage(null);
-      return { ok: false, hash: null };
+      logPayrollRouteDiagnostic(
+        "[official-payroll-route] batchRouteAndPay FAILED",
+        { error: message, rawError: error },
+      );
+      return { ok: false, hash: null, error: message };
     }
   };
 

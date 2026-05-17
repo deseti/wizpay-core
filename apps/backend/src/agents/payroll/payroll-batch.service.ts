@@ -40,34 +40,51 @@ export class PayrollBatchService {
 
   /**
    * Split a flat recipient list into ordered batches of up to MAX_BATCH_SIZE.
+   * Recipients are grouped by targetToken first so each batch contains only
+   * one targetToken. This ensures the frontend can execute each batch as a
+   * same-token payout (e.g., all USDC or all EURC) without mixing.
    */
   splitIntoBatches(recipients: ValidatedRecipient[]): PayrollBatch[] {
+    // Group recipients by targetToken
+    const groups = new Map<string, ValidatedRecipient[]>();
+
+    for (const recipient of recipients) {
+      const token = recipient.targetToken;
+      const group = groups.get(token);
+
+      if (group) {
+        group.push(recipient);
+      } else {
+        groups.set(token, [recipient]);
+      }
+    }
+
     const batches: PayrollBatch[] = [];
 
-    for (
-      let i = 0;
-      i < recipients.length;
-      i += PayrollBatchService.MAX_BATCH_SIZE
-    ) {
-      const chunk = recipients.slice(
-        i,
-        i + PayrollBatchService.MAX_BATCH_SIZE,
-      );
+    // Process each targetToken group, splitting into chunks of MAX_BATCH_SIZE
+    for (const [, groupRecipients] of groups) {
+      for (
+        let i = 0;
+        i < groupRecipients.length;
+        i += PayrollBatchService.MAX_BATCH_SIZE
+      ) {
+        const chunk = groupRecipients.slice(
+          i,
+          i + PayrollBatchService.MAX_BATCH_SIZE,
+        );
 
-      const totalAmount = chunk.reduce(
-        (sum, r) => sum + r.amountUnits,
-        0n,
-      );
+        const totalAmount = chunk.reduce((sum, r) => sum + r.amountUnits, 0n);
 
-      batches.push({
-        index: batches.length,
-        recipients: chunk,
-        totalAmount,
-      });
+        batches.push({
+          index: batches.length,
+          recipients: chunk,
+          totalAmount,
+        });
+      }
     }
 
     this.logger.log(
-      `Split ${recipients.length} recipients into ${batches.length} batch(es)`,
+      `Split ${recipients.length} recipients into ${batches.length} batch(es) across ${groups.size} token group(s)`,
     );
 
     return batches;

@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import {
   EXPLORER_BASE_URL,
+  SUPPORTED_TOKENS,
   formatCompactAddress,
   formatTokenAmount,
   type TokenSymbol,
@@ -130,10 +131,13 @@ export function SuccessModal({
               <div className="flex flex-col gap-2">
                 {Object.entries(sessionTotalDistributed).map(([token, amount]) => {
                   if (amount === 0n) return null;
+                  const distributedToken = token as TokenSymbol;
+                  const distributedDecimals =
+                    SUPPORTED_TOKENS[distributedToken].decimals;
                   return (
                     <div key={token} className="flex justify-between items-center bg-background/50 rounded-xl px-3 py-2 border border-border/30">
                       <span className="font-mono text-lg font-bold">
-                        {formatTokenAmount(amount, decimals, 2)}
+                        {formatTokenAmount(amount, distributedDecimals, 2)}
                       </span>
                       <span className="text-sm font-medium text-muted-foreground">{token}</span>
                     </div>

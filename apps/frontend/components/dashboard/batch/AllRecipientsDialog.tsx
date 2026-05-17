@@ -10,7 +10,11 @@ import {
 } from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
 import { RECIPIENT_PREVIEW_LIMIT } from "@/lib/batch-csv";
-import { formatCompactAddress, formatTokenAmount } from "@/lib/wizpay";
+import {
+  formatCompactAddress,
+  formatTokenAmount,
+  SUPPORTED_TOKENS,
+} from "@/lib/wizpay";
 import type { PreparedRecipient, QuoteSummary } from "@/lib/types";
 import type { TokenSymbol } from "@/lib/wizpay";
 
@@ -154,7 +158,10 @@ export function AllRecipientsDialog({
                         <Skeleton className="mt-2 h-4 w-24 bg-muted/20" />
                       ) : (
                         <p className="mt-1 font-mono text-sm text-foreground/80">
-                          {formatTokenAmount(estimatedOut, 6)}{" "}
+                          {formatTokenAmount(
+                            estimatedOut,
+                            SUPPORTED_TOKENS[recipient.targetToken].decimals,
+                          )}{" "}
                           {recipient.targetToken}
                         </p>
                       )}

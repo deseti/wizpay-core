@@ -98,6 +98,7 @@ export interface UnifiedHistoryItem {
 export interface TransactionActionResult {
   ok: boolean;
   hash: string | null;
+  error?: string | null;
 }
 
 export type BackendTaskStatus =

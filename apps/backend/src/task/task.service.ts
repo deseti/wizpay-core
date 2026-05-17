@@ -135,16 +135,23 @@ export class TaskService {
       typeof payload.sourceToken === 'string' && payload.sourceToken.trim()
         ? payload.sourceToken.trim()
         : 'USDC';
-    const hasCrossCurrencyRecipient = validation.recipients.some(
-      (recipient) => recipient.targetToken !== sourceToken,
-    );
 
-    if (hasCrossCurrencyRecipient) {
-      throwOfficialStableFxAuthRequired();
-    }
+    // Cross-currency recipients are allowed when FX settlement has already
+    // been completed upstream by PayrollInitService. The PayrollAgent will
+    // transfer each recipient in their targetToken from the treasury.
+    // If crossCurrencySettled is not set and cross-currency recipients exist,
+    // the caller must have settled FX before reaching this point.
 
     const batches = this.batchService.splitIntoBatches(validation.recipients);
     const totals = this.batchService.calculateTotals(batches);
+
+    // Approval amount covers only same-token (sourceToken) recipients.
+    // Cross-token recipients (e.g., EURC after pre-swap) are approved
+    // separately by the frontend's handleSubmit auto-approval logic.
+    const sourceTokenApprovalAmount = validation.recipients
+      .filter((r) => r.targetToken === sourceToken)
+      .reduce((sum, r) => sum + r.amountUnits, 0n);
+
     const walletAddress =
       typeof payload.walletAddress === 'string' && payload.walletAddress.trim()
         ? payload.walletAddress.trim().toLowerCase()
@@ -180,7 +187,7 @@ export class TaskService {
           completedUnits: 0,
           failedUnits: 0,
           metadata: {
-            approvalAmount: totals.totalAmount.toString(),
+            approvalAmount: sourceTokenApprovalAmount.toString(),
             referenceId,
             sourceToken,
             ...(walletAddress ? { walletAddress } : {}),
@@ -242,7 +249,7 @@ export class TaskService {
 
     return {
       taskId: task.id,
-      approvalAmount: totals.totalAmount.toString(),
+      approvalAmount: sourceTokenApprovalAmount.toString(),
       referenceId,
       totalUnits: task.totalUnits,
       units: task.units
