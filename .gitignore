@@ -8,4 +8,4 @@ packages/contracts/lib/
 AGENTS.md
 agents/
 internal/
-.kiro/
+.kiro/.vscode/
