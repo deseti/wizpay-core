@@ -162,6 +162,29 @@ function SendWorkspace() {
           copiedHash={wp.copiedHash}
           copyHash={wp.copyHash}
         />
+
+        {wp.statusMessage && !wp.errorMessage && (
+          <div className="rounded-xl border border-cyan-500/20 bg-cyan-500/5 px-4 py-3 text-sm text-cyan-100/90">
+            {wp.statusMessage}
+          </div>
+        )}
+
+        {wp.errorMessage && (
+          <div className="flex items-start justify-between gap-3 rounded-xl border border-destructive/25 bg-destructive/5 px-4 py-3 text-sm text-destructive">
+            <span className="whitespace-pre-wrap break-all">{wp.errorMessage}</span>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                wp.setErrorMessage(null);
+                wp.setStatusMessage(null);
+              }}
+              className="shrink-0 text-destructive hover:text-destructive/80"
+            >
+              Dismiss
+            </Button>
+          </div>
+        )}
       </div>
 
       <SuccessModal

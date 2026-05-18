@@ -35,10 +35,21 @@ export async function backendFetch<T>(
   if (!response.ok) {
     const errorPayload = isRecord(payload) ? payload : {};
 
+    // NestJS error responses may have the message in different locations:
+    // - { error: "string message" }
+    // - { message: "string message", error: "Bad Request" }
+    // - { message: { code: "...", message: "..." }, error: "Bad Request" }
+    const nestedMessage = isRecord(errorPayload.message)
+      ? getString(errorPayload.message.message)
+      : getString(errorPayload.message);
+
     throw new BackendApiError(
-      getString(errorPayload.error) || `Backend request failed with status ${response.status}`,
+      getString(errorPayload.error) !== "Bad Request" && getString(errorPayload.error)
+        ? getString(errorPayload.error)!
+        : nestedMessage || `Backend request failed with status ${response.status}`,
       response.status,
-      getString(errorPayload.code),
+      getString(errorPayload.code) ||
+        (isRecord(errorPayload.message) ? getString(errorPayload.message.code) : undefined),
       getString(errorPayload.details),
       errorPayload,
     );

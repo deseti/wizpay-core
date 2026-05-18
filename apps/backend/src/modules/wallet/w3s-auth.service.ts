@@ -71,8 +71,29 @@ export class W3sAuthService {
         );
       case 'bridge':
         return this.bridgeActionStatus(params);
+      case 'getTransaction':
+        return this.getTransaction(
+          typeof params.transactionId === 'string'
+            ? params.transactionId
+            : '',
+        );
       case 'getWalletBalances':
         return this.getWalletBalances(params);
+      case 'listTransactions':
+        return this.listTransactions({
+          blockchain:
+            typeof params.blockchain === 'string'
+              ? params.blockchain
+              : undefined,
+          destinationAddress:
+            typeof params.destinationAddress === 'string'
+              ? params.destinationAddress
+              : undefined,
+          walletIds:
+            typeof params.walletIds === 'string'
+              ? params.walletIds
+              : undefined,
+        });
       default:
         throw new Error(`Unknown W3S action: ${action}`);
     }

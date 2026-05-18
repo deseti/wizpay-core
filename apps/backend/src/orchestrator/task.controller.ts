@@ -7,6 +7,7 @@ import {
   HttpException,
   HttpStatus,
   Inject,
+  Logger,
   Param,
   ParseIntPipe,
   ParseUUIDPipe,
@@ -23,12 +24,17 @@ import { TaskService } from '../task/task.service';
 import { TaskEmployeeBreakdownService } from '../task/task-employee-breakdown.service';
 import { TaskPayrollHistoryService } from '../task/task-payroll-history.service';
 import { CircleApiError, CircleService } from '../adapters/circle.service';
+import { PayrollFxSettlementService } from '../agents/payroll/payroll-fx-settlement.service';
+import { AppWalletSwapDepositVerifierService } from '../app-wallet-swap/app-wallet-swap-deposit-verifier.service';
+import type { AppWalletSwapToken } from '../app-wallet-swap/app-wallet-swap.types';
 import { OFFICIAL_STABLEFX_AUTH_REQUIRED } from '../fx/stablefx-cutover.guard';
 import { TaskType } from '../task/task-type.enum';
 import type { ReportTaskUnitInput } from '../task/task.types';
 
 @Controller('tasks')
 export class TaskController {
+  private readonly logger = new Logger(TaskController.name);
+
   constructor(
     private readonly orchestratorService: OrchestratorService,
     private readonly taskService: TaskService,
@@ -37,6 +43,8 @@ export class TaskController {
     private readonly taskPayrollHistoryService: TaskPayrollHistoryService,
     private readonly payrollInitService: PayrollInitService,
     private readonly circleService: CircleService,
+    private readonly payrollFxSettlementService: PayrollFxSettlementService,
+    private readonly appWalletDepositVerifier: AppWalletSwapDepositVerifierService,
   ) {}
 
   @Post('fx/quote')
@@ -107,6 +115,184 @@ export class TaskController {
   async initPayroll(@Body() payload: Record<string, unknown>) {
     return {
       data: await this.payrollInitService.prepare(payload ?? {}),
+    };
+  }
+
+  /**
+   * POST /tasks/payroll/fx-settle — Execute treasury-mediated FX settlement
+   * for App Wallet cross-currency payroll.
+   *
+   * Flow:
+   *   1. Verify the App Wallet has funded treasury with sourceToken
+   *   2. Treasury wallet swaps sourceToken → targetToken server-side
+   *   3. Treasury transfers targetToken to user's walletAddress
+   *
+   * After this completes, the user's wallet holds targetToken and can
+   * proceed with same-token payroll via /tasks/payroll/init.
+   */
+  @Post('payroll/fx-settle')
+  async settlePayrollFx(@Body() payload: Record<string, unknown>) {
+    const body = payload ?? {};
+    const sourceToken =
+      typeof body.sourceToken === 'string' && body.sourceToken.trim()
+        ? body.sourceToken.trim()
+        : '';
+    const targetToken =
+      typeof body.targetToken === 'string' && body.targetToken.trim()
+        ? body.targetToken.trim()
+        : '';
+    const sourceAmount =
+      typeof body.sourceAmount === 'string' && body.sourceAmount.trim()
+        ? body.sourceAmount.trim()
+        : '';
+    const referenceId =
+      typeof body.referenceId === 'string' && body.referenceId.trim()
+        ? body.referenceId.trim()
+        : '';
+    const walletAddress =
+      typeof body.walletAddress === 'string' && body.walletAddress.trim()
+        ? body.walletAddress.trim().toLowerCase()
+        : undefined;
+    const sourceFundingTxHash =
+      typeof body.sourceFundingTxHash === 'string' &&
+      body.sourceFundingTxHash.trim()
+        ? body.sourceFundingTxHash.trim()
+        : '';
+
+    if (!sourceToken || !targetToken || !sourceAmount || !referenceId) {
+      throw new BadRequestException(
+        'Missing required fields: sourceToken, targetToken, sourceAmount, referenceId',
+      );
+    }
+
+    if (sourceToken === targetToken) {
+      throw new BadRequestException(
+        'sourceToken and targetToken must be different for FX settlement.',
+      );
+    }
+
+    if (
+      !this.isSupportedAppWalletSwapToken(sourceToken) ||
+      !this.isSupportedAppWalletSwapToken(targetToken)
+    ) {
+      throw new BadRequestException(
+        'Only USDC and EURC are supported for App Wallet FX settlement.',
+      );
+    }
+
+    if (!walletAddress || !/^0x[a-fA-F0-9]{40}$/.test(walletAddress)) {
+      throw new BadRequestException(
+        'Valid walletAddress is required for App Wallet FX settlement payout.',
+      );
+    }
+
+    if (!/^0x[a-fA-F0-9]{64}$/.test(sourceFundingTxHash)) {
+      throw new BadRequestException(
+        'Valid sourceFundingTxHash is required before App Wallet FX settlement.',
+      );
+    }
+
+    this.logger.log(
+      `App Wallet payroll FX settle requested referenceId=${referenceId} route=${sourceToken}->${targetToken} sourceAmount=${sourceAmount} wallet=${walletAddress} sourceFundingTxHash=${sourceFundingTxHash}`,
+    );
+
+    this.logger.log(
+      `[payroll-fx-settle-diag] Verification params: ` +
+      `referenceId=${referenceId} ` +
+      `sourceToken=${sourceToken} ` +
+      `targetToken=${targetToken} ` +
+      `sourceAmount=${sourceAmount} ` +
+      `walletAddress=${walletAddress} ` +
+      `treasuryDepositAddress=${this.getArcTreasuryDepositAddress()} ` +
+      `sourceFundingTxHash=${sourceFundingTxHash}`,
+    );
+
+    const fundingVerification =
+      await this.appWalletDepositVerifier.verifyDeposit({
+        amountIn: sourceAmount,
+        depositTxHash: sourceFundingTxHash,
+        tokenIn: sourceToken,
+        treasuryDepositAddress: this.getArcTreasuryDepositAddress(),
+        userWalletAddress: walletAddress,
+      });
+
+    if (!fundingVerification.confirmed) {
+      this.logger.warn(
+        `[payroll-fx-settle-diag] FUNDING VERIFICATION FAILED: ` +
+        `referenceId=${referenceId} ` +
+        `error="${fundingVerification.error}" ` +
+        `sourceAmount=${sourceAmount} ` +
+        `walletAddress=${walletAddress} ` +
+        `treasuryDepositAddress=${this.getArcTreasuryDepositAddress()} ` +
+        `sourceFundingTxHash=${sourceFundingTxHash} ` +
+        `tokenIn=${sourceToken}`,
+      );
+      throw new BadRequestException({
+        code: 'PAYROLL_FX_SOURCE_FUNDING_UNCONFIRMED',
+        message:
+          fundingVerification.error ??
+          'Source funding transaction is not confirmed.',
+      });
+    }
+
+    this.logger.log(
+      `App Wallet payroll FX source funding verified referenceId=${referenceId} confirmedAmount=${fundingVerification.confirmedAmount ?? sourceAmount}`,
+    );
+
+    // Step 1: Execute the swap (treasury swaps sourceToken → targetToken)
+    const settlement = await this.payrollFxSettlementService.settle({
+      sourceToken,
+      targetToken,
+      sourceAmount,
+      referenceId,
+      walletAddress,
+    });
+
+    if (settlement.status !== 'settled' || !settlement.txHash) {
+      throw new BadGatewayException({
+        code: 'PAYROLL_FX_SETTLEMENT_SWAP_FAILED',
+        message: `Treasury swap failed: status=${settlement.status}, txHash=${settlement.txHash ?? 'null'}`,
+      });
+    }
+
+    // Step 2: Transfer targetToken from treasury to user's wallet
+    const payoutAmount = this.formatBaseUnitsToHuman(settlement.targetAmount, 6);
+    const payoutTransfer = await this.circleService.transfer({
+      network: 'ARC-TESTNET',
+      token: targetToken,
+      toAddress: walletAddress,
+      amount: payoutAmount,
+      idempotencyKey: `payroll-fx-payout-${referenceId}`,
+    });
+
+    this.logger.log(
+      `App Wallet payroll FX payout submitted referenceId=${referenceId} txId=${payoutTransfer.txId ?? 'null'} txHash=${payoutTransfer.txHash ?? 'null'}`,
+    );
+
+    // Step 3: Wait for payout confirmation
+    let payoutTxHash = payoutTransfer.txHash;
+
+    if (!payoutTxHash && payoutTransfer.txId) {
+      const confirmed = await this.circleService.waitForTransactionComplete(
+        payoutTransfer.txId,
+      );
+      payoutTxHash = confirmed.txHash;
+    }
+
+    this.logger.log(
+      `App Wallet payroll FX settle completed referenceId=${referenceId} settlementTxHash=${settlement.txHash} payoutTxHash=${payoutTxHash ?? 'null'}`,
+    );
+
+    return {
+      data: {
+        ...settlement,
+        payoutTxHash: payoutTxHash ?? null,
+        payoutAmount: settlement.targetAmount,
+        sourceFundingTxHash,
+        sourceFundingAmount:
+          fundingVerification.confirmedAmount ?? sourceAmount,
+        walletAddress,
+      },
     };
   }
 
@@ -241,6 +427,39 @@ export class TaskController {
         id,
       ),
     };
+  }
+
+  private formatBaseUnitsToHuman(value: string, decimals: number): string {
+    const amount = BigInt(value);
+    const scale = 10n ** BigInt(decimals);
+    const whole = amount / scale;
+    const fraction = amount % scale;
+
+    if (fraction === 0n) {
+      return whole.toString();
+    }
+
+    return `${whole}.${fraction.toString().padStart(decimals, '0').replace(/0+$/, '')}`;
+  }
+
+  private getArcTreasuryDepositAddress(): string {
+    const address = process.env.CIRCLE_WALLET_ADDRESS_ARC?.trim().toLowerCase();
+
+    if (!address || !/^0x[a-fA-F0-9]{40}$/.test(address)) {
+      throw new BadGatewayException({
+        code: 'PAYROLL_FX_TREASURY_NOT_CONFIGURED',
+        message:
+          'Arc treasury deposit address is not configured for App Wallet payroll FX settlement.',
+      });
+    }
+
+    return address;
+  }
+
+  private isSupportedAppWalletSwapToken(
+    value: string,
+  ): value is AppWalletSwapToken {
+    return value === 'USDC' || value === 'EURC';
   }
 }
 

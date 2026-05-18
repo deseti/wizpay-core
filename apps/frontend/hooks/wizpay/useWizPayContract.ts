@@ -619,21 +619,40 @@ export function useWizPayContract({
             state.setErrorMessage(message);
             return { ok: false, hash: null, error: message };
           }
-          const approvalHash = approvalResult.txHash ?? approvalResult.hash;
+          // Only use txHash if it's a real EVM hash. The `hash` field may
+          // contain a Circle referenceId (UUID) which must NOT be passed to RPC.
+          const approvalEvmHash =
+            approvalResult.txHash && /^0x[a-fA-F0-9]{64}$/.test(approvalResult.txHash)
+              ? approvalResult.txHash
+              : approvalResult.hash && /^0x[a-fA-F0-9]{64}$/.test(approvalResult.hash)
+                ? approvalResult.hash
+                : null;
 
           logPayrollRouteDiagnostic(
             "[official-payroll-route] approval tx submitted",
-            { token: batchTargetToken, txHash: approvalHash },
+            {
+              token: batchTargetToken,
+              txHash: approvalEvmHash,
+              rawHash: approvalResult.hash,
+              rawTxHash: approvalResult.txHash,
+            },
           );
 
-          if (approvalHash) {
+          if (approvalEvmHash) {
             state.setStatusMessage(
               `Waiting for ${batchTargetToken} approval confirmation on Arc...`,
             );
             await publicClient.waitForTransactionReceipt({
-              hash: approvalHash as Hex,
+              hash: approvalEvmHash as Hex,
               confirmations: 1,
             });
+          } else {
+            // No EVM hash available (Circle W3S mode) — wait briefly then
+            // rely on the allowance polling below to confirm the approval.
+            state.setStatusMessage(
+              `Confirming ${batchTargetToken} approval...`,
+            );
+            await waitFor(3000);
           }
 
           for (let attempt = 0; attempt < MAX_CONFIRMATION_POLLS; attempt += 1) {
