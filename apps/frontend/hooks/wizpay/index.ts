@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { usePublicClient, useWalletClient } from "wagmi";
-import { getAddress, isAddress } from "viem";
+import { formatUnits, getAddress, isAddress, type Hex } from "viem";
 import type { QuoteSummary, WizPayState } from "@/lib/types";
 
+import { useCircleWallet } from "@/components/providers/CircleWalletProvider";
 import { useWizPayState } from "./useWizPayState";
 import { useWizPayContract } from "./useWizPayContract";
 import { useWizPayHistory } from "./useWizPayHistory";
@@ -22,6 +23,7 @@ import {
   type UserSwapQuoteRequest,
 } from "@/lib/user-swap-service";
 import {
+  findFirstString,
   getUserSwapExpectedOutputValue,
   getUserSwapMinimumOutputValue,
   parseUserSwapQuoteAmount,
@@ -30,16 +32,79 @@ import {
   parseAmountToUnits,
   PREVIEW_SLIPPAGE_BPS,
   SUPPORTED_TOKENS,
+  isTransactionHash,
   type TokenSymbol,
 } from "@/lib/wizpay";
 import { useActiveWalletAddress } from "@/hooks/useActiveWalletAddress";
 import { BackendApiError } from "@/lib/backend-api";
+import {
+  settlePayrollFx,
+  resolveCircleFundingTxHash,
+  PayrollFxRecoveryError,
+} from "@/lib/payroll-fx-settlement-service";
+import {
+  APP_WALLET_SWAP_CHAIN,
+  quoteAppWalletSwap,
+} from "@/lib/app-wallet-swap-service";
 
 const OFFICIAL_PAYROLL_QUOTE_UNAVAILABLE =
   "Official payroll route quote unavailable. Payroll cannot proceed.";
 
 function isPositiveDecimal(value: string) {
   return parseFloat(value) > 0 && Number.isFinite(Number(value));
+}
+
+function getCircleTxHash(...values: unknown[]): Hex | null {
+  for (const value of values) {
+    const candidate =
+      findFirstString(value, [
+        "data.txHash",
+        "data.transactionHash",
+        "data.hash",
+        "data.transaction.txHash",
+        "data.transaction.transactionHash",
+        "data.transaction.hash",
+        "data.transactions.0.txHash",
+        "data.transactions.0.transactionHash",
+        "data.transactions.0.hash",
+        "transaction.txHash",
+        "transaction.transactionHash",
+        "transaction.hash",
+        "transactions.0.txHash",
+        "transactions.0.transactionHash",
+        "transactions.0.hash",
+        "txHash",
+        "transactionHash",
+        "hash",
+      ]) ?? null;
+
+    if (candidate && isTransactionHash(candidate)) {
+      return candidate as Hex;
+    }
+  }
+
+  return null;
+}
+
+function getCircleTransactionId(...values: unknown[]) {
+  for (const value of values) {
+    const candidate = findFirstString(value, [
+      "data.transactionId",
+      "data.transaction.id",
+      "data.transactions.0.id",
+      "data.id",
+      "transaction.id",
+      "transactions.0.id",
+      "transactionId",
+      "id",
+    ]);
+
+    if (candidate && !isTransactionHash(candidate)) {
+      return candidate;
+    }
+  }
+
+  return null;
 }
 
 function allocateQuoteOutput(
@@ -85,6 +150,7 @@ function logOfficialQuoteDiagnostic(
 export function useWizPay(): WizPayState {
   // 1. Initialize UI / Local State
   const state = useWizPayState();
+  const { referenceId, setStatusMessage } = state;
   const preparedRecipients = useResolvedRecipients(state.recipients);
 
   // 1a. Derived Batch values
@@ -107,6 +173,13 @@ export function useWizPay(): WizPayState {
 
   // 2a. External Wallet Swap adapter for cross-currency payroll
   const { walletAddress, walletMode } = useActiveWalletAddress();
+  const {
+    arcWallet,
+    createTransferChallenge,
+    ensureSessionReady,
+    executeChallenge,
+    getWalletBalances,
+  } = useCircleWallet();
   const publicClient = usePublicClient({ chainId: arcTestnet.id });
   const { data: walletClient } = useWalletClient();
 
@@ -163,6 +236,16 @@ export function useWizPay(): WizPayState {
     return getAddress(walletAddress);
   }, [walletAddress, walletMode]);
 
+  // Quote preview address: used for official quote requests regardless of wallet mode.
+  // Both App Wallet and External Wallet can request quotes for display purposes.
+  const quotePreviewAddress = useMemo(() => {
+    if (!walletAddress || !isAddress(walletAddress)) {
+      return null;
+    }
+
+    return getAddress(walletAddress);
+  }, [walletAddress]);
+
   const [officialQuote, setOfficialQuote] = useState<{
     targetToken: TokenSymbol | null;
     expectedOutput: string | null;
@@ -187,7 +270,7 @@ export function useWizPay(): WizPayState {
     if (
       !crossCurrencyTarget ||
       contract.activeToken.symbol === crossCurrencyTarget ||
-      !externalWalletAddress ||
+      !quotePreviewAddress ||
       !isPositiveDecimal(crossCurrencyAmount)
     ) {
       queueMicrotask(() => {
@@ -211,8 +294,8 @@ export function useWizPay(): WizPayState {
       tokenIn: contract.activeToken.symbol,
       tokenOut: crossCurrencyTarget,
       amountIn: crossCurrencyAmount,
-      fromAddress: externalWalletAddress,
-      toAddress: externalWalletAddress,
+      fromAddress: quotePreviewAddress,
+      toAddress: quotePreviewAddress,
       chain: USER_SWAP_CHAIN,
     };
 
@@ -305,7 +388,7 @@ export function useWizPay(): WizPayState {
   }, [
     crossCurrencyTarget,
     crossCurrencyAmount,
-    externalWalletAddress,
+    quotePreviewAddress,
     contract.activeToken.symbol,
   ]);
 
@@ -473,6 +556,326 @@ export function useWizPay(): WizPayState {
     [swapAdapter, externalWalletAddress, publicClient],
   );
 
+  const executeAppWalletPreSwap = useCallback(
+    async (params: {
+      sourceToken: TokenSymbol;
+      targetToken: TokenSymbol;
+      amount: string;
+    }): Promise<PreSwapResult> => {
+      if (!walletAddress) {
+        throw new Error(
+          "App Wallet address is not available for FX settlement.",
+        );
+      }
+
+      await ensureSessionReady();
+
+      if (!arcWallet?.id) {
+        throw new Error("Arc App Wallet is not ready for payroll funding.");
+      }
+
+      logOfficialQuoteDiagnostic(
+        "[official-payroll-route] App Wallet payroll funding quote request",
+        {
+          sourceToken: params.sourceToken,
+          targetToken: params.targetToken,
+          amount: params.amount,
+          walletAddress,
+          referenceId,
+        },
+      );
+
+      const fundingQuote = await quoteAppWalletSwap({
+        tokenIn: params.sourceToken,
+        tokenOut: params.targetToken,
+        amountIn: params.amount,
+        fromAddress: walletAddress,
+        chain: APP_WALLET_SWAP_CHAIN,
+      });
+
+      const balances = await getWalletBalances(arcWallet.id);
+      const sourceTokenConfig = SUPPORTED_TOKENS[params.sourceToken];
+      const tokenBalance = balances.find((balance) => {
+        const symbolMatches = balance.symbol === params.sourceToken;
+        const addressMatches =
+          balance.tokenAddress?.toLowerCase() ===
+          sourceTokenConfig.address.toLowerCase();
+
+        return symbolMatches || addressMatches;
+      });
+
+      if (!tokenBalance?.tokenId) {
+        throw new Error(
+          `${params.sourceToken} token metadata is missing for App Wallet payroll funding.`,
+        );
+      }
+
+      const fundingAmount = formatUnits(
+        BigInt(params.amount),
+        sourceTokenConfig.decimals,
+      );
+      const fundingReferenceId = `PAYROLL-FX-FUND-${referenceId}-${params.targetToken}`;
+      const runStartTime = new Date().toISOString();
+
+      setStatusMessage(
+        `Funding treasury with ${fundingAmount} ${params.sourceToken} from App Wallet...`,
+      );
+
+      const fundingChallenge = await createTransferChallenge({
+        walletId: arcWallet.id,
+        destinationAddress: fundingQuote.treasuryDepositAddress,
+        tokenId: tokenBalance.tokenId,
+        amounts: [fundingAmount],
+        feeLevel: "HIGH",
+        refId: fundingReferenceId,
+      });
+      const fundingChallengeResult = await executeChallenge(
+        fundingChallenge.challengeId,
+      );
+      let sourceFundingTxHash = getCircleTxHash(
+        fundingChallengeResult,
+        fundingChallenge.raw,
+      );
+      const circleTransactionId = getCircleTransactionId(
+        fundingChallengeResult,
+        fundingChallenge.raw,
+      );
+
+      logOfficialQuoteDiagnostic(
+        "[official-payroll-route] App Wallet funding challenge result",
+        {
+          hasTxHash: Boolean(sourceFundingTxHash),
+          sourceFundingTxHash: sourceFundingTxHash ?? null,
+          hasTransactionId: Boolean(circleTransactionId),
+          circleTransactionId: circleTransactionId ?? null,
+          challengeId: fundingChallenge.challengeId,
+          walletId: arcWallet.id,
+          destinationAddress: fundingQuote.treasuryDepositAddress,
+          challengeResultType: typeof fundingChallengeResult,
+          challengeResultKeys:
+            fundingChallengeResult && typeof fundingChallengeResult === "object"
+              ? Object.keys(fundingChallengeResult as object)
+              : [],
+          challengeResultRaw: fundingChallengeResult,
+          challengeRawKeys:
+            fundingChallenge.raw && typeof fundingChallenge.raw === "object"
+              ? Object.keys(fundingChallenge.raw as object)
+              : [],
+          challengeRaw: fundingChallenge.raw,
+        },
+      );
+
+      // ── Post-funding continuation (wrapped for recovery context) ──
+      // After this point, source funds have been debited. Any failure
+      // must surface a recoverable error with tx context.
+      const recoveryContext = {
+        fundingCircleTxId: circleTransactionId ?? null,
+        fundingChallengeId: fundingChallenge.challengeId,
+        fundingTxHash: sourceFundingTxHash as string | null,
+        settlementTxHash: null as string | null,
+        payoutTxHash: null as string | null,
+      };
+
+      try {
+        if (!sourceFundingTxHash) {
+          logOfficialQuoteDiagnostic(
+            "[official-payroll-route] No direct txHash — starting resolveCircleFundingTxHash",
+            {
+              circleTransactionId: circleTransactionId ?? null,
+              challengeId: fundingChallenge.challengeId,
+              walletId: arcWallet.id,
+              destinationAddress: fundingQuote.treasuryDepositAddress,
+            },
+          );
+
+          setStatusMessage(
+            "Funding confirmed. Resolving transaction...",
+          );
+
+          sourceFundingTxHash = (await resolveCircleFundingTxHash({
+            circleTransactionId,
+            challengeId: fundingChallenge.challengeId,
+            walletId: arcWallet.id,
+            destinationAddress: fundingQuote.treasuryDepositAddress,
+            expectedAmount: fundingAmount,
+            refId: fundingReferenceId,
+            runStartTime,
+            onAttempt: (attempt, strategy) => {
+              setStatusMessage(
+                `Resolving funding transaction... (attempt ${attempt}, ${strategy})`,
+              );
+              logOfficialQuoteDiagnostic(
+                "[official-payroll-route] polling App Wallet payroll funding transaction",
+                {
+                  attempt,
+                  strategy,
+                  circleTransactionId,
+                  challengeId: fundingChallenge.challengeId,
+                  fundingReferenceId,
+                  walletId: arcWallet!.id,
+                  destinationAddress: fundingQuote.treasuryDepositAddress,
+                  expectedAmount: fundingAmount,
+                  runStartTime,
+                  sourceToken: params.sourceToken,
+                },
+              );
+            },
+          })) as Hex;
+
+          recoveryContext.fundingTxHash = sourceFundingTxHash;
+
+          logOfficialQuoteDiagnostic(
+            "[official-payroll-route] resolveCircleFundingTxHash SUCCESS",
+            { sourceFundingTxHash },
+          );
+        }
+
+        if (publicClient) {
+          logOfficialQuoteDiagnostic(
+            "[official-payroll-route] waiting for funding tx on-chain confirmation",
+            { sourceFundingTxHash },
+          );
+
+          setStatusMessage(
+            `Waiting for ${params.sourceToken} funding confirmation on Arc...`,
+          );
+
+          await publicClient.waitForTransactionReceipt({
+            hash: sourceFundingTxHash,
+            confirmations: 1,
+          });
+
+          logOfficialQuoteDiagnostic(
+            "[official-payroll-route] funding tx confirmed on-chain",
+            { sourceFundingTxHash },
+          );
+        }
+
+        setStatusMessage(
+          "Funding confirmed. Executing FX settlement...",
+        );
+
+        // Guard: only call settlePayrollFx with a valid EVM txHash
+        if (!isTransactionHash(sourceFundingTxHash)) {
+          throw new Error(
+            `Cannot call FX settlement: sourceFundingTxHash is not a valid EVM hash. ` +
+            `Got: ${sourceFundingTxHash}`,
+          );
+        }
+
+        logOfficialQuoteDiagnostic(
+          "[official-payroll-route] calling settlePayrollFx",
+          {
+            sourceFundingTxHash,
+            fundingReferenceId,
+            treasuryDepositAddress: fundingQuote.treasuryDepositAddress,
+            settleParams: {
+              sourceToken: params.sourceToken,
+              targetToken: params.targetToken,
+              sourceAmount: params.amount,
+              referenceId: `PAYROLL-FX-${referenceId}-${params.targetToken}`,
+              walletAddress,
+            },
+          },
+        );
+
+        const result = await settlePayrollFx({
+          sourceToken: params.sourceToken,
+          targetToken: params.targetToken,
+          sourceAmount: params.amount,
+          referenceId: `PAYROLL-FX-${referenceId}-${params.targetToken}`,
+          walletAddress,
+          sourceFundingTxHash,
+        });
+
+        logOfficialQuoteDiagnostic(
+          "[official-payroll-route] settlePayrollFx response",
+          {
+            status: result.status,
+            txHash: result.txHash,
+            payoutTxHash: result.payoutTxHash ?? null,
+            targetAmount: result.targetAmount,
+            sourceAmount: result.sourceAmount,
+            sourceToken: result.sourceToken,
+            targetToken: result.targetToken,
+          },
+        );
+
+        recoveryContext.settlementTxHash = result.txHash;
+
+        if (result.status !== "settled" || !result.txHash) {
+          throw new Error(
+            `App Wallet FX settlement failed: status=${result.status}, txHash=${result.txHash ?? "null"}`,
+          );
+        }
+
+        const payoutHash = (result.payoutTxHash ?? result.txHash) as Hex;
+        recoveryContext.payoutTxHash = payoutHash;
+
+        if (publicClient && payoutHash && isTransactionHash(payoutHash)) {
+          setStatusMessage(
+            "FX settlement complete. Waiting for target token payout...",
+          );
+
+          logOfficialQuoteDiagnostic(
+            "[official-payroll-route] waiting for payout tx on-chain confirmation",
+            { payoutHash },
+          );
+
+          await publicClient.waitForTransactionReceipt({
+            hash: payoutHash,
+            confirmations: 1,
+          });
+
+          logOfficialQuoteDiagnostic(
+            "[official-payroll-route] payout tx confirmed on-chain",
+            { payoutHash },
+          );
+        }
+
+        setStatusMessage(
+          "Target token received. Submitting payroll...",
+        );
+
+        return {
+          settledToken: params.targetToken,
+          txHash: payoutHash,
+        };
+      } catch (postFundingError) {
+        // Wrap any post-funding error with recovery context
+        const originalMessage =
+          postFundingError instanceof Error
+            ? postFundingError.message
+            : String(postFundingError);
+
+        logOfficialQuoteDiagnostic(
+          "[official-payroll-route] POST-FUNDING ERROR — wrapping with recovery context",
+          { originalMessage, recoveryContext },
+        );
+
+        throw new PayrollFxRecoveryError(originalMessage, {
+          ...recoveryContext,
+          step: recoveryContext.settlementTxHash
+            ? "waiting_payout"
+            : recoveryContext.fundingTxHash
+              ? "settling_fx"
+              : "resolving_tx_hash",
+        });
+      }
+    },
+    [
+      arcWallet?.id,
+      createTransferChallenge,
+      ensureSessionReady,
+      executeChallenge,
+      getWalletBalances,
+      publicClient,
+      referenceId,
+      setStatusMessage,
+      walletAddress,
+    ],
+  );
+
   const getPreSwapPayoutAmounts = useCallback(
     (targetToken: TokenSymbol) => {
       if (
@@ -515,14 +918,34 @@ export function useWizPay(): WizPayState {
     ],
   );
 
-  const officialQuoteRequired =
-    walletMode === "external" && Boolean(crossCurrencyTarget);
+  // ── Cross-currency quote and execution availability ─────────────────
+  // Quote preview: available for BOTH wallet modes when cross-currency is detected.
+  // Execution: available for External Wallet (browser wallet signing) and
+  // App Wallet (treasury-mediated server-side swap via PayrollFxSettlementService).
+
+  const officialQuotePreviewEnabled = Boolean(crossCurrencyTarget);
+  const appWalletCrossCurrencyExecutionSupported = true;
+
+  // officialQuoteRequired gates execution readiness for both wallet modes
+  // when cross-currency is detected.
+  const officialQuoteRequired = Boolean(crossCurrencyTarget);
   const officialQuoteReady = Boolean(
     officialQuoteRequired &&
       officialQuote.expectedOutputUnits &&
       !officialQuote.loading &&
       !officialQuote.error,
   );
+
+  // Determine if App Wallet cross-currency should block Send
+  const appWalletCrossCurrencyBlocked =
+    walletMode === "circle" &&
+    Boolean(crossCurrencyTarget) &&
+    !appWalletCrossCurrencyExecutionSupported;
+
+  const appWalletCrossCurrencyMessage = appWalletCrossCurrencyBlocked
+    ? "App Wallet cross-currency payroll execution is not available yet. Use External Wallet for route-swap payroll."
+    : null;
+
   const officialQuoteIssue = officialQuoteRequired
     ? officialQuote.error ??
       (officialQuote.loading
@@ -531,25 +954,59 @@ export function useWizPay(): WizPayState {
           ? `Official quote unavailable for ${contract.activeToken.symbol} -> ${crossCurrencyTarget} aggregate amount.`
           : OFFICIAL_PAYROLL_QUOTE_UNAVAILABLE)
     : null;
-  const officialQuoteDiagnostics = officialQuoteIssue
-    ? preparedRecipients.map((recipient) =>
-        recipient.targetToken !== contract.activeToken.symbol
-          ? officialQuoteIssue
-          : null,
-      )
-    : officialQuoteRequired && officialQuote.loading
-      ? preparedRecipients.map((recipient) =>
+
+  // Row diagnostics for cross-currency recipients
+  const officialQuoteDiagnostics = (() => {
+    // App Wallet cross-currency: show execution-blocked message on cross rows
+    if (appWalletCrossCurrencyBlocked) {
+      if (officialQuote.loading) {
+        return preparedRecipients.map((recipient) =>
           recipient.targetToken !== contract.activeToken.symbol
             ? "Loading official payroll route quote..."
             : null,
-        )
-      : officialQuoteRequired
-        ? preparedRecipients.map((recipient) =>
-            recipient.targetToken !== contract.activeToken.symbol
-              ? null // Quote succeeded — no diagnostic needed
-              : null,
-          )
-        : null;
+        );
+      }
+      if (officialQuote.error || !officialQuote.expectedOutputUnits) {
+        return preparedRecipients.map((recipient) =>
+          recipient.targetToken !== contract.activeToken.symbol
+            ? officialQuote.error ??
+              `Official quote unavailable for ${contract.activeToken.symbol} -> ${crossCurrencyTarget}.`
+            : null,
+        );
+      }
+      // Quote succeeded but execution not available
+      return preparedRecipients.map((recipient) =>
+        recipient.targetToken !== contract.activeToken.symbol
+          ? appWalletCrossCurrencyMessage
+          : null,
+      );
+    }
+
+    // External Wallet cross-currency
+    if (officialQuoteIssue) {
+      return preparedRecipients.map((recipient) =>
+        recipient.targetToken !== contract.activeToken.symbol
+          ? officialQuoteIssue
+          : null,
+      );
+    }
+    if (officialQuoteRequired && officialQuote.loading) {
+      return preparedRecipients.map((recipient) =>
+        recipient.targetToken !== contract.activeToken.symbol
+          ? "Loading official payroll route quote..."
+          : null,
+      );
+    }
+    if (officialQuoteRequired) {
+      return preparedRecipients.map((recipient) =>
+        recipient.targetToken !== contract.activeToken.symbol
+          ? null // Quote succeeded — no diagnostic needed
+          : null,
+      );
+    }
+
+    return null;
+  })();
 
   const batchPayroll = useBatchPayroll({
     activeToken: contract.activeToken,
@@ -562,12 +1019,18 @@ export function useWizPay(): WizPayState {
     setStatusMessage: state.setStatusMessage,
     setErrorMessage: state.setErrorMessage,
     submitCurrentBatch: contract.handleSubmit,
-    executePreSwap: walletMode === "external" ? executePreSwap : undefined,
-    getPreSwapPayoutAmounts:
-      walletMode === "external" ? getPreSwapPayoutAmounts : undefined,
+    executePreSwap:
+      walletMode === "external"
+        ? executePreSwap
+        : walletMode === "circle"
+          ? executeAppWalletPreSwap
+          : undefined,
+    getPreSwapPayoutAmounts: getPreSwapPayoutAmounts,
     officialQuoteRequired,
     officialQuoteReady,
-    officialQuoteError: officialQuoteIssue,
+    officialQuoteError: appWalletCrossCurrencyBlocked
+      ? appWalletCrossCurrencyMessage
+      : officialQuoteIssue,
   });
 
   // 3. Initialize History
@@ -581,7 +1044,7 @@ export function useWizPay(): WizPayState {
   });
 
   const isBusy =
-    batchPayroll.isRunning ||
+    (batchPayroll.isRunning && !batchPayroll.fxStatus?.recoverableError) ||
     state.approvalState === "signing" ||
     state.approvalState === "confirming" ||
     state.submitState === "simulating" ||
@@ -589,9 +1052,11 @@ export function useWizPay(): WizPayState {
     state.submitState === "confirming";
 
   const smartBatchCount = batchPayroll.task?.totalUnits ?? state.totalBatches;
-  const smartBatchButtonText = batchPayroll.isRunning
-    ? batchPayroll.progress.label ?? "Sending..."
-    : "Send";
+  const smartBatchButtonText = batchPayroll.fxStatus?.recoverableError
+    ? "Retry verification"
+    : batchPayroll.isRunning
+      ? batchPayroll.progress.label ?? "Sending..."
+      : "Send";
   const requiresSmartBatchApproval =
     batchPayroll.totalAmount > 0n &&
     contract.currentAllowance < batchPayroll.totalAmount;
@@ -651,6 +1116,79 @@ export function useWizPay(): WizPayState {
             ? `Approve ${state.selectedToken} via Permit2`
             : `Approve ${state.selectedToken} via Circle`;
 
+  // ── Dev-only App Wallet gating diagnostic ──────────────────────────
+  useEffect(() => {
+    if (process.env.NODE_ENV === "production") return;
+    const allRecipients = [state.recipients, ...state.pendingBatches].flat();
+    const targetTokens = Array.from(
+      new Set(allRecipients.map((r) => r.targetToken)),
+    );
+    const canSend = batchPayroll.isSupported && Boolean(batchPayroll.execute);
+    const disabledReasons: string[] = [];
+    if (isBusy) disabledReasons.push("isBusy");
+    if (batchPayroll.isRunning) disabledReasons.push("smartBatchRunning");
+    if (contract.insufficientBalance) disabledReasons.push("insufficientBalance");
+    if (!canSend) disabledReasons.push("!canSend (smartBatchAvailable=" + String(batchPayroll.isSupported) + ")");
+
+    console.info("[app-wallet-gating-diagnostic]", {
+      walletMode,
+      walletAddress: walletAddress ?? null,
+      activeToken: contract.activeToken.symbol,
+      recipientCount: allRecipients.length,
+      targetTokens,
+      crossCurrencyTarget: crossCurrencyTarget ?? null,
+      batchAmount: batchAmount.toString(),
+      currentBalance: contract.currentBalance.toString(),
+      currentAllowance: contract.currentAllowance.toString(),
+      insufficientBalance: contract.insufficientBalance,
+      officialQuoteRequired,
+      officialQuotePreviewEnabled,
+      officialQuoteReady,
+      officialQuoteLoading: officialQuote.loading,
+      officialQuoteError: officialQuote.error ?? null,
+      officialQuoteIssue: officialQuoteIssue ?? null,
+      appWalletCrossCurrencyBlocked,
+      appWalletCrossCurrencyExecutionSupported,
+      "batchPayroll.isSupported": batchPayroll.isSupported,
+      smartBatchAvailable: batchPayroll.isSupported,
+      handleSmartBatchSubmitExists: Boolean(batchPayroll.execute),
+      canSend,
+      isBusy,
+      disabledReasons: disabledReasons.length > 0 ? disabledReasons : ["none — button should be enabled"],
+      theyReceiveSource: officialQuotePreviewEnabled
+        ? officialQuote.expectedOutputUnits
+          ? "official quote"
+          : officialQuote.loading
+            ? "loading"
+            : "unavailable"
+        : "same-token (no quote needed)",
+    });
+  }, [
+    walletMode,
+    walletAddress,
+    contract.activeToken.symbol,
+    contract.currentBalance,
+    contract.currentAllowance,
+    contract.insufficientBalance,
+    state.recipients,
+    state.pendingBatches,
+    batchAmount,
+    crossCurrencyTarget,
+    officialQuoteRequired,
+    officialQuotePreviewEnabled,
+    officialQuoteReady,
+    officialQuote.loading,
+    officialQuote.error,
+    officialQuote.expectedOutputUnits,
+    officialQuoteIssue,
+    appWalletCrossCurrencyBlocked,
+    appWalletCrossCurrencyExecutionSupported,
+    batchPayroll.isSupported,
+    batchPayroll.isRunning,
+    batchPayroll.execute,
+    isBusy,
+  ]);
+
   // 4. Return unified state matching the previous monolithic footprint
   return {
     ...state,
@@ -658,7 +1196,8 @@ export function useWizPay(): WizPayState {
     ...contract,
     ...history,
     // Override quote with official source when cross-currency is detected
-    ...(officialQuoteRequired
+    // Applies to BOTH wallet modes so "They Receive" shows real quote output
+    ...(officialQuotePreviewEnabled
       ? {
           quoteSummary: officialQuoteSummary ?? {
             estimatedAmountsOut: preparedRecipients.map(() => 0n),
@@ -669,7 +1208,9 @@ export function useWizPay(): WizPayState {
           quoteRefreshing: officialQuote.loading,
           rowDiagnostics:
             officialQuoteDiagnostics ?? preparedRecipients.map(() => null),
-          hasRouteIssue: Boolean(officialQuoteIssue),
+          hasRouteIssue: Boolean(
+            officialQuoteIssue || appWalletCrossCurrencyBlocked,
+          ),
         }
       : {}),
     batchAmount,
@@ -680,13 +1221,15 @@ export function useWizPay(): WizPayState {
     primaryActionText,
     approvalText,
     smartBatchAvailable: batchPayroll.isSupported,
-    smartBatchRunning: batchPayroll.isRunning,
+    smartBatchRunning: batchPayroll.isRunning && !batchPayroll.fxStatus?.recoverableError,
     smartBatchReason: batchPayroll.availabilityReason,
     smartBatchButtonText,
     smartBatchHelperText,
     smartBatchSubmissionHashes: batchPayroll.submissionHashes,
     payrollTaskId: batchPayroll.taskId,
     payrollTask: batchPayroll.task,
-    handleSmartBatchSubmit: batchPayroll.execute,
+    handleSmartBatchSubmit: batchPayroll.fxStatus?.recoverableError
+      ? batchPayroll.recoverFxSettlement
+      : batchPayroll.execute,
   };
 }

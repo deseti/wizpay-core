@@ -1,10 +1,11 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import {
   initiateDeveloperControlledWalletsClient,
   type CircleDeveloperControlledWalletsClient,
   type CreateContractExecutionTransactionInput,
+  type CreateTransferTransactionInput,
   type FeeLevel,
   type TokenBlockchain,
 } from '@circle-fin/developer-controlled-wallets';
@@ -114,6 +115,11 @@ export interface CircleWalletBalance {
   amount: string;
   tokenAddress: string;
 }
+
+type CircleTransferPayloadWithTokenBlockchain =
+  Omit<CreateTransferTransactionInput, 'blockchain'> & {
+    blockchain: TokenBlockchain;
+  };
 
 export class CircleApiError extends Error {
   constructor(
@@ -309,6 +315,24 @@ export class CircleService {
     }
   }
 
+  // ── Idempotency key helpers ──────────────────────────────────────
+
+  private isUuidFormat(value: string): boolean {
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
+  }
+
+  private deriveUuidFromKey(key: string): string {
+    const hash = createHash('sha256').update(key).digest('hex');
+    // Format as UUID v4 shape (variant bits set for determinism)
+    return [
+      hash.slice(0, 8),
+      hash.slice(8, 12),
+      '4' + hash.slice(13, 16),
+      ((parseInt(hash[16], 16) & 0x3) | 0x8).toString(16) + hash.slice(17, 20),
+      hash.slice(20, 32),
+    ].join('-');
+  }
+
   // ── Token resolution ─────────────────────────────────────────────
 
   private resolveTokenAddress(token: string, blockchain?: string): string {
@@ -348,8 +372,13 @@ export class CircleService {
     const blockchain = this.resolveBlockchain(input.network);
     const walletId = input.walletId || this.getDefaultWalletId(blockchain);
     const tokenAddress = this.resolveTokenAddress(input.token, blockchain);
-    const idempotencyKey = input.idempotencyKey || randomUUID();
-    const walletAddress = await this.getWalletAddress(walletId);
+
+    // Circle requires UUID v4 format for idempotency keys.
+    // If the caller provides a non-UUID key, derive a deterministic UUID from it.
+    const rawKey = input.idempotencyKey || randomUUID();
+    const idempotencyKey = this.isUuidFormat(rawKey)
+      ? rawKey
+      : this.deriveUuidFromKey(rawKey);
 
     // ── Amount validation: must be a scalar string, never an array ────
     if (Array.isArray(input.amount)) {
@@ -363,13 +392,10 @@ export class CircleService {
       `Resolved blockchain: ${blockchain} for network: ${input.network ?? '(default)'}`,
     );
 
-    // NOTE: The Circle SDK's createTransaction expects `amounts: string[]`
-    // internally but we pass a single-element array since each transfer
-    // targets one recipient. The SDK handles serialisation to the REST API.
-    const payload = {
-      walletAddress,
-      blockchain,
+    const payload: CircleTransferPayloadWithTokenBlockchain = {
+      walletId,
       tokenAddress,
+      blockchain,
       amount: [amountStr],
       destinationAddress: input.toAddress,
       fee: {
@@ -387,7 +413,9 @@ export class CircleService {
 
     const client = this.getWalletClient();
 
-    const response = await client.createTransaction(payload);
+    const response = await client.createTransaction(
+      payload as CreateTransferTransactionInput,
+    );
 
     const tx = response.data;
 
