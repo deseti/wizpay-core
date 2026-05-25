@@ -1,0 +1,46 @@
+name: CD Production
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: cd-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy Production
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "${{ secrets.WIZPAY_VM_SSH_KEY }}" > ~/.ssh/wizpay_deploy_key
+          chmod 600 ~/.ssh/wizpay_deploy_key
+          ssh-keyscan -H "${{ secrets.WIZPAY_VM_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Verify SSH access
+        run: |
+          ssh -i ~/.ssh/wizpay_deploy_key \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            "${{ secrets.WIZPAY_VM_USER }}@${{ secrets.WIZPAY_VM_HOST }}" \
+            'hostname && whoami && docker ps --format "table {{.Names}}\t{{.Status}}" | head'
+
+      - name: Deploy application
+        run: |
+          ssh -i ~/.ssh/wizpay_deploy_key \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            "${{ secrets.WIZPAY_VM_USER }}@${{ secrets.WIZPAY_VM_HOST }}" \
+            'set -euo pipefail
+             cd /home/sultonyana4/wizpay-core
+             git fetch origin main
+             git reset --hard origin/main
+             test -z "$(git status --short)"
+             docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build --force-recreate backend frontend nginx
+             curl -fsS http://127.0.0.1:4000/openapi.json >/dev/null
+             curl -fsS http://127.0.0.1:3000 >/dev/null
+             docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"'
