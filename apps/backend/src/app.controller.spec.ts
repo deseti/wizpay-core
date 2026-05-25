@@ -6,6 +6,8 @@ import { TaskEmployeeBreakdownService } from './task/task-employee-breakdown.ser
 import { TaskPayrollHistoryService } from './task/task-payroll-history.service';
 import { PayrollInitService } from './orchestrator/payroll-init.service';
 import { CircleService } from './adapters/circle.service';
+import { PayrollFxSettlementService } from './agents/payroll/payroll-fx-settlement.service';
+import { AppWalletSwapDepositVerifierService } from './app-wallet-swap/app-wallet-swap-deposit-verifier.service';
 import { TaskStatus } from './task/task-status.enum';
 import { TaskType } from './task/task-type.enum';
 import { TaskDetails } from './task/task.types';
@@ -49,6 +51,10 @@ describe('TaskController', () => {
     getQuote: jest.fn().mockResolvedValue({}),
   };
 
+  const payrollFxSettlementService = {};
+
+  const appWalletDepositVerifier = {};
+
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
       controllers: [TaskController],
@@ -76,6 +82,14 @@ describe('TaskController', () => {
         {
           provide: CircleService,
           useValue: circleService,
+        },
+        {
+          provide: PayrollFxSettlementService,
+          useValue: payrollFxSettlementService,
+        },
+        {
+          provide: AppWalletSwapDepositVerifierService,
+          useValue: appWalletDepositVerifier,
         },
       ],
     }).compile();

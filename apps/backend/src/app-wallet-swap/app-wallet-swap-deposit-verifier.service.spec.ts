@@ -108,14 +108,17 @@ describe('AppWalletSwapDepositVerifierService', () => {
     });
   });
 
-  it('rejects wrong native log from address', async () => {
+  it('accepts native log from mismatch when transaction sender matches user wallet', async () => {
     getTransactionReceipt.mockResolvedValueOnce(
       receipt({
         logs: [nativeUsdcLog({ from: OTHER_ADDRESS })],
       }),
     );
 
-    await expectNativeReceiptToFail();
+    await expect(service.verifyDeposit(baseRequest)).resolves.toEqual({
+      confirmed: true,
+      confirmedAmount: baseRequest.amountIn,
+    });
   });
 
   it('rejects wrong native log to address', async () => {
@@ -153,11 +156,14 @@ describe('AppWalletSwapDepositVerifierService', () => {
   });
 
   async function expectNativeReceiptToFail() {
-    await expect(service.verifyDeposit(baseRequest)).resolves.toEqual({
+    const result = await service.verifyDeposit(baseRequest);
+
+    expect(result).toMatchObject({
       confirmed: false,
-      error:
-        'Deposit transaction did not include a matching USDC transfer to the treasury.',
     });
+    expect(result.error).toContain(
+      'Deposit transaction did not include a matching USDC transfer to the treasury.',
+    );
   }
 });
 
