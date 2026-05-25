@@ -37,7 +37,13 @@ jobs:
         uses: foundry-rs/foundry-toolchain@v1
 
       - name: Install Foundry libraries
-        run: cd packages/contracts && forge install foundry-rs/forge-std OpenZeppelin/openzeppelin-contracts --no-commit
+        run: |
+          rm -rf packages/contracts/lib/forge-std packages/contracts/lib/openzeppelin-contracts
+          mkdir -p packages/contracts/lib
+          git clone --depth 1 https://github.com/foundry-rs/forge-std packages/contracts/lib/forge-std
+          git clone --depth 1 https://github.com/OpenZeppelin/openzeppelin-contracts packages/contracts/lib/openzeppelin-contracts
+          test -f packages/contracts/lib/forge-std/src/Test.sol
+          test -f packages/contracts/lib/openzeppelin-contracts/contracts/access/Ownable.sol
 
       - name: Run tests
         run: npm run test
