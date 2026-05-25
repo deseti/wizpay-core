@@ -36,6 +36,9 @@ jobs:
       - name: Setup Foundry
         uses: foundry-rs/foundry-toolchain@v1
 
+      - name: Install Foundry libraries
+        run: cd packages/contracts && forge install foundry-rs/forge-std OpenZeppelin/openzeppelin-contracts --no-commit
+
       - name: Run tests
         run: npm run test
 
