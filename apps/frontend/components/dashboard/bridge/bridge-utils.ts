@@ -241,6 +241,11 @@ export function getBridgeErrorMessage(
       failedStep && typeof failedStep.errorMessage === "string"
         ? failedStep.errorMessage
         : null;
+    const attempts =
+      details && typeof details.attempts === "number" ? details.attempts : null;
+    if (failedStepMessage?.toLowerCase().includes("rpc")) {
+      return `Circle's infrastructure could not reach the ${labels.sourceLabel} RPC endpoint to execute the bridge. This is a transient issue${attempts ? ` (tried ${attempts} time${attempts > 1 ? "s" : ""})` : ""}. Please retry in a few moments.`;
+    }
     if (failedStepName && failedStepMessage) {
       return `Circle Bridge Kit failed during ${failedStepName}: ${failedStepMessage}`;
     }
@@ -298,6 +303,13 @@ export function getBridgeErrorMessage(
 
   if (message.includes("fetch failed")) {
     return "The bridge request could not reach the local app server. Reload the page and retry.";
+  }
+
+  if (
+    message.toLowerCase().includes("rpc endpoint error") ||
+    message.toLowerCase().includes("rpc endpoint")
+  ) {
+    return `Circle's infrastructure reported an RPC endpoint error on ${labels.sourceLabel}. This is typically a transient issue on Circle's side. Please retry in a few moments.`;
   }
 
   if (

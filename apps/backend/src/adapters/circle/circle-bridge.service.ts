@@ -3,9 +3,21 @@ import { CircleClient } from './circle.client';
 
 const ETH_SEPOLIA_RPC_URL = 'https://ethereum-sepolia-rpc.publicnode.com';
 const ARC_TESTNET_RPC_URL = 'https://rpc.testnet.arc.network/';
+const ARC_TESTNET_RPC_FALLBACK_URLS = [
+  'https://rpc.testnet.arc.network/',
+  'https://rpc.quicknode.testnet.arc.network/',
+  'https://rpc.blockdaemon.testnet.arc.network/',
+];
 const SOLANA_DEVNET_RPC_URL = 'https://api.devnet.solana.com';
 const SOLANA_MIN_FEE_BALANCE_LAMPORTS = 0.01 * 1_000_000_000; // 0.01 SOL
 const SOLANA_TOP_UP_TARGET_LAMPORTS = 0.05 * 1_000_000_000; // 0.05 SOL
+
+/**
+ * Maximum number of retry attempts for Arc Testnet source-chain bridge
+ * when Circle's API returns an RPC endpoint error.
+ */
+const ARC_SOURCE_BRIDGE_MAX_RETRIES = 2;
+const ARC_SOURCE_BRIDGE_RETRY_DELAY_MS = 3_000;
 
 type SupportedBridgeBlockchain = 'ETH-SEPOLIA' | 'ARC-TESTNET' | 'SOLANA-DEVNET';
 
@@ -80,6 +92,17 @@ export class CircleBridgeService {
     const normalized = this.normalizeInput(input);
     await this.ensureSolanaSourceFeeBalance(normalized);
 
+    // Pre-validate: ensure the source wallet is registered with Circle
+    // before attempting the bridge. This catches new-account issues early.
+    if (normalized.sourceBlockchain !== 'SOLANA-DEVNET') {
+      await this.validateCircleWalletExists(normalized);
+    }
+
+    // Pre-validate: verify Arc Testnet RPC is reachable when it's the source
+    if (normalized.sourceBlockchain === 'ARC-TESTNET') {
+      await this.validateArcTestnetRpcReachable();
+    }
+
     const client = await this.circleClient.getBridgeClient();
     const adapter = this.skipBridgeKitBalancePrechecks(
       await this.circleClient.getBridgeAdapter(),
@@ -120,51 +143,88 @@ export class CircleBridgeService {
       },
     };
 
-    try {
-      this.logger.log(
-        `Bridge executing: ${normalized.sourceBlockchain} → ${normalized.destinationBlockchain}, amount=${normalized.amount}, source=${normalized.sourceWalletAddress}, dest=${normalized.destinationAddress}`,
-      );
+    // For Arc Testnet source, retry on transient RPC endpoint errors from Circle
+    const maxAttempts = normalized.sourceBlockchain === 'ARC-TESTNET'
+      ? ARC_SOURCE_BRIDGE_MAX_RETRIES + 1
+      : 1;
 
-      const result = await client.bridge(bridgeParams as any);
+    let lastError: unknown = null;
 
-      this.logger.log(
-        `Bridge result state: ${result?.state}, steps: ${JSON.stringify(result?.steps?.map((s: any) => ({ name: s.name, state: s.state, error: s.errorMessage })))}`,
-      );
-
-      return this.normalizeBridgeResult(normalized, result);
-    } catch (error) {
-      const submittedHash = this.extractSubmittedHash(error);
-
-      if (submittedHash) {
-        this.logger.warn(
-          `Bridge threw but has a submitted hash: ${submittedHash}. Treating as processing.`,
-        );
-        return this.normalizeSubmittedBridgeResult(normalized, submittedHash, error);
-      }
-
-      const message = error instanceof Error ? error.message : String(error);
-      const stack = error instanceof Error ? error.stack : undefined;
-      const isTimeout = message.toLowerCase().includes('timeout') || message.toLowerCase().includes('timed out');
-
-      this.logger.error(
-        `Bridge failed: ${normalized.sourceBlockchain} → ${normalized.destinationBlockchain}. Error: ${message}`,
-        stack,
-      );
-
-      // Log full error object for debugging
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
-        const errorDetails = JSON.stringify(error, Object.getOwnPropertyNames(error as any), 2);
-        this.logger.error(`Bridge error details: ${errorDetails}`);
-      } catch {
-        // ignore serialization errors
-      }
+        this.logger.log(
+          `Bridge executing (attempt ${attempt}/${maxAttempts}): ${normalized.sourceBlockchain} → ${normalized.destinationBlockchain}, amount=${normalized.amount}, source=${normalized.sourceWalletAddress}, dest=${normalized.destinationAddress}`,
+        );
 
-      if (isTimeout) {
-        return this.normalizeSubmittedBridgeResult(normalized, null, error);
-      }
+        const result = await client.bridge(bridgeParams as any);
 
-      throw error;
+        this.logger.log(
+          `Bridge result state: ${result?.state}, steps: ${JSON.stringify(result?.steps?.map((s: any) => ({ name: s.name, state: s.state, error: s.errorMessage })))}`,
+        );
+
+        return this.normalizeBridgeResult(normalized, result);
+      } catch (error) {
+        lastError = error;
+        const submittedHash = this.extractSubmittedHash(error);
+
+        if (submittedHash) {
+          this.logger.warn(
+            `Bridge threw but has a submitted hash: ${submittedHash}. Treating as processing.`,
+          );
+          return this.normalizeSubmittedBridgeResult(normalized, submittedHash, error);
+        }
+
+        const message = error instanceof Error ? error.message : String(error);
+        const stack = error instanceof Error ? error.stack : undefined;
+        const isTimeout = message.toLowerCase().includes('timeout') || message.toLowerCase().includes('timed out');
+        const isRpcEndpointError = this.isCircleRpcEndpointError(error);
+
+        this.logger.error(
+          `Bridge failed (attempt ${attempt}/${maxAttempts}): ${normalized.sourceBlockchain} → ${normalized.destinationBlockchain}. Error: ${message}`,
+          stack,
+        );
+
+        // Log full error object for debugging
+        try {
+          const errorDetails = JSON.stringify(error, Object.getOwnPropertyNames(error as any), 2);
+          this.logger.error(`Bridge error details: ${errorDetails}`);
+        } catch {
+          // ignore serialization errors
+        }
+
+        if (isTimeout) {
+          return this.normalizeSubmittedBridgeResult(normalized, null, error);
+        }
+
+        // Retry only for transient RPC endpoint errors on Arc Testnet source
+        if (isRpcEndpointError && attempt < maxAttempts) {
+          this.logger.warn(
+            `Circle returned RPC endpoint error for Arc Testnet source. Retrying in ${ARC_SOURCE_BRIDGE_RETRY_DELAY_MS}ms (attempt ${attempt}/${maxAttempts})...`,
+          );
+          await this.delay(ARC_SOURCE_BRIDGE_RETRY_DELAY_MS);
+          continue;
+        }
+
+        // Not retryable — throw with improved error context
+        if (isRpcEndpointError) {
+          throw new BadRequestException({
+            code: 'CIRCLE_BRIDGE_EXECUTION_FAILED',
+            error: `Circle's infrastructure could not reach the Arc Testnet RPC endpoint to execute the burn transaction. This is a transient issue on Circle's side. Please retry in a few moments.`,
+            details: {
+              failedStep: { name: 'Burn on source chain', errorMessage: message },
+              sourceBlockchain: normalized.sourceBlockchain,
+              destinationBlockchain: normalized.destinationBlockchain,
+              attempts: attempt,
+            },
+          });
+        }
+
+        throw error;
+      }
     }
+
+    // Should not reach here, but handle gracefully
+    throw lastError;
   }
 
   async getBridgeStatus(transferId: string): Promise<unknown> {
@@ -627,6 +687,136 @@ export class CircleBridgeService {
     }
 
     return null;
+  }
+
+  /**
+   * Detect whether an error from Circle's Bridge Kit is a transient
+   * RPC endpoint connectivity issue (Circle's infra cannot reach the chain RPC).
+   */
+  private isCircleRpcEndpointError(error: unknown): boolean {
+    if (!(error instanceof Error)) {
+      return false;
+    }
+
+    const msg = error.message.toLowerCase();
+
+    // Circle's API returns these patterns when their RPC proxy fails
+    if (msg.includes('rpc endpoint error') || msg.includes('rpc endpoint')) {
+      return true;
+    }
+
+    // Also check nested cause
+    const cause = (error as any).cause;
+    if (cause && typeof cause === 'object') {
+      const causeMsg = typeof cause.message === 'string' ? cause.message.toLowerCase() : '';
+      if (causeMsg.includes('rpc endpoint error') || causeMsg.includes('rpc endpoint')) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  /**
+   * Pre-validate that the source wallet is registered with Circle's
+   * developer-controlled wallets API. This catches new-account issues
+   * early with a clear error message instead of a generic RPC error.
+   */
+  private async validateCircleWalletExists(input: NormalizedBridgeInput): Promise<void> {
+    try {
+      const walletClient = this.circleClient.getWalletClient();
+      const response = await (walletClient as any).listWallets({
+        address: input.sourceWalletAddress,
+        blockchain: input.sourceBlockchain,
+      });
+
+      const wallets = response?.data?.wallets ?? [];
+
+      if (wallets.length === 0) {
+        this.logger.error(
+          `Circle wallet not found for address=${input.sourceWalletAddress} blockchain=${input.sourceBlockchain}. ` +
+          `The wallet may not be initialized on Circle's side yet.`,
+        );
+        throw new BadRequestException({
+          code: 'CIRCLE_WALLET_NOT_FOUND',
+          error:
+            `No Circle developer-controlled wallet found for address ${input.sourceWalletAddress} on ${input.sourceBlockchain}. ` +
+            `The treasury wallet may not be initialized. Verify CIRCLE_WALLET_ID_ARC and CIRCLE_WALLET_ADDRESS_ARC are correct.`,
+          details: {
+            address: input.sourceWalletAddress,
+            blockchain: input.sourceBlockchain,
+            walletId: input.walletId,
+          },
+        });
+      }
+
+      this.logger.debug(
+        `Circle wallet validated: address=${input.sourceWalletAddress} blockchain=${input.sourceBlockchain} walletId=${wallets[0]?.id}`,
+      );
+    } catch (error) {
+      // If it's already a BadRequestException we threw, re-throw it
+      if (error instanceof BadRequestException) {
+        throw error;
+      }
+
+      // For other errors (network issues, auth problems), log but don't block
+      // the bridge attempt — Circle's bridge kit may still succeed
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn(
+        `Could not pre-validate Circle wallet (non-blocking): ${message}`,
+      );
+    }
+  }
+
+  /**
+   * Verify that the Arc Testnet RPC endpoint is reachable before attempting
+   * the bridge. If the RPC is down, fail fast with a clear error instead of
+   * waiting for Circle's API to timeout.
+   */
+  private async validateArcTestnetRpcReachable(): Promise<void> {
+    for (const rpcUrl of ARC_TESTNET_RPC_FALLBACK_URLS) {
+      try {
+        const res = await fetch(rpcUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            jsonrpc: '2.0',
+            id: Date.now(),
+            method: 'eth_chainId',
+            params: [],
+          }),
+          signal: AbortSignal.timeout(5_000),
+        });
+
+        const json = (await res.json()) as { result?: string; error?: unknown };
+
+        if (json.result) {
+          this.logger.debug(`Arc Testnet RPC reachable at ${rpcUrl}`);
+          return;
+        }
+      } catch {
+        // Try next URL
+        continue;
+      }
+    }
+
+    this.logger.error(
+      `Arc Testnet RPC is unreachable from all known endpoints: ${ARC_TESTNET_RPC_FALLBACK_URLS.join(', ')}`,
+    );
+    throw new BadRequestException({
+      code: 'CIRCLE_BRIDGE_EXECUTION_FAILED',
+      error:
+        'Arc Testnet RPC is currently unreachable. The bridge cannot execute the burn transaction. Please retry in a few minutes.',
+      details: {
+        failedStep: { name: 'Burn on source chain', errorMessage: 'Arc Testnet RPC unreachable' },
+        sourceBlockchain: 'ARC-TESTNET',
+        rpcEndpoints: ARC_TESTNET_RPC_FALLBACK_URLS,
+      },
+    });
+  }
+
+  private delay(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   private normalizeSupportedBlockchain(
