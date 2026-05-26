@@ -41,6 +41,7 @@ jobs:
              git reset --hard origin/main
              test -z "$(git status --short)"
              docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build --force-recreate backend frontend nginx
-             curl -fsS http://127.0.0.1:4000/openapi.json >/dev/null
+             test "$(docker inspect -f '{{.State.Health.Status}}' wizpay-core-backend-1)" = "healthy"
+             test "$(docker inspect -f '{{.State.Health.Status}}' wizpay-core-frontend-1)" = "healthy"
              curl -fsS http://127.0.0.1:3000 >/dev/null
              docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"'
