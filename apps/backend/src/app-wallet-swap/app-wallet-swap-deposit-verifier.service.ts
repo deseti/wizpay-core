@@ -25,6 +25,16 @@ const ARC_NATIVE_USDC_LOG_ADDRESS =
   '0x1800000000000000000000000000000000000000' as Address;
 const ARC_NATIVE_USDC_TRANSFER_TOPIC =
   '0x62f084c00a442dcf51cdbb51beed2839bf42a268da8474b0e98f38edb7db5a22';
+// Standard ERC-20 Transfer event topic0 (keccak256("Transfer(address,address,uint256)")).
+const ERC20_TRANSFER_TOPIC =
+  '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
+// Observed Arc Testnet pseudo log alias that emits native USDC movements as a
+// standard ERC-20 Transfer event. This is NOT a documented contract address
+// (`cast code` returns 0x), so it is treated only as an observed native USDC
+// transfer-log alias and is guarded narrowly. Values emitted under this alias
+// use Arc native 18-decimal scale, not the ERC-20 6-decimal interface.
+const ARC_NATIVE_USDC_TRANSFER_LOG_ALIAS_ADDRESS =
+  '0xfffffffffffffffffffffffffffffffffffffffe' as Address;
 const ARC_NATIVE_USDC_DECIMAL_SCALE = 1_000_000_000_000n;
 const TOKEN_ADDRESS_BY_SYMBOL = {
   USDC: USER_SWAP_USDC_ADDRESS,
@@ -210,6 +220,77 @@ export class AppWalletSwapDepositVerifierService {
             confirmed: true,
             confirmedAmount: request.amountIn,
           };
+        }
+      }
+
+      // Observed Arc Testnet path: native USDC movements can surface as a
+      // standard ERC-20 Transfer event emitted from the pseudo log alias
+      // 0xffff...fffe. The alias is not a documented token contract, so it is
+      // matched narrowly here (exact alias address + ERC-20 Transfer topic)
+      // and decoded against the Arc native 18-decimal scale.
+      this.logger.log(
+        `[deposit-verify-diag] Checking native USDC alias log path: ` +
+        `expectedNativeAmount=${expectedNativeAmount.toString()} ` +
+        `aliasLogAddress=${ARC_NATIVE_USDC_TRANSFER_LOG_ALIAS_ADDRESS} ` +
+        `erc20Topic=${ERC20_TRANSFER_TOPIC}`,
+      );
+
+      for (const log of receipt.logs) {
+        if (
+          !isAddressEqual(log.address, ARC_NATIVE_USDC_TRANSFER_LOG_ALIAS_ADDRESS)
+        ) {
+          continue;
+        }
+
+        if (
+          log.topics[0]?.toLowerCase() !== ERC20_TRANSFER_TOPIC.toLowerCase()
+        ) {
+          continue;
+        }
+
+        try {
+          const decoded = decodeEventLog({
+            abi: [TRANSFER_EVENT],
+            data: log.data,
+            topics: log.topics,
+          });
+
+          if (decoded.eventName !== 'Transfer') {
+            continue;
+          }
+
+          const { from, to, value } = decoded.args;
+
+          this.logger.log(
+            `[deposit-verify-diag] Native USDC alias Transfer found: ` +
+            `from=${from} to=${to} value=${value.toString()} ` +
+            `aliasAddress=${log.address} ` +
+            `fromMatch=${isAddressEqual(from, userWalletAddress)} ` +
+            `toMatch=${isAddressEqual(to, treasuryAddress)} ` +
+            `valueMatch=${value >= expectedNativeAmount}`,
+          );
+
+          if (!isAddressEqual(to, treasuryAddress)) {
+            continue;
+          }
+
+          if (value >= expectedNativeAmount) {
+            // Relaxed-from behavior mirrors the App Wallet MSCA path: the
+            // depositTxHash is already verified, so a from mismatch must not
+            // reject when to/value match. Native scale is enforced above.
+            if (!isAddressEqual(from, userWalletAddress)) {
+              this.logger.log(
+                `[deposit-verify-diag] Native USDC alias: accepting with relaxed from check: ` +
+                `actualFrom=${from} expectedFrom=${userWalletAddress} txFrom=${receipt.from}`,
+              );
+            }
+            return {
+              confirmed: true,
+              confirmedAmount: request.amountIn,
+            };
+          }
+        } catch {
+          continue;
         }
       }
     }

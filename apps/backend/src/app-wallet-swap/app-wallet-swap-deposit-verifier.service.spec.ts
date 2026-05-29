@@ -14,6 +14,8 @@ const ARC_NATIVE_USDC_TRANSFER_TOPIC =
   '0x62f084c00a442dcf51cdbb51beed2839bf42a268da8474b0e98f38edb7db5a22' as Hex;
 const ERC20_TRANSFER_TOPIC =
   '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef' as Hex;
+const ARC_NATIVE_USDC_TRANSFER_LOG_ALIAS_ADDRESS =
+  '0xfffffffffffffffffffffffffffffffffffffffe' as Address;
 
 const baseRequest = {
   amountIn: '5000000',
@@ -155,6 +157,79 @@ describe('AppWalletSwapDepositVerifierService', () => {
     await expectNativeReceiptToFail();
   });
 
+  it('confirms observed Arc native USDC ERC20-style alias log', async () => {
+    getTransactionReceipt.mockResolvedValueOnce(
+      receipt({
+        logs: [nativeUsdcAliasLog()],
+      }),
+    );
+
+    const result = await service.verifyDeposit(baseRequest);
+
+    expect(result).toEqual({
+      confirmed: true,
+      confirmedAmount: baseRequest.amountIn,
+    });
+  });
+
+  it('confirms alias log with relaxed from when sender differs', async () => {
+    getTransactionReceipt.mockResolvedValueOnce(
+      receipt({
+        from: OTHER_ADDRESS,
+        logs: [nativeUsdcAliasLog({ from: OTHER_ADDRESS })],
+      }),
+    );
+
+    const result = await service.verifyDeposit(baseRequest);
+
+    expect(result).toEqual({
+      confirmed: true,
+      confirmedAmount: baseRequest.amountIn,
+    });
+  });
+
+  it('rejects alias log when to is not treasury', async () => {
+    getTransactionReceipt.mockResolvedValueOnce(
+      receipt({
+        logs: [nativeUsdcAliasLog({ to: OTHER_ADDRESS })],
+      }),
+    );
+
+    await expectNativeReceiptToFail();
+  });
+
+  it('rejects alias log when amount is less than expected native-scaled amount', async () => {
+    getTransactionReceipt.mockResolvedValueOnce(
+      receipt({
+        logs: [
+          nativeUsdcAliasLog({ data: amountData(4_999_999_999_999_999_999n) }),
+        ],
+      }),
+    );
+
+    await expectNativeReceiptToFail();
+  });
+
+  it('rejects alias log for a non-USDC request', async () => {
+    getTransactionReceipt.mockResolvedValueOnce(
+      receipt({
+        logs: [nativeUsdcAliasLog()],
+      }),
+    );
+
+    const result = await service.verifyDeposit({
+      ...baseRequest,
+      tokenIn: 'EURC' as const,
+    });
+
+    expect(result).toMatchObject({
+      confirmed: false,
+    });
+    expect(result.error).toContain(
+      'Deposit transaction did not include a matching EURC transfer to the treasury.',
+    );
+  });
+
   async function expectNativeReceiptToFail() {
     const result = await service.verifyDeposit(baseRequest);
 
@@ -197,6 +272,26 @@ function nativeUsdcLog({
 } = {}) {
   return {
     address: ARC_NATIVE_USDC_LOG_ADDRESS,
+    topics: [topic0, addressTopic(from), addressTopic(to)],
+    data,
+  };
+}
+
+// Builds an observed Arc Testnet native USDC alias log: a standard ERC-20
+// Transfer event emitted from 0xffff...fffe with a native 18-decimal value.
+function nativeUsdcAliasLog({
+  from = USER_ADDRESS,
+  to = TREASURY_ADDRESS,
+  topic0 = ERC20_TRANSFER_TOPIC,
+  data = amountData(5_000_000_000_000_000_000n),
+}: {
+  from?: Address;
+  to?: Address;
+  topic0?: Hex;
+  data?: Hex;
+} = {}) {
+  return {
+    address: ARC_NATIVE_USDC_TRANSFER_LOG_ALIAS_ADDRESS,
     topics: [topic0, addressTopic(from), addressTopic(to)],
     data,
   };
