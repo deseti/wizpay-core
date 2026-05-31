@@ -1,8 +1,15 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { usePublicClient, useWalletClient } from "wagmi";
-import { formatUnits, getAddress, isAddress, type Hex } from "viem";
+import {
+  formatUnits,
+  getAddress,
+  isAddress,
+  type Address,
+  type Hex,
+} from "viem";
 import type { QuoteSummary, WizPayState } from "@/lib/types";
 
+import { ERC20_ABI } from "@/constants/erc20";
 import { useCircleWallet } from "@/components/providers/CircleWalletProvider";
 import { useWizPayState } from "./useWizPayState";
 import { useWizPayContract } from "./useWizPayContract";
@@ -17,9 +24,15 @@ import {
   type CircleSwapToken,
 } from "@/lib/circle-swap-kit";
 import {
+  createStablefxFundingPresign,
+  createStablefxTradableQuote,
+  createStablefxTrade,
+  fundStablefxTrade,
+  getStablefxTrade,
   prepareUserSwap,
   quoteUserSwap,
   USER_SWAP_CHAIN,
+  type StablefxTradeResponse,
   type UserSwapProvider,
   type UserSwapQuoteRequest,
 } from "@/lib/user-swap-service";
@@ -38,6 +51,7 @@ import {
   type TokenSymbol,
 } from "@/lib/wizpay";
 import { useActiveWalletAddress } from "@/hooks/useActiveWalletAddress";
+import { useTransactionExecutor } from "@/hooks/useTransactionExecutor";
 import { BackendApiError } from "@/lib/backend-api";
 import {
   settlePayrollFx,
@@ -55,9 +69,9 @@ const OFFICIAL_PAYROLL_QUOTE_UNAVAILABLE =
 // Human-readable label for the StableFX quote provider.
 const STABLEFX_PROVIDER_LABEL = "StableFX";
 
-// Shown when a cross-currency quote is available from StableFX but the
-// StableFX execution provider has not been implemented yet. The quote and
-// preview are valid; only execution (Send) is blocked.
+// Legacy fallback text for unsupported cross-currency execution providers.
+// StableFX payroll execution is now supported for both External Wallet and
+// App Wallet paths when a valid quote is ready.
 const STABLEFX_EXECUTION_PENDING_MESSAGE =
   "StableFX quote ready, but cross-currency payroll execution is not available yet. Send is disabled until the StableFX execution provider is implemented.";
 
@@ -158,6 +172,178 @@ function logOfficialQuoteDiagnostic(
   console.info(label, value);
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function requireStablefxString(value: unknown, label: string) {
+  if (typeof value === "string" && value.trim()) {
+    return value.trim();
+  }
+
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return String(value);
+  }
+
+  throw new Error(`StableFX ${label} is missing from the response.`);
+}
+
+function requireStablefxTypedData(value: unknown, label: string) {
+  if (isRecord(value) && isRecord(value.message)) {
+    return value;
+  }
+
+  throw new Error(`StableFX ${label} typed data is missing from the response.`);
+}
+
+function requireStablefxApprovalTarget(typedData: Record<string, unknown>) {
+  const verifyingContract = isRecord(typedData.domain)
+    ? typedData.domain.verifyingContract
+    : null;
+
+  if (typeof verifyingContract === "string" && isAddress(verifyingContract)) {
+    return getAddress(verifyingContract) as Address;
+  }
+
+  throw new Error(
+    "StableFX approval target is missing from quote typedData.domain.verifyingContract.",
+  );
+}
+
+function getNestedStringValue(value: unknown, path: string[]) {
+  let current = value;
+
+  for (const key of path) {
+    if (!isRecord(current)) {
+      return null;
+    }
+
+    current = current[key];
+  }
+
+  return typeof current === "string" || typeof current === "number"
+    ? String(current)
+    : null;
+}
+
+function resolveStablefxContractTradeId(trade: StablefxTradeResponse) {
+  const candidates = [
+    trade.contractTradeId,
+    isRecord(trade.data) ? trade.data.contractTradeId : undefined,
+    isRecord(trade.trade) ? trade.trade.contractTradeId : undefined,
+    isRecord(trade.data) && isRecord(trade.data.trade)
+      ? trade.data.trade.contractTradeId
+      : undefined,
+  ];
+
+  for (const candidate of candidates) {
+    if (
+      (typeof candidate === "string" || typeof candidate === "number") &&
+      /^\d+$/.test(String(candidate).trim())
+    ) {
+      return String(candidate).trim();
+    }
+  }
+
+  return null;
+}
+
+function getStablefxExplorerTxHash(
+  trade: StablefxTradeResponse,
+  options: { includeRecordTrade?: boolean } = {},
+): Hex | null {
+  const deliveryPaths = [
+    ["settlementTransactionHash"],
+    ["data", "settlementTransactionHash"],
+    ["contractTransactions", "makerDeliver", "txHash"],
+    ["data", "contractTransactions", "makerDeliver", "txHash"],
+    ["contractTransactions", "makerDeliver", "transactionHash"],
+    ["data", "contractTransactions", "makerDeliver", "transactionHash"],
+    ["contractTransactions", "takerDeliver", "txHash"],
+    ["data", "contractTransactions", "takerDeliver", "txHash"],
+    ["contractTransactions", "takerDeliver", "transactionHash"],
+    ["data", "contractTransactions", "takerDeliver", "transactionHash"],
+  ];
+  const recordPaths = [
+    ["contractTransactions", "recordTrade", "txHash"],
+    ["data", "contractTransactions", "recordTrade", "txHash"],
+    ["contractTransactions", "recordTrade", "transactionHash"],
+    ["data", "contractTransactions", "recordTrade", "transactionHash"],
+  ];
+  const paths = options.includeRecordTrade
+    ? [...deliveryPaths, ...recordPaths]
+    : deliveryPaths;
+
+  for (const path of paths) {
+    const candidate = getNestedStringValue(trade, path);
+
+    if (candidate && isTransactionHash(candidate)) {
+      return candidate as Hex;
+    }
+  }
+
+  return null;
+}
+
+function getStablefxRecordTradeStatus(trade: StablefxTradeResponse) {
+  return (
+    getNestedStringValue(trade, [
+      "contractTransactions",
+      "recordTrade",
+      "status",
+    ]) ??
+    getNestedStringValue(trade, [
+      "data",
+      "contractTransactions",
+      "recordTrade",
+      "status",
+    ])
+  );
+}
+
+function getStablefxRecordTradeFailureDetail(trade: StablefxTradeResponse) {
+  return (
+    getNestedStringValue(trade, [
+      "contractTransactions",
+      "recordTrade",
+      "errorDetails",
+    ]) ??
+    getNestedStringValue(trade, [
+      "data",
+      "contractTransactions",
+      "recordTrade",
+      "errorDetails",
+    ]) ??
+    getNestedStringValue(trade, [
+      "contractTransactions",
+      "recordTrade",
+      "revertReason",
+    ]) ??
+    getNestedStringValue(trade, [
+      "data",
+      "contractTransactions",
+      "recordTrade",
+      "revertReason",
+    ])
+  );
+}
+
+function isStablefxFinalStatus(status: string | undefined) {
+  return ["complete", "completed", "settled"].includes(
+    status?.toLowerCase() ?? "",
+  );
+}
+
+function isStablefxFailureStatus(status: string | undefined) {
+  return ["failed", "rejected", "expired", "breached", "refunded"].includes(
+    status?.toLowerCase() ?? "",
+  );
+}
+
+async function delay(ms: number) {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export function useWizPay(): WizPayState {
   // 1. Initialize UI / Local State
   const state = useWizPayState();
@@ -193,6 +379,7 @@ export function useWizPay(): WizPayState {
   } = useCircleWallet();
   const publicClient = usePublicClient({ chainId: arcTestnet.id });
   const { data: walletClient } = useWalletClient();
+  const { signTypedData } = useTransactionExecutor();
 
   const swapAdapter = useMemo(
     () => createArcSwapAdapter(publicClient, walletClient),
@@ -497,14 +684,329 @@ export function useWizPay(): WizPayState {
       targetToken: TokenSymbol;
       amount: string;
     }): Promise<PreSwapResult> => {
+      if (!externalWalletAddress) {
+        throw new Error("Wallet address is not available for swap.");
+      }
+
+      if (officialQuote.provider === "stablefx") {
+        try {
+          logOfficialQuoteDiagnostic(
+            "[official-payroll-route] StableFX step",
+            {
+              provider: "stablefx",
+              step: "tradable_quote",
+              tokenIn: params.sourceToken,
+              tokenOut: params.targetToken,
+              amountIn: params.amount,
+              recipientAddress: externalWalletAddress,
+            },
+          );
+
+          const tradableQuote = await createStablefxTradableQuote({
+            tokenIn: params.sourceToken,
+            tokenOut: params.targetToken,
+            amountIn: params.amount,
+            fromAddress: externalWalletAddress,
+            recipientAddress: externalWalletAddress,
+            chain: USER_SWAP_CHAIN,
+          });
+          const quoteTypedData = requireStablefxTypedData(
+            tradableQuote.typedData,
+            "tradable quote",
+          );
+          const quoteId = requireStablefxString(
+            tradableQuote.id ?? tradableQuote.quoteId,
+            "quoteId",
+          );
+          const approvalTarget = requireStablefxApprovalTarget(quoteTypedData);
+          const tokenConfig = SUPPORTED_TOKENS[params.sourceToken];
+          const tokenAddress = tokenConfig.address;
+          const requiredAmount = BigInt(params.amount);
+
+          if (!publicClient || !walletClient) {
+            throw new Error(
+              "External wallet is not ready for StableFX approval.",
+            );
+          }
+
+          const allowanceBefore = (await publicClient.readContract({
+            address: tokenAddress,
+            abi: ERC20_ABI,
+            functionName: "allowance",
+            args: [externalWalletAddress, approvalTarget],
+          })) as bigint;
+          const allowanceEnough = allowanceBefore >= requiredAmount;
+
+          logOfficialQuoteDiagnostic(
+            "[official-payroll-route] StableFX step",
+            {
+              provider: "stablefx",
+              step: "allowance_check",
+              tokenIn: params.sourceToken,
+              approvalTarget,
+              allowanceBefore: allowanceBefore.toString(),
+              allowanceAfter: allowanceEnough ? allowanceBefore.toString() : null,
+              allowanceEnough,
+            },
+          );
+
+          if (!allowanceEnough) {
+            const approvalTxHash = await walletClient.writeContract({
+              address: tokenAddress,
+              abi: ERC20_ABI,
+              functionName: "approve",
+              args: [approvalTarget, requiredAmount],
+              account: externalWalletAddress as Address,
+              chain: arcTestnet,
+            });
+
+            logOfficialQuoteDiagnostic(
+              "[official-payroll-route] StableFX step",
+              {
+                provider: "stablefx",
+                step: "approve",
+                tokenIn: params.sourceToken,
+                approvalTarget,
+                allowanceBefore: allowanceBefore.toString(),
+                approvalTxHash,
+              },
+            );
+
+            await publicClient.waitForTransactionReceipt({
+              hash: approvalTxHash,
+              confirmations: 1,
+            });
+
+            const allowanceAfter = (await publicClient.readContract({
+              address: tokenAddress,
+              abi: ERC20_ABI,
+              functionName: "allowance",
+              args: [externalWalletAddress, approvalTarget],
+            })) as bigint;
+            const confirmedAllowanceEnough = allowanceAfter >= requiredAmount;
+
+            logOfficialQuoteDiagnostic(
+              "[official-payroll-route] StableFX step",
+              {
+                provider: "stablefx",
+                step: "allowance_check",
+                tokenIn: params.sourceToken,
+                approvalTarget,
+                allowanceBefore: allowanceBefore.toString(),
+                allowanceAfter: allowanceAfter.toString(),
+                approvalTxHash,
+                allowanceEnough: confirmedAllowanceEnough,
+              },
+            );
+
+            if (!confirmedAllowanceEnough) {
+              throw new Error(
+                `${params.sourceToken} approval confirmed but allowance is still below the StableFX input amount.`,
+              );
+            }
+          }
+
+          logOfficialQuoteDiagnostic(
+            "[official-payroll-route] StableFX step",
+            {
+              provider: "stablefx",
+              step: "sign_quote",
+              quoteId,
+            },
+          );
+          const quoteSignature = await signTypedData({
+            chainId: arcTestnet.id,
+            memo: `StableFX payroll ${params.sourceToken} to ${params.targetToken} quote`,
+            typedData: quoteTypedData,
+          });
+
+          logOfficialQuoteDiagnostic(
+            "[official-payroll-route] StableFX step",
+            {
+              provider: "stablefx",
+              step: "create_trade",
+              quoteId,
+              createTradeAddress: externalWalletAddress,
+            },
+          );
+          const createdTrade = await createStablefxTrade({
+            idempotencyKey: crypto.randomUUID(),
+            quoteId,
+            address: externalWalletAddress,
+            selectedAddress: externalWalletAddress,
+            message: quoteTypedData.message as Record<string, unknown>,
+            signature: quoteSignature,
+            tokenIn: params.sourceToken,
+            tokenOut: params.targetToken,
+            walletMode: "external",
+          });
+          const tradeId = requireStablefxString(createdTrade.id, "tradeId");
+          let latestTrade = createdTrade;
+          let contractTradeId = resolveStablefxContractTradeId(createdTrade);
+
+          for (
+            let attempt = 1;
+            !contractTradeId && attempt <= 15;
+            attempt += 1
+          ) {
+            logOfficialQuoteDiagnostic(
+              "[official-payroll-route] StableFX step",
+              {
+                provider: "stablefx",
+                step: "get_trade",
+                phase: "contract_trade_id",
+                attempt,
+                tradeId,
+              },
+            );
+            latestTrade = await getStablefxTrade(tradeId);
+            contractTradeId = resolveStablefxContractTradeId(latestTrade);
+
+            const status =
+              typeof latestTrade.status === "string"
+                ? latestTrade.status
+                : undefined;
+            const recordTradeStatus = getStablefxRecordTradeStatus(latestTrade);
+
+            if (recordTradeStatus?.toLowerCase() === "failed") {
+              const failureDetail =
+                getStablefxRecordTradeFailureDetail(latestTrade);
+              throw new Error(
+                failureDetail
+                  ? `StableFX ${params.sourceToken} -> ${params.targetToken} recordTrade failed. Trade ID ${tradeId}. Details: ${failureDetail}`
+                  : `StableFX ${params.sourceToken} -> ${params.targetToken} recordTrade failed. Trade ID ${tradeId}.`,
+              );
+            }
+
+            if (isStablefxFailureStatus(status)) {
+              throw new Error(
+                `StableFX trade ended with status ${status} before funding.`,
+              );
+            }
+
+            if (!contractTradeId) {
+              await delay(2_000);
+            }
+          }
+
+          if (!contractTradeId) {
+            throw new Error(
+              "StableFX trade was created but funding identifier was not ready yet. Please retry.",
+            );
+          }
+
+          logOfficialQuoteDiagnostic(
+            "[official-payroll-route] StableFX step",
+            {
+              provider: "stablefx",
+              step: "funding_presign",
+              tradeId,
+              contractTradeId,
+            },
+          );
+          const fundingPresign = await createStablefxFundingPresign({
+            contractTradeId,
+          });
+          const fundingTypedData = requireStablefxTypedData(
+            fundingPresign.typedData,
+            "funding presign",
+          );
+
+          logOfficialQuoteDiagnostic(
+            "[official-payroll-route] StableFX step",
+            {
+              provider: "stablefx",
+              step: "sign_funding",
+              tradeId,
+              contractTradeId,
+            },
+          );
+          const fundingSignature = await signTypedData({
+            chainId: arcTestnet.id,
+            memo: `StableFX payroll ${params.sourceToken} funding`,
+            typedData: fundingTypedData,
+          });
+
+          logOfficialQuoteDiagnostic(
+            "[official-payroll-route] StableFX step",
+            {
+              provider: "stablefx",
+              step: "fund",
+              tradeId,
+              contractTradeId,
+            },
+          );
+          const fundResult = await fundStablefxTrade({
+            permit2: fundingTypedData.message as Record<string, unknown>,
+            signature: fundingSignature,
+          });
+
+          for (let attempt = 1; attempt <= 20; attempt += 1) {
+            logOfficialQuoteDiagnostic(
+              "[official-payroll-route] StableFX step",
+              {
+                provider: "stablefx",
+                step: "get_trade",
+                phase: "settlement",
+                attempt,
+                tradeId,
+              },
+            );
+            latestTrade = await getStablefxTrade(tradeId);
+            const status =
+              typeof latestTrade.status === "string"
+                ? latestTrade.status
+                : undefined;
+            const settlementTxHash = getStablefxExplorerTxHash(latestTrade);
+
+            if (isStablefxFinalStatus(status) || settlementTxHash) {
+              logOfficialQuoteDiagnostic(
+                "[official-payroll-route] StableFX step",
+                {
+                  provider: "stablefx",
+                  step: "settled",
+                  tradeId,
+                  status: status ?? null,
+                  settlementTxHash,
+                },
+              );
+
+              return {
+                settledToken: params.targetToken,
+                txHash:
+                  settlementTxHash ?? getCircleTxHash(fundResult) ?? null,
+              };
+            }
+
+            if (isStablefxFailureStatus(status)) {
+              throw new Error(`StableFX trade ended with status ${status}.`);
+            }
+
+            await delay(3_000);
+          }
+
+          throw new Error(
+            `StableFX trade ${tradeId} did not reach settlement before polling timed out.`,
+          );
+        } catch (error) {
+          logOfficialQuoteDiagnostic(
+            "[official-payroll-route] StableFX error",
+            {
+              provider: "stablefx",
+              step: "execute_preswap",
+              tokenIn: params.sourceToken,
+              tokenOut: params.targetToken,
+            },
+            error,
+          );
+          throw error;
+        }
+      }
+
       if (!swapAdapter) {
         throw new Error(
           "Swap adapter is not ready. Connect your external wallet first.",
         );
-      }
-
-      if (!externalWalletAddress) {
-        throw new Error("Wallet address is not available for swap.");
       }
 
       const preparePayload = {
@@ -577,7 +1079,13 @@ export function useWizPay(): WizPayState {
         txHash: txHash ?? null,
       };
     },
-    [swapAdapter, externalWalletAddress, publicClient],
+    [
+      externalWalletAddress,
+      officialQuote.provider,
+      publicClient,
+      signTypedData,
+      swapAdapter,
+    ],
   );
 
   const executeAppWalletPreSwap = useCallback(
@@ -970,12 +1478,14 @@ export function useWizPay(): WizPayState {
       ? STABLEFX_PROVIDER_LABEL
       : null;
 
-  // StableFX is quote-only in this phase: the preview is valid, but the
-  // execution provider (trade creation / settlement) is not implemented yet.
-  // Cross-currency execution must stay blocked while quotes still populate.
+  // StableFX payroll execution is available for both wallet modes:
+  // External Wallet uses the browser-wallet executePreSwap path, and App
+  // Wallet uses treasury-mediated settlement through PayrollFxSettlementService.
   const isStablefxCrossCurrency =
     officialQuoteRequired && officialQuoteProvider === "stablefx";
-  const crossCurrencyExecutionBlocked = isStablefxCrossCurrency;
+  const stablefxPayrollExecutionSupported = true;
+  const crossCurrencyExecutionBlocked =
+    isStablefxCrossCurrency && !stablefxPayrollExecutionSupported;
   const crossCurrencyExecutionBlockedReason = crossCurrencyExecutionBlocked
     ? STABLEFX_EXECUTION_PENDING_MESSAGE
     : null;
@@ -1046,8 +1556,7 @@ export function useWizPay(): WizPayState {
           : null,
       );
     }
-    // Quote resolved (e.g. StableFX), but cross-currency execution is not
-    // available yet. Show the execution-pending note on cross rows while the
+    // Reserved for unsupported cross-currency execution providers while the
     // preview amounts remain populated.
     if (officialQuoteRequired && crossCurrencyExecutionBlocked) {
       return preparedRecipients.map((recipient) =>
@@ -1090,8 +1599,6 @@ export function useWizPay(): WizPayState {
     officialQuoteError: appWalletCrossCurrencyBlocked
       ? appWalletCrossCurrencyMessage
       : officialQuoteIssue,
-    // StableFX is quote-only: keep Send disabled for cross-currency execution
-    // while the preview still populates from the resolved quote.
     crossCurrencyExecutionBlocked,
     crossCurrencyExecutionBlockedReason,
   });
