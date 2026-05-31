@@ -2,9 +2,12 @@ import {
   BadGatewayException,
   BadRequestException,
   Injectable,
+  Logger,
   ServiceUnavailableException,
 } from '@nestjs/common';
+import { StablefxQuoteProviderService } from './stablefx-quote-provider.service';
 import {
+  DEFAULT_SWAP_PROVIDER,
   USER_SWAP_ALLOWED_CHAIN,
   USER_SWAP_API_BASE_URL,
   USER_SWAP_ERROR_CODES,
@@ -12,6 +15,7 @@ import {
   type UserSwapNormalizedQuote,
   type UserSwapPrepareRequest,
   type UserSwapPrepareResponse,
+  type UserSwapProvider,
   type UserSwapQuoteRequest,
   type UserSwapStatusRequest,
   type UserSwapStatusResponse,
@@ -32,9 +36,81 @@ const TOKEN_ADDRESS_BY_SYMBOL: Record<UserSwapToken, string> = {
   EURC: USER_SWAP_EURC_ADDRESS,
 };
 
+// Bounded retry policy for transient upstream Circle Stablecoin Kits failures.
+// Only the statuses below are treated as transient; client/validation errors
+// (400/401/403) are never retried so the existing public error shape is kept.
+const CIRCLE_RETRYABLE_STATUSES = new Set<number>([
+  404, 408, 429, 500, 502, 503, 504,
+]);
+const CIRCLE_MAX_ATTEMPTS = 3;
+// Backoff applied before attempt N+1 (attempt 1 runs immediately).
+const CIRCLE_RETRY_DELAYS_MS = [750, 1500] as const;
+// Circle Stablecoin Kits upstream error code for deterministic route/liquidity
+// unavailability. Observed as HTTP 404 with body { code: 331001,
+// message: "No route available" }. This is not a transient transport failure,
+// so it must fail closed without retrying.
+const CIRCLE_ROUTE_UNAVAILABLE_CODE = 331001;
+// Stable internal reason surfaced in the error details so callers can detect
+// route unavailability without depending on the upstream HTTP status alone.
+const CIRCLE_ROUTE_UNAVAILABLE_REASON = 'CIRCLE_ROUTE_UNAVAILABLE';
+
 @Injectable()
 export class UserSwapService {
+  private readonly logger = new Logger(UserSwapService.name);
+
+  // The StableFX provider is optional so existing callers/tests that construct
+  // `new UserSwapService()` keep working; a default instance is used otherwise.
+  constructor(
+    private readonly stablefxQuoteProvider: StablefxQuoteProviderService = new StablefxQuoteProviderService(),
+  ) {}
+
   async quote(request: UserSwapQuoteRequest): Promise<UserSwapNormalizedQuote> {
+    const provider = this.getActiveProvider();
+
+    if (provider === 'stablefx') {
+      return this.quoteWithStablefxProvider(request);
+    }
+
+    return this.quoteWithSwapKit(request);
+  }
+
+  // Runs the StableFX quote path. When WIZPAY_STABLEFX_FALLBACK_TO_SWAPKIT is
+  // explicitly enabled, a genuine upstream StableFX failure falls back to the
+  // swapkit provider with an explicit (non-silent) warning log. The fallback is
+  // disabled by default so the provider fails closed. A missing API key is a
+  // hard misconfiguration and is never subject to fallback.
+  private async quoteWithStablefxProvider(
+    request: UserSwapQuoteRequest,
+  ): Promise<UserSwapNormalizedQuote> {
+    if (!this.isStablefxFallbackEnabled()) {
+      return this.quoteWithStablefx(request);
+    }
+
+    try {
+      return await this.quoteWithStablefx(request);
+    } catch (error) {
+      if (error instanceof ServiceUnavailableException) {
+        const code = this.readExceptionCode(error);
+
+        // Configuration failure (missing key): fail closed, do not fall back.
+        if (code === USER_SWAP_ERROR_CODES.STABLEFX_API_KEY_MISSING) {
+          throw error;
+        }
+      }
+
+      this.logger.warn(
+        `[user-swap] StableFX quote failed; falling back to swapkit ` +
+          `(WIZPAY_STABLEFX_FALLBACK_TO_SWAPKIT=true). provider=stablefx ` +
+          `error=${this.getErrorMessage(error)}`,
+      );
+
+      return this.quoteWithSwapKit(request);
+    }
+  }
+
+  private async quoteWithSwapKit(
+    request: UserSwapQuoteRequest,
+  ): Promise<UserSwapNormalizedQuote> {
     const normalized = this.normalizeBaseRequest(request);
     const slippageBps = this.readOptionalSlippageBps(request);
     const raw = await this.callCircleStablecoinApi(
@@ -44,6 +120,27 @@ export class UserSwapService {
     );
 
     return this.normalizeQuoteResponse(normalized, raw);
+  }
+
+  // Quote-only StableFX path. Reuses the same request validation/normalization
+  // as swapkit, then delegates to the StableFX reference quote provider. No
+  // settlement, trade creation, or Permit2 funding happens here.
+  private async quoteWithStablefx(
+    request: UserSwapQuoteRequest,
+  ): Promise<UserSwapNormalizedQuote> {
+    const normalized = this.normalizeBaseRequest(request, {
+      requireKitKey: false,
+    });
+
+    return this.stablefxQuoteProvider.quote({
+      tokenIn: normalized.tokenIn,
+      tokenOut: normalized.tokenOut,
+      amountIn: normalized.amountIn,
+      fromAddress: normalized.fromAddress,
+      toAddress: normalized.toAddress,
+      chain: normalized.chain,
+      slippageBps: this.readOptionalSlippageBps(request),
+    });
   }
 
   async prepare(
@@ -104,8 +201,11 @@ export class UserSwapService {
     };
   }
 
-  private normalizeBaseRequest(request: UserSwapQuoteRequest) {
-    this.guardConfig(request.chain);
+  private normalizeBaseRequest(
+    request: UserSwapQuoteRequest,
+    options: { requireKitKey?: boolean } = {},
+  ) {
+    this.guardConfig(request.chain, options);
 
     const tokenIn = this.normalizeToken(request.tokenIn);
     const tokenOut = this.normalizeToken(request.tokenOut);
@@ -144,7 +244,12 @@ export class UserSwapService {
     };
   }
 
-  private guardConfig(chain: string): void {
+  private guardConfig(
+    chain: string,
+    options: { requireKitKey?: boolean } = {},
+  ): void {
+    const { requireKitKey = true } = options;
+
     if (this.readEnvFlag('WIZPAY_USER_SWAP_ENABLED') !== true) {
       throw new ServiceUnavailableException({
         code: USER_SWAP_ERROR_CODES.DISABLED,
@@ -166,12 +271,44 @@ export class UserSwapService {
       });
     }
 
-    if (!this.getKitKey()) {
+    if (requireKitKey && !this.getKitKey()) {
       throw new ServiceUnavailableException({
         code: USER_SWAP_ERROR_CODES.KIT_KEY_MISSING,
         message: 'User-wallet swap Circle Kit key is not configured.',
       });
     }
+  }
+
+  // Resolves the active backend quote provider from WIZPAY_SWAP_PROVIDER.
+  // Defaults to swapkit (Circle Stablecoin Kits) when unset or unrecognized.
+  private getActiveProvider(): UserSwapProvider {
+    const configured = process.env.WIZPAY_SWAP_PROVIDER?.trim().toLowerCase();
+
+    if (configured === 'stablefx') {
+      return 'stablefx';
+    }
+
+    return DEFAULT_SWAP_PROVIDER;
+  }
+
+  // StableFX-to-swapkit fallback is opt-in and disabled by default so the
+  // StableFX provider fails closed.
+  private isStablefxFallbackEnabled(): boolean {
+    return this.readEnvFlag('WIZPAY_STABLEFX_FALLBACK_TO_SWAPKIT');
+  }
+
+  // Reads the structured error code from a Nest HttpException response body.
+  private readExceptionCode(error: {
+    getResponse?: () => unknown;
+  }): string | undefined {
+    const response =
+      typeof error.getResponse === 'function' ? error.getResponse() : undefined;
+
+    if (this.isRecord(response) && typeof response.code === 'string') {
+      return response.code;
+    }
+
+    return undefined;
   }
 
   private async callCircleStablecoinApi(
@@ -188,32 +325,88 @@ export class UserSwapService {
       });
     }
 
-    let response: Response;
-    try {
-      const query = method === 'GET' && params ? this.toSearchParams(params) : '';
-      const url = `${USER_SWAP_API_BASE_URL}${path}${query ? `?${query}` : ''}`;
+    const query = method === 'GET' && params ? this.toSearchParams(params) : '';
+    const url = `${USER_SWAP_API_BASE_URL}${path}${query ? `?${query}` : ''}`;
 
-      response = await fetch(url, {
-        method,
-        headers: {
-          Authorization: `Bearer ${kitKey}`,
-          ...(method === 'POST' && params
-            ? { 'Content-Type': 'application/json' }
-            : {}),
-        },
-        body: method === 'POST' && params ? JSON.stringify(params) : undefined,
-      });
-    } catch (error) {
-      throw new BadGatewayException({
-        code: USER_SWAP_ERROR_CODES.CIRCLE_STABLECOIN_API_FAILED,
-        message: `Circle Stablecoin Kits API request failed: ${this.getErrorMessage(error)}`,
-      });
-    }
+    // Bounded retry loop for transient upstream failures. Attempt 1 runs
+    // immediately; subsequent attempts wait per CIRCLE_RETRY_DELAYS_MS.
+    for (let attempt = 1; attempt <= CIRCLE_MAX_ATTEMPTS; attempt += 1) {
+      let response: Response;
+      try {
+        response = await fetch(url, {
+          method,
+          headers: {
+            Authorization: `Bearer ${kitKey}`,
+            ...(method === 'POST' && params
+              ? { 'Content-Type': 'application/json' }
+              : {}),
+          },
+          body: method === 'POST' && params ? JSON.stringify(params) : undefined,
+        });
+      } catch (error) {
+        // Network/transport failure: preserve the existing immediate failure shape.
+        throw new BadGatewayException({
+          code: USER_SWAP_ERROR_CODES.CIRCLE_STABLECOIN_API_FAILED,
+          message: `Circle Stablecoin Kits API request failed: ${this.getErrorMessage(error)}`,
+        });
+      }
 
-    const rawText = await response.text();
-    const raw = this.parseJsonOrText(rawText);
+      const rawText = await response.text();
+      const raw = this.parseJsonOrText(rawText);
 
-    if (!response.ok) {
+      if (response.ok) {
+        return raw;
+      }
+
+      // Deterministic route/liquidity unavailability (HTTP 404 + code 331001).
+      // This is not transient, so fail closed immediately without retrying.
+      if (
+        response.status === 404 &&
+        this.readUpstreamErrorCode(raw) === CIRCLE_ROUTE_UNAVAILABLE_CODE
+      ) {
+        this.logger.warn(
+          `[user-swap-circle] Route unavailable (no retry): ` +
+          `method=${method} path=${path} status=${response.status} ` +
+          `upstreamCode=${CIRCLE_ROUTE_UNAVAILABLE_CODE} ` +
+          `attempt=${attempt} maxAttempts=${CIRCLE_MAX_ATTEMPTS}`,
+        );
+
+        throw new BadGatewayException({
+          // Preserve USER_SWAP_ERROR_CODES compatibility for existing callers.
+          code: USER_SWAP_ERROR_CODES.CIRCLE_STABLECOIN_API_FAILED,
+          // Stable internal reason so callers can detect route unavailability.
+          reason: CIRCLE_ROUTE_UNAVAILABLE_REASON,
+          message: 'Circle Stablecoin Kits route unavailable.',
+          details: raw,
+        });
+      }
+
+      const isRetryable = CIRCLE_RETRYABLE_STATUSES.has(response.status);
+      const hasAttemptsLeft = attempt < CIRCLE_MAX_ATTEMPTS;
+
+      // Safe diagnostic log. Never includes Authorization, kit key, API key,
+      // or entity secret.
+      this.logger.warn(
+        `[user-swap-circle] Upstream non-OK response: ` +
+        `method=${method} path=${path} status=${response.status} ` +
+        `attempt=${attempt} maxAttempts=${CIRCLE_MAX_ATTEMPTS} ` +
+        `retryable=${isRetryable}`,
+      );
+
+      if (isRetryable && hasAttemptsLeft) {
+        await this.delay(CIRCLE_RETRY_DELAYS_MS[attempt - 1]);
+        continue;
+      }
+
+      if (isRetryable) {
+        // Transient status but no attempts left: report exhausted retries.
+        this.logger.error(
+          `[user-swap-circle] Exhausted retries for transient upstream failure: ` +
+          `method=${method} path=${path} status=${response.status} ` +
+          `attempts=${attempt} maxAttempts=${CIRCLE_MAX_ATTEMPTS}`,
+        );
+      }
+
       throw new BadGatewayException({
         code: USER_SWAP_ERROR_CODES.CIRCLE_STABLECOIN_API_FAILED,
         message: `Circle Stablecoin Kits API returned ${response.status}.`,
@@ -221,7 +414,38 @@ export class UserSwapService {
       });
     }
 
-    return raw;
+    // Defensive fallback: the loop returns or throws on every path above.
+    throw new BadGatewayException({
+      code: USER_SWAP_ERROR_CODES.CIRCLE_STABLECOIN_API_FAILED,
+      message: 'Circle Stablecoin Kits API retry loop terminated unexpectedly.',
+    });
+  }
+
+  // Resolves after the given delay. Isolated so retry backoff is testable.
+  private delay(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  // Safely extracts a numeric upstream error code from a parsed Circle error
+  // body. Returns undefined when the body is not an object or has no numeric
+  // `code`. Never throws and never reads secret material.
+  private readUpstreamErrorCode(raw: unknown): number | undefined {
+    if (!this.isRecord(raw)) {
+      return undefined;
+    }
+
+    const code = raw.code;
+
+    if (typeof code === 'number') {
+      return code;
+    }
+
+    // Some upstreams serialize the code as a numeric string; accept that too.
+    if (typeof code === 'string' && /^\d+$/.test(code)) {
+      return Number(code);
+    }
+
+    return undefined;
   }
 
   private normalizeQuoteResponse(
@@ -232,6 +456,7 @@ export class UserSwapService {
 
     return {
       ...request,
+      provider: 'swapkit',
       expectedOutput: this.findFirst(raw, [
         'estimatedOutput',
         'expectedOutput',

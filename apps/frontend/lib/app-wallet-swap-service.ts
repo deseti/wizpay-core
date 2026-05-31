@@ -23,17 +23,25 @@ export interface AppWalletSwapQuoteResponse {
   minimumOutput: unknown;
   expiresAt: string;
   status: "quoted";
+  provider?: "swapkit" | "stablefx";
   quoteId?: unknown;
   rawQuote?: unknown;
 }
 
-export interface AppWalletSwapOperationResponse
-  extends Omit<AppWalletSwapQuoteResponse, "status"> {
+export interface AppWalletSwapOperationResponse extends Omit<
+  AppWalletSwapQuoteResponse,
+  "status"
+> {
   operationId: string;
   status:
     | "awaiting_user_deposit"
     | "deposit_submitted"
     | "deposit_confirmed"
+    | "stablefx_quote_requested"
+    | "stablefx_trade_created"
+    | "stablefx_contract_ready"
+    | "stablefx_funded"
+    | "stablefx_settled_to_treasury"
     | "treasury_swap_pending"
     | "treasury_swap_submitted"
     | "treasury_swap_confirmed"

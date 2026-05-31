@@ -10,6 +10,11 @@ export type AppWalletSwapOperationStatus =
   | 'awaiting_user_deposit'
   | 'deposit_submitted'
   | 'deposit_confirmed'
+  | 'stablefx_quote_requested'
+  | 'stablefx_trade_created'
+  | 'stablefx_contract_ready'
+  | 'stablefx_funded'
+  | 'stablefx_settled_to_treasury'
   | 'treasury_swap_pending'
   | 'treasury_swap_submitted'
   | 'treasury_swap_confirmed'
@@ -25,6 +30,13 @@ export const APP_WALLET_SWAP_ERROR_CODES = {
   UNSUPPORTED_CHAIN: 'APP_WALLET_SWAP_UNSUPPORTED_CHAIN',
   EXECUTION_DISABLED: 'APP_WALLET_TREASURY_SWAP_EXECUTION_DISABLED',
   EXECUTION_FAILED: 'APP_WALLET_TREASURY_SWAP_EXECUTION_FAILED',
+  STABLEFX_APP_WALLET_DEPOSIT_REQUIRED:
+    'STABLEFX_APP_WALLET_DEPOSIT_REQUIRED',
+  STABLEFX_APP_WALLET_DEPOSIT_NOT_CONFIRMED:
+    'STABLEFX_APP_WALLET_DEPOSIT_NOT_CONFIRMED',
+  STABLEFX_TREASURY_EXECUTION_FAILED: 'STABLEFX_TREASURY_EXECUTION_FAILED',
+  STABLEFX_TREASURY_PAYOUT_FAILED: 'STABLEFX_TREASURY_PAYOUT_FAILED',
+  STABLEFX_MIN_AMOUNT: 'STABLEFX_MIN_AMOUNT',
 } as const;
 
 export interface AppWalletSwapQuoteRequest {
@@ -46,17 +58,19 @@ export interface AppWalletSwapQuoteResponse {
   minimumOutput: unknown;
   expiresAt: string;
   status: 'quoted';
+  provider?: 'swapkit' | 'stablefx';
   quoteId?: unknown;
   rawQuote?: unknown;
 }
 
-export interface AppWalletSwapOperationRequest
-  extends AppWalletSwapQuoteRequest {
+export interface AppWalletSwapOperationRequest extends AppWalletSwapQuoteRequest {
   quoteId?: string;
 }
 
-export interface AppWalletSwapOperationResponse
-  extends Omit<AppWalletSwapQuoteResponse, 'status'> {
+export interface AppWalletSwapOperationResponse extends Omit<
+  AppWalletSwapQuoteResponse,
+  'status'
+> {
   operationId: string;
   status: Exclude<AppWalletSwapOperationStatus, 'quoted'>;
   userWalletAddress: string;

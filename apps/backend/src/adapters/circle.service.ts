@@ -53,6 +53,14 @@ export interface CircleContractExecutionResult {
   raw: unknown;
 }
 
+export interface CircleTypedDataSignatureInput {
+  walletId?: string;
+  walletAddress?: string;
+  blockchain?: string;
+  typedData: Record<string, unknown>;
+  memo?: string;
+}
+
 export type CircleTransactionStatus =
   | 'INITIATED'
   | 'QUEUED'
@@ -517,6 +525,42 @@ export class CircleService {
       txHash: (tx as { txHash?: string }).txHash ?? null,
       blockNumber: (tx as { blockHeight?: string }).blockHeight ?? null,
       errorReason: (tx as { errorReason?: string }).errorReason ?? null,
+    };
+  }
+
+  async signTypedData(
+    input: CircleTypedDataSignatureInput,
+  ): Promise<{ signature: string; raw: unknown }> {
+    const client = this.getWalletClient();
+    const blockchain = input.blockchain
+      ? this.resolveBlockchain(input.blockchain)
+      : undefined;
+    const signer = input.walletId
+      ? { walletId: input.walletId }
+      : input.walletAddress && blockchain
+        ? { walletAddress: input.walletAddress, blockchain }
+        : null;
+
+    if (!signer) {
+      throw new Error(
+        'Circle typed-data signing requires walletId or walletAddress plus blockchain.',
+      );
+    }
+
+    const response = await client.signTypedData({
+      ...signer,
+      data: JSON.stringify(input.typedData),
+      ...(input.memo ? { memo: input.memo } : {}),
+    });
+    const signature = response.data?.signature;
+
+    if (!signature) {
+      throw new Error('Circle did not return a typed-data signature.');
+    }
+
+    return {
+      signature: signature.startsWith('0x') ? signature : `0x${signature}`,
+      raw: response.data,
     };
   }
 

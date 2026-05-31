@@ -1,12 +1,54 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'node:crypto';
+import { PrismaService } from '../../database/prisma.service';
 
 type W3sActionResult = Record<string, unknown>;
 type W3sValidationIssue = {
   field: string;
   message: string;
 };
+export type StablefxSignDiagnostic = {
+  amount: string;
+  expectedSignerAddress: string;
+  fromCurrency: string;
+  quoteId: string;
+  recipientAddress: string;
+  toCurrency: string;
+  typedData: Record<string, unknown>;
+  walletId: string;
+};
+
+const stablefxSignDiagnostics = new Map<string, StablefxSignDiagnostic>();
+
+export function getStablefxSignDiagnostic(input: {
+  expectedSignerAddress: string;
+  quoteId: string;
+}): StablefxSignDiagnostic | null {
+  const key = getStablefxSignDiagnosticKey(
+    input.quoteId,
+    input.expectedSignerAddress,
+  );
+
+  return stablefxSignDiagnostics.get(key) ?? null;
+}
+
+function setStablefxSignDiagnostic(diagnostic: StablefxSignDiagnostic): void {
+  stablefxSignDiagnostics.set(
+    getStablefxSignDiagnosticKey(
+      diagnostic.quoteId,
+      diagnostic.expectedSignerAddress,
+    ),
+    diagnostic,
+  );
+}
+
+function getStablefxSignDiagnosticKey(
+  quoteId: string,
+  expectedSignerAddress: string,
+): string {
+  return `${quoteId.trim()}::${expectedSignerAddress.trim().toLowerCase()}`;
+}
 
 /**
  * Server-side proxy for Circle W3S user-controlled wallet actions
@@ -20,7 +62,10 @@ export class W3sAuthService {
   private readonly logger = new Logger(W3sAuthService.name);
   private readonly circleBaseUrl: string;
 
-  constructor(private readonly configService: ConfigService) {
+  constructor(
+    private readonly configService: ConfigService,
+    private readonly prisma: PrismaService,
+  ) {
     const envBaseUrl =
       this.configService.get<string>('CIRCLE_BASE_URL') ||
       this.configService.get<string>('NEXT_PUBLIC_CIRCLE_BASE_URL');
@@ -337,14 +382,48 @@ export class W3sAuthService {
 
     const bodyParams = this.normalizeUserActionParams(path, params);
     this.validateUserActionParams(path, bodyParams);
+    const stablefxDiagnosticsEnabled =
+      process.env.WIZPAY_STABLEFX_SIGN_DIAGNOSTICS === 'true';
+    const stablefxDiagnostics = stablefxDiagnosticsEnabled
+      ? this.readStablefxDiagnostics(path, bodyParams)
+      : null;
+    const currentAppWalletAddress = stablefxDiagnosticsEnabled && stablefxDiagnostics
+      ? await this.resolveCurrentAppWalletAddress(stablefxDiagnostics.walletId)
+      : null;
+    const circleBodyParams = { ...bodyParams };
+    delete circleBodyParams.stablefxDiagnostics;
+
+    if (stablefxDiagnosticsEnabled && stablefxDiagnostics) {
+      const typedData = this.readTypedData(bodyParams);
+
+      if (typedData) {
+        setStablefxSignDiagnostic({
+          ...stablefxDiagnostics,
+          typedData,
+        });
+      }
+
+      this.logger.log(
+        `[stablefx-app-wallet-sign] provider=stablefx step=sign_typed_data ` +
+          `walletId=${stablefxDiagnostics.walletId} ` +
+          `currentAppWalletAddress=${currentAppWalletAddress ?? 'unavailable'} ` +
+          `expectedSignerAddress=${stablefxDiagnostics.expectedSignerAddress} ` +
+          `recipientAddress=${stablefxDiagnostics.recipientAddress} ` +
+          `quoteId=${stablefxDiagnostics.quoteId} ` +
+          `fromCurrency=${stablefxDiagnostics.fromCurrency} ` +
+          `toCurrency=${stablefxDiagnostics.toCurrency} ` +
+          `amount=${stablefxDiagnostics.amount} ` +
+          `typedDataCached=${typedData ? 'true' : 'false'}`,
+      );
+    }
 
     if (method === 'POST') {
       return this.circleUserRequest({
         body: {
-          ...bodyParams,
+          ...circleBodyParams,
           idempotencyKey:
-            typeof bodyParams.idempotencyKey === 'string'
-              ? bodyParams.idempotencyKey
+            typeof circleBodyParams.idempotencyKey === 'string'
+              ? circleBodyParams.idempotencyKey
               : randomUUID(),
         },
         method,
@@ -354,6 +433,108 @@ export class W3sAuthService {
     }
 
     return this.circleUserRequest({ method, path, userToken });
+  }
+
+  private readStablefxDiagnostics(
+    path: string,
+    body: Record<string, unknown>,
+  ):
+    | {
+        amount: string;
+        expectedSignerAddress: string;
+        fromCurrency: string;
+        quoteId: string;
+        recipientAddress: string;
+        toCurrency: string;
+        walletId: string;
+      }
+    | null {
+    if (path !== '/v1/w3s/user/sign/typedData') {
+      return null;
+    }
+
+    const diagnostics = body.stablefxDiagnostics;
+
+    if (!this.isRecord(diagnostics)) {
+      return null;
+    }
+
+    const walletId = this.readTrimmedString(body, 'walletId');
+    const expectedSignerAddress = this.readTrimmedString(
+      diagnostics,
+      'expectedSignerAddress',
+    );
+    const recipientAddress = this.readTrimmedString(
+      diagnostics,
+      'recipientAddress',
+    );
+    const quoteId = this.readTrimmedString(diagnostics, 'quoteId');
+    const fromCurrency = this.readTrimmedString(diagnostics, 'fromCurrency');
+    const toCurrency = this.readTrimmedString(diagnostics, 'toCurrency');
+    const amount = this.readTrimmedString(diagnostics, 'amount');
+
+    if (
+      !walletId ||
+      !expectedSignerAddress ||
+      !recipientAddress ||
+      !quoteId ||
+      !fromCurrency ||
+      !toCurrency ||
+      !amount
+    ) {
+      return null;
+    }
+
+    return {
+      amount,
+      expectedSignerAddress,
+      fromCurrency,
+      quoteId,
+      recipientAddress,
+      toCurrency,
+      walletId,
+    };
+  }
+
+  private async resolveCurrentAppWalletAddress(
+    walletId: string,
+  ): Promise<string | null> {
+    try {
+      const wallet = await this.prisma.userWallet.findUnique({
+        where: { walletId },
+        select: { address: true },
+      });
+
+      return typeof wallet?.address === 'string' && wallet.address.trim()
+        ? wallet.address.trim()
+        : null;
+    } catch (error) {
+      this.logger.warn(
+        `[stablefx-app-wallet-sign] Wallet lookup failed before typed-data signing: ` +
+          `walletId=${walletId} error=${this.getErrorMessage(error)}`,
+      );
+      return null;
+    }
+  }
+
+  private readTypedData(
+    body: Record<string, unknown>,
+  ): Record<string, unknown> | null {
+    if (this.isRecord(body.typedData)) {
+      return body.typedData;
+    }
+
+    if (typeof body.data !== 'string' || !body.data.trim()) {
+      return null;
+    }
+
+    try {
+      const parsed = JSON.parse(body.data) as unknown;
+
+      return this.isRecord(parsed) ? parsed : null;
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -675,6 +856,22 @@ export class W3sAuthService {
 
   private isNonEmptyString(value: unknown): value is string {
     return typeof value === 'string' && value.trim().length > 0;
+  }
+
+  private isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+  }
+
+  private readTrimmedString(
+    source: Record<string, unknown>,
+    key: string,
+  ): string | null {
+    const value = source[key];
+    return typeof value === 'string' && value.trim() ? value.trim() : null;
+  }
+
+  private getErrorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : 'unknown error';
   }
 
   private normalizeBridgeActionParams(params: Record<string, unknown>) {

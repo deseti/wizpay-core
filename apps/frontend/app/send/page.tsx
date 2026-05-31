@@ -141,6 +141,7 @@ function SendWorkspace() {
             smartBatchReason={wp.smartBatchReason}
             smartBatchButtonText={wp.smartBatchButtonText}
             smartBatchHelperText={wp.smartBatchHelperText}
+            swapProviderLabel={wp.swapProviderLabel}
             handleSmartBatchSubmit={wp.handleSmartBatchSubmit}
           />
 

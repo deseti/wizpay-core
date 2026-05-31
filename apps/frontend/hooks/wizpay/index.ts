@@ -20,12 +20,14 @@ import {
   prepareUserSwap,
   quoteUserSwap,
   USER_SWAP_CHAIN,
+  type UserSwapProvider,
   type UserSwapQuoteRequest,
 } from "@/lib/user-swap-service";
 import {
   findFirstString,
   getUserSwapExpectedOutputValue,
   getUserSwapMinimumOutputValue,
+  getUserSwapProvider,
   parseUserSwapQuoteAmount,
 } from "@/lib/user-swap-quote-parser";
 import {
@@ -49,6 +51,15 @@ import {
 
 const OFFICIAL_PAYROLL_QUOTE_UNAVAILABLE =
   "Official payroll route quote unavailable. Payroll cannot proceed.";
+
+// Human-readable label for the StableFX quote provider.
+const STABLEFX_PROVIDER_LABEL = "StableFX";
+
+// Shown when a cross-currency quote is available from StableFX but the
+// StableFX execution provider has not been implemented yet. The quote and
+// preview are valid; only execution (Send) is blocked.
+const STABLEFX_EXECUTION_PENDING_MESSAGE =
+  "StableFX quote ready, but cross-currency payroll execution is not available yet. Send is disabled until the StableFX execution provider is implemented.";
 
 function isPositiveDecimal(value: string) {
   return parseFloat(value) > 0 && Number.isFinite(Number(value));
@@ -248,6 +259,7 @@ export function useWizPay(): WizPayState {
 
   const [officialQuote, setOfficialQuote] = useState<{
     targetToken: TokenSymbol | null;
+    provider: UserSwapProvider | null;
     expectedOutput: string | null;
     expectedOutputUnits: bigint | null;
     minimumOutput: string | null;
@@ -256,6 +268,7 @@ export function useWizPay(): WizPayState {
     error: string | null;
   }>({
     targetToken: null,
+    provider: null,
     expectedOutput: null,
     expectedOutputUnits: null,
     minimumOutput: null,
@@ -277,6 +290,7 @@ export function useWizPay(): WizPayState {
         if (cancelled) return;
         setOfficialQuote({
           targetToken: null,
+          provider: null,
           expectedOutput: null,
           expectedOutputUnits: null,
           minimumOutput: null,
@@ -316,6 +330,13 @@ export function useWizPay(): WizPayState {
     quoteUserSwap(payload)
       .then((result) => {
         if (cancelled) return;
+        const provider = getUserSwapProvider(result);
+        const normalizedProvider: UserSwapProvider | null =
+          provider === "stablefx"
+            ? "stablefx"
+            : provider === "swapkit"
+              ? "swapkit"
+              : null;
         const expectedOutputValue = getUserSwapExpectedOutputValue(result);
         const minimumOutputValue = getUserSwapMinimumOutputValue(result);
         const expectedOutputParsed = parseUserSwapQuoteAmount(
@@ -334,6 +355,7 @@ export function useWizPay(): WizPayState {
         logOfficialQuoteDiagnostic(
           "[official-payroll-route] quoteUserSwap response",
           {
+            provider: normalizedProvider,
             rawExpectedOutput: expectedOutputParsed?.rawAmount ?? null,
             rawMinimumOutput: minimumOutputParsed?.rawAmount ?? null,
             expectedOutput,
@@ -345,6 +367,7 @@ export function useWizPay(): WizPayState {
 
         setOfficialQuote({
           targetToken: crossCurrencyTarget,
+          provider: normalizedProvider,
           expectedOutput,
           expectedOutputUnits,
           minimumOutput,
@@ -373,6 +396,7 @@ export function useWizPay(): WizPayState {
         );
         setOfficialQuote({
           targetToken: crossCurrencyTarget,
+          provider: null,
           expectedOutput: null,
           expectedOutputUnits: null,
           minimumOutput: null,
@@ -929,12 +953,32 @@ export function useWizPay(): WizPayState {
   // officialQuoteRequired gates execution readiness for both wallet modes
   // when cross-currency is detected.
   const officialQuoteRequired = Boolean(crossCurrencyTarget);
+  // officialQuoteReady means the preview quote resolved with a usable output.
+  // It drives the "They Receive" preview and proportional row allocation for
+  // BOTH providers. Execution readiness is gated separately below.
   const officialQuoteReady = Boolean(
     officialQuoteRequired &&
       officialQuote.expectedOutputUnits &&
       !officialQuote.loading &&
       !officialQuote.error,
   );
+
+  // Active provider behind the cross-currency quote.
+  const officialQuoteProvider = officialQuote.provider;
+  const officialQuoteProviderLabel =
+    officialQuoteProvider === "stablefx"
+      ? STABLEFX_PROVIDER_LABEL
+      : null;
+
+  // StableFX is quote-only in this phase: the preview is valid, but the
+  // execution provider (trade creation / settlement) is not implemented yet.
+  // Cross-currency execution must stay blocked while quotes still populate.
+  const isStablefxCrossCurrency =
+    officialQuoteRequired && officialQuoteProvider === "stablefx";
+  const crossCurrencyExecutionBlocked = isStablefxCrossCurrency;
+  const crossCurrencyExecutionBlockedReason = crossCurrencyExecutionBlocked
+    ? STABLEFX_EXECUTION_PENDING_MESSAGE
+    : null;
 
   // Determine if App Wallet cross-currency should block Send
   const appWalletCrossCurrencyBlocked =
@@ -946,13 +990,18 @@ export function useWizPay(): WizPayState {
     ? "App Wallet cross-currency payroll execution is not available yet. Use External Wallet for route-swap payroll."
     : null;
 
+  // A genuine quote problem (error, or resolved with no usable output).
+  // A successful quote — including a StableFX quote — is NOT an issue here;
+  // StableFX execution gating is handled by crossCurrencyExecutionBlocked.
   const officialQuoteIssue = officialQuoteRequired
-    ? officialQuote.error ??
-      (officialQuote.loading
-        ? null
-        : crossCurrencyTarget
-          ? `Official quote unavailable for ${contract.activeToken.symbol} -> ${crossCurrencyTarget} aggregate amount.`
-          : OFFICIAL_PAYROLL_QUOTE_UNAVAILABLE)
+    ? officialQuote.loading
+      ? null
+      : officialQuote.error ??
+        (officialQuote.expectedOutputUnits
+          ? null
+          : crossCurrencyTarget
+            ? `Official quote unavailable for ${contract.activeToken.symbol} -> ${crossCurrencyTarget} aggregate amount.`
+            : OFFICIAL_PAYROLL_QUOTE_UNAVAILABLE)
     : null;
 
   // Row diagnostics for cross-currency recipients
@@ -997,6 +1046,16 @@ export function useWizPay(): WizPayState {
           : null,
       );
     }
+    // Quote resolved (e.g. StableFX), but cross-currency execution is not
+    // available yet. Show the execution-pending note on cross rows while the
+    // preview amounts remain populated.
+    if (officialQuoteRequired && crossCurrencyExecutionBlocked) {
+      return preparedRecipients.map((recipient) =>
+        recipient.targetToken !== contract.activeToken.symbol
+          ? crossCurrencyExecutionBlockedReason
+          : null,
+      );
+    }
     if (officialQuoteRequired) {
       return preparedRecipients.map((recipient) =>
         recipient.targetToken !== contract.activeToken.symbol
@@ -1031,6 +1090,10 @@ export function useWizPay(): WizPayState {
     officialQuoteError: appWalletCrossCurrencyBlocked
       ? appWalletCrossCurrencyMessage
       : officialQuoteIssue,
+    // StableFX is quote-only: keep Send disabled for cross-currency execution
+    // while the preview still populates from the resolved quote.
+    crossCurrencyExecutionBlocked,
+    crossCurrencyExecutionBlockedReason,
   });
 
   // 3. Initialize History
@@ -1225,6 +1288,8 @@ export function useWizPay(): WizPayState {
     smartBatchReason: batchPayroll.availabilityReason,
     smartBatchButtonText,
     smartBatchHelperText,
+    // Cross-currency quote provider label (e.g. "StableFX"), null otherwise.
+    swapProviderLabel: officialQuoteProviderLabel,
     smartBatchSubmissionHashes: batchPayroll.submissionHashes,
     payrollTaskId: batchPayroll.taskId,
     payrollTask: batchPayroll.task,

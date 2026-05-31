@@ -78,6 +78,7 @@ interface BatchComposerProps {
   smartBatchReason?: string | null;
   smartBatchButtonText?: string | null;
   smartBatchHelperText?: string | null;
+  swapProviderLabel?: string | null;
   handleSmartBatchSubmit?: () => Promise<void>;
 }
 
@@ -111,6 +112,7 @@ export function BatchComposer({
   smartBatchReason,
   smartBatchButtonText,
   smartBatchHelperText,
+  swapProviderLabel,
   handleSmartBatchSubmit,
 }: BatchComposerProps) {
   const canSend = smartBatchAvailable && Boolean(handleSmartBatchSubmit);
@@ -429,6 +431,14 @@ export function BatchComposer({
               Execution path: active user-controlled wallet {"->"} Arc
               transaction(s)
             </p>
+            {swapProviderLabel ? (
+              <p className="text-xs text-muted-foreground/70">
+                Cross-currency quote provider:{" "}
+                <span className="font-medium text-foreground/90">
+                  {swapProviderLabel}
+                </span>
+              </p>
+            ) : null}
             {smartBatchAvailable ? (
               <p className="text-xs text-muted-foreground/70">
                 {smartBatchHelperText ??

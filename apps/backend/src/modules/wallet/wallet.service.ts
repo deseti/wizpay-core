@@ -27,7 +27,10 @@ type UpstreamWallet = {
   accountType?: string;
   address?: string;
   blockchain?: string;
+  custodyType?: string;
   id?: string;
+  type?: string;
+  walletType?: string;
   walletSetId?: string | null;
 };
 
@@ -296,8 +299,43 @@ export class WalletService {
       .filter((wallet): wallet is UpstreamWallet =>
         Boolean(wallet && typeof wallet === 'object'),
       )
+      .map((wallet) => {
+        this.logCircleWalletMetadata(wallet);
+        return wallet;
+      })
       .map((wallet) => this.normalizeUpstreamWallet(wallet))
       .filter((wallet): wallet is NormalizedUpstreamWallet => wallet !== null);
+  }
+
+  private logCircleWalletMetadata(wallet: UpstreamWallet): void {
+    if (process.env.WIZPAY_WALLET_METADATA_DIAGNOSTICS !== 'true') {
+      return;
+    }
+
+    const walletId = this.normalizeOptionalValue(wallet.id);
+
+    if (!walletId) {
+      return;
+    }
+
+    const rawKeys = Object.keys(wallet).sort();
+    const accountType = this.normalizeOptionalValue(wallet.accountType);
+    const custodyType = this.normalizeOptionalValue(wallet.custodyType);
+    const walletType =
+      this.normalizeOptionalValue(wallet.walletType) ??
+      this.normalizeOptionalValue(wallet.type);
+    const walletSetId = this.normalizeOptionalValue(wallet.walletSetId);
+
+    this.logger.log(
+      `[circle-wallet-metadata] walletId=${walletId} ` +
+        `blockchain=${this.normalizeOptionalValue(wallet.blockchain) ?? 'unavailable'} ` +
+        `address=${this.normalizeOptionalValue(wallet.address) ?? 'unavailable'} ` +
+        `accountType=${accountType ?? 'unavailable'} ` +
+        `walletSetId=${walletSetId ?? 'unavailable'} ` +
+        `custodyType=${custodyType ?? 'unavailable'} ` +
+        `walletType=${walletType ?? 'unavailable'} ` +
+        `rawTopLevelKeys=${rawKeys.join(',')}`,
+    );
   }
 
   private normalizeUpstreamWallet(wallet: UpstreamWallet) {

@@ -1,5 +1,6 @@
 import { BadRequestException } from '@nestjs/common';
 import { AppWalletSwapOperation } from '@prisma/client';
+import { BlockchainService } from '../adapters/blockchain.service';
 import { PrismaService } from '../database/prisma.service';
 import { W3sAuthService } from '../modules/wallet/w3s-auth.service';
 import { CircleService } from '../adapters/circle.service';
@@ -14,6 +15,7 @@ import {
   USER_SWAP_EURC_ADDRESS,
   UserSwapService,
 } from '../user-swap/user-swap.service';
+import { StablefxExecutionService } from '../user-swap/stablefx-execution.service';
 
 const TREASURY_ADDRESS = '0xbbd70b01a1cabc96d5b7b129ae1aaabdf50dd40b';
 const USER_ADDRESS = '0x90ab859240b941eaf0cbcbf42df5086e0ad54147';
@@ -55,11 +57,39 @@ describe('AppWalletSwapService', () => {
   const circleService = {
     executeContract: jest.fn(),
     getTransactionStatus: jest.fn(),
+    signTypedData: jest.fn(),
     transfer: jest.fn(),
+    waitForTransactionComplete: jest.fn(),
   } as unknown as jest.Mocked<
     Pick<
       CircleService,
-      'executeContract' | 'getTransactionStatus' | 'transfer'
+      | 'executeContract'
+      | 'getTransactionStatus'
+      | 'signTypedData'
+      | 'transfer'
+      | 'waitForTransactionComplete'
+    >
+  >;
+  const blockchainService = {
+    buildERC20ApproveData: jest.fn(),
+    getAllowance: jest.fn(),
+  } as unknown as jest.Mocked<
+    Pick<BlockchainService, 'buildERC20ApproveData' | 'getAllowance'>
+  >;
+  const stablefxExecutionService = {
+    createTradableQuote: jest.fn(),
+    createTrade: jest.fn(),
+    createFundingPresign: jest.fn(),
+    fund: jest.fn(),
+    getTrade: jest.fn(),
+  } as unknown as jest.Mocked<
+    Pick<
+      StablefxExecutionService,
+      | 'createTradableQuote'
+      | 'createTrade'
+      | 'createFundingPresign'
+      | 'fund'
+      | 'getTrade'
     >
   >;
   const w3sAuthService = {
@@ -83,6 +113,7 @@ describe('AppWalletSwapService', () => {
       ...originalEnv,
       CIRCLE_WALLET_ADDRESS_ARC: TREASURY_ADDRESS,
     };
+    delete process.env.WIZPAY_SWAP_PROVIDER;
     userSwapService.quote.mockResolvedValue({
       tokenIn: 'USDC',
       tokenOut: 'EURC',
@@ -153,6 +184,85 @@ describe('AppWalletSwapService', () => {
       txHash:
         '0xcc019e059ddbbbd32f73c444e350838553779dc027926111366ace5195faa1d5',
     });
+    circleService.signTypedData.mockResolvedValue({
+      signature: '0xsigned',
+      raw: { signature: '0xsigned' },
+    });
+    stablefxExecutionService.createTradableQuote.mockResolvedValue({
+      id: 'stablefx-quote-1',
+      from: { currency: 'EURC', amount: '17' },
+      to: { currency: 'USDC', amount: '16' },
+      typedData: {
+        domain: {
+          chainId: 5042002,
+          verifyingContract: '0x000000000022D473030F116dDEE9F6B43aC78BA3',
+        },
+        message: {
+          permitted: {
+            token: USER_SWAP_EURC_ADDRESS,
+            amount: '17000000',
+          },
+          spender: '0xc35ba767d4490b14eb106919dc032008e20e23db',
+        },
+      },
+    });
+    stablefxExecutionService.createTrade.mockResolvedValue({
+      id: 'stablefx-trade-1',
+      status: 'pending',
+    });
+    stablefxExecutionService.createFundingPresign.mockResolvedValue({
+      typedData: {
+        domain: {
+          chainId: 5042002,
+          verifyingContract: '0x000000000022D473030F116dDEE9F6B43aC78BA3',
+        },
+        message: {
+          permitted: {
+            token: USER_SWAP_EURC_ADDRESS,
+            amount: '17000000',
+          },
+          spender: '0xc35ba767d4490b14eb106919dc032008e20e23db',
+        },
+      },
+    });
+    stablefxExecutionService.fund.mockResolvedValue({
+      settlementTransactionHash:
+        '0xdd019e059ddbbbd32f73c444e350838553779dc027926111366ace5195faa1d5',
+    });
+    stablefxExecutionService.getTrade
+      .mockResolvedValueOnce({
+        id: 'stablefx-trade-1',
+        contractTradeId: '24',
+        status: 'pending',
+      })
+      .mockResolvedValue({
+        id: 'stablefx-trade-1',
+        contractTradeId: '24',
+        status: 'taker_funded',
+        to: { currency: 'USDC', amount: '16' },
+      });
+    blockchainService.buildERC20ApproveData.mockReturnValue('0x095ea7b3');
+    blockchainService.getAllowance
+      .mockResolvedValueOnce({
+        owner: TREASURY_ADDRESS,
+        spender: '0x000000000022D473030F116dDEE9F6B43aC78BA3',
+        tokenAddress: USER_SWAP_EURC_ADDRESS,
+        allowance: '0',
+      })
+      .mockResolvedValue({
+        owner: TREASURY_ADDRESS,
+        spender: '0x000000000022D473030F116dDEE9F6B43aC78BA3',
+        tokenAddress: USER_SWAP_EURC_ADDRESS,
+        allowance: '17000000',
+      });
+    circleService.waitForTransactionComplete.mockResolvedValue({
+      txId: 'stablefx-approval-transaction-1',
+      status: 'COMPLETE',
+      txHash:
+        '0xee019e059ddbbbd32f73c444e350838553779dc027926111366ace5195faa1d5',
+      blockNumber: '1',
+      errorReason: null,
+    });
     appWalletSwapOperationStore = new Map();
     prisma = createPrismaMock(appWalletSwapOperationStore);
   });
@@ -169,6 +279,8 @@ describe('AppWalletSwapService', () => {
       circleService as unknown as CircleService,
       w3sAuthService as W3sAuthService,
       prismaService as unknown as PrismaService,
+      stablefxExecutionService as unknown as StablefxExecutionService,
+      blockchainService as unknown as BlockchainService,
     );
   }
 
@@ -184,6 +296,12 @@ describe('AppWalletSwapService', () => {
       WIZPAY_USER_SWAP_ALLOW_TESTNET: 'true',
       WIZPAY_USER_SWAP_KIT_KEY: 'configured',
     };
+  }
+
+  function enableStablefxExecutionEnv() {
+    enableExecutionEnv();
+    process.env.WIZPAY_SWAP_PROVIDER = 'stablefx';
+    process.env.CIRCLE_STABLEFX_API_KEY = 'stablefx-secret';
   }
 
   async function createConfirmedOperation(service = createService()) {
@@ -1903,6 +2021,81 @@ describe('AppWalletSwapService', () => {
       tokenIn: 'EURC',
       tokenOut: 'USDC',
       payoutAmount: '980000',
+    });
+  });
+
+  it('retries failed App Wallet EURC to USDC StableFX operation without calling Stablecoin Kits', async () => {
+    enableStablefxExecutionEnv();
+    userSwapService.quote.mockResolvedValueOnce({
+      tokenIn: 'EURC',
+      tokenOut: 'USDC',
+      amountIn: '17000000',
+      fromAddress: TREASURY_ADDRESS,
+      toAddress: USER_ADDRESS,
+      chain: APP_WALLET_SWAP_CHAIN,
+      provider: 'stablefx',
+      quoteId: 'stablefx-reference-quote-1',
+      expectedOutput: '16000000',
+      raw: { id: 'stablefx-reference-quote-1' },
+    });
+    depositVerifier.verifyDeposit.mockResolvedValueOnce({
+      confirmed: true,
+      confirmedAmount: '17000000',
+    });
+    const service = createService();
+    const operation = await service.createOperation({
+      ...baseRequest,
+      tokenIn: 'EURC',
+      tokenOut: 'USDC',
+      amountIn: '17000000',
+    });
+    const submitted = await service.submitDeposit(operation.operationId, {
+      depositTxHash,
+    });
+    const confirmed = await service.confirmDeposit(submitted.operationId);
+    const record = appWalletSwapOperationStore.get(confirmed.operationId)!;
+
+    appWalletSwapOperationStore.set(confirmed.operationId, {
+      ...record,
+      status: 'execution_failed',
+      executionError: 'Circle Stablecoin Kits route unavailable.',
+      rawTreasurySwap: { prepare: { provider: 'swapkit' } },
+    });
+
+    const result = await service.execute(confirmed.operationId);
+
+    expect(userSwapService.prepare).not.toHaveBeenCalled();
+    expect(stablefxExecutionService.createTradableQuote).toHaveBeenCalledWith({
+      amountIn: '17000000',
+      chain: APP_WALLET_SWAP_CHAIN,
+      fromAddress: TREASURY_ADDRESS,
+      recipientAddress: TREASURY_ADDRESS,
+      tokenIn: 'EURC',
+      tokenOut: 'USDC',
+    });
+    expect(stablefxExecutionService.createTrade).toHaveBeenCalledWith(
+      expect.objectContaining({
+        address: TREASURY_ADDRESS,
+        quoteId: 'stablefx-quote-1',
+        selectedAddress: TREASURY_ADDRESS,
+        tokenIn: 'EURC',
+        tokenOut: 'USDC',
+        walletMode: 'app',
+      }),
+    );
+    expect(circleService.transfer).toHaveBeenCalledWith(
+      expect.objectContaining({
+        amount: '16',
+        token: 'USDC',
+        toAddress: USER_ADDRESS,
+      }),
+    );
+    expect(result).toMatchObject({
+      status: 'completed',
+      tokenIn: 'EURC',
+      tokenOut: 'USDC',
+      depositConfirmedAmount: '17000000',
+      payoutAmount: '16000000',
     });
   });
 

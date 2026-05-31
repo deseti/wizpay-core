@@ -1,16 +1,15 @@
-import {
-  AppWalletSwapOperation,
-  Prisma,
-} from '@prisma/client';
+import { AppWalletSwapOperation, Prisma } from '@prisma/client';
 import {
   BadRequestException,
   BadGatewayException,
   Injectable,
   Logger,
   NotFoundException,
+  Optional,
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { createHash, randomUUID } from 'crypto';
+import { BlockchainService } from '../adapters/blockchain.service';
 import { CircleService } from '../adapters/circle.service';
 import { PrismaService } from '../database/prisma.service';
 import { W3sAuthService } from '../modules/wallet/w3s-auth.service';
@@ -19,6 +18,7 @@ import {
   USER_SWAP_USDC_ADDRESS,
   UserSwapService,
 } from '../user-swap/user-swap.service';
+import { StablefxExecutionService } from '../user-swap/stablefx-execution.service';
 import { AppWalletSwapDepositVerifierService } from './app-wallet-swap-deposit-verifier.service';
 import { AppWalletSwapTreasuryVerifierService } from './app-wallet-swap-treasury-verifier.service';
 import {
@@ -35,10 +35,8 @@ import {
 } from './app-wallet-swap.types';
 
 const SUPPORTED_TOKENS = new Set<AppWalletSwapToken>(['USDC', 'EURC']);
-const ARC_TESTNET_CIRCLE_USDC_TOKEN_ID =
-  '15dc2b5d-0994-58b0-bf8c-3a0501148ee8';
-const ARC_TESTNET_CIRCLE_EURC_TOKEN_ID =
-  '4ea52a96-e6ae-56dc-8336-385bb238755f';
+const ARC_TESTNET_CIRCLE_USDC_TOKEN_ID = '15dc2b5d-0994-58b0-bf8c-3a0501148ee8';
+const ARC_TESTNET_CIRCLE_EURC_TOKEN_ID = '4ea52a96-e6ae-56dc-8336-385bb238755f';
 const TOKEN_ADDRESS_BY_SYMBOL: Record<AppWalletSwapToken, string> = {
   USDC: USER_SWAP_USDC_ADDRESS,
   EURC: USER_SWAP_EURC_ADDRESS,
@@ -53,6 +51,8 @@ const TOKEN_DECIMALS_BY_SYMBOL: Record<AppWalletSwapToken, number> = {
 };
 const CIRCLE_TRANSACTION_TIME_TOLERANCE_MS = 10_000;
 const DEFAULT_QUOTE_TTL_MS = 5 * 60 * 1000;
+const STABLEFX_MIN_BASE_UNITS = 10_000_000n;
+const STABLEFX_APP_WALLET_PAIRS = new Set(['USDC->EURC', 'EURC->USDC']);
 const UUID_PATTERN =
   /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 
@@ -67,6 +67,10 @@ export class AppWalletSwapService {
     private readonly circleService: CircleService,
     private readonly w3sAuthService: W3sAuthService,
     private readonly prisma: PrismaService,
+    @Optional()
+    private readonly stablefxExecutionService: StablefxExecutionService = new StablefxExecutionService(),
+    @Optional()
+    private readonly blockchainService?: BlockchainService,
   ) {}
 
   async quote(
@@ -94,8 +98,9 @@ export class AppWalletSwapService {
       minimumOutput: userSwapQuote.minimumOutput ?? null,
       expiresAt: this.normalizeExpiry(userSwapQuote.expiresAt),
       status: 'quoted',
+      provider: userSwapQuote.provider,
       quoteId: userSwapQuote.quoteId,
-      rawQuote: userSwapQuote.raw,
+      rawQuote: this.attachQuoteProvider(userSwapQuote.raw, userSwapQuote.provider),
     };
   }
 
@@ -121,7 +126,9 @@ export class AppWalletSwapService {
     );
   }
 
-  async getOperation(operationId: string): Promise<AppWalletSwapOperationResponse> {
+  async getOperation(
+    operationId: string,
+  ): Promise<AppWalletSwapOperationResponse> {
     this.assertOperationId(operationId);
 
     const operation = await this.prisma.appWalletSwapOperation.findUnique({
@@ -149,8 +156,7 @@ export class AppWalletSwapService {
     if (operation.status !== 'awaiting_user_deposit') {
       throw new BadRequestException({
         code: APP_WALLET_SWAP_ERROR_CODES.INVALID_REQUEST,
-        message:
-          'App Wallet swap operation is not awaiting a user deposit.',
+        message: 'App Wallet swap operation is not awaiting a user deposit.',
       });
     }
 
@@ -284,7 +290,8 @@ export class AppWalletSwapService {
         transactionResponse,
         operation,
       );
-      const depositTxHash = this.extractCircleTransactionHash(directTransaction);
+      const depositTxHash =
+        this.extractCircleTransactionHash(directTransaction);
 
       if (depositTxHash) {
         return this.attachDepositTxHash(operationId, { depositTxHash });
@@ -330,10 +337,9 @@ export class AppWalletSwapService {
       await this.prisma.appWalletSwapOperation.update({
         where: { operationId },
         data: {
-          depositConfirmationError:
-            diagnostic
-              ? `Deposit txHash is not available from Circle yet. Retry shortly. Candidate transaction shapes: ${diagnostic}`
-              : 'Deposit txHash is not available from Circle yet. Retry shortly.',
+          depositConfirmationError: diagnostic
+            ? `Deposit txHash is not available from Circle yet. Retry shortly. Candidate transaction shapes: ${diagnostic}`
+            : 'Deposit txHash is not available from Circle yet. Retry shortly.',
           updatedAt: new Date(),
         },
       }),
@@ -463,6 +469,11 @@ export class AppWalletSwapService {
   ): void {
     const allowedStatuses: AppWalletSwapOperationResponse['status'][] = [
       'deposit_confirmed',
+      'stablefx_quote_requested',
+      'stablefx_trade_created',
+      'stablefx_contract_ready',
+      'stablefx_funded',
+      'stablefx_settled_to_treasury',
       'treasury_swap_pending',
       'treasury_swap_submitted',
       'treasury_swap_confirmed',
@@ -523,7 +534,9 @@ export class AppWalletSwapService {
 
     const treasuryAddress = this.getArcTreasuryDepositAddress();
 
-    if (!this.equalsIgnoreCase(operation.treasuryDepositAddress, treasuryAddress)) {
+    if (
+      !this.equalsIgnoreCase(operation.treasuryDepositAddress, treasuryAddress)
+    ) {
       throw new BadRequestException({
         code: APP_WALLET_SWAP_ERROR_CODES.INVALID_REQUEST,
         message:
@@ -536,12 +549,14 @@ export class AppWalletSwapService {
   }
 
   private assertTreasuryExecutionConfig(): void {
+    const isStablefx =
+      process.env.WIZPAY_SWAP_PROVIDER?.trim().toLowerCase() === 'stablefx';
     const missing = [
       'CIRCLE_WALLET_ID_ARC',
       'CIRCLE_WALLET_ADDRESS_ARC',
       'CIRCLE_API_KEY',
       'CIRCLE_ENTITY_SECRET',
-      'WIZPAY_USER_SWAP_KIT_KEY',
+      isStablefx ? 'CIRCLE_STABLEFX_API_KEY' : 'WIZPAY_USER_SWAP_KIT_KEY',
     ].filter((name) => !process.env[name]?.trim());
 
     if (process.env.WIZPAY_USER_SWAP_ENABLED !== 'true') {
@@ -565,6 +580,18 @@ export class AppWalletSwapService {
   private async submitTreasurySwapIfNeeded(
     operation: AppWalletSwapOperationResponse,
   ): Promise<AppWalletSwapOperationResponse> {
+    if (this.isStablefxOperation(operation)) {
+      if (operation.treasurySwapConfirmedAt && operation.treasurySwapActualOutput) {
+        return operation;
+      }
+
+      if (operation.treasurySwapId && operation.status !== 'execution_failed') {
+        return operation;
+      }
+
+      return this.submitStablefxTreasurySwap(operation);
+    }
+
     if (operation.treasurySwapId || operation.treasurySwapTxHash) {
       return operation;
     }
@@ -641,8 +668,9 @@ export class AppWalletSwapService {
           status: 'treasury_swap_submitted',
           treasurySwapId: execution.txId,
           treasurySwapQuoteId:
-            this.stringifyUnknown(this.findFirst(prepared.raw, ['quoteId', 'id'])) ??
-            null,
+            this.stringifyUnknown(
+              this.findFirst(prepared.raw, ['quoteId', 'id']),
+            ) ?? null,
           treasurySwapTxHash: this.validTxHashOrNull(execution.txHash),
           treasurySwapSubmittedAt: new Date(),
           treasurySwapExpectedOutput: this.toNullableJson(
@@ -659,10 +687,107 @@ export class AppWalletSwapService {
     );
   }
 
+  private async submitStablefxTreasurySwap(
+    operation: AppWalletSwapOperationResponse,
+  ): Promise<AppWalletSwapOperationResponse> {
+    const now = new Date();
+    const treasuryAddress = this.getArcTreasuryDepositAddress();
+    const treasuryWalletId = this.getArcTreasuryWalletId();
+    const amountIn = operation.depositConfirmedAmount ?? operation.amountIn;
+
+    const pendingOperation = this.mapOperationRecord(
+      await this.prisma.appWalletSwapOperation.update({
+        where: { operationId: operation.operationId },
+        data: {
+          status: 'stablefx_quote_requested',
+          executionError: null,
+          updatedAt: now,
+        },
+      }),
+    );
+    const quote = await this.stablefxExecutionService.createTradableQuote({
+      amountIn,
+      chain: APP_WALLET_SWAP_CHAIN,
+      fromAddress: treasuryAddress,
+      recipientAddress: treasuryAddress,
+      tokenIn: pendingOperation.tokenIn,
+      tokenOut: pendingOperation.tokenOut,
+    });
+    const quoteId = this.stringifyUnknown(quote.id ?? quote.quoteId);
+    const typedData = this.getTypedDataObject(quote);
+
+    if (!quoteId || !typedData || !this.isRecord(typedData.message)) {
+      throw new BadGatewayException({
+        code: APP_WALLET_SWAP_ERROR_CODES.STABLEFX_TREASURY_EXECUTION_FAILED,
+        message:
+          'StableFX Treasury quote did not include quoteId and signable typedData.',
+      });
+    }
+
+    const approval = await this.ensureStablefxTreasuryTokenAllowance({
+      amountIn,
+      operationId: pendingOperation.operationId,
+      tokenIn: pendingOperation.tokenIn,
+      treasuryAddress,
+      typedData,
+    });
+    const signedQuote = await this.circleService.signTypedData({
+      walletId: treasuryWalletId,
+      typedData,
+      memo: `WizPay App Wallet StableFX ${pendingOperation.tokenIn}->${pendingOperation.tokenOut} quote`,
+    });
+    const trade = await this.stablefxExecutionService.createTrade({
+      idempotencyKey: this.deriveIdempotencyKey(
+        pendingOperation.operationId,
+        'stablefx-create-trade',
+      ),
+      quoteId,
+      address: treasuryAddress,
+      selectedAddress: treasuryAddress,
+      message: typedData.message,
+      signature: signedQuote.signature,
+      tokenIn: pendingOperation.tokenIn,
+      tokenOut: pendingOperation.tokenOut,
+      walletMode: 'app',
+    });
+    const tradeId = this.resolveStablefxTradeId(trade);
+
+    return this.mapOperationRecord(
+      await this.prisma.appWalletSwapOperation.update({
+        where: { operationId: pendingOperation.operationId },
+        data: {
+          status: 'stablefx_trade_created',
+          treasurySwapId: tradeId,
+          treasurySwapQuoteId: quoteId,
+          treasurySwapSubmittedAt: new Date(),
+          treasurySwapExpectedOutput: this.toNullableJson(
+            this.readStablefxToAmountBaseUnits(quote),
+          ),
+          rawTreasurySwap: this.toNullableJson({
+            provider: 'stablefx',
+            approval,
+            quote: this.sanitizeForPersistence(quote),
+            quoteSignature: this.sanitizeForPersistence(signedQuote.raw),
+            trade: this.sanitizeForPersistence(trade),
+          }),
+          executionError: null,
+          updatedAt: new Date(),
+        },
+      }),
+    );
+  }
+
   private async confirmTreasurySwapIfPossible(
     operation: AppWalletSwapOperationResponse,
   ): Promise<AppWalletSwapOperationResponse> {
-    if (operation.treasurySwapConfirmedAt && operation.treasurySwapActualOutput) {
+    if (this.isStablefxOperation(operation)) {
+      return this.confirmStablefxTreasurySwapIfPossible(operation);
+    }
+
+    if (
+      operation.treasurySwapConfirmedAt &&
+      operation.treasurySwapActualOutput
+    ) {
       if (operation.status === 'execution_failed') {
         return this.mapOperationRecord(
           await this.prisma.appWalletSwapOperation.update({
@@ -757,6 +882,252 @@ export class AppWalletSwapService {
     );
   }
 
+  private async confirmStablefxTreasurySwapIfPossible(
+    operation: AppWalletSwapOperationResponse,
+  ): Promise<AppWalletSwapOperationResponse> {
+    if (operation.treasurySwapConfirmedAt && operation.treasurySwapActualOutput) {
+      return operation;
+    }
+
+    if (!operation.treasurySwapId) {
+      return operation;
+    }
+
+    const tradeId = operation.treasurySwapId;
+    let trade = await this.stablefxExecutionService.getTrade(tradeId);
+    const contractTradeId = this.resolveStablefxContractTradeId(trade);
+    const status = this.resolveStablefxStatus(trade);
+
+    if (this.isStablefxFailureStatus(status)) {
+      throw new BadGatewayException({
+        code: APP_WALLET_SWAP_ERROR_CODES.STABLEFX_TREASURY_EXECUTION_FAILED,
+        message: `StableFX Treasury trade failed with status ${status}.`,
+      });
+    }
+
+    if (
+      contractTradeId &&
+      operation.status !== 'stablefx_funded' &&
+      operation.status !== 'stablefx_settled_to_treasury'
+    ) {
+      operation = this.mapOperationRecord(
+        await this.prisma.appWalletSwapOperation.update({
+          where: { operationId: operation.operationId },
+          data: {
+            status: 'stablefx_contract_ready',
+            rawTreasurySwap: this.toNullableJson({
+              previous: operation.rawTreasurySwap ?? null,
+              trade: this.sanitizeForPersistence(trade),
+            }),
+            updatedAt: new Date(),
+          },
+        }),
+      );
+
+      const fundingPresign =
+        await this.stablefxExecutionService.createFundingPresign({
+          contractTradeId,
+        });
+      const fundingTypedData = this.getTypedDataObject(fundingPresign);
+
+      if (!fundingTypedData || !this.isRecord(fundingTypedData.message)) {
+        throw new BadGatewayException({
+          code: APP_WALLET_SWAP_ERROR_CODES.STABLEFX_TREASURY_EXECUTION_FAILED,
+          message:
+            'StableFX Treasury funding presign did not include signable typedData.',
+        });
+      }
+
+      const signedFunding = await this.circleService.signTypedData({
+        walletId: this.getArcTreasuryWalletId(),
+        typedData: fundingTypedData,
+        memo: `WizPay App Wallet StableFX ${operation.tokenIn}->${operation.tokenOut} funding`,
+      });
+      const fund = await this.stablefxExecutionService.fund({
+        permit2: fundingTypedData.message,
+        signature: signedFunding.signature,
+      });
+
+      operation = this.mapOperationRecord(
+        await this.prisma.appWalletSwapOperation.update({
+          where: { operationId: operation.operationId },
+          data: {
+            status: 'stablefx_funded',
+            treasurySwapTxHash:
+              this.extractStablefxSettlementHash(fund) ??
+              this.extractStablefxSettlementHash(trade),
+            rawTreasurySwap: this.toNullableJson({
+              previous: operation.rawTreasurySwap ?? null,
+              contractTradeId,
+              fundingPresign: this.sanitizeForPersistence(fundingPresign),
+              fundingSignature: this.sanitizeForPersistence(signedFunding.raw),
+              fund: this.sanitizeForPersistence(fund),
+            }),
+            updatedAt: new Date(),
+          },
+        }),
+      );
+
+      trade = await this.stablefxExecutionService.getTrade(tradeId);
+    }
+
+    const settlementHash = this.extractStablefxSettlementHash(trade);
+    const finalStatus = this.resolveStablefxStatus(trade);
+
+    if (
+      !settlementHash &&
+      !['complete', 'completed', 'settled'].includes(finalStatus.toLowerCase()) &&
+      !(
+        finalStatus.toLowerCase() === 'taker_funded' &&
+        operation.treasurySwapTxHash
+      )
+    ) {
+      return this.mapOperationRecord(
+        await this.prisma.appWalletSwapOperation.update({
+          where: { operationId: operation.operationId },
+          data: {
+            rawTreasurySwap: this.toNullableJson({
+              previous: operation.rawTreasurySwap ?? null,
+              trade: this.sanitizeForPersistence(trade),
+            }),
+            updatedAt: new Date(),
+          },
+        }),
+      );
+    }
+
+    const actualOutput =
+      this.readStablefxToAmountBaseUnits(trade) ??
+      this.stringifyAmount(operation.treasurySwapExpectedOutput);
+
+    if (!actualOutput) {
+      return operation;
+    }
+
+    return this.mapOperationRecord(
+      await this.prisma.appWalletSwapOperation.update({
+        where: { operationId: operation.operationId },
+        data: {
+          status: 'treasury_swap_confirmed',
+          treasurySwapTxHash: settlementHash,
+          treasurySwapConfirmedAt: new Date(),
+          treasurySwapActualOutput: actualOutput,
+          rawTreasurySwap: this.toNullableJson({
+            previous: operation.rawTreasurySwap ?? null,
+            finalTrade: this.sanitizeForPersistence(trade),
+          }),
+          executionError: null,
+          updatedAt: new Date(),
+        },
+      }),
+    );
+  }
+
+  private async ensureStablefxTreasuryTokenAllowance(input: {
+    amountIn: string;
+    operationId: string;
+    tokenIn: AppWalletSwapToken;
+    treasuryAddress: string;
+    typedData: Record<string, unknown>;
+  }): Promise<{
+    allowanceAfter?: string;
+    allowanceBefore: string;
+    approvalTarget: string;
+    approvalTxHash?: string | null;
+    messageSpender?: string;
+    tokenAddress: string;
+    tokenIn: AppWalletSwapToken;
+    treasuryAddress: string;
+  }> {
+    if (!this.blockchainService) {
+      throw new ServiceUnavailableException({
+        code: APP_WALLET_SWAP_ERROR_CODES.TREASURY_NOT_CONFIGURED,
+        message:
+          'App Wallet StableFX Treasury approval requires BlockchainService.',
+      });
+    }
+
+    const approvalTarget = this.getStablefxPermit2ApprovalTarget(
+      input.typedData,
+    );
+    const messageSpender = this.validContractAddressOrNull(
+      this.getNestedString(input.typedData, ['message', 'spender']),
+    );
+    const tokenAddress = TOKEN_ADDRESS_BY_SYMBOL[input.tokenIn];
+    const requiredAllowance = BigInt(input.amountIn);
+    const allowanceBefore = (
+      await this.blockchainService.getAllowance(
+        input.treasuryAddress,
+        approvalTarget,
+        tokenAddress,
+      )
+    ).allowance;
+
+    let allowanceAfter: string | undefined;
+    let approvalTxHash: string | null | undefined;
+
+    if (BigInt(allowanceBefore) < requiredAllowance) {
+      const approval = await this.circleService.executeContract({
+        walletId: this.getArcTreasuryWalletId(),
+        contractAddress: tokenAddress,
+        callData: this.blockchainService.buildERC20ApproveData(
+          approvalTarget,
+          requiredAllowance,
+        ) as `0x${string}`,
+        network: APP_WALLET_SWAP_CHAIN,
+        idempotencyKey: this.deriveIdempotencyKey(
+          input.operationId,
+          `stablefx-${input.tokenIn.toLowerCase()}-permit2-approval`,
+        ),
+        refId: `APP-WALLET-SWAP-${input.operationId}-STABLEFX-${input.tokenIn}-APPROVAL`,
+      });
+      const completed = await this.circleService.waitForTransactionComplete(
+        approval.txId,
+      );
+
+      approvalTxHash = completed.txHash ?? approval.txHash ?? null;
+      allowanceAfter = (
+        await this.blockchainService.getAllowance(
+          input.treasuryAddress,
+          approvalTarget,
+          tokenAddress,
+        )
+      ).allowance;
+
+      if (BigInt(allowanceAfter) < requiredAllowance) {
+        throw new BadGatewayException({
+          code: APP_WALLET_SWAP_ERROR_CODES.STABLEFX_TREASURY_EXECUTION_FAILED,
+          message:
+            'StableFX Treasury token approval completed but allowance is still insufficient.',
+        });
+      }
+    } else {
+      allowanceAfter = allowanceBefore;
+    }
+
+    this.logger.log(
+      `[stablefx-app-wallet-treasury-approval] provider=stablefx ` +
+        `tokenIn=${input.tokenIn} tokenAddress=${tokenAddress} ` +
+        `treasuryAddress=${input.treasuryAddress} ` +
+        `approvalTarget=${approvalTarget} ` +
+        `messageSpender=${messageSpender ?? 'unavailable'} ` +
+        `allowanceBefore=${allowanceBefore} ` +
+        `approvalTxHash=${approvalTxHash ?? 'not_required'} ` +
+        `allowanceAfter=${allowanceAfter}`,
+    );
+
+    return {
+      allowanceAfter,
+      allowanceBefore,
+      approvalTarget,
+      ...(approvalTxHash !== undefined ? { approvalTxHash } : {}),
+      ...(messageSpender ? { messageSpender } : {}),
+      tokenAddress,
+      tokenIn: input.tokenIn,
+      treasuryAddress: input.treasuryAddress,
+    };
+  }
+
   private async submitPayoutIfNeeded(
     operation: AppWalletSwapOperationResponse,
   ): Promise<AppWalletSwapOperationResponse> {
@@ -827,7 +1198,9 @@ export class AppWalletSwapService {
     let txHash = operation.payoutTxHash;
 
     if (operation.rawPayout && !txHash) {
-      const payoutTransactionId = this.getPayoutTransactionId(operation.rawPayout);
+      const payoutTransactionId = this.getPayoutTransactionId(
+        operation.rawPayout,
+      );
 
       if (payoutTransactionId) {
         const status = await this.circleService
@@ -900,7 +1273,10 @@ export class AppWalletSwapService {
 
   private async resolvePayoutTxHashFromCircleList(
     operation: AppWalletSwapOperationResponse,
-  ): Promise<{ operation: AppWalletSwapOperationResponse; txHash: string } | null> {
+  ): Promise<{
+    operation: AppWalletSwapOperationResponse;
+    txHash: string;
+  } | null> {
     const treasuryWalletId = process.env.CIRCLE_WALLET_ID_ARC?.trim();
 
     if (!treasuryWalletId) {
@@ -1012,8 +1388,10 @@ export class AppWalletSwapService {
   ): AppWalletSwapOperationResponse {
     return {
       operationId: record.operationId,
-      operationMode: record.operationMode as AppWalletSwapOperationResponse['operationMode'],
-      sourceChain: record.sourceChain as AppWalletSwapOperationResponse['sourceChain'],
+      operationMode:
+        record.operationMode as AppWalletSwapOperationResponse['operationMode'],
+      sourceChain:
+        record.sourceChain as AppWalletSwapOperationResponse['sourceChain'],
       tokenIn: record.tokenIn as AppWalletSwapToken,
       tokenOut: record.tokenOut as AppWalletSwapToken,
       amountIn: record.amountIn,
@@ -1023,6 +1401,9 @@ export class AppWalletSwapService {
       minimumOutput: this.fromNullableJson(record.minimumOutput),
       expiresAt: record.expiresAt,
       status: record.status as AppWalletSwapOperationResponse['status'],
+      ...(this.getOperationProviderFromRecord(record)
+        ? { provider: this.getOperationProviderFromRecord(record) }
+        : {}),
       ...(record.quoteId !== null
         ? { quoteId: this.fromNullableJson(record.quoteId) }
         : {}),
@@ -1036,7 +1417,9 @@ export class AppWalletSwapService {
       ...(record.circleReferenceId
         ? { circleReferenceId: record.circleReferenceId }
         : {}),
-      ...(record.circleWalletId ? { circleWalletId: record.circleWalletId } : {}),
+      ...(record.circleWalletId
+        ? { circleWalletId: record.circleWalletId }
+        : {}),
       ...(record.depositSubmittedAt
         ? { depositSubmittedAt: record.depositSubmittedAt.toISOString() }
         : {}),
@@ -1059,10 +1442,16 @@ export class AppWalletSwapService {
         ? { treasurySwapTxHash: record.treasurySwapTxHash }
         : {}),
       ...(record.treasurySwapSubmittedAt
-        ? { treasurySwapSubmittedAt: record.treasurySwapSubmittedAt.toISOString() }
+        ? {
+            treasurySwapSubmittedAt:
+              record.treasurySwapSubmittedAt.toISOString(),
+          }
         : {}),
       ...(record.treasurySwapConfirmedAt
-        ? { treasurySwapConfirmedAt: record.treasurySwapConfirmedAt.toISOString() }
+        ? {
+            treasurySwapConfirmedAt:
+              record.treasurySwapConfirmedAt.toISOString(),
+          }
         : {}),
       ...(record.treasurySwapExpectedOutput !== null
         ? {
@@ -1100,6 +1489,26 @@ export class AppWalletSwapService {
     };
   }
 
+  private getOperationProviderFromRecord(
+    record: AppWalletSwapOperation,
+  ): 'swapkit' | 'stablefx' | undefined {
+    const rawQuote = this.fromNullableJson(record.rawQuote);
+
+    if (this.isRecord(rawQuote) && rawQuote.provider === 'stablefx') {
+      return 'stablefx';
+    }
+
+    if (this.isRecord(rawQuote) && rawQuote.provider === 'swapkit') {
+      return 'swapkit';
+    }
+
+    if (this.shouldUseStablefxTreasury(record.tokenIn, record.tokenOut)) {
+      return 'stablefx';
+    }
+
+    return undefined;
+  }
+
   private toNullableJson(
     value: unknown,
   ): Prisma.InputJsonValue | typeof Prisma.JsonNull {
@@ -1130,7 +1539,7 @@ export class AppWalletSwapService {
     },
   ): Promise<{ txId: null; txHash: string | null; raw: unknown }> {
     const rawTransaction = this.isRecord(prepared.transaction)
-      ? prepared.transaction.raw ?? prepared.transaction
+      ? (prepared.transaction.raw ?? prepared.transaction)
       : prepared.transaction;
     const responseShape = {
       prepare: this.describeResponseShape(prepared.raw),
@@ -1153,7 +1562,10 @@ export class AppWalletSwapService {
       this.logger.warn(
         `Circle Stablecoin Kits swap response missing executionParams: ${JSON.stringify(responseShape)}`,
       );
-      throw this.createNonExecutableSwapResponseError(prepared.raw, transaction);
+      throw this.createNonExecutableSwapResponseError(
+        prepared.raw,
+        transaction,
+      );
     }
 
     const signature = this.normalizeHexField(
@@ -1236,9 +1648,8 @@ export class AppWalletSwapService {
   }
 
   private async createCircleWalletsAdapter(): Promise<any> {
-    const { createCircleWalletsAdapter } = await import(
-      '@circle-fin/adapter-circle-wallets'
-    );
+    const { createCircleWalletsAdapter } =
+      await import('@circle-fin/adapter-circle-wallets');
 
     return createCircleWalletsAdapter({
       apiKey: process.env.CIRCLE_API_KEY ?? '',
@@ -1316,10 +1727,7 @@ export class AppWalletSwapService {
       instructions,
       tokens,
       execId: this.normalizeBigIntField(executionParams.execId, 'execId'),
-      deadline: this.normalizeBigIntField(
-        executionParams.deadline,
-        'deadline',
-      ),
+      deadline: this.normalizeBigIntField(executionParams.deadline, 'deadline'),
       metadata: this.normalizeHexField(executionParams.metadata, 'metadata'),
     };
   }
@@ -1446,10 +1854,7 @@ export class AppWalletSwapService {
   }
 
   private normalizeHexField(value: unknown, field: string): `0x${string}` {
-    if (
-      typeof value !== 'string' ||
-      !/^0x(?:[a-fA-F0-9]{2})*$/.test(value)
-    ) {
+    if (typeof value !== 'string' || !/^0x(?:[a-fA-F0-9]{2})*$/.test(value)) {
       throw new BadGatewayException({
         code: APP_WALLET_SWAP_ERROR_CODES.EXECUTION_FAILED,
         message: `Circle Stablecoin Kits swap response did not include valid ${field}.`,
@@ -1482,7 +1887,10 @@ export class AppWalletSwapService {
     });
   }
 
-  private resolvePreparedInputAmount(raw: unknown, fallbackAmount: string): bigint {
+  private resolvePreparedInputAmount(
+    raw: unknown,
+    fallbackAmount: string,
+  ): bigint {
     const rawAmount = this.findFirst(raw, ['amount']);
 
     if (
@@ -1580,6 +1988,139 @@ export class AppWalletSwapService {
     return undefined;
   }
 
+  private isStablefxOperation(
+    operation: AppWalletSwapOperationResponse,
+  ): boolean {
+    return (
+      operation.provider === 'stablefx' ||
+      this.shouldUseStablefxTreasury(operation.tokenIn, operation.tokenOut)
+    );
+  }
+
+  private shouldUseStablefxTreasury(tokenIn: string, tokenOut: string): boolean {
+    return (
+      process.env.WIZPAY_SWAP_PROVIDER?.trim().toLowerCase() === 'stablefx' &&
+      STABLEFX_APP_WALLET_PAIRS.has(`${tokenIn}->${tokenOut}`)
+    );
+  }
+
+  private attachQuoteProvider(
+    rawQuote: unknown,
+    provider: 'swapkit' | 'stablefx' | undefined,
+  ): unknown {
+    if (!provider || !this.isRecord(rawQuote) || rawQuote.provider) {
+      return rawQuote;
+    }
+
+    return {
+      ...rawQuote,
+      provider,
+    };
+  }
+
+  private getTypedDataObject(raw: unknown): Record<string, unknown> | null {
+    const typedData = this.getNestedValue(raw, ['typedData']);
+
+    return this.isRecord(typedData) ? typedData : null;
+  }
+
+  private getStablefxPermit2ApprovalTarget(
+    typedData: Record<string, unknown>,
+  ): string {
+    const approvalTarget = this.validContractAddressOrNull(
+      this.getNestedString(typedData, ['domain', 'verifyingContract']),
+    );
+
+    if (!approvalTarget) {
+      throw new BadGatewayException({
+        code: APP_WALLET_SWAP_ERROR_CODES.STABLEFX_TREASURY_EXECUTION_FAILED,
+        message:
+          'StableFX Treasury quote typedData did not include a valid Permit2 verifyingContract approval target.',
+      });
+    }
+
+    return approvalTarget;
+  }
+
+  private resolveStablefxTradeId(raw: unknown): string {
+    const tradeId =
+      this.getNestedString(raw, ['id']) ??
+      this.getNestedString(raw, ['tradeId']) ??
+      this.getNestedString(raw, ['data', 'id']) ??
+      this.getNestedString(raw, ['data', 'tradeId']);
+
+    if (!tradeId) {
+      throw new BadGatewayException({
+        code: APP_WALLET_SWAP_ERROR_CODES.STABLEFX_TREASURY_EXECUTION_FAILED,
+        message: 'StableFX create_trade did not return a trade identifier.',
+      });
+    }
+
+    return tradeId;
+  }
+
+  private resolveStablefxContractTradeId(raw: unknown): string | null {
+    return (
+      this.getNestedString(raw, ['contractTradeId']) ??
+      this.getNestedString(raw, ['data', 'contractTradeId']) ??
+      this.getNestedString(raw, ['trade', 'contractTradeId']) ??
+      this.getNestedString(raw, ['data', 'trade', 'contractTradeId'])
+    );
+  }
+
+  private resolveStablefxStatus(raw: unknown): string {
+    return (
+      this.getNestedString(raw, ['status']) ??
+      this.getNestedString(raw, ['data', 'status']) ??
+      'unknown'
+    );
+  }
+
+  private isStablefxFailureStatus(status: string): boolean {
+    return ['failed', 'rejected', 'expired', 'breached', 'refunded'].includes(
+      status.toLowerCase(),
+    );
+  }
+
+  private extractStablefxSettlementHash(raw: unknown): string | null {
+    return this.validTxHashOrNull(
+      this.getNestedString(raw, ['settlementTransactionHash']) ??
+        this.getNestedString(raw, ['data', 'settlementTransactionHash']) ??
+        this.getNestedString(raw, [
+          'contractTransactions',
+          'makerDeliver',
+          'txHash',
+        ]) ??
+        this.getNestedString(raw, [
+          'data',
+          'contractTransactions',
+          'makerDeliver',
+          'txHash',
+        ]) ??
+        this.getNestedString(raw, [
+          'contractTransactions',
+          'takerDeliver',
+          'txHash',
+        ]) ??
+        this.getNestedString(raw, [
+          'data',
+          'contractTransactions',
+          'takerDeliver',
+          'txHash',
+        ]),
+    );
+  }
+
+  private readStablefxToAmountBaseUnits(raw: unknown): string | null {
+    const amount =
+      this.getNestedString(raw, ['to', 'amount']) ??
+      this.getNestedString(raw, ['data', 'to', 'amount']);
+
+    return amount
+      ? this.normalizeTokenAmountToBaseUnits(amount, 6)?.toString() ?? null
+      : null;
+  }
+
   private getPublicErrorMessage(error: unknown): string {
     if (error instanceof BadRequestException) {
       return 'App Wallet swap execution request is invalid.';
@@ -1614,8 +2155,7 @@ export class AppWalletSwapService {
     if (request.chain !== APP_WALLET_SWAP_CHAIN) {
       throw new BadRequestException({
         code: APP_WALLET_SWAP_ERROR_CODES.UNSUPPORTED_CHAIN,
-        message:
-          'Treasury-mediated App Wallet swap supports ARC-TESTNET only.',
+        message: 'Treasury-mediated App Wallet swap supports ARC-TESTNET only.',
       });
     }
 
@@ -1630,6 +2170,16 @@ export class AppWalletSwapService {
       throw new BadRequestException({
         code: APP_WALLET_SWAP_ERROR_CODES.INVALID_REQUEST,
         message: 'amountIn must be a positive decimal string.',
+      });
+    }
+
+    if (
+      process.env.WIZPAY_SWAP_PROVIDER?.trim().toLowerCase() === 'stablefx' &&
+      BigInt(amountIn) < STABLEFX_MIN_BASE_UNITS
+    ) {
+      throw new BadRequestException({
+        code: APP_WALLET_SWAP_ERROR_CODES.STABLEFX_MIN_AMOUNT,
+        message: 'StableFX requires a minimum amount of 10 for this pair.',
       });
     }
 
@@ -1668,9 +2218,7 @@ export class AppWalletSwapService {
   }
 
   private normalizeOptionalString(value: unknown): string | undefined {
-    return typeof value === 'string' && value.trim()
-      ? value.trim()
-      : undefined;
+    return typeof value === 'string' && value.trim() ? value.trim() : undefined;
   }
 
   private assertDepositTxHash(depositTxHash: string): void {
@@ -1866,7 +2414,9 @@ export class AppWalletSwapService {
       return false;
     }
 
-    if (!this.transactionOccurredAfter(transaction, operation.depositSubmittedAt)) {
+    if (
+      !this.transactionOccurredAfter(transaction, operation.depositSubmittedAt)
+    ) {
       return false;
     }
 
@@ -1933,7 +2483,7 @@ export class AppWalletSwapService {
 
     return Boolean(
       sourceAddress &&
-        this.equalsIgnoreCase(sourceAddress, operation.userWalletAddress),
+      this.equalsIgnoreCase(sourceAddress, operation.userWalletAddress),
     );
   }
 
@@ -1941,11 +2491,15 @@ export class AppWalletSwapService {
     transaction: unknown,
     operation: AppWalletSwapOperationResponse,
   ): boolean {
-    const destinationAddress = this.getTransactionDestinationAddress(transaction);
+    const destinationAddress =
+      this.getTransactionDestinationAddress(transaction);
 
     return (
       !destinationAddress ||
-      this.equalsIgnoreCase(destinationAddress, operation.treasuryDepositAddress)
+      this.equalsIgnoreCase(
+        destinationAddress,
+        operation.treasuryDepositAddress,
+      )
     );
   }
 
@@ -2047,7 +2601,8 @@ export class AppWalletSwapService {
     const reasons: string[] = [];
     const walletId = this.getNestedString(transaction, ['walletId']);
     const sourceAddress = this.getTransactionSourceAddress(transaction);
-    const destinationAddress = this.getTransactionDestinationAddress(transaction);
+    const destinationAddress =
+      this.getTransactionDestinationAddress(transaction);
 
     if (!this.extractCircleTransactionHash(transaction)) {
       reasons.push('missing txHash');
@@ -2079,7 +2634,10 @@ export class AppWalletSwapService {
 
     if (
       destinationAddress &&
-      !this.equalsIgnoreCase(destinationAddress, operation.treasuryDepositAddress)
+      !this.equalsIgnoreCase(
+        destinationAddress,
+        operation.treasuryDepositAddress,
+      )
     ) {
       reasons.push('address mismatch: destinationAddress');
     }
@@ -2098,14 +2656,18 @@ export class AppWalletSwapService {
       reasons.push('amount mismatch');
     }
 
-    if (!this.transactionOccurredAfter(transaction, operation.depositSubmittedAt)) {
+    if (
+      !this.transactionOccurredAfter(transaction, operation.depositSubmittedAt)
+    ) {
       reasons.push('timestamp mismatch');
     }
 
     if (!this.transactionHasAcceptableDepositTransferShape(transaction)) {
       const state = this.getNestedString(transaction, ['state']);
       const operationType = this.getNestedString(transaction, ['operation']);
-      const transactionType = this.getNestedString(transaction, ['transactionType']);
+      const transactionType = this.getNestedString(transaction, [
+        'transactionType',
+      ]);
 
       if (state && !this.isResolvableDepositTransactionState(state)) {
         reasons.push('state mismatch');
@@ -2231,7 +2793,9 @@ export class AppWalletSwapService {
       token,
     );
 
-    return normalizedAmount !== null && normalizedAmount === BigInt(expectedAmount);
+    return (
+      normalizedAmount !== null && normalizedAmount === BigInt(expectedAmount)
+    );
   }
 
   private transactionOccurredAfter(
@@ -2271,7 +2835,10 @@ export class AppWalletSwapService {
     transaction: unknown,
   ): boolean {
     return (
-      this.equalsIgnoreCase(this.getNestedString(transaction, ['state']), 'COMPLETE') &&
+      this.equalsIgnoreCase(
+        this.getNestedString(transaction, ['state']),
+        'COMPLETE',
+      ) &&
       this.equalsIgnoreCase(
         this.getNestedString(transaction, ['operation']),
         'TRANSFER',
@@ -2288,7 +2855,9 @@ export class AppWalletSwapService {
   ): boolean {
     const state = this.getNestedString(transaction, ['state']);
     const operationType = this.getNestedString(transaction, ['operation']);
-    const transactionType = this.getNestedString(transaction, ['transactionType']);
+    const transactionType = this.getNestedString(transaction, [
+      'transactionType',
+    ]);
 
     return (
       (!state || this.isResolvableDepositTransactionState(state)) &&
@@ -2313,7 +2882,9 @@ export class AppWalletSwapService {
     );
   }
 
-  private getTransactionDestinationAddress(transaction: unknown): string | null {
+  private getTransactionDestinationAddress(
+    transaction: unknown,
+  ): string | null {
     return (
       this.getNestedString(transaction, ['destinationAddress']) ??
       this.getNestedString(transaction, ['destination', 'address']) ??
@@ -2407,7 +2978,8 @@ export class AppWalletSwapService {
     }
 
     const firstString = value.find(
-      (item): item is string => typeof item === 'string' && item.trim().length > 0,
+      (item): item is string =>
+        typeof item === 'string' && item.trim().length > 0,
     );
 
     return firstString?.trim() ?? null;
@@ -2429,6 +3001,20 @@ export class AppWalletSwapService {
     }
 
     return address;
+  }
+
+  private getArcTreasuryWalletId(): string {
+    const walletId = process.env.CIRCLE_WALLET_ID_ARC?.trim();
+
+    if (!walletId) {
+      throw new ServiceUnavailableException({
+        code: APP_WALLET_SWAP_ERROR_CODES.TREASURY_NOT_CONFIGURED,
+        message:
+          'Arc treasury wallet id is not configured for App Wallet swap.',
+      });
+    }
+
+    return walletId;
   }
 
   private normalizeExpiry(value: unknown): string {

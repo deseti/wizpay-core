@@ -43,6 +43,21 @@ export type ExecuteTransactionResult = {
   txHash: Hex | null;
 };
 
+type SignTypedDataParams = {
+  chainId?: number;
+  memo?: string;
+  stablefxDiagnostics?: Record<string, unknown>;
+  typedData: Record<string, unknown>;
+};
+
+export type SignTypedDataResult = {
+  chainId: number;
+  signature: Hex;
+  walletAddress?: Address;
+  walletId?: string;
+  walletMode: "circle" | "external";
+};
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null
     ? (value as Record<string, unknown>)
@@ -92,19 +107,48 @@ function extractCircleReference(value: unknown): string | null {
 function extractCircleSignature(value: unknown): Hex | null {
   const candidate =
     getNestedString(value, ["data", "signature"]) ??
-    getNestedString(value, ["signature"]);
+    getNestedString(value, ["signature"]) ??
+    getNestedString(value, ["data", "signatures", "0", "signature"]) ??
+    getNestedString(value, ["signatures", "0", "signature"]) ??
+    getNestedString(value, ["data", "signedData", "signature"]) ??
+    getNestedString(value, ["signedData", "signature"]) ??
+    getNestedString(value, ["data", "result", "signature"]) ??
+    getNestedString(value, ["result", "signature"]) ??
+    getNestedString(value, ["data", "output", "signature"]) ??
+    getNestedString(value, ["output", "signature"]);
 
-  return /^0x[a-fA-F0-9]+$/.test(candidate ?? "")
-    ? (candidate as Hex)
-    : null;
+  if (/^0x[a-fA-F0-9]+$/.test(candidate ?? "")) {
+    return candidate as Hex;
+  }
+
+  if (/^[a-fA-F0-9]+$/.test(candidate ?? "")) {
+    return `0x${candidate}` as Hex;
+  }
+
+  return null;
+}
+
+function collectResponseKeys(value: unknown, path = ""): string[] {
+  const record = asRecord(value);
+
+  if (!record) {
+    return [];
+  }
+
+  return Object.entries(record).flatMap(([key, nested]) => {
+    const nextPath = path ? `${path}.${key}` : key;
+
+    if (key.toLowerCase().includes("signature")) {
+      return [nextPath];
+    }
+
+    return [nextPath, ...collectResponseKeys(nested, nextPath)];
+  });
 }
 
 export function useTransactionExecutor() {
-  const {
-    activeWalletAddress,
-    activeWalletChainId,
-    walletMode,
-  } = useHybridWallet();
+  const { activeWalletAddress, activeWalletChainId, walletMode } =
+    useHybridWallet();
   const {
     arcWallet,
     createContractExecutionChallenge,
@@ -115,7 +159,8 @@ export function useTransactionExecutor() {
   } = useCircleWallet();
   const arcPublicClient = usePublicClient({ chainId: arcTestnet.id });
   const sepoliaPublicClient = usePublicClient({ chainId: ethereumSepolia.id });
-  const { data: walletClient, refetch: refetchWalletClient } = useWalletClient();
+  const { data: walletClient, refetch: refetchWalletClient } =
+    useWalletClient();
   const { switchChainAsync } = useSwitchChain();
 
   const getPublicClientForChain = (chainId: number) => {
@@ -145,7 +190,7 @@ export function useTransactionExecutor() {
 
     if (!switchChainAsync) {
       throw new Error(
-        `Switch your external wallet to ${CHAIN_NAME_BY_ID[targetChainId] ?? `chain ${targetChainId}`} to continue.`
+        `Switch your external wallet to ${CHAIN_NAME_BY_ID[targetChainId] ?? `chain ${targetChainId}`} to continue.`,
       );
     }
 
@@ -153,14 +198,16 @@ export function useTransactionExecutor() {
       await switchChainAsync({ chainId: targetChainId });
     } catch (error) {
       const message =
-        error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+        error instanceof Error
+          ? error.message.toLowerCase()
+          : String(error).toLowerCase();
 
       if (message.includes("rejected")) {
         throw new Error("Network switch was rejected in your wallet.");
       }
 
       throw new Error(
-        `Failed to switch the external wallet to ${CHAIN_NAME_BY_ID[targetChainId] ?? `chain ${targetChainId}`}.`
+        `Failed to switch the external wallet to ${CHAIN_NAME_BY_ID[targetChainId] ?? `chain ${targetChainId}`}.`,
       );
     }
   };
@@ -173,7 +220,7 @@ export function useTransactionExecutor() {
 
     if (!nextWalletClient) {
       throw new Error(
-        "External wallet client is not ready. Reconnect the wallet and try again."
+        "External wallet client is not ready. Reconnect the wallet and try again.",
       );
     }
 
@@ -181,7 +228,7 @@ export function useTransactionExecutor() {
   };
 
   const executeWithCircle = async (
-    params: ExecuteTransactionParams
+    params: ExecuteTransactionParams,
   ): Promise<ExecuteTransactionResult> => {
     const chainId = params.chainId ?? arcTestnet.id;
     const publicClient = getPublicClientForChain(chainId);
@@ -193,7 +240,7 @@ export function useTransactionExecutor() {
 
     if (!targetWallet?.id) {
       throw new Error(
-        `${getWalletLabelForChain(chainId)} is not ready yet. Refresh the session and try again.`
+        `${getWalletLabelForChain(chainId)} is not ready yet. Refresh the session and try again.`,
       );
     }
 
@@ -230,7 +277,7 @@ export function useTransactionExecutor() {
   };
 
   const executeWithViem = async (
-    params: ExecuteTransactionParams
+    params: ExecuteTransactionParams,
   ): Promise<ExecuteTransactionResult> => {
     const chainId = params.chainId ?? arcTestnet.id;
     const chain = CHAIN_BY_ID[chainId];
@@ -238,12 +285,14 @@ export function useTransactionExecutor() {
 
     if (!chain || !publicClient) {
       throw new Error(
-        `Chain ${chainId} is not configured for external wallet transactions.`
+        `Chain ${chainId} is not configured for external wallet transactions.`,
       );
     }
 
     if (!activeWalletAddress) {
-      throw new Error("Connect an external wallet before sending a transaction.");
+      throw new Error(
+        "Connect an external wallet before sending a transaction.",
+      );
     }
 
     const startBlock = await publicClient.getBlockNumber();
@@ -267,7 +316,7 @@ export function useTransactionExecutor() {
   };
 
   const executeTransaction = async (
-    params: ExecuteTransactionParams
+    params: ExecuteTransactionParams,
   ): Promise<ExecuteTransactionResult> => {
     if (walletMode === "circle") {
       return executeWithCircle(params);
@@ -276,15 +325,12 @@ export function useTransactionExecutor() {
     return executeWithViem(params);
   };
 
-  const signTypedData = async ({
+  const signTypedDataWithMetadata = async ({
     chainId = arcTestnet.id,
     memo,
+    stablefxDiagnostics,
     typedData,
-  }: {
-    chainId?: number;
-    memo?: string;
-    typedData: Record<string, unknown>;
-  }): Promise<Hex> => {
+  }: SignTypedDataParams): Promise<SignTypedDataResult> => {
     if (walletMode === "circle") {
       await ensureSessionReady();
 
@@ -292,7 +338,7 @@ export function useTransactionExecutor() {
 
       if (!targetWallet?.id) {
         throw new Error(
-          `${getWalletLabelForChain(chainId)} is not ready for signing yet.`
+          `${getWalletLabelForChain(chainId)} is not ready for signing yet.`,
         );
       }
 
@@ -300,6 +346,7 @@ export function useTransactionExecutor() {
         walletId: targetWallet.id,
         data: JSON.stringify(typedData),
         memo,
+        ...(stablefxDiagnostics ? { stablefxDiagnostics } : {}),
       });
       const challengeResult = await executeChallenge(challenge.challengeId);
       const signature =
@@ -307,10 +354,23 @@ export function useTransactionExecutor() {
         extractCircleSignature(challenge.raw);
 
       if (!signature) {
+        console.warn("[stablefx-swap]", {
+          provider: "stablefx",
+          step: "sign_quote",
+          circleResultKeys: collectResponseKeys(challengeResult),
+          circleChallengeKeys: collectResponseKeys(challenge.raw),
+          walletId: targetWallet.id,
+        });
         throw new Error("Circle did not return a typed-data signature.");
       }
 
-      return signature;
+      return {
+        chainId,
+        signature,
+        walletAddress: targetWallet.address as Address | undefined,
+        walletId: targetWallet.id,
+        walletMode,
+      };
     }
 
     if (!activeWalletAddress) {
@@ -323,12 +383,23 @@ export function useTransactionExecutor() {
       params: [activeWalletAddress, JSON.stringify(typedData)],
     });
 
-    return signature as Hex;
+    return {
+      chainId,
+      signature: signature as Hex,
+      walletAddress: activeWalletAddress,
+      walletMode,
+    };
+  };
+
+  const signTypedData = async (params: SignTypedDataParams): Promise<Hex> => {
+    const result = await signTypedDataWithMetadata(params);
+    return result.signature;
   };
 
   return {
     executeTransaction,
     signTypedData,
+    signTypedDataWithMetadata,
   };
 }
 

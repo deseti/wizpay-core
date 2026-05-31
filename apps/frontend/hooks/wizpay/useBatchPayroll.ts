@@ -79,6 +79,13 @@ interface UseBatchPayrollOptions {
   officialQuoteRequired?: boolean;
   officialQuoteReady?: boolean;
   officialQuoteError?: string | null;
+  /**
+   * True when a cross-currency quote is available (e.g. StableFX) but the
+   * execution provider is not implemented yet. The preview still populates,
+   * but Send must stay disabled and no prepare/pre-swap may run.
+   */
+  crossCurrencyExecutionBlocked?: boolean;
+  crossCurrencyExecutionBlockedReason?: string | null;
 }
 
 interface PayrollInitRecipient {
@@ -335,6 +342,8 @@ export function useBatchPayroll({
   officialQuoteRequired = false,
   officialQuoteReady = false,
   officialQuoteError = null,
+  crossCurrencyExecutionBlocked = false,
+  crossCurrencyExecutionBlockedReason = null,
 }: UseBatchPayrollOptions): BatchPayrollResult {
   const { walletAddress, walletMode } = useActiveWalletAddress();
   const batches = useMemo(
@@ -465,6 +474,18 @@ export function useBatchPayroll({
           setErrorMessage(
             officialQuoteError ??
               "Official payroll route quote unavailable. Payroll cannot proceed.",
+          );
+          return;
+        }
+
+        // Quote is available, but the cross-currency execution provider may not
+        // be implemented yet (e.g. StableFX is quote-only in this phase).
+        // Fail closed before any pre-swap / prepare call so no swapkit-only
+        // prepare endpoint is hit for a StableFX quote.
+        if (crossCurrencyExecutionBlocked) {
+          setErrorMessage(
+            crossCurrencyExecutionBlockedReason ??
+              "Cross-currency payroll execution is not available yet.",
           );
           return;
         }
@@ -914,6 +935,8 @@ export function useBatchPayroll({
     officialQuoteError,
     officialQuoteReady,
     officialQuoteRequired,
+    crossCurrencyExecutionBlocked,
+    crossCurrencyExecutionBlockedReason,
     walletAddress,
     walletMode,
     referenceId,
@@ -1242,9 +1265,13 @@ export function useBatchPayroll({
 
   return {
     ...totals,
-    isSupported: !officialQuoteRequired || officialQuoteReady,
-    availabilityReason:
-      officialQuoteRequired && !officialQuoteReady
+    isSupported:
+      (!officialQuoteRequired || officialQuoteReady) &&
+      !crossCurrencyExecutionBlocked,
+    availabilityReason: crossCurrencyExecutionBlocked
+      ? crossCurrencyExecutionBlockedReason ??
+        "Cross-currency payroll execution is not available yet."
+      : officialQuoteRequired && !officialQuoteReady
         ? officialQuoteError ??
           "Official payroll route quote unavailable. Payroll cannot proceed."
         : null,

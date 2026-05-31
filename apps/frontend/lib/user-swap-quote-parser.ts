@@ -22,6 +22,7 @@ export const MINIMUM_OUTPUT_FALLBACK_PATHS = [
 type SwapQuoteLike = {
   expectedOutput?: unknown;
   minimumOutput?: unknown;
+  provider?: unknown;
   raw?: unknown;
   rawQuote?: unknown;
 };
@@ -101,6 +102,19 @@ export function getUserSwapExpectedOutputValue(quote: SwapQuoteLike) {
     quote.expectedOutput ??
     findFirst(getRawQuote(quote), EXPECTED_OUTPUT_FALLBACK_PATHS)
   );
+}
+
+/**
+ * Reads the backend swap provider from a quote response.
+ * Falls back to the raw quote payload, then null when not present.
+ */
+export function getUserSwapProvider(quote: SwapQuoteLike): string | null {
+  if (typeof quote.provider === "string" && quote.provider.trim()) {
+    return quote.provider.trim();
+  }
+
+  const rawProvider = findFirstString(getRawQuote(quote), ["provider"]);
+  return rawProvider ?? null;
 }
 
 export function getUserSwapMinimumOutputValue(quote: SwapQuoteLike) {
