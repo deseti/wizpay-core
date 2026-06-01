@@ -325,11 +325,11 @@ export class StablefxExecutionService {
       });
     }
 
-    if (process.env.WIZPAY_SWAP_PROVIDER?.trim().toLowerCase() !== 'stablefx') {
+    if (!this.isStablefxExecutionSelected()) {
       throw new ServiceUnavailableException({
         code: USER_SWAP_ERROR_CODES.STABLEFX_EXECUTION_DISABLED,
         message:
-          'StableFX execution is available only when WIZPAY_SWAP_PROVIDER=stablefx.',
+          'StableFX execution is available only when WIZPAY_SWAP_PROVIDER=stablefx or USE_REAL_STABLEFX=true.',
       });
     }
 
@@ -340,6 +340,15 @@ export class StablefxExecutionService {
           'StableFX execution is selected but CIRCLE_STABLEFX_API_KEY is not configured.',
       });
     }
+  }
+
+  private isStablefxExecutionSelected(): boolean {
+    return (
+      process.env.WIZPAY_SWAP_PROVIDER?.trim().toLowerCase() === 'stablefx' ||
+      process.env.USE_REAL_STABLEFX?.trim().toLowerCase() === 'true' ||
+      process.env.NEXT_PUBLIC_USE_REAL_STABLEFX?.trim().toLowerCase() ===
+        'true'
+    );
   }
 
   private async callStablefxApi(

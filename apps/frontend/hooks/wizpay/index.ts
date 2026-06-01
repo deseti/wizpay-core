@@ -74,6 +74,8 @@ const STABLEFX_PROVIDER_LABEL = "StableFX";
 // App Wallet paths when a valid quote is ready.
 const STABLEFX_EXECUTION_PENDING_MESSAGE =
   "StableFX quote ready, but cross-currency payroll execution is not available yet. Send is disabled until the StableFX execution provider is implemented.";
+const PAYROLL_FX_DEBUG =
+  process.env.NEXT_PUBLIC_PAYROLL_FX_DEBUG === "true";
 
 function isPositiveDecimal(value: string) {
   return parseFloat(value) > 0 && Number.isFinite(Number(value));
@@ -160,16 +162,14 @@ function logOfficialQuoteDiagnostic(
   value: unknown,
   error?: unknown,
 ) {
-  if (process.env.NODE_ENV === "production") {
-    return;
-  }
+  if (!PAYROLL_FX_DEBUG) return;
 
   if (error) {
-    console.warn(label, value, error);
+    console.debug(label, value, error);
     return;
   }
 
-  console.info(label, value);
+  console.debug(label, value);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -1146,7 +1146,7 @@ export function useWizPay(): WizPayState {
         BigInt(params.amount),
         sourceTokenConfig.decimals,
       );
-      const fundingReferenceId = `PAYROLL-FX-FUND-${referenceId}-${params.targetToken}`;
+      const fundingReferenceId = `PAYROLL-FX-FUND-${referenceId}-${params.sourceToken}`;
       const runStartTime = new Date().toISOString();
 
       setStatusMessage(
@@ -1211,12 +1211,35 @@ export function useWizPay(): WizPayState {
       try {
         if (!sourceFundingTxHash) {
           logOfficialQuoteDiagnostic(
+            "[official-payroll-route] App Wallet StableFX funding resolver inputs",
+            {
+              provider: "stablefx",
+              step: "app_wallet_funding_resolve",
+              sourceToken: params.sourceToken,
+              targetToken: params.targetToken,
+              fundingReferenceId,
+              destinationAddress: fundingQuote.treasuryDepositAddress,
+              expectedAmount: fundingAmount,
+              expectedTokenId: tokenBalance.tokenId,
+              circleTransactionId: circleTransactionId ? "present" : "missing",
+              challengeId: fundingChallenge.challengeId,
+            },
+          );
+
+          logOfficialQuoteDiagnostic(
             "[official-payroll-route] No direct txHash — starting resolveCircleFundingTxHash",
             {
+              provider: "stablefx",
+              step: "app_wallet_funding_resolve",
+              sourceToken: params.sourceToken,
+              targetToken: params.targetToken,
+              fundingReferenceId,
               circleTransactionId: circleTransactionId ?? null,
               challengeId: fundingChallenge.challengeId,
               walletId: arcWallet.id,
               destinationAddress: fundingQuote.treasuryDepositAddress,
+              expectedAmount: fundingAmount,
+              expectedTokenId: tokenBalance.tokenId,
             },
           );
 
@@ -1230,6 +1253,7 @@ export function useWizPay(): WizPayState {
             walletId: arcWallet.id,
             destinationAddress: fundingQuote.treasuryDepositAddress,
             expectedAmount: fundingAmount,
+            expectedTokenId: tokenBalance.tokenId,
             refId: fundingReferenceId,
             runStartTime,
             onAttempt: (attempt, strategy) => {
@@ -1247,6 +1271,7 @@ export function useWizPay(): WizPayState {
                   walletId: arcWallet!.id,
                   destinationAddress: fundingQuote.treasuryDepositAddress,
                   expectedAmount: fundingAmount,
+                  expectedTokenId: tokenBalance.tokenId,
                   runStartTime,
                   sourceToken: params.sourceToken,
                 },
@@ -1688,7 +1713,7 @@ export function useWizPay(): WizPayState {
 
   // ── Dev-only App Wallet gating diagnostic ──────────────────────────
   useEffect(() => {
-    if (process.env.NODE_ENV === "production") return;
+    if (!PAYROLL_FX_DEBUG) return;
     const allRecipients = [state.recipients, ...state.pendingBatches].flat();
     const targetTokens = Array.from(
       new Set(allRecipients.map((r) => r.targetToken)),
@@ -1700,7 +1725,7 @@ export function useWizPay(): WizPayState {
     if (contract.insufficientBalance) disabledReasons.push("insufficientBalance");
     if (!canSend) disabledReasons.push("!canSend (smartBatchAvailable=" + String(batchPayroll.isSupported) + ")");
 
-    console.info("[app-wallet-gating-diagnostic]", {
+    console.debug("[app-wallet-gating-diagnostic]", {
       walletMode,
       walletAddress: walletAddress ?? null,
       activeToken: contract.activeToken.symbol,

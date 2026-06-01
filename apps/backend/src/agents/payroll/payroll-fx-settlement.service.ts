@@ -2,11 +2,14 @@ import {
   BadGatewayException,
   Injectable,
   Logger,
+  Optional,
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createHash } from 'crypto';
+import { BlockchainService } from '../../adapters/blockchain.service';
 import { CircleService } from '../../adapters/circle.service';
+import { StablefxExecutionService } from '../../user-swap/stablefx-execution.service';
 import { UserSwapService } from '../../user-swap/user-swap.service';
 import {
   USER_SWAP_ALLOWED_CHAIN,
@@ -45,6 +48,7 @@ const TOKEN_ADDRESS_MAP: Record<string, `0x${string}`> = {
   USDC: USER_SWAP_USDC_ADDRESS as `0x${string}`,
   EURC: USER_SWAP_EURC_ADDRESS as `0x${string}`,
 };
+const STABLEFX_PAYROLL_PAIRS = new Set(['USDC->EURC', 'EURC->USDC']);
 
 // ─── Service ────────────────────────────────────────────────────────
 
@@ -80,6 +84,10 @@ export class PayrollFxSettlementService {
     private readonly userSwapService: UserSwapService,
     private readonly circleService: CircleService,
     private readonly configService: ConfigService,
+    @Optional()
+    private readonly stablefxExecutionService: StablefxExecutionService = new StablefxExecutionService(),
+    @Optional()
+    private readonly blockchainService?: BlockchainService,
   ) {}
 
   /**
@@ -112,6 +120,10 @@ export class PayrollFxSettlementService {
         `amount=${request.sourceAmount} ref=${request.referenceId} ` +
         `treasury=${treasuryAddress}`,
     );
+
+    if (this.shouldUseStablefxSettlement(request)) {
+      return this.settleWithStablefxTreasury(request, treasuryAddress);
+    }
 
     // ── Step 1: Prepare swap via UserSwapService (App Kit / SwapKit) ──
     this.logger.log(
@@ -204,6 +216,126 @@ export class PayrollFxSettlementService {
       targetToken: request.targetToken,
       sourceAmount: request.sourceAmount,
       targetAmount: String(prepared.expectedOutput ?? prepared.minimumOutput ?? request.sourceAmount),
+      txHash,
+      status: 'settled',
+    };
+  }
+
+  private async settleWithStablefxTreasury(
+    request: FxSettlementRequest,
+    treasuryAddress: string,
+  ): Promise<FxSettlementResult> {
+    this.logStablefxPayrollPhase(request, 'tradable_quote');
+
+    const quote = await this.stablefxExecutionService.createTradableQuote({
+      amountIn: request.sourceAmount,
+      chain: USER_SWAP_ALLOWED_CHAIN,
+      fromAddress: treasuryAddress,
+      recipientAddress: treasuryAddress,
+      tokenIn: request.sourceToken,
+      tokenOut: request.targetToken,
+    });
+    const quoteId = this.stringifyUnknown(quote.id ?? quote.quoteId);
+    const typedData = this.getTypedDataObject(quote);
+
+    if (!quoteId || !typedData || !this.isRecord(typedData.message)) {
+      throw new BadGatewayException({
+        code: 'PAYROLL_FX_SETTLEMENT_STABLEFX_FAILED',
+        message:
+          'StableFX payroll settlement quote did not include quoteId and signable typedData.',
+      });
+    }
+
+    await this.ensureStablefxTreasuryTokenAllowance({
+      amountIn: request.sourceAmount,
+      referenceId: request.referenceId,
+      tokenIn: request.sourceToken,
+      treasuryAddress,
+      typedData,
+    });
+
+    this.logStablefxPayrollPhase(request, 'sign_quote');
+    const signedQuote = await this.circleService.signTypedData({
+      walletId: this.getTreasuryWalletId(),
+      typedData,
+      memo: `WizPay Payroll StableFX ${request.sourceToken}->${request.targetToken} quote`,
+    });
+
+    this.logStablefxPayrollPhase(request, 'create_trade');
+    const trade = await this.stablefxExecutionService.createTrade({
+      idempotencyKey: this.buildIdempotencyKey(
+        `${request.referenceId}:stablefx-create-trade`,
+      ),
+      quoteId,
+      address: treasuryAddress,
+      selectedAddress: treasuryAddress,
+      message: typedData.message,
+      signature: signedQuote.signature,
+      tokenIn: request.sourceToken,
+      tokenOut: request.targetToken,
+      walletMode: 'app',
+    });
+    const tradeId = this.resolveStablefxTradeId(trade);
+    const { contractTradeId } =
+      await this.waitForStablefxContractTradeId(request, tradeId, trade);
+
+    this.logStablefxPayrollPhase(request, 'funding_presign');
+    const fundingPresign =
+      await this.stablefxExecutionService.createFundingPresign({
+        contractTradeId,
+      });
+    const fundingTypedData = this.getTypedDataObject(fundingPresign);
+
+    if (
+      !fundingTypedData ||
+      !this.isRecord(fundingTypedData.message)
+    ) {
+      throw new BadGatewayException({
+        code: 'PAYROLL_FX_SETTLEMENT_STABLEFX_FAILED',
+        message:
+          'StableFX payroll settlement funding presign did not include signable typedData.',
+      });
+    }
+
+    this.logStablefxPayrollPhase(request, 'sign_funding');
+    const signedFunding = await this.circleService.signTypedData({
+      walletId: this.getTreasuryWalletId(),
+      typedData: fundingTypedData,
+      memo: `WizPay Payroll StableFX ${request.sourceToken}->${request.targetToken} funding`,
+    });
+
+    this.logStablefxPayrollPhase(request, 'fund');
+    const fund = await this.stablefxExecutionService.fund({
+      permit2: fundingTypedData.message,
+      signature: signedFunding.signature,
+    });
+    const settledTrade = await this.waitForStablefxSettlement(
+      request,
+      tradeId,
+    );
+    const txHash =
+      this.extractStablefxSettlementHash(settledTrade) ??
+      this.extractStablefxSettlementHash(fund);
+    if (!txHash) {
+      throw new BadGatewayException({
+        code: 'PAYROLL_FX_SETTLEMENT_STABLEFX_FAILED',
+        message:
+          'StableFX payroll settlement completed without a settlement transaction hash.',
+      });
+    }
+
+    const targetAmount =
+      this.readStablefxToAmountBaseUnits(settledTrade) ??
+      this.readStablefxToAmountBaseUnits(quote) ??
+      request.sourceAmount;
+
+    this.logStablefxPayrollPhase(request, 'settled');
+
+    return {
+      sourceToken: request.sourceToken,
+      targetToken: request.targetToken,
+      sourceAmount: request.sourceAmount,
+      targetAmount,
       txHash,
       status: 'settled',
     };
@@ -386,12 +518,164 @@ export class PayrollFxSettlementService {
     return validTxHash;
   }
 
+  private async waitForStablefxContractTradeId(
+    request: FxSettlementRequest,
+    tradeId: string,
+    initialTrade: Record<string, unknown>,
+  ): Promise<{ contractTradeId: string; trade: Record<string, unknown> }> {
+    let trade = initialTrade;
+    let contractTradeId = this.resolveStablefxContractTradeId(trade);
+
+    for (let attempt = 1; attempt <= 20; attempt += 1) {
+      const status = this.resolveStablefxStatus(trade);
+
+      if (contractTradeId) {
+        this.logStablefxPayrollPhase(request, 'contract_ready');
+        return { contractTradeId, trade };
+      }
+
+      if (this.isStablefxFailureStatus(status)) {
+        throw new BadGatewayException({
+          code: 'PAYROLL_FX_SETTLEMENT_STABLEFX_FAILED',
+          message: `StableFX payroll trade failed before funding with status ${status}.`,
+        });
+      }
+
+      this.logStablefxPayrollPhase(request, 'get_trade');
+      await this.delay(2_000);
+      trade = await this.stablefxExecutionService.getTrade(tradeId);
+      contractTradeId = this.resolveStablefxContractTradeId(trade);
+    }
+
+    throw new BadGatewayException({
+      code: 'PAYROLL_FX_SETTLEMENT_STABLEFX_FAILED',
+      message:
+        'StableFX payroll trade was created but contractTradeId was not ready before timeout.',
+    });
+  }
+
+  private async waitForStablefxSettlement(
+    request: FxSettlementRequest,
+    tradeId: string,
+  ): Promise<Record<string, unknown>> {
+    let latest: Record<string, unknown> | null = null;
+
+    for (let attempt = 1; attempt <= 30; attempt += 1) {
+      this.logStablefxPayrollPhase(request, 'get_trade');
+      latest = await this.stablefxExecutionService.getTrade(tradeId);
+      const status = this.resolveStablefxStatus(latest);
+      const settlementHash = this.extractStablefxSettlementHash(latest);
+
+      if (
+        settlementHash ||
+        ['complete', 'completed', 'settled'].includes(status.toLowerCase())
+      ) {
+        return latest;
+      }
+
+      if (this.isStablefxFailureStatus(status)) {
+        throw new BadGatewayException({
+          code: 'PAYROLL_FX_SETTLEMENT_STABLEFX_FAILED',
+          message: `StableFX payroll trade failed during settlement with status ${status}.`,
+        });
+      }
+
+      await this.delay(3_000);
+    }
+
+    if (latest) {
+      return latest;
+    }
+
+    throw new BadGatewayException({
+      code: 'PAYROLL_FX_SETTLEMENT_STABLEFX_FAILED',
+      message: 'StableFX payroll trade status was not available after funding.',
+    });
+  }
+
+  private async ensureStablefxTreasuryTokenAllowance(input: {
+    amountIn: string;
+    referenceId: string;
+    tokenIn: string;
+    treasuryAddress: string;
+    typedData: Record<string, unknown>;
+  }): Promise<void> {
+    if (!this.blockchainService) {
+      throw new ServiceUnavailableException({
+        code: 'PAYROLL_FX_SETTLEMENT_UNAVAILABLE',
+        message:
+          'StableFX payroll settlement requires BlockchainService for treasury token approval.',
+      });
+    }
+
+    const approvalTarget = this.getStablefxPermit2ApprovalTarget(
+      input.typedData,
+    );
+    const tokenAddress = this.resolveTokenAddress(input.tokenIn);
+    const requiredAllowance = BigInt(input.amountIn);
+    const allowanceBefore = (
+      await this.blockchainService.getAllowance(
+        input.treasuryAddress,
+        approvalTarget,
+        tokenAddress,
+      )
+    ).allowance;
+    let approvalTxHash: string | null = null;
+    let allowanceAfter = allowanceBefore;
+
+    if (BigInt(allowanceBefore) < requiredAllowance) {
+      const approval = await this.circleService.executeContract({
+        walletId: this.getTreasuryWalletId(),
+        contractAddress: tokenAddress,
+        callData: this.blockchainService.buildERC20ApproveData(
+          approvalTarget,
+          requiredAllowance,
+        ) as `0x${string}`,
+        network: USER_SWAP_ALLOWED_CHAIN,
+        idempotencyKey: this.buildIdempotencyKey(
+          `${input.referenceId}:stablefx-${input.tokenIn.toLowerCase()}-approval`,
+        ),
+        refId: `PAYROLL-FX-${input.referenceId}-STABLEFX-${input.tokenIn}-APPROVAL`,
+      });
+      const completed = await this.circleService.waitForTransactionComplete(
+        approval.txId,
+      );
+
+      approvalTxHash = completed.txHash ?? approval.txHash ?? null;
+      allowanceAfter = (
+        await this.blockchainService.getAllowance(
+          input.treasuryAddress,
+          approvalTarget,
+          tokenAddress,
+        )
+      ).allowance;
+
+      if (BigInt(allowanceAfter) < requiredAllowance) {
+        throw new BadGatewayException({
+          code: 'PAYROLL_FX_SETTLEMENT_STABLEFX_FAILED',
+          message:
+            'StableFX payroll treasury token approval completed but allowance is still insufficient.',
+        });
+      }
+    }
+
+    this.logger.log(
+      `[payroll-fx-settlement] provider=stablefx payroll-fx settlement ` +
+        `phase=allowance_check sourceToken=${input.tokenIn} ` +
+        `sourceAmount=${input.amountIn} referenceId=${input.referenceId} ` +
+        `treasuryAddress=${input.treasuryAddress} tokenAddress=${tokenAddress} ` +
+        `approvalTarget=${approvalTarget} allowanceBefore=${allowanceBefore} ` +
+        `approvalTxHash=${approvalTxHash ?? 'not_required'} allowanceAfter=${allowanceAfter}`,
+    );
+  }
+
   // ════════════════════════════════════════════════════════════════════
   //  Private helpers
   // ════════════════════════════════════════════════════════════════════
 
   private getMissingConfig(): string[] {
     const missing: string[] = [];
+    const stablefxSelected = this.isStablefxProviderSelected();
 
     if (this.configService.get<string>('WIZPAY_USER_SWAP_ENABLED') !== 'true') {
       missing.push('WIZPAY_USER_SWAP_ENABLED=true');
@@ -401,7 +685,10 @@ export class PayrollFxSettlementService {
       missing.push('WIZPAY_USER_SWAP_ALLOW_TESTNET=true');
     }
 
-    if (!this.configService.get<string>('WIZPAY_USER_SWAP_KIT_KEY')?.trim()) {
+    if (
+      !stablefxSelected &&
+      !this.configService.get<string>('WIZPAY_USER_SWAP_KIT_KEY')?.trim()
+    ) {
       missing.push('WIZPAY_USER_SWAP_KIT_KEY');
     }
 
@@ -420,6 +707,47 @@ export class PayrollFxSettlementService {
     }
 
     return missing;
+  }
+
+  private shouldUseStablefxSettlement(request: FxSettlementRequest): boolean {
+    return (
+      this.isStablefxProviderSelected() &&
+      STABLEFX_PAYROLL_PAIRS.has(
+        `${request.sourceToken.toUpperCase()}->${request.targetToken.toUpperCase()}`,
+      )
+    );
+  }
+
+  private isStablefxProviderSelected(): boolean {
+    return (
+      this.configService
+        .get<string>('WIZPAY_SWAP_PROVIDER')
+        ?.trim()
+        .toLowerCase() === 'stablefx' ||
+      this.configService
+        .get<string>('USE_REAL_STABLEFX')
+        ?.trim()
+        .toLowerCase() === 'true' ||
+      this.configService
+        .get<string>('NEXT_PUBLIC_USE_REAL_STABLEFX')
+        ?.trim()
+        .toLowerCase() === 'true'
+    );
+  }
+
+  private getTreasuryWalletId(): string {
+    const walletId = this.configService
+      .get<string>('CIRCLE_WALLET_ID_ARC')
+      ?.trim();
+
+    if (!walletId) {
+      throw new ServiceUnavailableException({
+        code: 'PAYROLL_FX_SETTLEMENT_UNAVAILABLE',
+        message: 'Treasury wallet ID (CIRCLE_WALLET_ID_ARC) is not configured.',
+      });
+    }
+
+    return walletId;
   }
 
   private getTreasuryAddress(): string {
@@ -460,6 +788,177 @@ export class PayrollFxSettlementService {
     }
 
     return address;
+  }
+
+  private logStablefxPayrollPhase(
+    request: FxSettlementRequest,
+    phase: string,
+  ): void {
+    this.logger.log(
+      `[payroll-fx-settlement] provider=stablefx payroll-fx settlement ` +
+        `sourceToken=${request.sourceToken} targetToken=${request.targetToken} ` +
+        `sourceAmount=${request.sourceAmount} referenceId=${request.referenceId} ` +
+        `phase=${phase}`,
+    );
+  }
+
+  private getTypedDataObject(raw: unknown): Record<string, unknown> | null {
+    const typedData = this.getNestedValue(raw, ['typedData']);
+    return this.isRecord(typedData) ? typedData : null;
+  }
+
+  private getStablefxPermit2ApprovalTarget(
+    typedData: Record<string, unknown>,
+  ): string {
+    const approvalTarget = this.validContractAddressOrNull(
+      this.getNestedString(typedData, ['domain', 'verifyingContract']),
+    );
+
+    if (!approvalTarget) {
+      throw new BadGatewayException({
+        code: 'PAYROLL_FX_SETTLEMENT_STABLEFX_FAILED',
+        message:
+          'StableFX payroll quote typedData did not include a valid Permit2 verifyingContract approval target.',
+      });
+    }
+
+    return approvalTarget;
+  }
+
+  private resolveStablefxTradeId(raw: unknown): string {
+    const tradeId =
+      this.getNestedString(raw, ['id']) ??
+      this.getNestedString(raw, ['tradeId']) ??
+      this.getNestedString(raw, ['data', 'id']) ??
+      this.getNestedString(raw, ['data', 'tradeId']);
+
+    if (!tradeId) {
+      throw new BadGatewayException({
+        code: 'PAYROLL_FX_SETTLEMENT_STABLEFX_FAILED',
+        message: 'StableFX create_trade did not return a trade identifier.',
+      });
+    }
+
+    return tradeId;
+  }
+
+  private resolveStablefxContractTradeId(raw: unknown): string | null {
+    return (
+      this.getNestedString(raw, ['contractTradeId']) ??
+      this.getNestedString(raw, ['data', 'contractTradeId']) ??
+      this.getNestedString(raw, ['trade', 'contractTradeId']) ??
+      this.getNestedString(raw, ['data', 'trade', 'contractTradeId'])
+    );
+  }
+
+  private resolveStablefxStatus(raw: unknown): string {
+    return (
+      this.getNestedString(raw, ['status']) ??
+      this.getNestedString(raw, ['data', 'status']) ??
+      'unknown'
+    );
+  }
+
+  private isStablefxFailureStatus(status: string): boolean {
+    return ['failed', 'rejected', 'expired', 'breached', 'refunded'].includes(
+      status.toLowerCase(),
+    );
+  }
+
+  private extractStablefxSettlementHash(raw: unknown): string | null {
+    return this.validTxHashOrNull(
+      this.getNestedString(raw, ['settlementTransactionHash']) ??
+        this.getNestedString(raw, ['data', 'settlementTransactionHash']) ??
+        this.getNestedString(raw, [
+          'contractTransactions',
+          'makerDeliver',
+          'txHash',
+        ]) ??
+        this.getNestedString(raw, [
+          'data',
+          'contractTransactions',
+          'makerDeliver',
+          'txHash',
+        ]) ??
+        this.getNestedString(raw, [
+          'contractTransactions',
+          'takerDeliver',
+          'txHash',
+        ]) ??
+        this.getNestedString(raw, [
+          'data',
+          'contractTransactions',
+          'takerDeliver',
+          'txHash',
+        ]),
+    );
+  }
+
+  private readStablefxToAmountBaseUnits(raw: unknown): string | null {
+    const amount =
+      this.getNestedString(raw, ['to', 'amount']) ??
+      this.getNestedString(raw, ['data', 'to', 'amount']);
+
+    return amount ? this.decimalToBaseUnits(amount, 6) : null;
+  }
+
+  private decimalToBaseUnits(value: string, decimals: number): string {
+    const [wholeRaw, fractionRaw = ''] = value.trim().split('.');
+    const whole = wholeRaw || '0';
+    const fraction = fractionRaw.padEnd(decimals, '0').slice(0, decimals);
+
+    if (!/^\d+$/.test(whole) || !/^\d*$/.test(fraction)) {
+      return value;
+    }
+
+    return (
+      BigInt(whole) * 10n ** BigInt(decimals) +
+      BigInt(fraction || '0')
+    ).toString();
+  }
+
+  private stringifyUnknown(value: unknown): string | null {
+    if (typeof value === 'string' && value.trim()) {
+      return value.trim();
+    }
+
+    if (typeof value === 'number' || typeof value === 'bigint') {
+      return String(value);
+    }
+
+    return null;
+  }
+
+  private getNestedString(raw: unknown, path: string[]): string | null {
+    const value = this.getNestedValue(raw, path);
+
+    if (typeof value === 'string' && value.trim()) {
+      return value.trim();
+    }
+
+    if (typeof value === 'number' || typeof value === 'bigint') {
+      return String(value);
+    }
+
+    return null;
+  }
+
+  private getNestedValue(raw: unknown, path: string[]): unknown {
+    let current = raw;
+
+    for (const key of path) {
+      if (!this.isRecord(current)) {
+        return undefined;
+      }
+
+      current = current[key];
+    }
+
+    return current;
+  }
+
+  private async delay(ms: number): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   // ── Transaction inspection ──────────────────────────────────────────

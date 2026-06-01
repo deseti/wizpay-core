@@ -2,9 +2,23 @@ import { resolveBackendBaseUrl, buildBackendUrl, backendFetch } from "@/lib/back
 import { findFirstString } from "@/lib/user-swap-quote-parser";
 import { isTransactionHash, type TokenSymbol } from "@/lib/wizpay";
 
-function logFxDiag(label: string, value: unknown) {
-  if (process.env.NODE_ENV === "production") return;
-  console.info(label, value);
+const CIRCLE_TX_RUN_START_GRACE_MS = 120_000;
+const CIRCLE_IN_FLIGHT_TRANSACTION_STATES = new Set([
+  "INITIATED",
+  "PENDING",
+  "PROCESSING",
+  "QUEUED",
+  "SUBMITTED",
+  "RUNNING",
+  "IN_PROGRESS",
+]);
+
+const PAYROLL_FX_DEBUG =
+  process.env.NEXT_PUBLIC_PAYROLL_FX_DEBUG === "true";
+
+function debugPayrollFx(...args: unknown[]) {
+  if (!PAYROLL_FX_DEBUG) return;
+  console.debug(...args);
 }
 
 /**
@@ -175,19 +189,119 @@ export async function listCircleTransactions(params: {
   });
 }
 
+function getRunStartTimeMinusGrace(runStartTime?: string | null) {
+  return runStartTime && Number.isFinite(Date.parse(runStartTime))
+    ? new Date(
+        Date.parse(runStartTime) - CIRCLE_TX_RUN_START_GRACE_MS,
+      ).toISOString()
+    : runStartTime;
+}
+
+function amountMatchesExpected(amounts: unknown[], expectedAmount?: string | null) {
+  if (!expectedAmount) {
+    return false;
+  }
+
+  return amounts.some((amt) => {
+    if (typeof amt !== "string") return false;
+    try {
+      return Math.abs(parseFloat(amt) - parseFloat(expectedAmount)) < 0.01;
+    } catch {
+      return amt === expectedAmount;
+    }
+  });
+}
+
+function tokenIdMatchesExpected(
+  tokenId: unknown,
+  expectedTokenId?: string | null,
+) {
+  if (!expectedTokenId) {
+    return true;
+  }
+
+  return (
+    typeof tokenId === "string" &&
+    tokenId.trim().toLowerCase() === expectedTokenId.trim().toLowerCase()
+  );
+}
+
+function findPromotablePendingCircleTransaction(
+  candidates: unknown[],
+  filters: {
+    destinationAddress: string;
+    expectedAmount?: string | null;
+    expectedTokenId?: string | null;
+    runStartTime?: string | null;
+  },
+) {
+  const destinationAddress = filters.destinationAddress.toLowerCase();
+  const runStartTimeMinusGrace = getRunStartTimeMinusGrace(filters.runStartTime);
+
+  for (const candidate of candidates) {
+    const record =
+      candidate && typeof candidate === "object"
+        ? (candidate as Record<string, unknown>)
+        : null;
+
+    if (!record) continue;
+
+    const id = typeof record.id === "string" ? record.id.trim() : "";
+    const state =
+      typeof record.state === "string" ? record.state.toUpperCase() : "";
+    const txHashPresent =
+      typeof record.txHash === "string" && record.txHash.length > 0;
+    const candidateDestination =
+      typeof record.destinationAddress === "string"
+        ? record.destinationAddress.toLowerCase()
+        : null;
+    const amounts = Array.isArray(record.amounts) ? record.amounts : [];
+    const createDate =
+      typeof record.createDate === "string" ? record.createDate : null;
+    const tokenId = typeof record.tokenId === "string" ? record.tokenId : null;
+
+    if (!id) continue;
+    if (txHashPresent) continue;
+    if (!CIRCLE_IN_FLIGHT_TRANSACTION_STATES.has(state)) continue;
+    if (candidateDestination !== destinationAddress) continue;
+    if (!amountMatchesExpected(amounts, filters.expectedAmount)) continue;
+    if (!tokenIdMatchesExpected(tokenId, filters.expectedTokenId)) continue;
+    if (
+      runStartTimeMinusGrace &&
+      createDate &&
+      createDate < runStartTimeMinusGrace
+    ) {
+      continue;
+    }
+
+    return {
+      id,
+      state,
+      destinationAddress: candidateDestination,
+      amounts,
+      createDate,
+      tokenId,
+      tokenMatched: tokenIdMatchesExpected(tokenId, filters.expectedTokenId),
+    };
+  }
+
+  return null;
+}
+
 /**
  * Extract a txHash from a Circle transaction list response.
  *
  * Selection is deterministic and logged:
  * - Each candidate is inspected and either accepted or rejected with a reason.
- * - Filters are applied in priority order: refId > destination > amount > runStartTime > state > txHash.
- * - If strict filters find nothing, a relaxed pass (destination + state + txHash only) is attempted.
+ * - Filters are applied in priority order: refId > destination > tokenId > amount > runStartTime > state > txHash.
+ * - If strict filters find nothing, a relaxed pass keeps destination, tokenId, amount, time, state, and txHash checks.
  */
 function extractTxHashFromTransactionList(
   response: Record<string, unknown>,
   filters: {
     destinationAddress: string;
     expectedAmount?: string | null;
+    expectedTokenId?: string | null;
     refId?: string | null;
     runStartTime?: string | null;
     sourceToken?: string | null;
@@ -197,7 +311,15 @@ function extractTxHashFromTransactionList(
     attempt?: number;
   } = {},
 ): { txHash: string | null; candidates: unknown[] } {
-  const { destinationAddress, expectedAmount, refId, runStartTime } = filters;
+  const {
+    destinationAddress,
+    expectedAmount,
+    expectedTokenId,
+    refId,
+    runStartTime,
+  } = filters;
+  const runStartTimeMinusGrace =
+    getRunStartTimeMinusGrace(runStartTime);
 
   // Circle list response shape: { transactions: [...] } or array at top level
   const transactions: unknown[] = Array.isArray(response.transactions)
@@ -232,6 +354,7 @@ function extractTxHashFromTransactionList(
     const amounts = Array.isArray(record.amounts) ? record.amounts : [];
     const txHash = getCircleTxHash(record);
     const tokenId = typeof record.tokenId === "string" ? record.tokenId : null;
+    const tokenMatched = tokenIdMatchesExpected(tokenId, expectedTokenId);
 
     const candidateInfo: Record<string, unknown> = {
       id: txId,
@@ -241,6 +364,7 @@ function extractTxHashFromTransactionList(
       amounts,
       refId: txRefId,
       tokenId,
+      tokenMatched,
       createDate: txCreateDate,
       updateDate: txUpdateDate,
     };
@@ -267,21 +391,24 @@ function extractTxHashFromTransactionList(
       rejectionReason = `refId mismatch: got "${txRefId}", want "${refId}"`;
     }
 
-    // Filter: if runStartTime provided, reject transactions created before run
-    if (!rejectionReason && runStartTime && txCreateDate && txCreateDate < runStartTime) {
-      rejectionReason = `stale: created ${txCreateDate} before runStartTime ${runStartTime}`;
+    // Filter: if expectedTokenId is provided, Circle tokenId must match the funding token.
+    if (!rejectionReason && expectedTokenId && !tokenMatched) {
+      rejectionReason = `tokenId mismatch: got ${tokenId ?? "none"}, want ${expectedTokenId}`;
+    }
+
+    // Filter: if runStartTime provided, reject transactions created before the grace-adjusted run start.
+    if (
+      !rejectionReason &&
+      runStartTimeMinusGrace &&
+      txCreateDate &&
+      txCreateDate < runStartTimeMinusGrace
+    ) {
+      rejectionReason = `stale: created ${txCreateDate} before runStartTimeMinusGrace ${runStartTimeMinusGrace}`;
     }
 
     // Filter: if expectedAmount provided, verify amount matches
     if (!rejectionReason && expectedAmount) {
-      const amountMatches = amounts.some((amt) => {
-        if (typeof amt !== "string") return false;
-        try {
-          return Math.abs(parseFloat(amt) - parseFloat(expectedAmount)) < 0.01;
-        } catch {
-          return amt === expectedAmount;
-        }
-      });
+      const amountMatches = amountMatchesExpected(amounts, expectedAmount);
       if (!amountMatches) {
         rejectionReason = `amount mismatch: got [${amounts.join(", ")}], want ~${expectedAmount}`;
       }
@@ -290,12 +417,13 @@ function extractTxHashFromTransactionList(
     candidateLog.push({ ...candidateInfo, rejectionReason: rejectionReason ?? "ACCEPTED" });
 
     if (!rejectionReason && txHash) {
-      // Log all candidates for diagnostics
-      console.info("[payroll-fx] extractTxHash STRICT MATCH", {
+      debugPayrollFx("[payroll-fx] extractTxHash STRICT MATCH", {
         selectedTxHash: txHash,
         selectedId: txId,
         attempt: diagnostics.attempt,
         referenceId: diagnostics.referenceId,
+        expectedTokenId,
+        tokenMatched,
         totalCandidates: sorted.length,
         candidateLog,
       });
@@ -303,8 +431,7 @@ function extractTxHashFromTransactionList(
     }
   }
 
-  // ── Relaxed pass: only require destination + txHash exists ──
-  // This handles cases where Circle doesn't return refId/amounts in list response
+  // Relaxed pass ignores refId gaps, but still requires destination, amount, time, state, and txHash.
   for (const tx of sorted) {
     if (!tx || typeof tx !== "object") continue;
     const record = tx as Record<string, unknown>;
@@ -312,22 +439,47 @@ function extractTxHashFromTransactionList(
     const txDest = typeof record.destinationAddress === "string" ? record.destinationAddress.toLowerCase() : null;
     const state = typeof record.state === "string" ? record.state.toUpperCase() : "";
     const txCreateDate = typeof record.createDate === "string" ? record.createDate : null;
+    const amounts = Array.isArray(record.amounts) ? record.amounts : [];
     const txHash = getCircleTxHash(record);
+    const tokenId = typeof record.tokenId === "string" ? record.tokenId : null;
+    const destinationMatched = txDest === destinationAddress.toLowerCase();
+    const tokenMatched = tokenIdMatchesExpected(tokenId, expectedTokenId);
+    const amountMatched = expectedAmount
+      ? amountMatchesExpected(amounts, expectedAmount)
+      : true;
+    const timeMatched = !(
+      runStartTimeMinusGrace &&
+      txCreateDate &&
+      txCreateDate < runStartTimeMinusGrace
+    );
 
     // Relaxed: destination must match
-    if (txDest && txDest !== destinationAddress.toLowerCase()) continue;
+    if (!destinationMatched) continue;
+    // Relaxed: token must still match when expectedTokenId is available
+    if (!tokenMatched) continue;
     // Relaxed: must be in a success-like state
     if (state && state !== "COMPLETE" && state !== "CONFIRMED" && state !== "SENT") continue;
     // Relaxed: must have txHash
     if (!txHash) continue;
+    // Relaxed: amount must still match when expectedAmount is available
+    if (!amountMatched) continue;
     // Relaxed: must not be stale (if runStartTime provided)
-    if (runStartTime && txCreateDate && txCreateDate < runStartTime) continue;
+    if (!timeMatched) continue;
 
-    console.info("[payroll-fx] extractTxHash RELAXED MATCH (strict filters failed)", {
+    debugPayrollFx("[payroll-fx] extractTxHash RELAXED MATCH (strict filters failed)", {
       selectedTxHash: txHash,
       selectedId: typeof record.id === "string" ? record.id : null,
       attempt: diagnostics.attempt,
       referenceId: diagnostics.referenceId,
+      destinationMatched,
+      tokenMatched,
+      amountMatched,
+      timeMatched,
+      expectedTokenId,
+      tokenId,
+      destinationAddress: txDest,
+      amounts,
+      createDate: txCreateDate,
       totalCandidates: sorted.length,
       candidateLog,
     });
@@ -335,11 +487,75 @@ function extractTxHashFromTransactionList(
   }
 
   // No match found
-  console.warn("[payroll-fx] extractTxHash NO MATCH", {
+  const rejectionSummary = candidateLog.reduce<Record<string, number>>(
+    (summary, candidate) => {
+      const record =
+        candidate && typeof candidate === "object"
+          ? (candidate as Record<string, unknown>)
+          : null;
+      const reason =
+        typeof record?.rejectionReason === "string"
+          ? record.rejectionReason
+          : "unknown";
+
+      summary[reason] = (summary[reason] ?? 0) + 1;
+      return summary;
+    },
+    {},
+  );
+  const topCandidates = candidateLog.slice(0, 5).map((candidate) => {
+    const record =
+      candidate && typeof candidate === "object"
+        ? (candidate as Record<string, unknown>)
+        : {};
+
+    return {
+      id: record.id ?? null,
+      state: record.state ?? null,
+      rejectionReason: record.rejectionReason ?? null,
+      txHashPresent: typeof record.txHash === "string" && record.txHash.length > 0,
+      destinationAddress: record.destinationAddress ?? null,
+      amounts: record.amounts ?? [],
+      refId: record.refId ?? null,
+      createDate: record.createDate ?? null,
+      updateDate: record.updateDate ?? null,
+      tokenId: record.tokenId ?? null,
+      tokenMatched: record.tokenMatched ?? null,
+    };
+  });
+
+  const noMatchSummary = {
+    attempt: diagnostics.attempt,
+    referenceId: diagnostics.referenceId,
+    filters: {
+      destinationAddress,
+      expectedAmount,
+      expectedTokenId,
+      refId,
+      runStartTime,
+      runStartTimeMinusGrace,
+    },
+    rejectionSummary,
+    topCandidates,
+  };
+
+  debugPayrollFx("[payroll-fx] extractTxHash NO MATCH SUMMARY", noMatchSummary);
+  debugPayrollFx(
+    "[payroll-fx] NO_MATCH_SUMMARY_JSON",
+    JSON.stringify(noMatchSummary, null, 2),
+  );
+  debugPayrollFx("[payroll-fx] extractTxHash NO MATCH", {
     attempt: diagnostics.attempt,
     referenceId: diagnostics.referenceId,
     totalCandidates: sorted.length,
-    filters: { destinationAddress, expectedAmount, refId, runStartTime },
+    filters: {
+      destinationAddress,
+      expectedAmount,
+      expectedTokenId,
+      refId,
+      runStartTime,
+      runStartTimeMinusGrace,
+    },
     candidateLog,
   });
   return { txHash: null, candidates: candidateLog };
@@ -392,6 +608,8 @@ export interface ResolveCircleFundingTxHashOptions {
   destinationAddress?: string | null;
   /** Expected funding amount (human-readable, e.g. "1.0") for filtering */
   expectedAmount?: string | null;
+  /** Circle tokenId used for the funding transfer */
+  expectedTokenId?: string | null;
   /** Circle refId used in createTransferChallenge for deterministic binding */
   refId?: string | null;
   /** ISO timestamp of when this payroll run started — reject transactions created before this */
@@ -423,6 +641,7 @@ export async function resolveCircleFundingTxHash({
   walletId,
   destinationAddress,
   expectedAmount,
+  expectedTokenId,
   refId,
   runStartTime,
   intervalMs = 3000,
@@ -438,6 +657,7 @@ export async function resolveCircleFundingTxHash({
   const lookupIds = [circleTransactionId].filter(
     (id): id is string => Boolean(id),
   );
+  const discoveredLookupIds = new Set<string>();
 
   const context = {
     lookupIds,
@@ -445,12 +665,13 @@ export async function resolveCircleFundingTxHash({
     walletId,
     destinationAddress,
     expectedAmount,
+    expectedTokenId,
     refId,
     runStartTime,
     timeoutMs,
   };
 
-  console.info("[payroll-fx] resolveCircleFundingTxHash START", context);
+  debugPayrollFx("[payroll-fx] resolveCircleFundingTxHash START", context);
 
   while (Date.now() - startedAt <= timeoutMs) {
     attempt += 1;
@@ -467,7 +688,7 @@ export async function resolveCircleFundingTxHash({
 
         // Log every attempt for the first 3, then every 5th
         if (attempt <= 3 || attempt % 5 === 0 || txHash) {
-          console.info("[payroll-fx] getTransaction poll", {
+          debugPayrollFx("[payroll-fx] getTransaction poll", {
             attempt,
             elapsedMs,
             lookupId,
@@ -481,7 +702,7 @@ export async function resolveCircleFundingTxHash({
         }
 
         if (txHash) {
-          console.info("[payroll-fx] resolveCircleFundingTxHash SUCCESS via getTransaction", {
+          debugPayrollFx("[payroll-fx] resolveCircleFundingTxHash SUCCESS via getTransaction", {
             txHash,
             lookupId,
             attempt,
@@ -492,7 +713,7 @@ export async function resolveCircleFundingTxHash({
         }
       } catch (err) {
         if (attempt <= 2) {
-          console.info("[payroll-fx] getTransaction error (expected during processing)", {
+          debugPayrollFx("[payroll-fx] getTransaction error (expected during processing)", {
             lookupId,
             attempt,
             error: err instanceof Error ? err.message : String(err),
@@ -515,6 +736,7 @@ export async function resolveCircleFundingTxHash({
           {
             destinationAddress,
             expectedAmount,
+            expectedTokenId,
             refId,
             runStartTime,
           },
@@ -524,7 +746,7 @@ export async function resolveCircleFundingTxHash({
         lastCandidates = candidates;
 
         if (txHash) {
-          console.info("[payroll-fx] resolveCircleFundingTxHash SUCCESS via listTransactions", {
+          debugPayrollFx("[payroll-fx] resolveCircleFundingTxHash SUCCESS via listTransactions", {
             txHash,
             attempt,
             elapsedMs,
@@ -532,9 +754,40 @@ export async function resolveCircleFundingTxHash({
           });
           return txHash;
         }
+
+        const pendingCandidate = findPromotablePendingCircleTransaction(
+          candidates,
+          {
+            destinationAddress,
+            expectedAmount,
+            expectedTokenId,
+            runStartTime,
+          },
+        );
+
+        if (
+          pendingCandidate &&
+          !lookupIds.includes(pendingCandidate.id) &&
+          !discoveredLookupIds.has(pendingCandidate.id)
+        ) {
+          discoveredLookupIds.add(pendingCandidate.id);
+          lookupIds.push(pendingCandidate.id);
+          debugPayrollFx("[payroll-fx] discovered pending Circle transaction", {
+            id: pendingCandidate.id,
+            state: pendingCandidate.state,
+            attempt,
+            referenceId: refId,
+            destinationAddress: pendingCandidate.destinationAddress,
+            amounts: pendingCandidate.amounts,
+            expectedTokenId,
+            tokenId: pendingCandidate.tokenId,
+            tokenMatched: pendingCandidate.tokenMatched,
+            createDate: pendingCandidate.createDate,
+          });
+        }
       } catch (err) {
         if (attempt <= 2) {
-          console.info("[payroll-fx] listTransactions error", {
+          debugPayrollFx("[payroll-fx] listTransactions error", {
             attempt,
             error: err instanceof Error ? err.message : String(err),
           });
@@ -566,7 +819,7 @@ export async function resolveCircleFundingTxHash({
     lastCandidates: lastCandidates.slice(0, 10), // cap at 10 for readability
   };
 
-  console.error("[payroll-fx] resolveCircleFundingTxHash TIMEOUT", timeoutDiag);
+  debugPayrollFx("[payroll-fx] resolveCircleFundingTxHash TIMEOUT", timeoutDiag);
 
   const errorMsg =
     `Funding txHash resolution timed out after ${Math.round(elapsedMs / 1000)}s. ` +
@@ -574,6 +827,7 @@ export async function resolveCircleFundingTxHash({
     `circleTransactionId=${circleTransactionId ?? "none"}, ` +
     `refId=${refId ?? "none"}, ` +
     `expectedAmount=${expectedAmount ?? "none"}, ` +
+    `expectedTokenId=${expectedTokenId ?? "none"}, ` +
     `candidates inspected: ${lastCandidates.length}. ` +
     `The funding was confirmed but the EVM txHash is not yet available.`;
 
