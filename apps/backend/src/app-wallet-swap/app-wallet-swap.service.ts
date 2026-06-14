@@ -86,6 +86,9 @@ export class AppWalletSwapService {
       tokenIn: normalized.tokenIn,
       tokenOut: normalized.tokenOut,
     });
+    const quoteProvider = this.toAppWalletQuoteProvider(
+      userSwapQuote.provider,
+    );
 
     return {
       operationMode: APP_WALLET_SWAP_MODE,
@@ -98,9 +101,9 @@ export class AppWalletSwapService {
       minimumOutput: userSwapQuote.minimumOutput ?? null,
       expiresAt: this.normalizeExpiry(userSwapQuote.expiresAt),
       status: 'quoted',
-      provider: userSwapQuote.provider,
+      provider: quoteProvider,
       quoteId: userSwapQuote.quoteId,
-      rawQuote: this.attachQuoteProvider(userSwapQuote.raw, userSwapQuote.provider),
+      rawQuote: this.attachQuoteProvider(userSwapQuote.raw, quoteProvider),
     };
   }
 
@@ -2016,6 +2019,24 @@ export class AppWalletSwapService {
       ...rawQuote,
       provider,
     };
+  }
+
+  private toAppWalletQuoteProvider(
+    provider: string | undefined,
+  ): 'swapkit' | 'stablefx' | undefined {
+    if (provider === 'swapkit' || provider === 'stablefx') {
+      return provider;
+    }
+
+    if (provider === 'xylonet') {
+      throw new ServiceUnavailableException({
+        code: APP_WALLET_SWAP_ERROR_CODES.TREASURY_NOT_CONFIGURED,
+        message:
+          'App Wallet swap does not support XyloNet quotes. Use External Wallet swap for XyloNet.',
+      });
+    }
+
+    return undefined;
   }
 
   private getTypedDataObject(raw: unknown): Record<string, unknown> | null {

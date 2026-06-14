@@ -7,8 +7,9 @@ export const USER_SWAP_CHAIN = "ARC-TESTNET" as const;
  * Backend swap quote provider.
  * - "swapkit": Circle Stablecoin Kits (default, supports prepare/execute).
  * - "stablefx": Circle StableFX quotes; /swap executes through StableFX lifecycle endpoints.
+ * - "xylonet": XyloRouter quotes for External Wallet only; execution is not enabled yet.
  */
-export type UserSwapProvider = "swapkit" | "stablefx";
+export type UserSwapProvider = "swapkit" | "stablefx" | "xylonet";
 
 export interface UserSwapQuoteRequest {
   tokenIn: TokenSymbol;
@@ -17,6 +18,7 @@ export interface UserSwapQuoteRequest {
   fromAddress: string;
   toAddress?: string;
   chain: typeof USER_SWAP_CHAIN;
+  provider?: UserSwapProvider;
   slippageBps?: number;
 }
 
@@ -47,6 +49,14 @@ export interface UserSwapQuoteResponse {
   provider?: UserSwapProvider;
   expectedOutput?: unknown;
   minimumOutput?: unknown;
+  routerAddress?: unknown;
+  executorAddress?: unknown;
+  feeAmount?: unknown;
+  netAmountIn?: unknown;
+  expectedAmountOut?: unknown;
+  minimumAmountOut?: unknown;
+  minAmountOut?: unknown;
+  chainId?: unknown;
   raw: unknown;
 }
 

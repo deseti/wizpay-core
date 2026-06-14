@@ -6,6 +6,7 @@ import {
   USER_SWAP_USDC_ADDRESS,
   UserSwapService,
 } from './user-swap.service';
+import { XylonetQuoteProviderService } from './xylonet-quote-provider.service';
 
 const baseRequest = {
   tokenIn: 'USDC',
@@ -502,6 +503,55 @@ describe('UserSwapService', () => {
       provider: 'stablefx',
       quoteId: 'quote-stablefx',
     });
+  });
+
+  it('routes request provider=xylonet to the XyloNet quote provider', async () => {
+    enableUserSwap();
+    const quoteSpy = jest
+      .spyOn(XylonetQuoteProviderService.prototype, 'quote')
+      .mockResolvedValue({
+        provider: 'xylonet',
+        tokenIn: 'USDC',
+        tokenOut: 'EURC',
+        amountIn: '10',
+        fromAddress: baseRequest.fromAddress,
+        toAddress: baseRequest.fromAddress,
+        chain: 'ARC-TESTNET',
+        expectedOutput: '9',
+        raw: {},
+      });
+    const service = new UserSwapService();
+
+    const result = await service.quote({
+      ...baseRequest,
+      provider: 'xylonet',
+      slippageBps: 200,
+    });
+
+    expect(result).toMatchObject({ provider: 'xylonet' });
+    expect(quoteSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tokenIn: 'USDC',
+        tokenOut: 'EURC',
+        amountIn: '10',
+        slippageBps: 200,
+      }),
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects unknown quote provider values instead of defaulting to swapkit', async () => {
+    enableUserSwap();
+    const service = new UserSwapService();
+
+    await expect(
+      service.quote({ ...baseRequest, provider: 'unknown-provider' }),
+    ).rejects.toMatchObject({
+      response: {
+        code: 'USER_SWAP_PROVIDER_UNSUPPORTED',
+      },
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('fails clearly when stablefx is selected without CIRCLE_STABLEFX_API_KEY', async () => {

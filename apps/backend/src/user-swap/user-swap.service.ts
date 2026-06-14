@@ -22,6 +22,7 @@ import {
   type UserSwapToken,
   type UserSwapTransactionPayload,
 } from './user-swap.types';
+import { XylonetQuoteProviderService } from './xylonet-quote-provider.service';
 
 const SUPPORTED_TOKENS = new Set<UserSwapToken>(['USDC', 'EURC']);
 const DEFAULT_SLIPPAGE_BPS = 200;
@@ -58,17 +59,22 @@ const CIRCLE_ROUTE_UNAVAILABLE_REASON = 'CIRCLE_ROUTE_UNAVAILABLE';
 export class UserSwapService {
   private readonly logger = new Logger(UserSwapService.name);
 
-  // The StableFX provider is optional so existing callers/tests that construct
-  // `new UserSwapService()` keep working; a default instance is used otherwise.
+  // Providers are optional so existing callers/tests that construct
+  // `new UserSwapService()` keep working; Nest injects them in the app module.
   constructor(
     private readonly stablefxQuoteProvider: StablefxQuoteProviderService = new StablefxQuoteProviderService(),
+    private readonly xylonetQuoteProvider: XylonetQuoteProviderService = new XylonetQuoteProviderService(),
   ) {}
 
   async quote(request: UserSwapQuoteRequest): Promise<UserSwapNormalizedQuote> {
-    const provider = this.getActiveProvider();
+    const provider = this.getActiveProvider(request.provider);
 
     if (provider === 'stablefx') {
       return this.quoteWithStablefxProvider(request);
+    }
+
+    if (provider === 'xylonet') {
+      return this.quoteWithXylonet(request);
     }
 
     return this.quoteWithSwapKit(request);
@@ -133,6 +139,24 @@ export class UserSwapService {
     });
 
     return this.stablefxQuoteProvider.quote({
+      tokenIn: normalized.tokenIn,
+      tokenOut: normalized.tokenOut,
+      amountIn: normalized.amountIn,
+      fromAddress: normalized.fromAddress,
+      toAddress: normalized.toAddress,
+      chain: normalized.chain,
+      slippageBps: this.readOptionalSlippageBps(request),
+    });
+  }
+
+  private async quoteWithXylonet(
+    request: UserSwapQuoteRequest,
+  ): Promise<UserSwapNormalizedQuote> {
+    const normalized = this.normalizeBaseRequest(request, {
+      requireKitKey: false,
+    });
+
+    return this.xylonetQuoteProvider.quote({
       tokenIn: normalized.tokenIn,
       tokenOut: normalized.tokenOut,
       amountIn: normalized.amountIn,
@@ -279,16 +303,31 @@ export class UserSwapService {
     }
   }
 
-  // Resolves the active backend quote provider from WIZPAY_SWAP_PROVIDER.
-  // Defaults to swapkit (Circle Stablecoin Kits) when unset or unrecognized.
-  private getActiveProvider(): UserSwapProvider {
-    const configured = process.env.WIZPAY_SWAP_PROVIDER?.trim().toLowerCase();
+  // Resolves the active backend quote provider. Request-level provider is used
+  // by External Wallet /swap quotes; WIZPAY_SWAP_PROVIDER remains the legacy
+  // default when the request does not specify one.
+  private getActiveProvider(requestedProvider?: string): UserSwapProvider {
+    const configured = (
+      requestedProvider?.trim() || process.env.WIZPAY_SWAP_PROVIDER?.trim()
+    )?.toLowerCase();
 
-    if (configured === 'stablefx') {
-      return 'stablefx';
+    if (!configured) {
+      return DEFAULT_SWAP_PROVIDER;
     }
 
-    return DEFAULT_SWAP_PROVIDER;
+    if (
+      configured === 'swapkit' ||
+      configured === 'stablefx' ||
+      configured === 'xylonet'
+    ) {
+      return configured;
+    }
+
+    throw new BadRequestException({
+      code: USER_SWAP_ERROR_CODES.PROVIDER_UNSUPPORTED,
+      message:
+        'Unsupported user-wallet swap provider. Supported providers: swapkit, stablefx, xylonet.',
+    });
   }
 
   // StableFX-to-swapkit fallback is opt-in and disabled by default so the

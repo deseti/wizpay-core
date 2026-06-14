@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { type Address, type Hex, formatUnits } from "viem";
+import { type Address, type Hex, formatUnits, isAddress } from "viem";
 import {
   ArrowRightLeft,
   CheckCircle2,
@@ -70,6 +70,7 @@ import {
   prepareUserSwap,
   quoteUserSwap,
   type StablefxTradeResponse,
+  type UserSwapProvider,
   type UserSwapPrepareResponse,
   type UserSwapQuoteResponse,
 } from "@/lib/user-swap-service";
@@ -107,6 +108,36 @@ type RequestStatus =
   | "funding"
   | "settling";
 type SwapQuoteState = UserSwapQuoteResponse | AppWalletSwapQuoteResponse;
+type ExternalWalletSwapProvider = Extract<
+  UserSwapProvider,
+  "stablefx" | "xylonet"
+>;
+
+const EXTERNAL_WALLET_SWAP_PROVIDER_LABELS: Record<
+  ExternalWalletSwapProvider,
+  string
+> = {
+  stablefx: "StableFX Official",
+  xylonet: "XyloNet",
+};
+const XYLONET_EXECUTION_DEADLINE_SECONDS = 20 * 60;
+const WIZPAY_SWAP_EXECUTOR_ABI = [
+  {
+    inputs: [
+      { name: "router", type: "address" },
+      { name: "tokenIn", type: "address" },
+      { name: "tokenOut", type: "address" },
+      { name: "amountIn", type: "uint256" },
+      { name: "minAmountOut", type: "uint256" },
+      { name: "recipient", type: "address" },
+      { name: "deadline", type: "uint256" },
+    ],
+    name: "executeSwap",
+    outputs: [{ name: "amountOut", type: "uint256" }],
+    stateMutability: "nonpayable",
+    type: "function",
+  },
+] as const;
 
 interface SwapSuccessState {
   amountIn: string;
@@ -574,6 +605,10 @@ function getQuoteProvider(quote: SwapQuoteState | null) {
     return "swapkit";
   }
 
+  if (isRecord(quote) && quote.provider === "xylonet") {
+    return "xylonet";
+  }
+
   return undefined;
 }
 
@@ -837,6 +872,66 @@ function getStablefxRecordTradeTxHash(trade: StablefxTradeResponse) {
   );
 }
 
+function getQuoteStringValue(
+  quote: SwapQuoteState,
+  topLevelKeys: string[],
+  rawPaths: string[],
+) {
+  for (const key of topLevelKeys) {
+    if (isRecord(quote)) {
+      const value = quote[key];
+
+      if (typeof value === "string" && value.trim()) {
+        return value.trim();
+      }
+
+      if (typeof value === "number" || typeof value === "bigint") {
+        return value.toString();
+      }
+    }
+  }
+
+  return findFirstString(
+    "raw" in quote ? quote.raw : quote.rawQuote,
+    rawPaths,
+  );
+}
+
+function getQuoteAddressValue(
+  quote: SwapQuoteState,
+  topLevelKeys: string[],
+  rawPaths: string[],
+  label: string,
+): Address {
+  const value = getQuoteStringValue(quote, topLevelKeys, rawPaths);
+
+  if (!value || !isAddress(value)) {
+    throw new Error(`XyloNet quote did not include a valid ${label}.`);
+  }
+
+  return value as Address;
+}
+
+function getQuoteBaseUnitValue(
+  quote: SwapQuoteState,
+  topLevelKeys: string[],
+  rawPaths: string[],
+  label: string,
+): bigint {
+  const value = getQuoteStringValue(quote, topLevelKeys, rawPaths);
+
+  if (!value || !/^\d+$/.test(value)) {
+    throw new Error(`XyloNet quote did not include a valid ${label}.`);
+  }
+
+  const amount = BigInt(value);
+  if (amount <= 0n) {
+    throw new Error(`XyloNet quote ${label} must be greater than zero.`);
+  }
+
+  return amount;
+}
+
 async function delay(ms: number) {
   await new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -861,6 +956,8 @@ export function SwapScreen() {
   const [tokenIn, setTokenIn] = useState<TokenSymbol>("USDC");
   const [tokenOut, setTokenOut] = useState<TokenSymbol>("EURC");
   const [amountIn, setAmountIn] = useState("");
+  const [externalSwapProvider, setExternalSwapProvider] =
+    useState<ExternalWalletSwapProvider>("stablefx");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [requestStatus, setRequestStatus] = useState<RequestStatus>("idle");
   const [quote, setQuote] = useState<SwapQuoteState | null>(null);
@@ -914,15 +1011,26 @@ export function SwapScreen() {
             : null;
   const formInvalid =
     !walletAddress || tokenIn === tokenOut || amountInUnits <= 0n;
+  const rawQuoteProvider = getQuoteProvider(quote);
   const quoteMatchesForm =
     quote !== null &&
     quote.tokenIn === tokenIn &&
     quote.tokenOut === tokenOut &&
     quote.amountIn === amountInBaseUnits &&
+    (!isExternalWalletMode || rawQuoteProvider === externalSwapProvider) &&
     (!("fromAddress" in quote) ||
       quote.fromAddress.toLowerCase() === walletAddress?.toLowerCase());
-  const quoteProvider = quoteMatchesForm ? getQuoteProvider(quote) : undefined;
+  const quoteProvider = quoteMatchesForm ? rawQuoteProvider : undefined;
   const isStablefxQuote = quoteProvider === "stablefx";
+  const isXylonetSelected =
+    isExternalWalletMode && externalSwapProvider === "xylonet";
+  const activeProviderLabel =
+    quoteProvider === "stablefx" ||
+    quoteProvider === "xylonet"
+      ? EXTERNAL_WALLET_SWAP_PROVIDER_LABELS[quoteProvider]
+      : isExternalWalletMode
+        ? EXTERNAL_WALLET_SWAP_PROVIDER_LABELS[externalSwapProvider]
+        : quoteProvider;
   const stablefxCapability = getStablefxExecutionCapability({
     tokenIn,
     tokenOut,
@@ -987,7 +1095,11 @@ export function SwapScreen() {
             ...getRequestBase(),
             chain: APP_WALLET_SWAP_CHAIN,
           })
-        : await quoteUserSwap(getRequestBase());
+        : await quoteUserSwap({
+            ...getRequestBase(),
+            provider: externalSwapProvider,
+            slippageBps: Number(PREVIEW_SLIPPAGE_BPS),
+          });
       setQuote(nextQuote);
       return nextQuote;
     } catch (error) {
@@ -1431,6 +1543,158 @@ export function SwapScreen() {
     });
   }
 
+  async function executeXylonetSwap(activeQuote: SwapQuoteState) {
+    if (!isExternalWalletMode) {
+      throw new Error("XyloNet execution is only available for External Wallet mode.");
+    }
+
+    if (!walletAddress || !walletClient || !publicClient) {
+      throw new Error("Connect an external EVM wallet before executing XyloNet.");
+    }
+
+    if (walletClient.chain?.id !== arcTestnet.id) {
+      throw new Error("Switch your external wallet to Arc Testnet before executing XyloNet.");
+    }
+
+    if (getQuoteProvider(activeQuote) !== "xylonet") {
+      throw new Error("Request a fresh XyloNet quote before executing.");
+    }
+
+    const owner = normalizeStablefxAddress(walletAddress, "Owner address");
+    const executorAddress = getQuoteAddressValue(
+      activeQuote,
+      ["executorAddress"],
+      ["executorAddress"],
+      "executor address",
+    );
+    const routerAddress = getQuoteAddressValue(
+      activeQuote,
+      ["routerAddress"],
+      ["routerAddress"],
+      "router address",
+    );
+    const tokenInAddress = getQuoteAddressValue(
+      activeQuote,
+      [],
+      ["tokenInAddress"],
+      "tokenIn address",
+    );
+    const tokenOutAddress = getQuoteAddressValue(
+      activeQuote,
+      [],
+      ["tokenOutAddress"],
+      "tokenOut address",
+    );
+    const inputAmount = getQuoteBaseUnitValue(
+      activeQuote,
+      ["amountIn"],
+      ["amountIn"],
+      "amountIn",
+    );
+    const minAmountOut = getQuoteBaseUnitValue(
+      activeQuote,
+      ["minAmountOut", "minimumAmountOut", "minimumOutput"],
+      ["minAmountOut", "minimumAmountOut", "minimumOutput"],
+      "minAmountOut",
+    );
+    const recipient = getQuoteAddressValue(
+      activeQuote,
+      ["toAddress"],
+      ["toAddress", "recipient"],
+      "recipient address",
+    );
+    const deadline =
+      BigInt(Math.floor(Date.now() / 1000) + XYLONET_EXECUTION_DEADLINE_SECONDS);
+    let instructionCount = 1;
+
+    setRequestStatus("checkingAllowance");
+    const allowance = (await publicClient.readContract({
+      address: tokenInAddress,
+      abi: ERC20_ABI,
+      functionName: "allowance",
+      args: [owner, executorAddress],
+    })) as bigint;
+
+    if (allowance < inputAmount) {
+      instructionCount += 1;
+      setRequestStatus("approving");
+      toast({
+        title: `Approve ${tokenIn}`,
+        description: `Approve ${tokenIn} spending for the WizPay XyloNet executor, then the swap will continue automatically.`,
+      });
+
+      const approvalTxHash = await walletClient.writeContract({
+        address: tokenInAddress,
+        abi: ERC20_ABI,
+        functionName: "approve",
+        args: [executorAddress, inputAmount],
+        account: owner,
+        chain: arcTestnet,
+      });
+
+      await publicClient.waitForTransactionReceipt({
+        hash: approvalTxHash,
+        confirmations: 1,
+      });
+
+      const confirmedAllowance = (await publicClient.readContract({
+        address: tokenInAddress,
+        abi: ERC20_ABI,
+        functionName: "allowance",
+        args: [owner, executorAddress],
+      })) as bigint;
+
+      if (confirmedAllowance < inputAmount) {
+        throw new Error(
+          `${tokenIn} approval confirmed but allowance is still below the XyloNet input amount.`,
+        );
+      }
+    }
+
+    setRequestStatus("executing");
+    const txHash = await walletClient.writeContract({
+      address: executorAddress,
+      abi: WIZPAY_SWAP_EXECUTOR_ABI,
+      functionName: "executeSwap",
+      args: [
+        routerAddress,
+        tokenInAddress,
+        tokenOutAddress,
+        inputAmount,
+        minAmountOut,
+        recipient,
+        deadline,
+      ],
+      account: owner,
+      chain: arcTestnet,
+    });
+
+    await publicClient.waitForTransactionReceipt({
+      hash: txHash,
+      confirmations: 1,
+    });
+
+    setSuccessState({
+      amountIn,
+      amountOut: getUserSwapExpectedOutputDisplay(activeQuote, tokenOut),
+      explorerUrl: `${EXPLORER_BASE_URL}/tx/${txHash}`,
+      instructionCount,
+      referenceId: txHash,
+      status: "success",
+      tokenIn,
+      tokenOut,
+      transactionId: txHash,
+      transactionStatus: "COMPLETE",
+      txHash,
+      walletMode: "external",
+    });
+    setIsSuccessDialogOpen(true);
+    toast({
+      title: "XyloNet swap submitted",
+      description: `External wallet submitted ${shortenHash(txHash)} on Arc Testnet.`,
+    });
+  }
+
   async function submitAppWalletDeposit() {
     if (!appWalletOperation) {
       return;
@@ -1859,6 +2123,15 @@ export function SwapScreen() {
         return;
       }
 
+      if (
+        isExternalWalletMode &&
+        (externalSwapProvider === "xylonet" ||
+          getQuoteProvider(activeQuote) === "xylonet")
+      ) {
+        await executeXylonetSwap(activeQuote);
+        return;
+      }
+
       if (getQuoteProvider(activeQuote) === "stablefx") {
         if (!isExternalWalletMode) {
           if (!isCircleWalletMode) {
@@ -2062,11 +2335,54 @@ export function SwapScreen() {
               </div>
             </div>
 
+            {isExternalWalletMode ? (
+              <div className="space-y-2 rounded-xl border border-border/30 bg-background/20 px-4 py-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground/60">
+                      Provider
+                    </div>
+                    <div className="text-xs text-muted-foreground/60">
+                      External Wallet only
+                    </div>
+                  </div>
+                  <Select
+                    value={externalSwapProvider}
+                    onValueChange={(value) => {
+                      resetSwapFeedback();
+                      setQuote(null);
+                      setExternalSwapProvider(
+                        value as ExternalWalletSwapProvider,
+                      );
+                    }}
+                  >
+                    <SelectTrigger className="h-10 w-[180px] rounded-xl border-border/40 bg-background/50">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="stablefx">
+                        StableFX Official
+                      </SelectItem>
+                      <SelectItem value="xylonet">XyloNet</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+            ) : null}
+
             <div className="space-y-2 rounded-xl border border-border/30 bg-background/20 px-4 py-3 text-sm">
               <div className="flex justify-between gap-3 text-muted-foreground/70">
                 <span>Network</span>
                 <span className="font-mono text-foreground">Arc Testnet</span>
               </div>
+              {activeProviderLabel ? (
+                <div className="flex justify-between gap-3 text-muted-foreground/70">
+                  <span>Provider</span>
+                  <span className="font-mono text-foreground">
+                    {activeProviderLabel}
+                  </span>
+                </div>
+              ) : null}
               <div className="flex justify-between gap-3 text-muted-foreground/70">
                 <span>Expected output</span>
                 <span className="font-mono text-foreground">
@@ -2088,6 +2404,13 @@ export function SwapScreen() {
             {modeBlockMessage ? (
               <div className="rounded-xl border border-amber-500/25 bg-amber-500/5 px-4 py-3 text-sm text-amber-200">
                 {modeBlockMessage}
+              </div>
+            ) : null}
+
+            {isXylonetSelected ? (
+              <div className="rounded-xl border border-amber-500/25 bg-amber-500/5 px-4 py-3 text-sm text-amber-200">
+                XyloNet execution is available for External Wallet swaps only.
+                Your wallet will approve the executor before the swap if needed.
               </div>
             ) : null}
 
@@ -2167,6 +2490,7 @@ export function SwapScreen() {
                 requestStatus === "approving" ||
                 requestStatus === "signing" ||
                 requestStatus === "creating" ||
+                requestStatus === "executing" ||
                 requestStatus === "funding" ||
                 requestStatus === "settling" ? (
                   <span className="flex items-center gap-2">
@@ -2175,8 +2499,10 @@ export function SwapScreen() {
                       ? "Preparing..."
                       : requestStatus === "checkingAllowance"
                         ? `Checking ${tokenIn} allowance...`
-                        : requestStatus === "approving"
+                      : requestStatus === "approving"
                           ? `Approve ${tokenIn} spending...`
+                      : requestStatus === "executing"
+                        ? "Executing..."
                       : requestStatus === "funding"
                         ? "Funding..."
                         : requestStatus === "settling"

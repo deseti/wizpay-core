@@ -3,6 +3,7 @@ import { StablefxExecutionService } from './stablefx-execution.service';
 import { StablefxQuoteProviderService } from './stablefx-quote-provider.service';
 import { UserSwapController } from './user-swap.controller';
 import { UserSwapService } from './user-swap.service';
+import { XylonetQuoteProviderService } from './xylonet-quote-provider.service';
 
 @Module({
   controllers: [UserSwapController],
@@ -10,6 +11,7 @@ import { UserSwapService } from './user-swap.service';
     StablefxExecutionService,
     StablefxQuoteProviderService,
     UserSwapService,
+    XylonetQuoteProviderService,
   ],
   exports: [StablefxExecutionService, UserSwapService],
 })

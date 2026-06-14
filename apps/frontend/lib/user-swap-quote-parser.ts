@@ -7,6 +7,7 @@ import {
 } from "@/lib/wizpay";
 
 export const EXPECTED_OUTPUT_FALLBACK_PATHS = [
+  "expectedAmountOut",
   "quote.estimatedAmount",
   "quote.route.steps.0.estimate.toAmount",
   "estimatedOutput",
@@ -14,6 +15,8 @@ export const EXPECTED_OUTPUT_FALLBACK_PATHS = [
 ] as const;
 
 export const MINIMUM_OUTPUT_FALLBACK_PATHS = [
+  "minimumAmountOut",
+  "minAmountOut",
   "quote.minAmount",
   "minimumOutput",
   "minOutput",
@@ -21,7 +24,10 @@ export const MINIMUM_OUTPUT_FALLBACK_PATHS = [
 
 type SwapQuoteLike = {
   expectedOutput?: unknown;
+  expectedAmountOut?: unknown;
   minimumOutput?: unknown;
+  minimumAmountOut?: unknown;
+  minAmountOut?: unknown;
   provider?: unknown;
   raw?: unknown;
   rawQuote?: unknown;
@@ -100,6 +106,7 @@ function getRawQuote(quote: SwapQuoteLike) {
 export function getUserSwapExpectedOutputValue(quote: SwapQuoteLike) {
   return (
     quote.expectedOutput ??
+    quote.expectedAmountOut ??
     findFirst(getRawQuote(quote), EXPECTED_OUTPUT_FALLBACK_PATHS)
   );
 }
@@ -120,6 +127,8 @@ export function getUserSwapProvider(quote: SwapQuoteLike): string | null {
 export function getUserSwapMinimumOutputValue(quote: SwapQuoteLike) {
   return (
     quote.minimumOutput ??
+    quote.minimumAmountOut ??
+    quote.minAmountOut ??
     findFirst(getRawQuote(quote), MINIMUM_OUTPUT_FALLBACK_PATHS)
   );
 }

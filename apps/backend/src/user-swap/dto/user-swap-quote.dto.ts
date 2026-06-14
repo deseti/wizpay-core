@@ -1,4 +1,12 @@
-import { IsNotEmpty, IsOptional, IsString } from 'class-validator';
+import {
+  IsIn,
+  IsInt,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+  Max,
+  Min,
+} from 'class-validator';
 
 export class UserSwapQuoteDto {
   @IsString()
@@ -25,4 +33,14 @@ export class UserSwapQuoteDto {
   @IsString()
   @IsNotEmpty()
   chain!: string;
+
+  @IsOptional()
+  @IsIn(['swapkit', 'stablefx', 'xylonet'])
+  provider?: 'swapkit' | 'stablefx' | 'xylonet';
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(10_000)
+  slippageBps?: number;
 }
