@@ -1,6 +1,8 @@
 "use client";
 
 import { QrCode } from "lucide-react";
+import { getAddress, isAddress } from "viem";
+import { useRouter, useSearchParams } from "next/navigation";
 
 import { BatchComposer } from "@/components/dashboard/BatchComposer";
 import { PreflightPanel } from "@/components/dashboard/PreflightPanel";
@@ -13,7 +15,7 @@ import { Button } from "@/components/ui/button";
 import { useActiveWalletAddress } from "@/hooks/useActiveWalletAddress";
 import { useWizPay } from "@/hooks/wizpay";
 import { SUPPORTED_TOKENS, type TokenSymbol } from "@/lib/wizpay";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 function getTaskMetadataString(
   metadata: Record<string, unknown> | null | undefined,
@@ -42,7 +44,28 @@ function getTaskMetadataToken(
 function SendWorkspace() {
   const wp = useWizPay();
   const { walletAddress } = useActiveWalletAddress();
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const scannedRecipient = searchParams.get("recipient");
+  const firstRecipientId = wp.recipients[0]?.id;
+  const updateRecipient = wp.updateRecipient;
   const [showReceive, setShowReceive] = useState(false);
+
+  useEffect(() => {
+    if (!scannedRecipient || !firstRecipientId) {
+      return;
+    }
+
+    const trimmedRecipient = scannedRecipient.trim();
+
+    if (!isAddress(trimmedRecipient)) {
+      router.replace("/send", { scroll: false });
+      return;
+    }
+
+    updateRecipient(firstRecipientId, "address", getAddress(trimmedRecipient));
+    router.replace("/send", { scroll: false });
+  }, [firstRecipientId, router, scannedRecipient, updateRecipient]);
   const showSuccessModal = wp.payrollTask?.status === "executed";
   const taskMetadata = wp.payrollTask?.metadata;
   const taskTotalAmount = getTaskMetadataString(taskMetadata, "totalAmount");
