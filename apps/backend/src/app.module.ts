@@ -3,6 +3,7 @@ import { AppWalletSwapModule } from './app-wallet-swap/app-wallet-swap.module';
 import { TreasuryModule } from './treasury/treasury.module';
 import { AdaptersModule } from './adapters/adapters.module';
 import { AgentsModule } from './agents/agents.module';
+import { AnalyticsModule } from './analytics/analytics.module';
 import { AppConfigModule } from './config/app-config.module';
 import { DatabaseModule } from './database/database.module';
 import { FxModule } from './fx/fx.module';
@@ -30,6 +31,7 @@ import { UserSwapModule } from './user-swap/user-swap.module';
     WalletModule,
     UserSwapModule,
     AppWalletSwapModule,
+    AnalyticsModule,
   ],
 })
 export class AppModule {}
