@@ -1,10 +1,12 @@
 export const USER_SWAP_ALLOWED_CHAIN = 'ARC-TESTNET' as const;
 export const USER_SWAP_API_BASE_URL = 'https://api.circle.com' as const;
 
-export const USER_SWAP_STABLEFX_QUOTE_URL =
-  'https://api.circle.com/v1/exchange/stablefx/quotes' as const;
+export const USER_SWAP_STABLEFX_QUOTE_API_BASE_URL =
+  'https://api-sandbox.circle.com' as const;
 export const USER_SWAP_STABLEFX_QUOTE_PATH =
   '/v1/exchange/stablefx/quotes' as const;
+export const USER_SWAP_STABLEFX_QUOTE_URL =
+  `${USER_SWAP_STABLEFX_QUOTE_API_BASE_URL}${USER_SWAP_STABLEFX_QUOTE_PATH}` as const;
 export const USER_SWAP_STABLEFX_TRADES_PATH =
   '/v1/exchange/stablefx/trades' as const;
 export const USER_SWAP_STABLEFX_FUNDING_PRESIGN_PATH =

@@ -7,6 +7,8 @@ import {
   USER_SWAP_STABLEFX_TRADES_PATH,
 } from './user-swap.types';
 
+const STABLEFX_EXECUTION_API_BASE_URL = 'https://api-sandbox.circle.com';
+
 const walletAddress = '0x90ab859240b941eaf0cbcbf42df5086e0ad54147';
 const baseQuoteRequest = {
   amountIn: '2000000',
@@ -90,7 +92,7 @@ describe('StablefxExecutionService', () => {
     const result = await service.createTradableQuote(baseQuoteRequest);
 
     expect(fetchMock).toHaveBeenCalledWith(
-      `${USER_SWAP_API_BASE_URL}${USER_SWAP_STABLEFX_QUOTE_PATH}`,
+      `${STABLEFX_EXECUTION_API_BASE_URL}${USER_SWAP_STABLEFX_QUOTE_PATH}`,
       expect.objectContaining({
         method: 'POST',
         headers: expect.objectContaining({
@@ -98,6 +100,7 @@ describe('StablefxExecutionService', () => {
         }),
       }),
     );
+    expect(USER_SWAP_API_BASE_URL).toBe('https://api.circle.com');
     expect(getFetchBody()).toEqual({
       from: { currency: 'USDC', amount: '2.00' },
       to: { currency: 'EURC' },
@@ -130,7 +133,7 @@ describe('StablefxExecutionService', () => {
     });
 
     expect(fetchMock).toHaveBeenCalledWith(
-      `${USER_SWAP_API_BASE_URL}${USER_SWAP_STABLEFX_TRADES_PATH}`,
+      `${STABLEFX_EXECUTION_API_BASE_URL}${USER_SWAP_STABLEFX_TRADES_PATH}`,
       expect.objectContaining({ method: 'POST' }),
     );
     expect(getFetchBody()).toMatchObject({
@@ -294,7 +297,7 @@ describe('StablefxExecutionService', () => {
     });
 
     expect(fetchMock).toHaveBeenCalledWith(
-      `${USER_SWAP_API_BASE_URL}${USER_SWAP_STABLEFX_FUNDING_PRESIGN_PATH}`,
+      `${STABLEFX_EXECUTION_API_BASE_URL}${USER_SWAP_STABLEFX_FUNDING_PRESIGN_PATH}`,
       expect.objectContaining({ method: 'POST' }),
     );
     expect(getFetchBody()).toEqual({
@@ -314,7 +317,7 @@ describe('StablefxExecutionService', () => {
     });
 
     expect(fetchMock).toHaveBeenCalledWith(
-      `${USER_SWAP_API_BASE_URL}${USER_SWAP_STABLEFX_FUND_PATH}`,
+      `${STABLEFX_EXECUTION_API_BASE_URL}${USER_SWAP_STABLEFX_FUND_PATH}`,
       expect.objectContaining({ method: 'POST' }),
     );
     expect(getFetchBody()).toEqual({
@@ -339,7 +342,7 @@ describe('StablefxExecutionService', () => {
     const result = await service.getTrade(tradeId);
 
     expect(fetchMock).toHaveBeenCalledWith(
-      `${USER_SWAP_API_BASE_URL}${USER_SWAP_STABLEFX_TRADES_PATH}/${tradeId}`,
+      `${STABLEFX_EXECUTION_API_BASE_URL}${USER_SWAP_STABLEFX_TRADES_PATH}/${tradeId}`,
       expect.objectContaining({ method: 'GET' }),
     );
     expect(result).toMatchObject({ status: 'taker_funded' });
@@ -516,7 +519,7 @@ describe('StablefxExecutionService', () => {
     });
 
     expect(fetchMock).toHaveBeenCalledWith(
-      `${USER_SWAP_API_BASE_URL}${USER_SWAP_STABLEFX_TRADES_PATH}`,
+      `${STABLEFX_EXECUTION_API_BASE_URL}${USER_SWAP_STABLEFX_TRADES_PATH}`,
       expect.objectContaining({ method: 'POST' }),
     );
     expect(getFetchBody()).toMatchObject({
@@ -552,7 +555,7 @@ describe('StablefxExecutionService', () => {
     });
 
     expect(fetchMock).toHaveBeenCalledWith(
-      `${USER_SWAP_API_BASE_URL}${USER_SWAP_STABLEFX_TRADES_PATH}`,
+      `${STABLEFX_EXECUTION_API_BASE_URL}${USER_SWAP_STABLEFX_TRADES_PATH}`,
       expect.objectContaining({ method: 'POST' }),
     );
     expect(result).toMatchObject({

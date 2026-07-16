@@ -956,9 +956,6 @@ export class AppWalletSwapService {
           where: { operationId: operation.operationId },
           data: {
             status: 'stablefx_funded',
-            treasurySwapTxHash:
-              this.extractStablefxSettlementHash(fund) ??
-              this.extractStablefxSettlementHash(trade),
             rawTreasurySwap: this.toNullableJson({
               previous: operation.rawTreasurySwap ?? null,
               contractTradeId,
@@ -976,14 +973,22 @@ export class AppWalletSwapService {
 
     const settlementHash = this.extractStablefxSettlementHash(trade);
     const finalStatus = this.resolveStablefxStatus(trade);
+    const normalizedFinalStatus = finalStatus.toLowerCase();
+    const makerDeliver = this.getStablefxMakerDeliver(trade);
+    const makerDeliverStatus = this.getNestedString(makerDeliver, ['status']);
+
+    if (this.isStablefxFailureStatus(finalStatus)) {
+      throw new BadGatewayException({
+        code: APP_WALLET_SWAP_ERROR_CODES.STABLEFX_TREASURY_EXECUTION_FAILED,
+        message: `StableFX Treasury trade failed with status ${finalStatus}.`,
+      });
+    }
 
     if (
-      !settlementHash &&
-      !['complete', 'completed', 'settled'].includes(finalStatus.toLowerCase()) &&
-      !(
-        finalStatus.toLowerCase() === 'taker_funded' &&
-        operation.treasurySwapTxHash
-      )
+      !['complete', 'completed', 'settled'].includes(normalizedFinalStatus) ||
+      (makerDeliver !== null &&
+        makerDeliver !== undefined &&
+        makerDeliverStatus?.toLowerCase() !== 'success')
     ) {
       return this.mapOperationRecord(
         await this.prisma.appWalletSwapOperation.update({
@@ -2103,6 +2108,17 @@ export class AppWalletSwapService {
     );
   }
 
+  private getStablefxMakerDeliver(raw: unknown): unknown {
+    return (
+      this.getNestedValue(raw, ['contractTransactions', 'makerDeliver']) ??
+      this.getNestedValue(raw, [
+        'data',
+        'contractTransactions',
+        'makerDeliver',
+      ])
+    );
+  }
+
   private extractStablefxSettlementHash(raw: unknown): string | null {
     return this.validTxHashOrNull(
       this.getNestedString(raw, ['settlementTransactionHash']) ??
@@ -2116,17 +2132,6 @@ export class AppWalletSwapService {
           'data',
           'contractTransactions',
           'makerDeliver',
-          'txHash',
-        ]) ??
-        this.getNestedString(raw, [
-          'contractTransactions',
-          'takerDeliver',
-          'txHash',
-        ]) ??
-        this.getNestedString(raw, [
-          'data',
-          'contractTransactions',
-          'takerDeliver',
           'txHash',
         ]),
     );

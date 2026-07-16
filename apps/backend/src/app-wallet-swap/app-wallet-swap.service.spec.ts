@@ -29,6 +29,10 @@ const baseRequest = {
 };
 const depositTxHash =
   '0xdd019e059ddbbbd32f73c444e350838553779dc027926111366ace5195faa1d5';
+const stablefxTakerDeliverTxHash =
+  '0xab019e059ddbbbd32f73c444e350838553779dc027926111366ace5195faa1d5';
+const stablefxMakerDeliverTxHash =
+  '0xac019e059ddbbbd32f73c444e350838553779dc027926111366ace5195faa1d5';
 const arcTestnetCircleUsdcTokenId = '15dc2b5d-0994-58b0-bf8c-3a0501148ee8';
 const arcTestnetCircleEurcTokenId = '4ea52a96-e6ae-56dc-8336-385bb238755f';
 const invalidOperationId = '2bdaccac7-2d53-491a-8ef6-8ca3256a1162';
@@ -227,7 +231,7 @@ describe('AppWalletSwapService', () => {
     });
     stablefxExecutionService.fund.mockResolvedValue({
       settlementTransactionHash:
-        '0xdd019e059ddbbbd32f73c444e350838553779dc027926111366ace5195faa1d5',
+        stablefxTakerDeliverTxHash,
     });
     stablefxExecutionService.getTrade
       .mockResolvedValueOnce({
@@ -238,8 +242,18 @@ describe('AppWalletSwapService', () => {
       .mockResolvedValue({
         id: 'stablefx-trade-1',
         contractTradeId: '24',
-        status: 'taker_funded',
+        status: 'complete',
         to: { currency: 'USDC', amount: '16' },
+        contractTransactions: {
+          takerDeliver: {
+            status: 'success',
+            txHash: stablefxTakerDeliverTxHash,
+          },
+          makerDeliver: {
+            status: 'success',
+            txHash: stablefxMakerDeliverTxHash,
+          },
+        },
       });
     blockchainService.buildERC20ApproveData.mockReturnValue('0x095ea7b3');
     blockchainService.getAllowance
@@ -306,6 +320,39 @@ describe('AppWalletSwapService', () => {
 
   async function createConfirmedOperation(service = createService()) {
     const operation = await service.createOperation(baseRequest);
+    const submitted = await service.submitDeposit(operation.operationId, {
+      depositTxHash,
+    });
+
+    return service.confirmDeposit(submitted.operationId);
+  }
+
+  async function createConfirmedStablefxOperation(
+    service = createService(),
+  ) {
+    enableStablefxExecutionEnv();
+    userSwapService.quote.mockResolvedValueOnce({
+      tokenIn: 'EURC',
+      tokenOut: 'USDC',
+      amountIn: '17000000',
+      fromAddress: TREASURY_ADDRESS,
+      toAddress: USER_ADDRESS,
+      chain: APP_WALLET_SWAP_CHAIN,
+      provider: 'stablefx',
+      quoteId: 'stablefx-reference-quote-1',
+      expectedOutput: '16000000',
+      raw: { id: 'stablefx-reference-quote-1' },
+    });
+    depositVerifier.verifyDeposit.mockResolvedValueOnce({
+      confirmed: true,
+      confirmedAmount: '17000000',
+    });
+    const operation = await service.createOperation({
+      ...baseRequest,
+      tokenIn: 'EURC',
+      tokenOut: 'USDC',
+      amountIn: '17000000',
+    });
     const submitted = await service.submitDeposit(operation.operationId, {
       depositTxHash,
     });
@@ -2024,7 +2071,7 @@ describe('AppWalletSwapService', () => {
     });
   });
 
-  it('retries failed App Wallet EURC to USDC StableFX operation without calling Stablecoin Kits', async () => {
+  it('retries App Wallet StableFX and pays out after complete maker delivery', async () => {
     enableStablefxExecutionEnv();
     userSwapService.quote.mockResolvedValueOnce({
       tokenIn: 'EURC',
@@ -2096,8 +2143,133 @@ describe('AppWalletSwapService', () => {
       tokenOut: 'USDC',
       depositConfirmedAmount: '17000000',
       payoutAmount: '16000000',
+      treasurySwapTxHash: stablefxMakerDeliverTxHash,
     });
   });
+
+  it('keeps taker_funded with a successful taker delivery waiting without payout', async () => {
+    const service = createService();
+    const confirmed = await createConfirmedStablefxOperation(service);
+    stablefxExecutionService.getTrade.mockReset();
+    stablefxExecutionService.getTrade
+      .mockResolvedValueOnce({
+        id: 'stablefx-trade-1',
+        contractTradeId: '24',
+        status: 'pending_settlement',
+      })
+      .mockResolvedValueOnce({
+        id: 'stablefx-trade-1',
+        contractTradeId: '24',
+        status: 'taker_funded',
+        to: { currency: 'USDC', amount: '16' },
+        contractTransactions: {
+          takerDeliver: {
+            status: 'success',
+            txHash: stablefxTakerDeliverTxHash,
+          },
+          makerDeliver: { status: 'pending' },
+        },
+      });
+
+    const result = await service.execute(confirmed.operationId);
+
+    expect(result.status).toBe('stablefx_funded');
+    expect(circleService.transfer).not.toHaveBeenCalled();
+    expect(result).not.toHaveProperty('treasurySwapConfirmedAt');
+    expect(result).not.toHaveProperty('payoutSubmittedAt');
+  });
+
+  it('does not payout when top-level status is complete but maker delivery is pending', async () => {
+    const service = createService();
+    const confirmed = await createConfirmedStablefxOperation(service);
+    stablefxExecutionService.getTrade.mockReset();
+    stablefxExecutionService.getTrade
+      .mockResolvedValueOnce({
+        id: 'stablefx-trade-1',
+        contractTradeId: '24',
+        status: 'pending_settlement',
+      })
+      .mockResolvedValueOnce({
+        id: 'stablefx-trade-1',
+        contractTradeId: '24',
+        status: 'complete',
+        to: { currency: 'USDC', amount: '16' },
+        contractTransactions: {
+          takerDeliver: {
+            status: 'success',
+            txHash: stablefxTakerDeliverTxHash,
+          },
+          makerDeliver: { status: 'pending' },
+        },
+      });
+
+    const result = await service.execute(confirmed.operationId);
+
+    expect(result.status).toBe('stablefx_funded');
+    expect(circleService.transfer).not.toHaveBeenCalled();
+  });
+
+  it.each(['pending_settlement', 'maker_funded'])(
+    'keeps StableFX %s waiting without payout',
+    async (status) => {
+      const service = createService();
+      const confirmed = await createConfirmedStablefxOperation(service);
+      stablefxExecutionService.getTrade.mockReset();
+      stablefxExecutionService.getTrade
+        .mockResolvedValueOnce({
+          id: 'stablefx-trade-1',
+          contractTradeId: '24',
+          status: 'pending_settlement',
+        })
+        .mockResolvedValueOnce({
+          id: 'stablefx-trade-1',
+          contractTradeId: '24',
+          status,
+          to: { currency: 'USDC', amount: '16' },
+        });
+
+      const result = await service.execute(confirmed.operationId);
+
+      expect(result.status).toBe('stablefx_funded');
+      expect(circleService.transfer).not.toHaveBeenCalled();
+    },
+  );
+
+  it('never treats a taker delivery hash alone as StableFX settlement evidence', () => {
+    const service = createService() as unknown as {
+      extractStablefxSettlementHash: (raw: unknown) => string | null;
+    };
+
+    expect(
+      service.extractStablefxSettlementHash({
+        contractTransactions: {
+          takerDeliver: {
+            status: 'success',
+            txHash: stablefxTakerDeliverTxHash,
+          },
+        },
+      }),
+    ).toBeNull();
+  });
+
+  it.each(['breached', 'refunded', 'failed', 'rejected'])(
+    'fails StableFX %s without payout',
+    async (status) => {
+      const service = createService();
+      const confirmed = await createConfirmedStablefxOperation(service);
+      stablefxExecutionService.getTrade.mockReset();
+      stablefxExecutionService.getTrade.mockResolvedValueOnce({
+        id: 'stablefx-trade-1',
+        contractTradeId: '24',
+        status,
+      });
+
+      const result = await service.execute(confirmed.operationId);
+
+      expect(result.status).toBe('execution_failed');
+      expect(circleService.transfer).not.toHaveBeenCalled();
+    },
+  );
 
   it('persists sanitized treasury swap prepare response before non-executable response failure', async () => {
     enableExecutionEnv();

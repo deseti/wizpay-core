@@ -1,5 +1,9 @@
 import { StablefxQuoteProviderService } from './stablefx-quote-provider.service';
-import { USER_SWAP_STABLEFX_QUOTE_URL } from './user-swap.types';
+import {
+  USER_SWAP_API_BASE_URL,
+  USER_SWAP_STABLEFX_QUOTE_API_BASE_URL,
+  USER_SWAP_STABLEFX_QUOTE_URL,
+} from './user-swap.types';
 
 const baseRequest = {
   amountIn: '2000000', // 2 USDC in 6-decimal base units
@@ -67,9 +71,16 @@ describe('StablefxQuoteProviderService', () => {
     });
 
     expect(fetchMock).toHaveBeenCalledWith(
-      USER_SWAP_STABLEFX_QUOTE_URL,
+      'https://api-sandbox.circle.com/v1/exchange/stablefx/quotes',
       expect.objectContaining({ method: 'POST' }),
     );
+    expect(USER_SWAP_STABLEFX_QUOTE_API_BASE_URL).toBe(
+      'https://api-sandbox.circle.com',
+    );
+    expect(USER_SWAP_STABLEFX_QUOTE_URL).toBe(
+      'https://api-sandbox.circle.com/v1/exchange/stablefx/quotes',
+    );
+    expect(USER_SWAP_API_BASE_URL).toBe('https://api.circle.com');
     // Base units -> decimal amount for the upstream request.
     expect(getFetchBody()).toEqual({
       type: 'reference',

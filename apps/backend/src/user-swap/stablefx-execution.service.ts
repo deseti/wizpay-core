@@ -9,7 +9,6 @@ import { recoverTypedDataAddress } from 'viem';
 import { getStablefxSignDiagnostic } from '../modules/wallet/w3s-auth.service';
 import {
   USER_SWAP_ALLOWED_CHAIN,
-  USER_SWAP_API_BASE_URL,
   USER_SWAP_ERROR_CODES,
   USER_SWAP_STABLEFX_FUND_PATH,
   USER_SWAP_STABLEFX_FUNDING_PRESIGN_PATH,
@@ -25,6 +24,7 @@ const STABLEFX_TRADABLE_QUOTE_TYPE = 'tradable' as const;
 const STABLEFX_QUOTE_EXPIRED_CODE = 3004;
 const STABLEFX_AMOUNT_BELOW_MINIMUM_CODE = 3005;
 const STABLEFX_SIGNATURE_ADDRESS_MISMATCH_CODE = 3015;
+const STABLEFX_EXECUTION_API_BASE_URL = 'https://api-sandbox.circle.com';
 const REQUEST_TIMEOUT_MS = 30_000;
 type StablefxExecutionStep =
   | 'tradable_quote'
@@ -365,7 +365,7 @@ export class StablefxExecutionService {
     let response: Response;
 
     try {
-      response = await fetch(`${USER_SWAP_API_BASE_URL}${path}`, {
+      response = await fetch(`${STABLEFX_EXECUTION_API_BASE_URL}${path}`, {
         method: options.method,
         headers: {
           Authorization: `Bearer ${this.getApiKey()}`,
