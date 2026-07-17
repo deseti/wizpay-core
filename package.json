@@ -13,9 +13,8 @@
     "dev:stack": "docker compose up --build",
     "dev:backend": "npm run start:dev -w backend",
     "dev:frontend": "npm run dev -w frontend",
-    "dev:landing": "npm run dev -w landing-page",
-    "build": "npm run build -w backend && npm run build -w frontend && npm run build -w landing-page && npm run build -w wizpay_router",
-    "lint": "npm run lint -w backend && npm run lint -w frontend && npm run lint -w landing-page",
+    "build": "npm run build -w backend && npm run build -w frontend && npm run build -w wizpay_router",
+    "lint": "npm run lint -w backend && npm run lint -w frontend",
     "test": "npm run test:backend && npm run test:contracts",
     "test:backend": "npm run test -w backend",
     "test:contracts": "npm run test -w wizpay_router"
