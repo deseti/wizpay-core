@@ -617,7 +617,6 @@ export function useBatchPayroll({
         }
 
         setStatusMessage("Swap confirmed. Submitting payroll...");
-        await refetchAllowance();
 
         // Build effective recipients: same-token unchanged, cross-token rewritten
         effectiveRecipients = allRecipients.map((recipient) => {

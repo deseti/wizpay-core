@@ -127,7 +127,7 @@ export class BlockchainService {
       this.configService.get<string>('RPC_URL') ||
       this.configService.get<string>('ARC_RPC_URL') ||
       this.configService.get<string>('NEXT_PUBLIC_ARC_TESTNET_RPC_URL') ||
-      'https://rpc-testnet.arc.money'
+      'https://rpc.testnet.arc.network'
     );
   }
 

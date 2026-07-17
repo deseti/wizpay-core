@@ -16,6 +16,10 @@ import type {
   AnsNamespaceSnapshot,
 } from "../types/ans"
 import { buildAnsNode, buildAnsTokenId } from "../utils/domain"
+import { runAnsRpcRead } from "../services/ans-rpc"
+
+const ARC_MULTICALL3_ADDRESS =
+  "0xca11bde05977b3631167028862be2a173976ca11" as Address
 
 function readAddress(value: unknown): Address | null {
   if (typeof value !== "string" || value === zeroAddress) {
@@ -25,37 +29,74 @@ function readAddress(value: unknown): Address | null {
   return value as Address
 }
 
+export function getAnsReadErrorMessage(error: unknown) {
+  const shortMessage =
+    typeof error === "object" && error !== null
+      ? Reflect.get(error, "shortMessage")
+      : null
+  const message = error instanceof Error ? error.message : ""
+  const details =
+    typeof error === "object" && error !== null
+      ? Reflect.get(error, "details")
+      : null
+  const rpcMessage = [shortMessage, message, details]
+    .filter((value): value is string => typeof value === "string")
+    .join(" ")
+    .toLowerCase()
+
+  if (
+    rpcMessage.includes("request limit") ||
+    rpcMessage.includes("rate limit") ||
+    rpcMessage.includes("rpc request failed") ||
+    rpcMessage.includes("http request failed") ||
+    rpcMessage.includes("fetch failed") ||
+    rpcMessage.includes("timed out")
+  ) {
+    return "Arc Testnet RPC is temporarily busy. Wait a moment, then load the ANS quote again."
+  }
+
+  return "Unable to read the current ANS contract state. Please try again."
+}
+
 export async function fetchAnsNamespaceSnapshot(
   publicClient: PublicClient,
   contracts: AnsContractsConfig,
   namespace: AnsNamespaceKey
 ): Promise<AnsNamespaceSnapshot> {
   const [defaultResolver, namespaceConfig, namespacePricing, namespacePromo] =
-    await Promise.all([
-      publicClient.readContract({
-        address: contracts.rootRegistry,
-        abi: ANS_ROOT_REGISTRY_ABI,
-        functionName: "defaultResolver",
-      }),
-      publicClient.readContract({
-        address: contracts.rootRegistry,
-        abi: ANS_ROOT_REGISTRY_ABI,
-        functionName: "namespaceConfig",
-        args: [namespace],
-      }),
-      publicClient.readContract({
-        address: contracts.rootRegistry,
-        abi: ANS_ROOT_REGISTRY_ABI,
-        functionName: "namespacePricing",
-        args: [namespace],
-      }),
-      publicClient.readContract({
-        address: contracts.rootRegistry,
-        abi: ANS_ROOT_REGISTRY_ABI,
-        functionName: "namespacePromo",
-        args: [namespace],
-      }),
-    ])
+    await runAnsRpcRead(
+      `namespace:${contracts.chainId}:${contracts.rootRegistry.toLowerCase()}:${namespace}`,
+      () =>
+        publicClient.multicall({
+          allowFailure: false,
+          contracts: [
+            {
+              address: contracts.rootRegistry,
+              abi: ANS_ROOT_REGISTRY_ABI,
+              functionName: "defaultResolver",
+            },
+            {
+              address: contracts.rootRegistry,
+              abi: ANS_ROOT_REGISTRY_ABI,
+              functionName: "namespaceConfig",
+              args: [namespace],
+            },
+            {
+              address: contracts.rootRegistry,
+              abi: ANS_ROOT_REGISTRY_ABI,
+              functionName: "namespacePricing",
+              args: [namespace],
+            },
+            {
+              address: contracts.rootRegistry,
+              abi: ANS_ROOT_REGISTRY_ABI,
+              functionName: "namespacePromo",
+              args: [namespace],
+            },
+          ],
+          multicallAddress: ARC_MULTICALL3_ADDRESS,
+        })
+    )
 
   const [namespaceOwner, registrar, controller, vault, active, isGlobal, whitelisted, blacklisted] =
     namespaceConfig
@@ -98,43 +139,73 @@ export async function fetchAnsDomainLookup(
   const tokenId = buildAnsTokenId(target.label)
   const node = buildAnsNode(target.domain)
 
-  const [available, rentPrice, expiresRaw, resolverRaw] = await Promise.all([
-    publicClient.readContract({
-      address: namespaceSnapshot.controller,
-      abi: ANS_NAMESPACE_CONTROLLER_ABI,
-      functionName: "available",
-      args: [target.label],
-    }),
-    publicClient.readContract({
-      address: namespaceSnapshot.controller,
-      abi: ANS_NAMESPACE_CONTROLLER_ABI,
-      functionName: "rentPrice",
-      args: [target.label, durationSeconds],
-    }),
-    publicClient.readContract({
-      address: namespaceSnapshot.registrar,
-      abi: ANS_NAMESPACE_REGISTRAR_ABI,
-      functionName: "nameExpires",
-      args: [tokenId],
-    }),
-    publicClient.readContract({
-      address: contracts.registry,
-      abi: ANS_ARC_REGISTRY_ABI,
-      functionName: "resolver",
-      args: [node],
-    }),
-  ])
+  const lookupKey = `${contracts.chainId}:${namespaceSnapshot.controller.toLowerCase()}:${target.domain}:${durationSeconds}`
+  const [available, rentPrice] = await runAnsRpcRead(
+    `lookup:${lookupKey}`,
+    () =>
+      publicClient.multicall({
+        allowFailure: false,
+        contracts: [
+          {
+            address: namespaceSnapshot.controller,
+            abi: ANS_NAMESPACE_CONTROLLER_ABI,
+            functionName: "available",
+            args: [target.label],
+          },
+          {
+            address: namespaceSnapshot.controller,
+            abi: ANS_NAMESPACE_CONTROLLER_ABI,
+            functionName: "rentPrice",
+            args: [target.label, durationSeconds],
+          },
+        ],
+        multicallAddress: ARC_MULTICALL3_ADDRESS,
+      })
+  )
 
+  let expiresRaw = 0n
+  let resolverRaw: Address = zeroAddress
   let ownerAddress: Address | null = null
-  try {
-    ownerAddress = await publicClient.readContract({
-      address: namespaceSnapshot.registrar,
-      abi: ANS_NAMESPACE_REGISTRAR_ABI,
-      functionName: "ownerOf",
-      args: [tokenId],
-    })
-  } catch {
-    ownerAddress = null
+  if (!available) {
+    const [expiresResult, resolverResult, ownerResult] =
+      await runAnsRpcRead(`details:${lookupKey}`, () =>
+        publicClient.multicall({
+          allowFailure: true,
+          contracts: [
+            {
+              address: namespaceSnapshot.registrar,
+              abi: ANS_NAMESPACE_REGISTRAR_ABI,
+              functionName: "nameExpires",
+              args: [tokenId],
+            },
+            {
+              address: contracts.registry,
+              abi: ANS_ARC_REGISTRY_ABI,
+              functionName: "resolver",
+              args: [node],
+            },
+            {
+              address: namespaceSnapshot.registrar,
+              abi: ANS_NAMESPACE_REGISTRAR_ABI,
+              functionName: "ownerOf",
+              args: [tokenId],
+            },
+          ],
+          multicallAddress: ARC_MULTICALL3_ADDRESS,
+        })
+      )
+
+    if (expiresResult.status === "failure") {
+      throw expiresResult.error
+    }
+    if (resolverResult.status === "failure") {
+      throw resolverResult.error
+    }
+
+    expiresRaw = expiresResult.result
+    resolverRaw = resolverResult.result
+    ownerAddress =
+      ownerResult.status === "success" ? ownerResult.result : null
   }
 
   let resolvedAddress: Address | null = null
@@ -142,12 +213,14 @@ export async function fetchAnsDomainLookup(
   if (resolverAddress) {
     try {
       resolvedAddress = readAddress(
-        await publicClient.readContract({
-          address: resolverAddress,
-          abi: ANS_PUBLIC_RESOLVER_ABI,
-          functionName: "addr",
-          args: [node],
-        })
+        await runAnsRpcRead(`resolved-address:${lookupKey}`, () =>
+          publicClient.readContract({
+            address: resolverAddress,
+            abi: ANS_PUBLIC_RESOLVER_ABI,
+            functionName: "addr",
+            args: [node],
+          })
+        )
       )
     } catch {
       resolvedAddress = null

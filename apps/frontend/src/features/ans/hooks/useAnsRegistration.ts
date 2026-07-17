@@ -2,7 +2,8 @@
 
 import { useCallback, useMemo, useState } from "react"
 import { type Address, type Hex } from "viem"
-import { usePublicClient, useReadContract } from "wagmi"
+import { useQuery } from "@tanstack/react-query"
+import { usePublicClient } from "wagmi"
 
 import { ERC20_ABI } from "@/constants/erc20"
 import { useActiveWalletAddress } from "@/hooks/useActiveWalletAddress"
@@ -15,6 +16,7 @@ import {
   ANS_NAMESPACE_CONTROLLER_ABI,
 } from "../contracts/abis"
 import { getAnsContractsConfig } from "../services/ans-config"
+import { runAnsRpcRead } from "../services/ans-rpc"
 import { recordAnsRegistrationActivity } from "../utils/storage"
 import type {
   AnsDomainLookup,
@@ -26,6 +28,8 @@ type RegistrationStep = "idle" | "approving" | "registering" | "success" | "erro
 const MAX_CONFIRMATION_POLLS = 20
 const POLL_INTERVAL_MS = 1_500
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
+const ARC_MULTICALL3_ADDRESS =
+  "0xca11bde05977b3631167028862be2a173976ca11" as Address
 
 const ERC20_APPROVAL_EVENT = {
   type: "event",
@@ -97,32 +101,56 @@ export function useAnsRegistration({
 
   const requiredAmount = lookup?.rentPrice ?? 0n
 
-  const { data: allowanceData, refetch: refetchAllowance } = useReadContract({
-    address: contracts.usdc,
-    abi: ERC20_ABI,
-    chainId: arcTestnet.id,
-    functionName: "allowance",
-    args: walletAddress && lookup ? [walletAddress, lookup.namespaceSnapshot.controller] : undefined,
-    query: {
-      enabled: Boolean(walletAddress && lookup),
-      staleTime: 5_000,
+  const { data: tokenState, refetch: refetchTokenState } = useQuery({
+    queryKey: [
+      "ans",
+      "registration-token-state",
+      contracts.usdc,
+      walletAddress,
+      lookup?.namespaceSnapshot.controller,
+    ],
+    enabled: Boolean(publicClient && walletAddress && lookup),
+    queryFn: () => {
+      const controller = lookup!.namespaceSnapshot.controller
+      const requestKey = [
+        "registration-token-state",
+        arcTestnet.id,
+        contracts.usdc.toLowerCase(),
+        walletAddress!.toLowerCase(),
+        controller.toLowerCase(),
+      ].join(":")
+
+      return runAnsRpcRead(requestKey, async () => {
+        const [allowance, balance] = await publicClient!.multicall({
+          allowFailure: false,
+          contracts: [
+            {
+              address: contracts.usdc,
+              abi: ERC20_ABI,
+              functionName: "allowance",
+              args: [walletAddress!, controller],
+            },
+            {
+              address: contracts.usdc,
+              abi: ERC20_ABI,
+              functionName: "balanceOf",
+              args: [walletAddress!],
+            },
+          ],
+          multicallAddress: ARC_MULTICALL3_ADDRESS,
+        })
+
+        return { allowance, balance }
+      })
     },
+    refetchOnReconnect: false,
+    refetchOnWindowFocus: false,
+    retry: false,
+    staleTime: 5_000,
   })
 
-  const { data: balanceData, refetch: refetchBalance } = useReadContract({
-    address: contracts.usdc,
-    abi: ERC20_ABI,
-    chainId: arcTestnet.id,
-    functionName: "balanceOf",
-    args: walletAddress ? [walletAddress] : undefined,
-    query: {
-      enabled: Boolean(walletAddress),
-      staleTime: 5_000,
-    },
-  })
-
-  const allowance = allowanceData ?? 0n
-  const balance = balanceData ?? 0n
+  const allowance = tokenState?.allowance ?? 0n
+  const balance = tokenState?.balance ?? 0n
   const needsApproval = requiredAmount > 0n && allowance < requiredAmount
   const insufficientBalance = requiredAmount > balance
 
@@ -272,8 +300,8 @@ export function useAnsRegistration({
       }
 
       for (let attempt = 0; attempt < MAX_CONFIRMATION_POLLS; attempt += 1) {
-        const result = await refetchAllowance()
-        if ((result.data ?? 0n) >= minimumAllowance) {
+        const result = await refetchTokenState()
+        if ((result.data?.allowance ?? 0n) >= minimumAllowance) {
           if (!txHash && recoveryContext) {
             return recoverApprovalTransactionHash({
               minimumAllowance,
@@ -295,7 +323,7 @@ export function useAnsRegistration({
         "Approval completed, but the USDC allowance did not refresh before the timeout window ended."
       )
     },
-    [publicClient, recoverApprovalTransactionHash, refetchAllowance]
+    [publicClient, recoverApprovalTransactionHash, refetchTokenState]
   )
 
   const waitForOwnershipUpdate = useCallback(
@@ -415,7 +443,7 @@ export function useAnsRegistration({
         setSubmissionHash(resolvedApprovalHash)
       }
 
-      await refetchAllowance()
+      await refetchTokenState()
       setStep("idle")
 
       if (showToast) {
@@ -435,7 +463,7 @@ export function useAnsRegistration({
     executeTransaction,
     lookup,
     publicClient,
-    refetchAllowance,
+    refetchTokenState,
     toast,
     waitForAllowanceUpdate,
     walletAddress,
@@ -514,7 +542,7 @@ export function useAnsRegistration({
       })
 
       setConfirmation(nextConfirmation)
-      await Promise.all([refetchAllowance(), refetchBalance()])
+      await refetchTokenState()
       setStep("success")
 
       toast({
@@ -537,8 +565,7 @@ export function useAnsRegistration({
     insufficientBalance,
     lookup,
     onRegistered,
-    refetchAllowance,
-    refetchBalance,
+    refetchTokenState,
     toast,
     waitForOwnershipUpdate,
     walletAddress,

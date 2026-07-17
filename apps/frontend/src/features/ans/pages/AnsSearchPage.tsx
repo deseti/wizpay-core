@@ -11,16 +11,27 @@ import type { AnsNamespaceKey } from "../types/ans"
 
 export function AnsSearchPage() {
   const [inputValue, setInputValue] = useState("")
-  const [submittedSearch, setSubmittedSearch] = useState("")
   const [namespace, setNamespace] = useState<AnsNamespaceKey>("arc")
   const [durationYears, setDurationYears] = useState(1)
+  const [submittedQuery, setSubmittedQuery] = useState<{
+    searchValue: string
+    namespace: AnsNamespaceKey
+    durationYears: number
+    requestId: number
+  }>({
+    searchValue: "",
+    namespace: "arc",
+    durationYears: 1,
+    requestId: 0,
+  })
   const { trackDomain } = useTrackedAnsDomains()
 
   const lookupQuery = useAnsDomainLookup({
-    searchValue: submittedSearch,
-    defaultNamespace: namespace,
-    durationYears,
-    enabled: Boolean(submittedSearch),
+    searchValue: submittedQuery.searchValue,
+    defaultNamespace: submittedQuery.namespace,
+    durationYears: submittedQuery.durationYears,
+    requestId: submittedQuery.requestId,
+    enabled: submittedQuery.requestId > 0,
   })
 
   const lookupErrorMessage =
@@ -53,7 +64,14 @@ export function AnsSearchPage() {
         onInputValueChange={setInputValue}
         onNamespaceChange={setNamespace}
         onDurationYearsChange={setDurationYears}
-        onSubmit={() => setSubmittedSearch(inputValue)}
+        onSubmit={() =>
+          setSubmittedQuery({
+            searchValue: inputValue,
+            namespace,
+            durationYears,
+            requestId: Date.now(),
+          })
+        }
       />
 
       <AnsLookupDetailsCard

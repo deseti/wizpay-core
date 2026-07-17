@@ -15,17 +15,28 @@ import type { AnsNamespaceKey } from "../types/ans"
 
 export function AnsRegisterPage() {
   const [inputValue, setInputValue] = useState("")
-  const [submittedSearch, setSubmittedSearch] = useState("")
   const [namespace, setNamespace] = useState<AnsNamespaceKey>("arc")
   const [durationYears, setDurationYears] = useState(1)
+  const [submittedQuery, setSubmittedQuery] = useState<{
+    searchValue: string
+    namespace: AnsNamespaceKey
+    durationYears: number
+    requestId: number
+  }>({
+    searchValue: "",
+    namespace: "arc",
+    durationYears: 1,
+    requestId: 0,
+  })
   const { walletAddress } = useActiveWalletAddress()
   const { trackDomain } = useTrackedAnsDomains(walletAddress)
 
   const lookupQuery = useAnsDomainLookup({
-    searchValue: submittedSearch,
-    defaultNamespace: namespace,
-    durationYears,
-    enabled: Boolean(submittedSearch),
+    searchValue: submittedQuery.searchValue,
+    defaultNamespace: submittedQuery.namespace,
+    durationYears: submittedQuery.durationYears,
+    requestId: submittedQuery.requestId,
+    enabled: submittedQuery.requestId > 0,
   })
 
   const lookupErrorMessage =
@@ -42,10 +53,11 @@ export function AnsRegisterPage() {
     lookup: lookupQuery.data,
     onRegistered: (domain) => trackDomain(domain, "register", walletAddress),
   })
+  const resetRegistrationFeedback = registration.resetFeedback
 
   useEffect(() => {
-    registration.resetFeedback()
-  }, [lookupQuery.data?.target.domain, lookupQuery.data?.durationYears, registration.resetFeedback])
+    resetRegistrationFeedback()
+  }, [lookupQuery.data?.target.domain, lookupQuery.data?.durationYears, resetRegistrationFeedback])
 
   return (
     <AnsRouteShell
@@ -61,7 +73,14 @@ export function AnsRegisterPage() {
         onInputValueChange={setInputValue}
         onNamespaceChange={setNamespace}
         onDurationYearsChange={setDurationYears}
-        onSubmit={() => setSubmittedSearch(inputValue)}
+        onSubmit={() =>
+          setSubmittedQuery({
+            searchValue: inputValue,
+            namespace,
+            durationYears,
+            requestId: Date.now(),
+          })
+        }
       />
 
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1.15fr)_minmax(0,0.95fr)]">

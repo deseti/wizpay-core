@@ -1,6 +1,13 @@
 import { keepPreviousData } from "@tanstack/react-query";
 import { useEffect, useMemo } from "react";
-import { formatUnits, getAddress, isAddress, type Address, type Hex } from "viem";
+import {
+  formatUnits,
+  getAddress,
+  isAddress,
+  type Address,
+  type Hex,
+  type PublicClient,
+} from "viem";
 import { usePublicClient, useReadContract } from "wagmi";
 
 import { useActiveWalletAddress } from "@/hooks/useActiveWalletAddress";
@@ -24,7 +31,7 @@ import type {
 } from "@/lib/types";
 import type { useWizPayState } from "./useWizPayState";
 import { isStableFxMode, fxProviderLabel } from "@/lib/fx-config";
-import { arcTestnet } from "@/lib/wagmi";
+import { ARC_TESTNET_RPC_URL, arcTestnet } from "@/lib/wagmi";
 
 type BaseState = ReturnType<typeof useWizPayState>;
 
@@ -36,6 +43,21 @@ const EMPTY_QUOTE_SUMMARY: QuoteSummary = {
 
 const MAX_CONFIRMATION_POLLS = 20;
 const POLL_INTERVAL_MS = 1500;
+const ARC_MULTICALL3_ADDRESS =
+  "0xca11bde05977b3631167028862be2a173976ca11" as Address;
+const POST_SETTLEMENT_VERIFICATION_INITIAL_DELAY_MS = 750;
+const POST_SETTLEMENT_VERIFICATION_RETRY_DELAY_MS = 750;
+const POST_SETTLEMENT_VERIFICATION_MAX_ATTEMPTS = 4;
+
+type PostSettlementTokenState = {
+  allowance: bigint;
+  balance: bigint;
+};
+
+const postSettlementVerificationRequests = new Map<
+  string,
+  Promise<PostSettlementTokenState>
+>();
 
 type PreparedBatchRecipient = {
   address: Address;
@@ -56,6 +78,134 @@ function waitFor(ms: number) {
   return new Promise<void>((resolve) => {
     window.setTimeout(resolve, ms);
   });
+}
+
+function getRpcErrorText(error: unknown, depth = 0): string {
+  if (depth > 4 || typeof error !== "object" || error === null) {
+    return error instanceof Error ? error.message : String(error ?? "");
+  }
+
+  const parts = ["name", "message", "shortMessage", "details"]
+    .map((key) => Reflect.get(error, key))
+    .filter((value): value is string => typeof value === "string");
+  const cause = Reflect.get(error, "cause");
+
+  if (cause && cause !== error) {
+    parts.push(getRpcErrorText(cause, depth + 1));
+  }
+
+  return parts.join(" ").toLowerCase();
+}
+
+function isTransientRpcError(error: unknown) {
+  const errorText = getRpcErrorText(error);
+
+  if (
+    errorText.includes("execution reverted") ||
+    errorText.includes("contract function execution error") ||
+    errorText.includes("returned no data")
+  ) {
+    return false;
+  }
+
+  return [
+    "429",
+    "request limit",
+    "rate limit",
+    "too many requests",
+    "temporarily unavailable",
+    "rpc request failed",
+    "http request failed",
+    "fetch failed",
+    "network error",
+    "timed out",
+    "timeout",
+  ].some((fragment) => errorText.includes(fragment));
+}
+
+async function readPostSettlementTokenState({
+  publicClient,
+  tokenAddress,
+  walletAddress,
+  spenderAddress,
+}: {
+  publicClient: PublicClient;
+  tokenAddress: Address;
+  walletAddress: Address;
+  spenderAddress: Address;
+}): Promise<PostSettlementTokenState> {
+  const requestKey = [
+    publicClient.chain?.id ?? arcTestnet.id,
+    tokenAddress.toLowerCase(),
+    walletAddress.toLowerCase(),
+    spenderAddress.toLowerCase(),
+  ].join(":");
+  const inFlightRequest = postSettlementVerificationRequests.get(requestKey);
+
+  if (inFlightRequest) {
+    return inFlightRequest;
+  }
+
+  const verificationRequest = (async () => {
+    await waitFor(POST_SETTLEMENT_VERIFICATION_INITIAL_DELAY_MS);
+
+    for (
+      let attempt = 1;
+      attempt <= POST_SETTLEMENT_VERIFICATION_MAX_ATTEMPTS;
+      attempt += 1
+    ) {
+      try {
+        const [allowance, balance] = await publicClient.multicall({
+          allowFailure: false,
+          contracts: [
+            {
+              address: tokenAddress,
+              abi: ERC20_ABI,
+              functionName: "allowance",
+              args: [walletAddress, spenderAddress],
+            },
+            {
+              address: tokenAddress,
+              abi: ERC20_ABI,
+              functionName: "balanceOf",
+              args: [walletAddress],
+            },
+          ],
+          multicallAddress: ARC_MULTICALL3_ADDRESS,
+        });
+
+        return { allowance, balance };
+      } catch (error) {
+        const canRetry =
+          isTransientRpcError(error) &&
+          attempt < POST_SETTLEMENT_VERIFICATION_MAX_ATTEMPTS;
+
+        if (!canRetry) {
+          throw error;
+        }
+
+        const retryDelay =
+          POST_SETTLEMENT_VERIFICATION_RETRY_DELAY_MS * 2 ** (attempt - 1);
+        logPayrollRouteDiagnostic(
+          "[official-payroll-route] post-settlement verification retry",
+          { attempt, nextAttempt: attempt + 1, retryDelay },
+        );
+        await waitFor(retryDelay);
+      }
+    }
+
+    throw new Error("Post-settlement verification exhausted its retry window.");
+  })();
+
+  postSettlementVerificationRequests.set(requestKey, verificationRequest);
+
+  try {
+    return await verificationRequest;
+  } finally {
+    if (postSettlementVerificationRequests.get(requestKey) === verificationRequest) {
+      postSettlementVerificationRequests.delete(requestKey);
+    }
+  }
 }
 
 function logPayrollRouteDiagnostic(label: string, value: unknown) {
@@ -544,22 +694,52 @@ export function useWizPayContract({
     // When the effective input token differs from activeToken (post-swap scenario),
     // read allowance and balance directly for the effective token.
     if (effectiveTokenIn !== activeToken.address) {
-      const [onChainAllowance, onChainBalance] = await Promise.all([
-        publicClient.readContract({
-          address: effectiveTokenIn,
-          abi: ERC20_ABI,
-          functionName: "allowance",
-          args: [walletAddress, allowanceSpender],
-        }) as Promise<bigint>,
-        publicClient.readContract({
-          address: effectiveTokenIn,
-          abi: ERC20_ABI,
-          functionName: "balanceOf",
-          args: [walletAddress],
-        }) as Promise<bigint>,
-      ]);
-      latestAllowance = onChainAllowance;
-      latestBalance = onChainBalance;
+      const verificationContext = {
+        chainId: arcTestnet.id,
+        methods: ["allowance", "balanceOf"],
+        multicallAddress: ARC_MULTICALL3_ADDRESS,
+        rpcEndpoint: ARC_TESTNET_RPC_URL,
+        spender: allowanceSpender,
+        token: effectiveTokenInSymbol,
+        tokenAddress: effectiveTokenIn,
+        walletAddress,
+      };
+
+      logPayrollRouteDiagnostic(
+        "[official-payroll-route] post-settlement verification request",
+        verificationContext,
+      );
+
+      try {
+        const verifiedState = await readPostSettlementTokenState({
+          publicClient,
+          tokenAddress: effectiveTokenIn,
+          walletAddress,
+          spenderAddress: allowanceSpender,
+        });
+        latestAllowance = verifiedState.allowance;
+        latestBalance = verifiedState.balance;
+      } catch (verificationError) {
+        const transientRpcFailure = isTransientRpcError(verificationError);
+        logPayrollRouteDiagnostic(
+          "[official-payroll-route] post-settlement verification failed",
+          {
+            ...verificationContext,
+            error: verificationError,
+            transientRpcFailure,
+          },
+        );
+
+        if (!transientRpcFailure) {
+          throw new Error(
+            `Post-settlement ${effectiveTokenInSymbol} payroll verification failed: ${getFriendlyErrorMessage(verificationError)}`,
+          );
+        }
+
+        throw new Error(
+          `Arc Testnet RPC could not verify the post-settlement ${effectiveTokenInSymbol} payroll allowance and balance. The FX settlement is not affected; wait a moment and use payroll recovery to continue.`,
+        );
+      }
 
       logPayrollRouteDiagnostic(
         "[official-payroll-route] post-swap wallet state",
