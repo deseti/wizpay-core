@@ -22,6 +22,10 @@ export type AppWalletSwapOperationStatus =
   | 'payout_submitted'
   | 'payout_confirmed'
   | 'completed'
+  | 'execution_recovery_required'
+  | 'refund_pending'
+  | 'refund_submitted'
+  | 'refunded'
   | 'execution_failed';
 
 export const APP_WALLET_SWAP_ERROR_CODES = {
@@ -30,12 +34,13 @@ export const APP_WALLET_SWAP_ERROR_CODES = {
   UNSUPPORTED_CHAIN: 'APP_WALLET_SWAP_UNSUPPORTED_CHAIN',
   EXECUTION_DISABLED: 'APP_WALLET_TREASURY_SWAP_EXECUTION_DISABLED',
   EXECUTION_FAILED: 'APP_WALLET_TREASURY_SWAP_EXECUTION_FAILED',
-  STABLEFX_APP_WALLET_DEPOSIT_REQUIRED:
-    'STABLEFX_APP_WALLET_DEPOSIT_REQUIRED',
+  STABLEFX_APP_WALLET_DEPOSIT_REQUIRED: 'STABLEFX_APP_WALLET_DEPOSIT_REQUIRED',
   STABLEFX_APP_WALLET_DEPOSIT_NOT_CONFIRMED:
     'STABLEFX_APP_WALLET_DEPOSIT_NOT_CONFIRMED',
   STABLEFX_TREASURY_EXECUTION_FAILED: 'STABLEFX_TREASURY_EXECUTION_FAILED',
   STABLEFX_TREASURY_PAYOUT_FAILED: 'STABLEFX_TREASURY_PAYOUT_FAILED',
+  EXECUTION_TIMEOUT: 'APP_WALLET_SWAP_EXECUTION_TIMEOUT',
+  REFUND_NOT_SAFE: 'APP_WALLET_SWAP_REFUND_NOT_SAFE',
   STABLEFX_MIN_AMOUNT: 'STABLEFX_MIN_AMOUNT',
 } as const;
 
@@ -90,11 +95,19 @@ export interface AppWalletSwapOperationResponse extends Omit<
   treasurySwapExpectedOutput?: unknown;
   treasurySwapActualOutput?: string;
   rawTreasurySwap?: unknown;
+  stablefxFundingRequestedAt?: string;
+  stablefxFundedAt?: string;
   payoutTxHash?: string;
   payoutAmount?: string;
   payoutSubmittedAt?: string;
   payoutConfirmedAt?: string;
   rawPayout?: unknown;
+  refundTransactionId?: string;
+  refundTxHash?: string;
+  refundAmount?: string;
+  refundSubmittedAt?: string;
+  refundConfirmedAt?: string;
+  rawRefund?: unknown;
   completedAt?: string;
   executionError?: string;
   createdAt: string;

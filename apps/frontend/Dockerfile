@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 
-FROM node:20-alpine AS builder
+FROM node:22-alpine AS builder
 
 WORKDIR /app
 
@@ -14,7 +14,7 @@ ENV NEXT_TELEMETRY_DISABLED=1 \
 COPY package.json package-lock.json ./
 RUN --mount=type=cache,target=/root/.npm \
 		attempt=1; \
-		until npm install --legacy-peer-deps --no-audit --no-fund --prefer-offline; do \
+		until npm ci --legacy-peer-deps --no-audit --no-fund --prefer-offline; do \
 			if [ "$attempt" -ge 3 ]; then \
 				echo "npm install failed after $attempt attempts"; \
 				exit 1; \
@@ -106,7 +106,7 @@ ENV NEXT_PUBLIC_WIZPAY_BRIDGE_EXTERNAL_ENABLED=$NEXT_PUBLIC_WIZPAY_BRIDGE_EXTERN
 
 RUN npm run build
 
-FROM node:20-alpine AS runner
+FROM node:22-alpine AS runner
 
 WORKDIR /app
 

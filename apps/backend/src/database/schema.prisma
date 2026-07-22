@@ -4,24 +4,23 @@ generator client {
 
 datasource db {
   provider = "postgresql"
-  
 }
 
 model Task {
-  id           String            @id @default(uuid()) @db.Uuid
-  type         String
-  status       String
-  totalUnits   Int               @default(0)
-  completedUnits Int             @default(0)
-  failedUnits  Int               @default(0)
-  metadata     Json?
-  payload      Json
-  result       Json?
-  createdAt    DateTime          @default(now())
-  updatedAt    DateTime          @updatedAt
-  logs         TaskLog[]
-  units        TaskUnit[]
-  transactions TaskTransaction[]
+  id             String            @id @default(uuid()) @db.Uuid
+  type           String
+  status         String
+  totalUnits     Int               @default(0)
+  completedUnits Int               @default(0)
+  failedUnits    Int               @default(0)
+  metadata       Json?
+  payload        Json
+  result         Json?
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+  logs           TaskLog[]
+  units          TaskUnit[]
+  transactions   TaskTransaction[]
 }
 
 model TaskLog {
@@ -51,37 +50,37 @@ model TaskUnit {
   updatedAt DateTime @updatedAt
   task      Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
 
-  @@index([taskId])
   @@unique([taskId, id])
   @@unique([taskId, index])
+  @@index([taskId])
 }
 
 /// Tracks individual on-chain transactions within a task.
 /// Each payroll recipient gets one TaskTransaction record.
 model TaskTransaction {
-  id          String   @id @default(uuid()) @db.Uuid
-  taskId      String   @db.Uuid
+  id           String   @id @default(uuid()) @db.Uuid
+  taskId       String   @db.Uuid
   /// Circle transaction ID
-  txId        String
+  txId         String
   /// Recipient address
-  recipient   String
+  recipient    String
   /// Human-readable amount
-  amount      String
+  amount       String
   /// Token symbol (USDC, EURC)
-  currency    String
+  currency     String
   /// pending | completed | failed
-  status      String   @default("pending")
+  status       String   @default("pending")
   /// On-chain tx hash (null until confirmed)
-  txHash      String?
+  txHash       String?
   /// Error reason (only for failed transactions)
-  errorReason String?
+  errorReason  String?
   /// Batch index within the payroll
-  batchIndex  Int      @default(0)
+  batchIndex   Int      @default(0)
   /// Number of poll attempts made
-  pollAttempts Int     @default(0)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-  task        Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  pollAttempts Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  task         Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
 
   @@index([taskId])
   @@index([txId])
@@ -100,52 +99,62 @@ model UserWallet {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
+  @@unique([userId, blockchain])
   @@index([userId])
   @@index([userId, chain])
-  @@unique([userId, blockchain])
 }
 
 model AppWalletSwapOperation {
-  operationId              String   @id @db.Uuid
-  operationMode            String
-  sourceChain              String
-  tokenIn                  String
-  tokenOut                 String
-  amountIn                 String
-  userWalletAddress        String
-  treasuryDepositAddress   String
-  expectedOutput           Json?
-  minimumOutput            Json?
-  expiresAt                String
-  status                   String
-  quoteId                  Json?
-  rawQuote                 Json?
-  depositTxHash            String?
-  circleTransactionId      String?
-  circleReferenceId        String?
-  circleWalletId           String?
-  depositSubmittedAt       DateTime?
-  depositConfirmedAt       DateTime?
-  depositConfirmedAmount   String?
-  depositConfirmationError String?
-  executionEnabled         Boolean  @default(false)
-  treasurySwapId           String?
-  treasurySwapQuoteId      String?
-  treasurySwapTxHash       String?
-  treasurySwapSubmittedAt  DateTime?
-  treasurySwapConfirmedAt  DateTime?
+  operationId                String    @id @db.Uuid
+  operationMode              String
+  sourceChain                String
+  tokenIn                    String
+  tokenOut                   String
+  amountIn                   String
+  userWalletAddress          String
+  treasuryDepositAddress     String
+  expectedOutput             Json?
+  minimumOutput              Json?
+  expiresAt                  String
+  status                     String
+  quoteId                    Json?
+  rawQuote                   Json?
+  depositTxHash              String?
+  circleTransactionId        String?
+  circleReferenceId          String?
+  circleWalletId             String?
+  depositSubmittedAt         DateTime?
+  depositConfirmedAt         DateTime?
+  depositConfirmedAmount     String?
+  depositConfirmationError   String?
+  executionEnabled           Boolean   @default(false)
+  treasurySwapId             String?
+  treasurySwapQuoteId        String?
+  treasurySwapTxHash         String?
+  treasurySwapSubmittedAt    DateTime?
+  treasurySwapConfirmedAt    DateTime?
   treasurySwapExpectedOutput Json?
-  treasurySwapActualOutput String?
-  rawTreasurySwap          Json?
-  payoutTxHash             String?
-  payoutAmount             String?
-  payoutSubmittedAt        DateTime?
-  payoutConfirmedAt        DateTime?
-  rawPayout                Json?
-  completedAt              DateTime?
-  executionError           String?
-  createdAt                DateTime @default(now())
-  updatedAt                DateTime @updatedAt
+  treasurySwapActualOutput   String?
+  rawTreasurySwap            Json?
+  stablefxFundingRequestedAt DateTime?
+  stablefxFundedAt           DateTime?
+  payoutTxHash               String?
+  payoutAmount               String?
+  payoutSubmittedAt          DateTime?
+  payoutConfirmedAt          DateTime?
+  rawPayout                  Json?
+  refundTransactionId        String?
+  refundTxHash               String?
+  refundAmount               String?
+  refundSubmittedAt          DateTime?
+  refundConfirmedAt          DateTime?
+  rawRefund                  Json?
+  executionLeaseId           String?
+  executionLeaseExpiresAt    DateTime?
+  completedAt                DateTime?
+  executionError             String?
+  createdAt                  DateTime  @default(now())
+  updatedAt                  DateTime  @updatedAt
 
   @@index([status])
   @@index([circleTransactionId])
@@ -154,14 +163,17 @@ model AppWalletSwapOperation {
   @@index([treasurySwapId])
   @@index([treasurySwapTxHash])
   @@index([payoutTxHash])
+  @@index([refundTransactionId])
+  @@index([refundTxHash])
+  @@index([executionLeaseExpiresAt])
 }
 
 model BridgeTransaction {
-  id            String   @id @default(uuid())
-  taskId        String   @unique
-  status        String
-  payload       Json
-  result        Json?
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  id        String   @id @default(uuid())
+  taskId    String   @unique
+  status    String
+  payload   Json
+  result    Json?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }

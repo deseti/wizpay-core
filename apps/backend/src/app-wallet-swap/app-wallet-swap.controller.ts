@@ -41,7 +41,9 @@ export class AppWalletSwapController {
   @Post('operations')
   async createOperation(@Body() body: AppWalletSwapOperationDto) {
     return {
-      data: await this.appWalletSwapService.createOperation(body),
+      data: this.appWalletSwapService.toPublicOperation(
+        await this.appWalletSwapService.createOperation(body),
+      ),
     };
   }
 
@@ -51,7 +53,9 @@ export class AppWalletSwapController {
     @Body() body: AppWalletSwapDepositDto,
   ) {
     return {
-      data: await this.appWalletSwapService.submitDeposit(operationId, body),
+      data: this.appWalletSwapService.toPublicOperation(
+        await this.appWalletSwapService.submitDeposit(operationId, body),
+      ),
     };
   }
 
@@ -61,9 +65,8 @@ export class AppWalletSwapController {
     @Body() body: AppWalletSwapDepositTxHashDto,
   ) {
     return {
-      data: await this.appWalletSwapService.attachDepositTxHash(
-        operationId,
-        body,
+      data: this.appWalletSwapService.toPublicOperation(
+        await this.appWalletSwapService.attachDepositTxHash(operationId, body),
       ),
     };
   }
@@ -71,28 +74,45 @@ export class AppWalletSwapController {
   @Post('operations/:id/resolve-deposit-txhash')
   async resolveDepositTxHash(@Param('id') operationId: string) {
     return {
-      data: await this.appWalletSwapService.resolveDepositTxHash(operationId),
+      data: this.appWalletSwapService.toPublicOperation(
+        await this.appWalletSwapService.resolveDepositTxHash(operationId),
+      ),
     };
   }
 
   @Post('operations/:id/confirm-deposit')
   async confirmDeposit(@Param('id') operationId: string) {
     return {
-      data: await this.appWalletSwapService.confirmDeposit(operationId),
+      data: this.appWalletSwapService.toPublicOperation(
+        await this.appWalletSwapService.confirmDeposit(operationId),
+      ),
     };
   }
 
   @Post('operations/:id/execute')
   async execute(@Param('id') operationId: string) {
     return {
-      data: await this.appWalletSwapService.execute(operationId),
+      data: this.appWalletSwapService.toPublicOperation(
+        await this.appWalletSwapService.execute(operationId),
+      ),
+    };
+  }
+
+  @Post('operations/:id/refund')
+  async refund(@Param('id') operationId: string) {
+    return {
+      data: this.appWalletSwapService.toPublicOperation(
+        await this.appWalletSwapService.refund(operationId),
+      ),
     };
   }
 
   @Get('operations/:id')
   async getOperation(@Param('id') operationId: string) {
     return {
-      data: await this.appWalletSwapService.getOperation(operationId),
+      data: this.appWalletSwapService.toPublicOperation(
+        await this.appWalletSwapService.getOperation(operationId),
+      ),
     };
   }
 }

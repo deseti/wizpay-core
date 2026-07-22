@@ -49,6 +49,10 @@ export interface AppWalletSwapOperationResponse extends Omit<
     | "payout_submitted"
     | "payout_confirmed"
     | "completed"
+    | "execution_recovery_required"
+    | "refund_pending"
+    | "refund_submitted"
+    | "refunded"
     | "execution_failed";
   userWalletAddress: string;
   circleWalletId?: string;
@@ -67,11 +71,19 @@ export interface AppWalletSwapOperationResponse extends Omit<
   treasurySwapExpectedOutput?: unknown;
   treasurySwapActualOutput?: string;
   rawTreasurySwap?: unknown;
+  stablefxFundingRequestedAt?: string;
+  stablefxFundedAt?: string;
   payoutTxHash?: string;
   payoutAmount?: string;
   payoutSubmittedAt?: string;
   payoutConfirmedAt?: string;
   rawPayout?: unknown;
+  refundTransactionId?: string;
+  refundTxHash?: string;
+  refundAmount?: string;
+  refundSubmittedAt?: string;
+  refundConfirmedAt?: string;
+  rawRefund?: unknown;
   completedAt?: string;
   executionError?: string;
   createdAt: string;
@@ -170,10 +182,17 @@ export async function confirmAppWalletSwapDeposit(
 export async function executeAppWalletSwapOperation(
   operationId: string,
 ): Promise<AppWalletSwapOperationResponse> {
-  return backendFetch<AppWalletSwapOperationResponse>(
-    `/app-wallet-swap/operations/${encodeURIComponent(operationId)}/execute`,
-    {
-      method: "POST",
-    },
-  );
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 25_000);
+  try {
+    return await backendFetch<AppWalletSwapOperationResponse>(
+      `/app-wallet-swap/operations/${encodeURIComponent(operationId)}/execute`,
+      {
+        method: "POST",
+        signal: controller.signal,
+      },
+    );
+  } finally {
+    clearTimeout(timer);
+  }
 }

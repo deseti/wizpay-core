@@ -232,6 +232,13 @@ function getAppWalletOperationMessage(
       return `Swap completed. ${operation.tokenOut} is in your App Wallet.`;
     case "execution_failed":
       return "Something went wrong during settlement. You can retry the status check.";
+    case "execution_recovery_required":
+      return "Settlement stopped safely. This operation needs recovery or a verified refund.";
+    case "refund_pending":
+    case "refund_submitted":
+      return `Your verified ${operation.tokenIn} deposit is being returned.`;
+    case "refunded":
+      return `Your verified ${operation.tokenIn} deposit was returned.`;
     case "deposit_submitted":
       return "Deposit received. Waiting for network confirmation.";
     default:
@@ -271,7 +278,12 @@ function getAppWalletSwapPhase(
     case "completed":
       return "completed";
     case "execution_failed":
+    case "execution_recovery_required":
+    case "refunded":
       return "failed";
+    case "refund_pending":
+    case "refund_submitted":
+      return "receiving_payout";
     default:
       return "confirm_deposit";
   }
@@ -891,10 +903,7 @@ function getQuoteStringValue(
     }
   }
 
-  return findFirstString(
-    "raw" in quote ? quote.raw : quote.rawQuote,
-    rawPaths,
-  );
+  return findFirstString("raw" in quote ? quote.raw : quote.rawQuote, rawPaths);
 }
 
 function getQuoteAddressValue(
@@ -1025,8 +1034,7 @@ export function SwapScreen() {
   const isXylonetSelected =
     isExternalWalletMode && externalSwapProvider === "xylonet";
   const activeProviderLabel =
-    quoteProvider === "stablefx" ||
-    quoteProvider === "xylonet"
+    quoteProvider === "stablefx" || quoteProvider === "xylonet"
       ? EXTERNAL_WALLET_SWAP_PROVIDER_LABELS[quoteProvider]
       : isExternalWalletMode
         ? EXTERNAL_WALLET_SWAP_PROVIDER_LABELS[externalSwapProvider]
@@ -1545,15 +1553,21 @@ export function SwapScreen() {
 
   async function executeXylonetSwap(activeQuote: SwapQuoteState) {
     if (!isExternalWalletMode) {
-      throw new Error("XyloNet execution is only available for External Wallet mode.");
+      throw new Error(
+        "XyloNet execution is only available for External Wallet mode.",
+      );
     }
 
     if (!walletAddress || !walletClient || !publicClient) {
-      throw new Error("Connect an external EVM wallet before executing XyloNet.");
+      throw new Error(
+        "Connect an external EVM wallet before executing XyloNet.",
+      );
     }
 
     if (walletClient.chain?.id !== arcTestnet.id) {
-      throw new Error("Switch your external wallet to Arc Testnet before executing XyloNet.");
+      throw new Error(
+        "Switch your external wallet to Arc Testnet before executing XyloNet.",
+      );
     }
 
     if (getQuoteProvider(activeQuote) !== "xylonet") {
@@ -1603,8 +1617,9 @@ export function SwapScreen() {
       ["toAddress", "recipient"],
       "recipient address",
     );
-    const deadline =
-      BigInt(Math.floor(Date.now() / 1000) + XYLONET_EXECUTION_DEADLINE_SECONDS);
+    const deadline = BigInt(
+      Math.floor(Date.now() / 1000) + XYLONET_EXECUTION_DEADLINE_SECONDS,
+    );
     let instructionCount = 1;
 
     setRequestStatus("checkingAllowance");
@@ -2048,7 +2063,9 @@ export function SwapScreen() {
         // Phase 4: If not completed, poll for status updates
         if (
           current.status !== "completed" &&
-          current.status !== "execution_failed"
+          current.status !== "execution_failed" &&
+          current.status !== "execution_recovery_required" &&
+          current.status !== "refunded"
         ) {
           pollTimerRef.current = setTimeout(async () => {
             autoProgressRef.current = false;
@@ -2059,7 +2076,9 @@ export function SwapScreen() {
               setAppWalletOperation(polled);
               if (
                 polled.status !== "completed" &&
-                polled.status !== "execution_failed"
+                polled.status !== "execution_failed" &&
+                polled.status !== "execution_recovery_required" &&
+                polled.status !== "refunded"
               ) {
                 void progressAppWalletOperation(polled);
               } else if (polled.status === "completed") {
@@ -2072,8 +2091,10 @@ export function SwapScreen() {
                 });
               }
             } catch {
-              // Silently retry
               autoProgressRef.current = false;
+              pollTimerRef.current = setTimeout(() => {
+                void progressAppWalletOperation(current);
+              }, 5000);
             }
           }, 5000);
         }
@@ -2499,19 +2520,19 @@ export function SwapScreen() {
                       ? "Preparing..."
                       : requestStatus === "checkingAllowance"
                         ? `Checking ${tokenIn} allowance...`
-                      : requestStatus === "approving"
+                        : requestStatus === "approving"
                           ? `Approve ${tokenIn} spending...`
-                      : requestStatus === "executing"
-                        ? "Executing..."
-                      : requestStatus === "funding"
-                        ? "Funding..."
-                        : requestStatus === "settling"
-                          ? "Checking status..."
-                          : requestStatus === "signing"
-                            ? isCircleWalletMode
-                              ? "Waiting for confirmation..."
-                              : "Signing..."
-                            : "Preparing..."}
+                          : requestStatus === "executing"
+                            ? "Executing..."
+                            : requestStatus === "funding"
+                              ? "Funding..."
+                              : requestStatus === "settling"
+                                ? "Checking status..."
+                                : requestStatus === "signing"
+                                  ? isCircleWalletMode
+                                    ? "Waiting for confirmation..."
+                                    : "Signing..."
+                                  : "Preparing..."}
                   </span>
                 ) : (
                   <>

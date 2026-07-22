@@ -1,10 +1,16 @@
 import { BadRequestException } from '@nestjs/common';
 import { AppWalletSwapOperation } from '@prisma/client';
+import { createHash } from 'crypto';
 import { BlockchainService } from '../adapters/blockchain.service';
 import { PrismaService } from '../database/prisma.service';
 import { W3sAuthService } from '../modules/wallet/w3s-auth.service';
 import { CircleService } from '../adapters/circle.service';
 import { AppWalletSwapDepositVerifierService } from './app-wallet-swap-deposit-verifier.service';
+import { AppWalletSwapCircleExecutorService } from './app-wallet-swap-circle-executor.service';
+import { AppWalletSwapStablefxExecutorService } from './app-wallet-swap-stablefx-executor.service';
+import { AppWalletSwapOperationRepository } from './app-wallet-swap-operation.repository';
+import { AppWalletSwapPayoutExecutorService } from './app-wallet-swap-payout-executor.service';
+import { getPayoutTransactionId } from './app-wallet-swap-provider-reference';
 import { AppWalletSwapService } from './app-wallet-swap.service';
 import { AppWalletSwapTreasuryVerifierService } from './app-wallet-swap-treasury-verifier.service';
 import {
@@ -13,6 +19,7 @@ import {
 } from './app-wallet-swap.types';
 import {
   USER_SWAP_EURC_ADDRESS,
+  USER_SWAP_USDC_ADDRESS,
   UserSwapService,
 } from '../user-swap/user-swap.service';
 import { StablefxExecutionService } from '../user-swap/stablefx-execution.service';
@@ -38,6 +45,83 @@ const arcTestnetCircleEurcTokenId = '4ea52a96-e6ae-56dc-8336-385bb238755f';
 const invalidOperationId = '2bdaccac7-2d53-491a-8ef6-8ca3256a1162';
 const missingOperationId = '2bdaccac-2d53-491a-8ef6-8ca3256a1162';
 
+function deriveExpectedIdempotencyKey(
+  operationId: string,
+  purpose: string,
+): string {
+  const hex = createHash('sha256')
+    .update(`${operationId}:${purpose}`)
+    .digest('hex');
+  const variant = ((parseInt(hex[16], 16) & 0x3) | 0x8).toString(16);
+
+  return [
+    hex.slice(0, 8),
+    hex.slice(8, 12),
+    `4${hex.slice(13, 16)}`,
+    `${variant}${hex.slice(17, 20)}`,
+    hex.slice(20, 32),
+  ].join('-');
+}
+
+function collectForbiddenPublicPayloadPaths(
+  value: unknown,
+  path = 'response',
+): string[] {
+  if (Array.isArray(value)) {
+    return value.flatMap((entry, index) =>
+      collectForbiddenPublicPayloadPaths(entry, `${path}[${index}]`),
+    );
+  }
+
+  if (typeof value !== 'object' || value === null) {
+    return [];
+  }
+
+  return Object.entries(value as Record<string, unknown>).flatMap(
+    ([key, entry]) => {
+      const entryPath = `${path}.${key}`;
+      const normalizedKey = key.replace(/[-_]/g, '').toLowerCase();
+      const forbidden =
+        normalizedKey.includes('typeddata') ||
+        normalizedKey.includes('signature') ||
+        normalizedKey.includes('permit2') ||
+        normalizedKey.includes('authorization') ||
+        normalizedKey.includes('rawcircleresponse') ||
+        entryPath.includes('.previous.previous');
+
+      return [
+        ...(forbidden ? [entryPath] : []),
+        ...collectForbiddenPublicPayloadPaths(entry, entryPath),
+      ];
+    },
+  );
+}
+
+function collectRecursivePreviousPaths(
+  value: unknown,
+  path = 'snapshot',
+): string[] {
+  if (Array.isArray(value)) {
+    return value.flatMap((entry, index) =>
+      collectRecursivePreviousPaths(entry, `${path}[${index}]`),
+    );
+  }
+
+  if (typeof value !== 'object' || value === null) {
+    return [];
+  }
+
+  return Object.entries(value as Record<string, unknown>).flatMap(
+    ([key, entry]) => {
+      const entryPath = `${path}.${key}`;
+      return [
+        ...(entryPath.includes('.previous.previous') ? [entryPath] : []),
+        ...collectRecursivePreviousPaths(entry, entryPath),
+      ];
+    },
+  );
+}
+
 describe('AppWalletSwapService', () => {
   const originalEnv = process.env;
   const userSwapService = {
@@ -61,6 +145,7 @@ describe('AppWalletSwapService', () => {
   const circleService = {
     executeContract: jest.fn(),
     getTransactionStatus: jest.fn(),
+    getWalletBalance: jest.fn(),
     signTypedData: jest.fn(),
     transfer: jest.fn(),
     waitForTransactionComplete: jest.fn(),
@@ -69,6 +154,7 @@ describe('AppWalletSwapService', () => {
       CircleService,
       | 'executeContract'
       | 'getTransactionStatus'
+      | 'getWalletBalance'
       | 'signTypedData'
       | 'transfer'
       | 'waitForTransactionComplete'
@@ -108,6 +194,7 @@ describe('AppWalletSwapService', () => {
       create: jest.Mock;
       findUnique: jest.Mock;
       update: jest.Mock;
+      updateMany: jest.Mock;
     };
   };
 
@@ -118,6 +205,8 @@ describe('AppWalletSwapService', () => {
       CIRCLE_WALLET_ADDRESS_ARC: TREASURY_ADDRESS,
     };
     delete process.env.WIZPAY_SWAP_PROVIDER;
+    delete process.env.APP_WALLET_SWAP_POLL_TIMEOUT_MS;
+    delete process.env.APP_WALLET_PROVIDER_TIMEOUT_MS;
     userSwapService.quote.mockResolvedValue({
       tokenIn: 'USDC',
       tokenOut: 'EURC',
@@ -188,6 +277,9 @@ describe('AppWalletSwapService', () => {
       txHash:
         '0xcc019e059ddbbbd32f73c444e350838553779dc027926111366ace5195faa1d5',
     });
+    circleService.getWalletBalance.mockResolvedValue([
+      { amount: '1000000', tokenAddress: USER_SWAP_EURC_ADDRESS },
+    ]);
     circleService.signTypedData.mockResolvedValue({
       signature: '0xsigned',
       raw: { signature: '0xsigned' },
@@ -230,8 +322,7 @@ describe('AppWalletSwapService', () => {
       },
     });
     stablefxExecutionService.fund.mockResolvedValue({
-      settlementTransactionHash:
-        stablefxTakerDeliverTxHash,
+      settlementTransactionHash: stablefxTakerDeliverTxHash,
     });
     stablefxExecutionService.getTrade
       .mockResolvedValueOnce({
@@ -290,11 +381,29 @@ describe('AppWalletSwapService', () => {
       userSwapService as UserSwapService,
       depositVerifier as AppWalletSwapDepositVerifierService,
       treasuryVerifier as AppWalletSwapTreasuryVerifierService,
-      circleService as unknown as CircleService,
-      w3sAuthService as W3sAuthService,
-      prismaService as unknown as PrismaService,
-      stablefxExecutionService as unknown as StablefxExecutionService,
-      blockchainService as unknown as BlockchainService,
+      new AppWalletSwapCircleExecutorService(
+        circleService as unknown as CircleService,
+        w3sAuthService as unknown as W3sAuthService,
+        blockchainService as unknown as BlockchainService,
+      ),
+      new AppWalletSwapStablefxExecutorService(
+        stablefxExecutionService as unknown as StablefxExecutionService,
+        new AppWalletSwapCircleExecutorService(
+          circleService as unknown as CircleService,
+          w3sAuthService as unknown as W3sAuthService,
+          blockchainService as unknown as BlockchainService,
+        ),
+      ),
+      new AppWalletSwapPayoutExecutorService(
+        new AppWalletSwapCircleExecutorService(
+          circleService as unknown as CircleService,
+          w3sAuthService as unknown as W3sAuthService,
+          blockchainService as unknown as BlockchainService,
+        ),
+      ),
+      new AppWalletSwapOperationRepository(
+        prismaService as unknown as PrismaService,
+      ),
     );
   }
 
@@ -327,9 +436,7 @@ describe('AppWalletSwapService', () => {
     return service.confirmDeposit(submitted.operationId);
   }
 
-  async function createConfirmedStablefxOperation(
-    service = createService(),
-  ) {
+  async function createConfirmedStablefxOperation(service = createService()) {
     enableStablefxExecutionEnv();
     userSwapService.quote.mockResolvedValueOnce({
       tokenIn: 'EURC',
@@ -412,15 +519,24 @@ describe('AppWalletSwapService', () => {
             treasurySwapTxHash: data.treasurySwapTxHash ?? null,
             treasurySwapSubmittedAt: data.treasurySwapSubmittedAt ?? null,
             treasurySwapConfirmedAt: data.treasurySwapConfirmedAt ?? null,
-            treasurySwapExpectedOutput:
-              data.treasurySwapExpectedOutput ?? null,
+            treasurySwapExpectedOutput: data.treasurySwapExpectedOutput ?? null,
             treasurySwapActualOutput: data.treasurySwapActualOutput ?? null,
             rawTreasurySwap: data.rawTreasurySwap ?? null,
+            stablefxFundingRequestedAt: data.stablefxFundingRequestedAt ?? null,
+            stablefxFundedAt: data.stablefxFundedAt ?? null,
             payoutTxHash: data.payoutTxHash ?? null,
             payoutAmount: data.payoutAmount ?? null,
             payoutSubmittedAt: data.payoutSubmittedAt ?? null,
             payoutConfirmedAt: data.payoutConfirmedAt ?? null,
             rawPayout: data.rawPayout ?? null,
+            refundTransactionId: data.refundTransactionId ?? null,
+            refundTxHash: data.refundTxHash ?? null,
+            refundAmount: data.refundAmount ?? null,
+            refundSubmittedAt: data.refundSubmittedAt ?? null,
+            refundConfirmedAt: data.refundConfirmedAt ?? null,
+            rawRefund: data.rawRefund ?? null,
+            executionLeaseId: data.executionLeaseId ?? null,
+            executionLeaseExpiresAt: data.executionLeaseExpiresAt ?? null,
             completedAt: data.completedAt ?? null,
             executionError: data.executionError ?? null,
             createdAt: data.createdAt ?? now,
@@ -446,6 +562,30 @@ describe('AppWalletSwapService', () => {
           } as AppWalletSwapOperation;
           store.set(where.operationId, updated);
           return updated;
+        }),
+        updateMany: jest.fn(async ({ where, data }) => {
+          const existing = store.get(where.operationId);
+          if (!existing) return { count: 0 };
+          if (
+            where.executionLeaseId &&
+            existing.executionLeaseId !== where.executionLeaseId
+          ) {
+            return { count: 0 };
+          }
+          if (where.OR) {
+            const now = where.OR[2].executionLeaseExpiresAt.lt as Date;
+            const available =
+              !existing.executionLeaseId ||
+              !existing.executionLeaseExpiresAt ||
+              existing.executionLeaseExpiresAt < now;
+            if (!available) return { count: 0 };
+          }
+          store.set(where.operationId, {
+            ...existing,
+            ...data,
+            updatedAt: new Date(),
+          } as AppWalletSwapOperation);
+          return { count: 1 };
         }),
       },
     };
@@ -510,6 +650,9 @@ describe('AppWalletSwapService', () => {
     const operation = await service.createOperation(baseRequest);
 
     const persisted = await service.getOperation(operation.operationId);
+    const internalRecord = appWalletSwapOperationStore.get(
+      operation.operationId,
+    )!;
 
     expect(prisma.appWalletSwapOperation.create).toHaveBeenCalled();
     expect(prisma.appWalletSwapOperation.findUnique).toHaveBeenCalledWith({
@@ -518,9 +661,10 @@ describe('AppWalletSwapService', () => {
     expect(persisted).toMatchObject({
       operationId: operation.operationId,
       status: 'awaiting_user_deposit',
-      rawQuote: { quoteId: 'quote-1' },
       quoteId: 'quote-1',
     });
+    expect(persisted).not.toHaveProperty('rawQuote');
+    expect(internalRecord.rawQuote).toMatchObject({ quoteId: 'quote-1' });
   });
 
   it('keeps operations retrievable from a fresh service using the same database', async () => {
@@ -886,9 +1030,7 @@ describe('AppWalletSwapService', () => {
   });
 
   it('resolves txHash from Circle transaction list by refId without confirming', async () => {
-    w3sAuthService.getTransaction.mockRejectedValueOnce(
-      new Error('Not found'),
-    );
+    w3sAuthService.getTransaction.mockRejectedValueOnce(new Error('Not found'));
     w3sAuthService.listTransactions.mockResolvedValueOnce({
       transactions: [
         {
@@ -931,9 +1073,7 @@ describe('AppWalletSwapService', () => {
   });
 
   it('calls Circle transaction list with blockchain and destination when wallet id is missing', async () => {
-    w3sAuthService.getTransaction.mockRejectedValueOnce(
-      new Error('Not found'),
-    );
+    w3sAuthService.getTransaction.mockRejectedValueOnce(new Error('Not found'));
     w3sAuthService.listTransactions.mockResolvedValueOnce({
       transactions: [
         {
@@ -975,9 +1115,7 @@ describe('AppWalletSwapService', () => {
   });
 
   it('matches Circle list decimal amount without refId when strict transfer fields pass', async () => {
-    w3sAuthService.getTransaction.mockRejectedValueOnce(
-      new Error('Not found'),
-    );
+    w3sAuthService.getTransaction.mockRejectedValueOnce(new Error('Not found'));
     w3sAuthService.listTransactions.mockResolvedValueOnce({
       transactions: [
         {
@@ -1062,9 +1200,7 @@ describe('AppWalletSwapService', () => {
   });
 
   it('resolves EURC deposit txHash from Circle transaction list using Arc Testnet EURC tokenId and human amount', async () => {
-    w3sAuthService.getTransaction.mockRejectedValueOnce(
-      new Error('Not found'),
-    );
+    w3sAuthService.getTransaction.mockRejectedValueOnce(new Error('Not found'));
     w3sAuthService.listTransactions.mockResolvedValue({
       transactions: [
         {
@@ -1107,9 +1243,7 @@ describe('AppWalletSwapService', () => {
   });
 
   it('resolves EURC deposit txHash from a matching Circle SENT transaction without confirming', async () => {
-    w3sAuthService.getTransaction.mockRejectedValueOnce(
-      new Error('Not found'),
-    );
+    w3sAuthService.getTransaction.mockRejectedValueOnce(new Error('Not found'));
     w3sAuthService.listTransactions.mockResolvedValue({
       transactions: [
         {
@@ -1190,9 +1324,7 @@ describe('AppWalletSwapService', () => {
   });
 
   it('does not resolve EURC deposit txHash from a USDC tokenId candidate', async () => {
-    w3sAuthService.getTransaction.mockRejectedValueOnce(
-      new Error('Not found'),
-    );
+    w3sAuthService.getTransaction.mockRejectedValueOnce(new Error('Not found'));
     w3sAuthService.listTransactions.mockResolvedValue({
       transactions: [
         {
@@ -1228,9 +1360,7 @@ describe('AppWalletSwapService', () => {
   });
 
   it('does not resolve USDC deposit txHash from a EURC tokenId candidate', async () => {
-    w3sAuthService.getTransaction.mockRejectedValueOnce(
-      new Error('Not found'),
-    );
+    w3sAuthService.getTransaction.mockRejectedValueOnce(new Error('Not found'));
     w3sAuthService.listTransactions.mockResolvedValueOnce({
       transactions: [
         {
@@ -1262,9 +1392,7 @@ describe('AppWalletSwapService', () => {
   });
 
   it('ignores Circle list fallback entries with the wrong wallet id', async () => {
-    w3sAuthService.getTransaction.mockRejectedValueOnce(
-      new Error('Not found'),
-    );
+    w3sAuthService.getTransaction.mockRejectedValueOnce(new Error('Not found'));
     w3sAuthService.listTransactions.mockResolvedValueOnce({
       transactions: [
         {
@@ -1298,9 +1426,7 @@ describe('AppWalletSwapService', () => {
   });
 
   it('ignores Circle list fallback entries with the wrong source address', async () => {
-    w3sAuthService.getTransaction.mockRejectedValueOnce(
-      new Error('Not found'),
-    );
+    w3sAuthService.getTransaction.mockRejectedValueOnce(new Error('Not found'));
     w3sAuthService.listTransactions.mockResolvedValueOnce({
       transactions: [
         {
@@ -1335,9 +1461,7 @@ describe('AppWalletSwapService', () => {
   });
 
   it('ignores Circle list fallback entries with the wrong state', async () => {
-    w3sAuthService.getTransaction.mockRejectedValueOnce(
-      new Error('Not found'),
-    );
+    w3sAuthService.getTransaction.mockRejectedValueOnce(new Error('Not found'));
     w3sAuthService.listTransactions.mockResolvedValueOnce({
       transactions: [
         {
@@ -1371,9 +1495,7 @@ describe('AppWalletSwapService', () => {
   });
 
   it('ignores Circle list fallback entries with the wrong operation', async () => {
-    w3sAuthService.getTransaction.mockRejectedValueOnce(
-      new Error('Not found'),
-    );
+    w3sAuthService.getTransaction.mockRejectedValueOnce(new Error('Not found'));
     w3sAuthService.listTransactions.mockResolvedValueOnce({
       transactions: [
         {
@@ -1408,9 +1530,7 @@ describe('AppWalletSwapService', () => {
   });
 
   it('ignores Circle transaction list entries with the wrong destination', async () => {
-    w3sAuthService.getTransaction.mockRejectedValueOnce(
-      new Error('Not found'),
-    );
+    w3sAuthService.getTransaction.mockRejectedValueOnce(new Error('Not found'));
     w3sAuthService.listTransactions.mockResolvedValueOnce({
       transactions: [
         {
@@ -1440,9 +1560,7 @@ describe('AppWalletSwapService', () => {
   });
 
   it('ignores Circle transaction list entries with the wrong token', async () => {
-    w3sAuthService.getTransaction.mockRejectedValueOnce(
-      new Error('Not found'),
-    );
+    w3sAuthService.getTransaction.mockRejectedValueOnce(new Error('Not found'));
     w3sAuthService.listTransactions.mockResolvedValueOnce({
       transactions: [
         {
@@ -1472,9 +1590,7 @@ describe('AppWalletSwapService', () => {
   });
 
   it('resolves EURC deposit txHash from Circle list when tokenSymbol matches operation tokenIn', async () => {
-    w3sAuthService.getTransaction.mockRejectedValueOnce(
-      new Error('Not found'),
-    );
+    w3sAuthService.getTransaction.mockRejectedValueOnce(new Error('Not found'));
     w3sAuthService.listTransactions.mockResolvedValueOnce({
       transactions: [
         {
@@ -1519,9 +1635,7 @@ describe('AppWalletSwapService', () => {
   });
 
   it('resolves EURC deposit txHash from Circle list when tokenAddress matches operation tokenIn', async () => {
-    w3sAuthService.getTransaction.mockRejectedValueOnce(
-      new Error('Not found'),
-    );
+    w3sAuthService.getTransaction.mockRejectedValueOnce(new Error('Not found'));
     w3sAuthService.listTransactions.mockResolvedValue({
       transactions: [
         {
@@ -1563,9 +1677,7 @@ describe('AppWalletSwapService', () => {
   });
 
   it('resolves EURC deposit txHash when destination is null but token transfer fields match', async () => {
-    w3sAuthService.getTransaction.mockRejectedValueOnce(
-      new Error('Not found'),
-    );
+    w3sAuthService.getTransaction.mockRejectedValueOnce(new Error('Not found'));
     w3sAuthService.listTransactions.mockResolvedValue({
       transactions: [
         {
@@ -1611,9 +1723,7 @@ describe('AppWalletSwapService', () => {
   });
 
   it('persists sanitized EURC candidate shape when only an unknown tokenId is available', async () => {
-    w3sAuthService.getTransaction.mockRejectedValueOnce(
-      new Error('Not found'),
-    );
+    w3sAuthService.getTransaction.mockRejectedValueOnce(new Error('Not found'));
     w3sAuthService.listTransactions.mockResolvedValue({
       transactions: [
         {
@@ -1654,9 +1764,7 @@ describe('AppWalletSwapService', () => {
   });
 
   it('does not resolve EURC deposit txHash when destination mismatches', async () => {
-    w3sAuthService.getTransaction.mockRejectedValueOnce(
-      new Error('Not found'),
-    );
+    w3sAuthService.getTransaction.mockRejectedValueOnce(new Error('Not found'));
     w3sAuthService.listTransactions.mockResolvedValueOnce({
       transactions: [
         {
@@ -1693,9 +1801,7 @@ describe('AppWalletSwapService', () => {
   });
 
   it('does not resolve EURC deposit txHash when amount mismatches', async () => {
-    w3sAuthService.getTransaction.mockRejectedValueOnce(
-      new Error('Not found'),
-    );
+    w3sAuthService.getTransaction.mockRejectedValueOnce(new Error('Not found'));
     w3sAuthService.listTransactions.mockResolvedValueOnce({
       transactions: [
         {
@@ -1732,9 +1838,7 @@ describe('AppWalletSwapService', () => {
   });
 
   it('ignores Circle transaction list entries with the wrong amount', async () => {
-    w3sAuthService.getTransaction.mockRejectedValueOnce(
-      new Error('Not found'),
-    );
+    w3sAuthService.getTransaction.mockRejectedValueOnce(new Error('Not found'));
     w3sAuthService.listTransactions.mockResolvedValueOnce({
       transactions: [
         {
@@ -1836,13 +1940,13 @@ describe('AppWalletSwapService', () => {
     const service = createService();
     const operation = await service.createOperation(baseRequest);
 
-    await expect(service.confirmDeposit(operation.operationId)).rejects.toMatchObject(
-      {
-        response: {
-          code: 'APP_WALLET_SWAP_INVALID_REQUEST',
-        },
+    await expect(
+      service.confirmDeposit(operation.operationId),
+    ).rejects.toMatchObject({
+      response: {
+        code: 'APP_WALLET_SWAP_INVALID_REQUEST',
       },
-    );
+    });
     expect(depositVerifier.verifyDeposit).not.toHaveBeenCalled();
   });
 
@@ -1920,9 +2024,7 @@ describe('AppWalletSwapService', () => {
     const result = await service.confirmDeposit(submitted.operationId);
 
     expect(result.status).toBe('deposit_submitted');
-    expect(result.depositConfirmationError).toContain(
-      'matching USDC transfer',
-    );
+    expect(result.depositConfirmationError).toContain('matching USDC transfer');
     expect(result).not.toHaveProperty('depositConfirmedAt');
   });
 
@@ -2236,12 +2338,17 @@ describe('AppWalletSwapService', () => {
   );
 
   it('never treats a taker delivery hash alone as StableFX settlement evidence', () => {
-    const service = createService() as unknown as {
-      extractStablefxSettlementHash: (raw: unknown) => string | null;
-    };
+    const executor = new AppWalletSwapStablefxExecutorService(
+      stablefxExecutionService as unknown as StablefxExecutionService,
+      new AppWalletSwapCircleExecutorService(
+        circleService as unknown as CircleService,
+        w3sAuthService as unknown as W3sAuthService,
+        blockchainService as unknown as BlockchainService,
+      ),
+    );
 
     expect(
-      service.extractStablefxSettlementHash({
+      executor.extractSettlementHash({
         contractTransactions: {
           takerDeliver: {
             status: 'success',
@@ -2250,6 +2357,79 @@ describe('AppWalletSwapService', () => {
         },
       }),
     ).toBeNull();
+  });
+
+  it('persists the StableFX funding marker before funding submission', async () => {
+    const service = createService();
+    const confirmed = await createConfirmedStablefxOperation(service);
+
+    await service.execute(confirmed.operationId);
+
+    const fundingMarkerCall =
+      prisma.appWalletSwapOperation.update.mock.calls.find(
+        ([call]) => call.data.stablefxFundingRequestedAt instanceof Date,
+      );
+    expect(fundingMarkerCall).toBeDefined();
+    expect(
+      prisma.appWalletSwapOperation.update.mock.invocationCallOrder[
+        prisma.appWalletSwapOperation.update.mock.calls.indexOf(
+          fundingMarkerCall!,
+        )
+      ],
+    ).toBeLessThan(stablefxExecutionService.fund.mock.invocationCallOrder[0]);
+  });
+
+  it('does not fund when pre-funding marker persistence fails', async () => {
+    const service = createService();
+    const confirmed = await createConfirmedStablefxOperation(service);
+    const updateImplementation =
+      prisma.appWalletSwapOperation.update.getMockImplementation()!;
+    prisma.appWalletSwapOperation.update.mockImplementation(async (args) => {
+      if (args.data.stablefxFundingRequestedAt instanceof Date) {
+        throw new Error('synthetic pre-funding persistence failure');
+      }
+      return updateImplementation(args);
+    });
+
+    const result = await service.execute(confirmed.operationId);
+
+    expect(result.executionError).toBe(
+      'synthetic pre-funding persistence failure',
+    );
+    expect(stablefxExecutionService.fund).not.toHaveBeenCalled();
+  });
+
+  it('does not resubmit funding after funding succeeds and funded-state persistence fails', async () => {
+    const service = createService();
+    const confirmed = await createConfirmedStablefxOperation(service);
+    const updateImplementation =
+      prisma.appWalletSwapOperation.update.getMockImplementation()!;
+    let rejectFundedState = true;
+    prisma.appWalletSwapOperation.update.mockImplementation(async (args) => {
+      if (rejectFundedState && args.data.status === 'stablefx_funded') {
+        rejectFundedState = false;
+        throw new Error('synthetic post-funding persistence failure');
+      }
+      return updateImplementation(args);
+    });
+
+    const first = await service.execute(confirmed.operationId);
+    stablefxExecutionService.getTrade.mockReset().mockResolvedValueOnce({
+      id: 'stablefx-trade-1',
+      contractTradeId: '24',
+      status: 'complete',
+      to: { currency: 'USDC', amount: '16' },
+      contractTransactions: {
+        makerDeliver: { status: 'success', txHash: stablefxMakerDeliverTxHash },
+      },
+    });
+    const second = await service.execute(confirmed.operationId);
+
+    expect(first.executionError).toBe(
+      'synthetic post-funding persistence failure',
+    );
+    expect(second.status).toBe('completed');
+    expect(stablefxExecutionService.fund).toHaveBeenCalledTimes(1);
   });
 
   it.each(['breached', 'refunded', 'failed', 'rejected'])(
@@ -2266,7 +2446,7 @@ describe('AppWalletSwapService', () => {
 
       const result = await service.execute(confirmed.operationId);
 
-      expect(result.status).toBe('execution_failed');
+      expect(result.status).toBe('execution_recovery_required');
       expect(circleService.transfer).not.toHaveBeenCalled();
     },
   );
@@ -2300,19 +2480,21 @@ describe('AppWalletSwapService', () => {
 
     const result = await service.execute(operation.operationId);
 
-    expect(result.status).toBe('execution_failed');
+    expect(result.status).toBe('execution_recovery_required');
     expect(result.executionError).toContain(
       'Circle Stablecoin Kits swap response did not include an executable transaction target.',
     );
-    expect(result.executionError).toContain('Top-level keys: amount, apiKey, transaction');
+    expect(result.executionError).toContain(
+      'Top-level keys: amount, apiKey, transaction',
+    );
     expect(result.executionError).toContain('Transaction keys: signature');
-    expect(result.rawTreasurySwap).toMatchObject({
+    expect(
+      appWalletSwapOperationStore.get(operation.operationId)?.rawTreasurySwap,
+    ).toMatchObject({
       prepare: {
         amount: baseRequest.amountIn,
         apiKey: '[REDACTED]',
-        transaction: {
-          signature: '0x1234',
-        },
+        transaction: {},
       },
     });
     expect(circleService.executeContract).not.toHaveBeenCalled();
@@ -2322,13 +2504,17 @@ describe('AppWalletSwapService', () => {
   });
 
   it('normalizes hex quantity instruction values without dropping zero-value instructions', () => {
-    const service = createService() as unknown as {
+    const executor = new AppWalletSwapCircleExecutorService(
+      circleService as unknown as CircleService,
+      w3sAuthService as unknown as W3sAuthService,
+      blockchainService as unknown as BlockchainService,
+    ) as unknown as {
       buildSwapExecuteParams: (executionParams: Record<string, unknown>) => {
         instructions: Array<{ value: bigint }>;
       };
     };
 
-    const result = service.buildSwapExecuteParams({
+    const result = executor.buildSwapExecuteParams({
       instructions: [
         {
           target: '0x1111111111111111111111111111111111111111',
@@ -2498,21 +2684,666 @@ describe('AppWalletSwapService', () => {
     expect(circleService.transfer).not.toHaveBeenCalled();
   });
 
-  it('execute persists execution_failed and preserves prior identifiers', async () => {
+  it('keeps transient payout submission failure retryable and preserves prior identifiers', async () => {
     enableExecutionEnv();
-    circleService.transfer.mockRejectedValueOnce(new Error('Payout unavailable'));
+    circleService.transfer.mockRejectedValueOnce(
+      new Error('Payout unavailable'),
+    );
     const service = createService();
     const operation = await createConfirmedOperation(service);
 
     const result = await service.execute(operation.operationId);
 
     expect(result).toMatchObject({
-      status: 'execution_failed',
+      status: 'payout_pending',
       treasurySwapId: 'treasury-swap-transaction-1',
       treasurySwapActualOutput: '990000',
       executionError: 'Payout unavailable',
     });
     expect(result).not.toHaveProperty('completedAt');
   });
-});
 
+  it('persists payout_pending before payout submission and uses the authoritative treasury output', async () => {
+    enableExecutionEnv();
+    const service = createService();
+    const operation = await createConfirmedOperation(service);
+
+    await service.execute(operation.operationId);
+
+    const pendingCallIndex =
+      prisma.appWalletSwapOperation.update.mock.calls.findIndex(
+        ([call]) => call.data.status === 'payout_pending',
+      );
+    expect(pendingCallIndex).toBeGreaterThanOrEqual(0);
+    expect(
+      prisma.appWalletSwapOperation.update.mock.invocationCallOrder[
+        pendingCallIndex
+      ],
+    ).toBeLessThan(circleService.transfer.mock.invocationCallOrder[0]);
+    expect(circleService.transfer).toHaveBeenCalledWith(
+      expect.objectContaining({
+        amount: '0.99',
+        idempotencyKey: deriveExpectedIdempotencyKey(
+          operation.operationId,
+          'payout',
+        ),
+      }),
+    );
+  });
+
+  it('does not submit a payout when payout_pending persistence fails', async () => {
+    enableExecutionEnv();
+    const service = createService();
+    const operation = await createConfirmedOperation(service);
+    const updateImplementation =
+      prisma.appWalletSwapOperation.update.getMockImplementation()!;
+    prisma.appWalletSwapOperation.update.mockImplementation(async (args) => {
+      if (args.data.status === 'payout_pending') {
+        throw new Error('synthetic payout pending persistence failure');
+      }
+      return updateImplementation(args);
+    });
+
+    const result = await service.execute(operation.operationId);
+
+    expect(circleService.transfer).not.toHaveBeenCalled();
+    expect(result.executionError).toBe(
+      'synthetic payout pending persistence failure',
+    );
+  });
+
+  it('reuses the payout idempotency key after provider success and submitted-state persistence failure', async () => {
+    enableExecutionEnv();
+    const service = createService();
+    const operation = await createConfirmedOperation(service);
+    const updateImplementation =
+      prisma.appWalletSwapOperation.update.getMockImplementation()!;
+    let failSubmittedWrite = true;
+    prisma.appWalletSwapOperation.update.mockImplementation(async (args) => {
+      if (args.data.status === 'payout_submitted' && failSubmittedWrite) {
+        failSubmittedWrite = false;
+        throw new Error('synthetic payout submitted persistence failure');
+      }
+      return updateImplementation(args);
+    });
+
+    const first = await service.execute(operation.operationId);
+    const second = await service.execute(operation.operationId);
+
+    expect(first).toMatchObject({
+      status: 'payout_pending',
+      executionError: 'synthetic payout submitted persistence failure',
+    });
+    expect(second.status).toBe('completed');
+    expect(circleService.transfer).toHaveBeenCalledTimes(2);
+    const firstIdempotencyKey =
+      circleService.transfer.mock.calls[0][0].idempotencyKey;
+    const secondIdempotencyKey =
+      circleService.transfer.mock.calls[1][0].idempotencyKey;
+    expect(firstIdempotencyKey).toBe(
+      deriveExpectedIdempotencyKey(operation.operationId, 'payout'),
+    );
+    expect(secondIdempotencyKey).toBe(firstIdempotencyKey);
+  });
+
+  it('keeps a transient StableFX polling error retryable without replacing the trade', async () => {
+    const service = createService();
+    const confirmed = await createConfirmedStablefxOperation(service);
+    const record = appWalletSwapOperationStore.get(confirmed.operationId)!;
+    appWalletSwapOperationStore.set(confirmed.operationId, {
+      ...record,
+      status: 'stablefx_funded',
+      treasurySwapId: 'existing-stablefx-trade',
+      treasurySwapSubmittedAt: new Date(),
+    });
+    stablefxExecutionService.getTrade
+      .mockReset()
+      .mockRejectedValueOnce(new Error('StableFX temporarily unavailable'));
+
+    const result = await service.execute(confirmed.operationId);
+
+    expect(result).toMatchObject({
+      status: 'stablefx_funded',
+      treasurySwapId: 'existing-stablefx-trade',
+      executionError: 'StableFX temporarily unavailable',
+    });
+    expect(stablefxExecutionService.createTrade).not.toHaveBeenCalled();
+  });
+
+  it('resumes and polls an existing StableFX trade on retry', async () => {
+    const service = createService();
+    const confirmed = await createConfirmedStablefxOperation(service);
+    const record = appWalletSwapOperationStore.get(confirmed.operationId)!;
+    appWalletSwapOperationStore.set(confirmed.operationId, {
+      ...record,
+      status: 'execution_failed',
+      treasurySwapId: 'existing-stablefx-trade',
+      treasurySwapSubmittedAt: new Date(),
+    });
+    stablefxExecutionService.getTrade.mockResolvedValueOnce({
+      id: 'existing-stablefx-trade',
+      status: 'complete',
+      to: { currency: 'USDC', amount: '16' },
+      contractTransactions: {
+        makerDeliver: { status: 'success', txHash: stablefxMakerDeliverTxHash },
+      },
+    });
+
+    const result = await service.execute(confirmed.operationId);
+
+    expect(result.status).toBe('completed');
+    expect(result.treasurySwapId).toBe('existing-stablefx-trade');
+    expect(stablefxExecutionService.getTrade).toHaveBeenCalledWith(
+      'existing-stablefx-trade',
+    );
+    expect(stablefxExecutionService.createTrade).not.toHaveBeenCalled();
+  });
+
+  it('serializes concurrent StableFX execute requests', async () => {
+    const service = createService();
+    const confirmed = await createConfirmedStablefxOperation(service);
+
+    await Promise.all([
+      service.execute(confirmed.operationId),
+      service.execute(confirmed.operationId),
+    ]);
+
+    expect(stablefxExecutionService.createTrade).toHaveBeenCalledTimes(1);
+    expect(stablefxExecutionService.fund).toHaveBeenCalledTimes(1);
+    expect(circleService.transfer).toHaveBeenCalledTimes(1);
+  });
+
+  it('moves an expired StableFX poll window to recovery_required', async () => {
+    process.env.APP_WALLET_SWAP_POLL_TIMEOUT_MS = '1';
+    const service = createService();
+    const confirmed = await createConfirmedStablefxOperation(service);
+    const record = appWalletSwapOperationStore.get(confirmed.operationId)!;
+    appWalletSwapOperationStore.set(confirmed.operationId, {
+      ...record,
+      status: 'stablefx_trade_created',
+      treasurySwapId: 'timed-out-trade',
+      treasurySwapSubmittedAt: new Date(Date.now() - 1000),
+    });
+
+    const result = await service.execute(confirmed.operationId);
+
+    expect(result.status).toBe('execution_recovery_required');
+    expect(result.executionError).toContain('polling timed out');
+    expect(stablefxExecutionService.createTrade).not.toHaveBeenCalled();
+  });
+
+  it('does not complete payout until its on-chain transfer is verified', async () => {
+    enableExecutionEnv();
+    treasuryVerifier.verifyPayout.mockResolvedValueOnce({
+      confirmed: false,
+      error: 'receipt pending',
+    });
+    const service = createService();
+    const operation = await createPayoutSubmittedOperation(service);
+    const record = appWalletSwapOperationStore.get(operation.operationId)!;
+    appWalletSwapOperationStore.set(operation.operationId, {
+      ...record,
+      payoutTxHash:
+        '0xcc019e059ddbbbd32f73c444e350838553779dc027926111366ace5195faa1d5',
+    });
+
+    const result = await service.execute(operation.operationId);
+
+    expect(result.status).toBe('payout_submitted');
+    expect(result).not.toHaveProperty('payoutConfirmedAt');
+    expect(treasuryVerifier.verifyPayout).toHaveBeenCalledTimes(1);
+  });
+
+  it('refunds the verified deposit amount to the original sender at most once', async () => {
+    const service = createService();
+    const confirmed = await createConfirmedStablefxOperation(service);
+    const record = appWalletSwapOperationStore.get(confirmed.operationId)!;
+    appWalletSwapOperationStore.set(confirmed.operationId, {
+      ...record,
+      status: 'execution_recovery_required',
+      executionError: 'manual recovery required',
+    });
+    circleService.getWalletBalance.mockResolvedValueOnce([
+      { amount: '17', tokenAddress: USER_SWAP_EURC_ADDRESS },
+    ]);
+
+    const first = await service.refund(confirmed.operationId);
+    const second = await service.refund(confirmed.operationId);
+
+    expect(first.status).toBe('refunded');
+    expect(second.status).toBe('refunded');
+    expect(first.refundAmount).toBe('17000000');
+    expect(circleService.transfer).toHaveBeenCalledTimes(1);
+    expect(circleService.transfer).toHaveBeenCalledWith(
+      expect.objectContaining({
+        token: 'EURC',
+        toAddress: USER_ADDRESS,
+        amount: '17',
+      }),
+    );
+  });
+
+  it('blocks refund while a funded StableFX trade is still pending', async () => {
+    const service = createService();
+    const confirmed = await createConfirmedStablefxOperation(service);
+    const record = appWalletSwapOperationStore.get(confirmed.operationId)!;
+    appWalletSwapOperationStore.set(confirmed.operationId, {
+      ...record,
+      status: 'execution_recovery_required',
+      treasurySwapId: 'funded-pending-trade',
+      stablefxFundingRequestedAt: new Date(),
+      stablefxFundedAt: new Date(),
+    });
+    stablefxExecutionService.getTrade.mockReset().mockResolvedValueOnce({
+      id: 'funded-pending-trade',
+      status: 'pending_settlement',
+    });
+
+    const result = await service.refund(confirmed.operationId);
+
+    expect(result.status).toBe('execution_recovery_required');
+    expect(result.executionError).toContain('not in a terminal');
+    expect(circleService.transfer).not.toHaveBeenCalled();
+  });
+
+  describe('Phase 0 successful lifecycle characterization', () => {
+    it('preserves the verified StableFX App Wallet lifecycle and terminal idempotency', async () => {
+      const service = createService();
+      const confirmed = await createConfirmedStablefxOperation(service);
+
+      expect(confirmed).toMatchObject({
+        status: 'deposit_confirmed',
+        amountIn: '17000000',
+        depositConfirmedAmount: '17000000',
+      });
+      expect(confirmed.amountIn).toMatch(/^\d+$/);
+      expect(confirmed.depositConfirmedAmount).toMatch(/^\d+$/);
+
+      const completed = await service.execute(confirmed.operationId);
+      const repeated = await service.execute(confirmed.operationId);
+      const persisted = appWalletSwapOperationStore.get(confirmed.operationId)!;
+      const persistedStatuses = [
+        'awaiting_user_deposit',
+        ...prisma.appWalletSwapOperation.update.mock.calls
+          .map((call) => call[0].data.status)
+          .filter((status): status is string => typeof status === 'string'),
+      ];
+
+      expect(persistedStatuses).toEqual(
+        expect.arrayContaining([
+          'awaiting_user_deposit',
+          'deposit_submitted',
+          'deposit_confirmed',
+          'stablefx_quote_requested',
+          'stablefx_trade_created',
+          'stablefx_contract_ready',
+          'stablefx_funded',
+          'treasury_swap_confirmed',
+          'payout_pending',
+          'payout_submitted',
+          'completed',
+        ]),
+      );
+      expect(completed).toMatchObject({
+        status: 'completed',
+        treasurySwapId: 'stablefx-trade-1',
+        treasurySwapQuoteId: 'stablefx-quote-1',
+        treasurySwapActualOutput: '16000000',
+        payoutAmount: '16000000',
+        treasurySwapTxHash: stablefxMakerDeliverTxHash,
+      });
+      expect(completed.treasurySwapActualOutput).toMatch(/^\d+$/);
+      expect(completed.payoutAmount).toMatch(/^\d+$/);
+      expect(repeated).toMatchObject({
+        status: 'completed',
+        treasurySwapId: completed.treasurySwapId,
+        treasurySwapTxHash: completed.treasurySwapTxHash,
+        payoutTxHash: completed.payoutTxHash,
+        completedAt: completed.completedAt,
+      });
+      expect(persisted.status).toBe('completed');
+      expect(
+        stablefxExecutionService.createTradableQuote,
+      ).toHaveBeenCalledTimes(1);
+      expect(stablefxExecutionService.createTrade).toHaveBeenCalledTimes(1);
+      expect(
+        stablefxExecutionService.createFundingPresign,
+      ).toHaveBeenCalledTimes(1);
+      expect(stablefxExecutionService.fund).toHaveBeenCalledTimes(1);
+      expect(circleService.transfer).toHaveBeenCalledTimes(1);
+      expect(depositVerifier.verifyDeposit).toHaveBeenCalledTimes(1);
+      expect(w3sAuthService.getTransaction).not.toHaveBeenCalled();
+      expect(w3sAuthService.listTransactions).not.toHaveBeenCalled();
+      expect(circleService.transfer).toHaveBeenCalledWith(
+        expect.objectContaining({ amount: '16', token: 'USDC' }),
+      );
+    });
+
+    it('keeps a pending StableFX settlement retryable without duplicating trade, funding, payout, or refund', async () => {
+      const service = createService();
+      const confirmed = await createConfirmedStablefxOperation(service);
+      stablefxExecutionService.getTrade.mockReset();
+      stablefxExecutionService.getTrade
+        .mockResolvedValueOnce({
+          id: 'stablefx-trade-1',
+          contractTradeId: '24',
+          status: 'pending_settlement',
+        })
+        .mockResolvedValue({
+          id: 'stablefx-trade-1',
+          contractTradeId: '24',
+          status: 'taker_funded',
+          to: { currency: 'USDC', amount: '16' },
+          contractTransactions: {
+            takerDeliver: {
+              status: 'success',
+              txHash: stablefxTakerDeliverTxHash,
+            },
+            makerDeliver: { status: 'pending' },
+          },
+        });
+
+      const first = await service.execute(confirmed.operationId);
+      const second = await service.execute(confirmed.operationId);
+
+      expect(first).toMatchObject({
+        status: 'stablefx_funded',
+        treasurySwapId: 'stablefx-trade-1',
+      });
+      expect(second).toMatchObject({
+        status: 'stablefx_funded',
+        treasurySwapId: 'stablefx-trade-1',
+      });
+      expect(stablefxExecutionService.createTrade).toHaveBeenCalledTimes(1);
+      expect(
+        stablefxExecutionService.createFundingPresign,
+      ).toHaveBeenCalledTimes(1);
+      expect(stablefxExecutionService.fund).toHaveBeenCalledTimes(1);
+      expect(circleService.transfer).not.toHaveBeenCalled();
+      expect(first).not.toHaveProperty('completedAt');
+      expect(second).not.toHaveProperty('completedAt');
+    });
+  });
+
+  describe('Phase 0 recursive payload regressions', () => {
+    it('does not recursively wrap Circle treasury status polling snapshots', async () => {
+      enableExecutionEnv();
+      const service = createService();
+      const confirmed = await createConfirmedOperation(service);
+      const record = appWalletSwapOperationStore.get(confirmed.operationId)!;
+      appWalletSwapOperationStore.set(confirmed.operationId, {
+        ...record,
+        status: 'treasury_swap_submitted',
+        treasurySwapId: 'existing-treasury-transaction',
+        treasurySwapTxHash: null,
+        treasurySwapSubmittedAt: new Date(),
+        rawTreasurySwap: { submission: { id: 'synthetic-submission' } },
+      });
+      circleService.getTransactionStatus.mockResolvedValueOnce({
+        txId: 'existing-treasury-transaction',
+        status: 'COMPLETE',
+        txHash:
+          '0xfa019e059ddbbbd32f73c444e350838553779dc027926111366ace5195faa1d5',
+        blockNumber: '20',
+        errorReason: null,
+      });
+      treasuryVerifier.verifyTreasurySwap.mockResolvedValueOnce({
+        confirmed: false,
+        error: 'Synthetic receipt is pending.',
+      });
+
+      const result = await service.execute(confirmed.operationId);
+      const persisted = appWalletSwapOperationStore.get(confirmed.operationId)!;
+
+      expect(circleService.executeContract).not.toHaveBeenCalled();
+      expect(circleService.transfer).not.toHaveBeenCalled();
+      expect(collectRecursivePreviousPaths(persisted.rawTreasurySwap)).toEqual(
+        [],
+      );
+    });
+
+    it('does not recursively wrap StableFX contract-ready, funding, and pending-settlement snapshots', async () => {
+      const service = createService();
+      const confirmed = await createConfirmedStablefxOperation(service);
+      stablefxExecutionService.getTrade.mockReset();
+      stablefxExecutionService.getTrade
+        .mockResolvedValueOnce({
+          id: 'stablefx-trade-1',
+          contractTradeId: '24',
+          status: 'pending_settlement',
+        })
+        .mockResolvedValueOnce({
+          id: 'stablefx-trade-1',
+          contractTradeId: '24',
+          status: 'taker_funded',
+          to: { currency: 'USDC', amount: '16' },
+          contractTransactions: { makerDeliver: { status: 'pending' } },
+        });
+
+      const result = await service.execute(confirmed.operationId);
+      const persisted = appWalletSwapOperationStore.get(confirmed.operationId)!;
+
+      expect(result.status).toBe('stablefx_funded');
+      expect(circleService.transfer).not.toHaveBeenCalled();
+      expect(collectRecursivePreviousPaths(persisted.rawTreasurySwap)).toEqual(
+        [],
+      );
+    });
+
+    it('does not recursively wrap the final StableFX settlement snapshot', async () => {
+      const service = createService();
+      const confirmed = await createConfirmedStablefxOperation(service);
+
+      const result = await service.execute(confirmed.operationId);
+      const persisted = appWalletSwapOperationStore.get(confirmed.operationId)!;
+
+      expect(result.status).toBe('completed');
+      expect(collectRecursivePreviousPaths(persisted.rawTreasurySwap)).toEqual(
+        [],
+      );
+    });
+
+    it('does not recursively wrap direct and list-based Circle payout polling snapshots', async () => {
+      enableExecutionEnv();
+      const payoutTxHash =
+        '0xfb019e059ddbbbd32f73c444e350838553779dc027926111366ace5195faa1d5';
+      const service = createService();
+      const operation = await createPayoutSubmittedOperation(service);
+      circleService.getTransactionStatus
+        .mockResolvedValueOnce({
+          txId: 'payout-transaction-queued',
+          status: 'QUEUED',
+          txHash: null,
+          blockNumber: null,
+          errorReason: null,
+        })
+        .mockRejectedValueOnce(
+          new Error('Synthetic direct lookup unavailable.'),
+        );
+      w3sAuthService.listTransactions
+        .mockResolvedValueOnce({ transactions: [] })
+        .mockResolvedValueOnce({
+          transactions: [
+            {
+              id: 'payout-transaction-queued',
+              blockchain: APP_WALLET_SWAP_CHAIN,
+              walletId: 'circle-wallet-arc-1',
+              sourceAddress: TREASURY_ADDRESS,
+              destinationAddress: USER_ADDRESS,
+              tokenSymbol: 'EURC',
+              state: 'COMPLETE',
+              operation: 'TRANSFER',
+              transactionType: 'OUTBOUND',
+              amount: '1.042878',
+              createDate: '2026-05-17T01:01:00.000Z',
+              txHash: payoutTxHash,
+            },
+          ],
+        });
+      treasuryVerifier.verifyPayout.mockResolvedValueOnce({
+        confirmed: false,
+        error: 'Synthetic payout receipt is pending.',
+      });
+
+      const first = await service.execute(operation.operationId);
+      const second = await service.execute(operation.operationId);
+      const persisted = appWalletSwapOperationStore.get(operation.operationId)!;
+
+      expect(first.status).toBe('payout_submitted');
+      expect(second.status).toBe('payout_submitted');
+      expect(second.payoutTxHash).toBe(payoutTxHash);
+      expect(circleService.transfer).not.toHaveBeenCalled();
+      expect(collectRecursivePreviousPaths(persisted.rawPayout)).toEqual([]);
+    });
+
+    it('does not recursively wrap repeated Circle refund status snapshots', async () => {
+      const service = createService();
+      const confirmed = await createConfirmedStablefxOperation(service);
+      const record = appWalletSwapOperationStore.get(confirmed.operationId)!;
+      appWalletSwapOperationStore.set(confirmed.operationId, {
+        ...record,
+        status: 'execution_recovery_required',
+        executionError: 'Synthetic recovery case.',
+      });
+      circleService.getWalletBalance.mockResolvedValueOnce([
+        { amount: '17', tokenAddress: USER_SWAP_EURC_ADDRESS },
+      ]);
+      circleService.transfer.mockResolvedValueOnce({
+        txId: 'refund-transaction-queued',
+        status: 'QUEUED',
+        txHash: null,
+      });
+      circleService.getTransactionStatus.mockResolvedValue({
+        txId: 'refund-transaction-queued',
+        status: 'QUEUED',
+        txHash: null,
+        blockNumber: null,
+        errorReason: null,
+      });
+
+      const first = await service.refund(confirmed.operationId);
+      const second = await service.refund(confirmed.operationId);
+      const persisted = appWalletSwapOperationStore.get(confirmed.operationId)!;
+
+      expect(first.status).toBe('refund_submitted');
+      expect(second.status).toBe('refund_submitted');
+      expect(circleService.transfer).toHaveBeenCalledTimes(1);
+      expect(collectRecursivePreviousPaths(persisted.rawRefund)).toEqual([]);
+    });
+  });
+
+  describe('Phase 0 public payload exposure regressions', () => {
+    it('keeps provider internals in persistence but excludes them from the public operation response', async () => {
+      const service = createService();
+      const confirmed = await createConfirmedStablefxOperation(service);
+      const completed = await service.execute(confirmed.operationId);
+      const persisted = appWalletSwapOperationStore.get(confirmed.operationId)!;
+      const publicOperation = await service.getOperation(confirmed.operationId);
+
+      expect(persisted.rawTreasurySwap).not.toBeNull();
+      expect(
+        collectForbiddenPublicPayloadPaths(persisted.rawTreasurySwap),
+      ).toEqual([]);
+      expect(publicOperation.operationId).toBe(completed.operationId);
+      expect(collectForbiddenPublicPayloadPaths(publicOperation)).toEqual([]);
+    });
+
+    it('does not expose synthetic raw Circle responses from operation persistence', async () => {
+      const service = createService();
+      const operation = await service.createOperation(baseRequest);
+      const record = appWalletSwapOperationStore.get(operation.operationId)!;
+      appWalletSwapOperationStore.set(operation.operationId, {
+        ...record,
+        rawPayout: {
+          rawCircleResponse: {
+            authorizationPayload: '[synthetic-authorization-payload]',
+          },
+        },
+      });
+
+      const publicOperation = await service.getOperation(operation.operationId);
+
+      expect(collectForbiddenPublicPayloadPaths(publicOperation)).toEqual([]);
+    });
+  });
+
+  describe('Phase 0 payout and refund reference preservation', () => {
+    it.each([
+      ['transfer', { transfer: { txId: 'payout-reference-1' } }],
+      ['status', { status: { txId: 'payout-reference-1' } }],
+      [
+        'previous transfer',
+        { previous: { transfer: { txId: 'payout-reference-1' } } },
+      ],
+      [
+        'previous status',
+        { previous: { status: { txId: 'payout-reference-1' } } },
+      ],
+    ])('recovers the Circle payout transaction ID from %s', (_, rawPayout) => {
+      expect(getPayoutTransactionId(rawPayout)).toBe('payout-reference-1');
+    });
+
+    it('retains a payout transaction ID after more than one historical snapshot', () => {
+      expect(
+        getPayoutTransactionId({
+          previous: {
+            previous: { transfer: { txId: 'payout-reference-deep' } },
+          },
+        }),
+      ).toBe('payout-reference-deep');
+    });
+
+    it('preserves the dedicated refund transaction ID and does not resubmit the refund', async () => {
+      enableExecutionEnv();
+      const service = createService();
+      const confirmed = await createConfirmedOperation(service);
+      const record = appWalletSwapOperationStore.get(confirmed.operationId)!;
+      appWalletSwapOperationStore.set(confirmed.operationId, {
+        ...record,
+        status: 'execution_recovery_required',
+        executionError: 'Synthetic recovery case.',
+      });
+      circleService.getWalletBalance.mockResolvedValueOnce([
+        { amount: '1', tokenAddress: USER_SWAP_USDC_ADDRESS },
+      ]);
+      circleService.transfer.mockResolvedValueOnce({
+        txId: 'refund-reference-1',
+        status: 'QUEUED',
+        txHash: null,
+      });
+      circleService.getTransactionStatus.mockResolvedValue({
+        txId: 'refund-reference-1',
+        status: 'QUEUED',
+        txHash: null,
+        blockNumber: null,
+        errorReason: null,
+      });
+
+      const first = await service.refund(confirmed.operationId);
+      const persistedAfterFirst = appWalletSwapOperationStore.get(
+        confirmed.operationId,
+      )!;
+      const second = await service.refund(confirmed.operationId);
+
+      expect(persistedAfterFirst.executionError).toBeNull();
+      expect(persistedAfterFirst).toMatchObject({
+        status: 'refund_submitted',
+        refundTransactionId: 'refund-reference-1',
+      });
+      expect(first.status).toBe('refund_submitted');
+      expect(first.refundTransactionId).toBe('refund-reference-1');
+      expect(second.refundTransactionId).toBe('refund-reference-1');
+      expect(persistedAfterFirst.rawRefund).toMatchObject({
+        provider: 'circle',
+        transactionId: 'refund-reference-1',
+      });
+      expect(
+        collectRecursivePreviousPaths(persistedAfterFirst.rawRefund),
+      ).toEqual([]);
+      expect(circleService.getTransactionStatus).toHaveBeenCalledWith(
+        'refund-reference-1',
+      );
+      expect(circleService.transfer).toHaveBeenCalledTimes(1);
+    });
+  });
+});
