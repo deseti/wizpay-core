@@ -117,6 +117,7 @@ model AppWalletSwapOperation {
   minimumOutput              Json?
   expiresAt                  String
   status                     String
+  executionProvider          String?
   quoteId                    Json?
   rawQuote                   Json?
   depositTxHash              String?

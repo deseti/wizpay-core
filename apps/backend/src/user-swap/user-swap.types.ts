@@ -65,6 +65,7 @@ export interface UserSwapBaseRequest {
 export interface UserSwapQuoteRequest extends UserSwapBaseRequest {
   provider?: string;
   slippageBps?: number;
+  allowProviderFallback?: boolean;
 }
 
 export interface UserSwapPrepareRequest extends UserSwapBaseRequest {

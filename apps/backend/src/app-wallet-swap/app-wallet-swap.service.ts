@@ -3,7 +3,6 @@ import {
   BadRequestException,
   BadGatewayException,
   Injectable,
-  Logger,
   NotFoundException,
   ServiceUnavailableException,
 } from '@nestjs/common';
@@ -13,21 +12,14 @@ import {
   USER_SWAP_USDC_ADDRESS,
   UserSwapService,
 } from '../user-swap/user-swap.service';
-import { AppWalletSwapDepositVerifierService } from './app-wallet-swap-deposit-verifier.service';
 import { AppWalletSwapCircleExecutorService } from './app-wallet-swap-circle-executor.service';
 import {
-  buildDepositResolutionDiagnostic,
   equalsIgnoreCase,
-  findMatchingCircleDepositTransaction,
   isFailedCircleTransactionStatus,
   normalizeTokenAmountToBaseUnits,
-  type CircleDepositTransactionMatch,
 } from './app-wallet-swap-circle-transaction-matcher';
-import {
-  mapAppWalletSwapOperationRecord,
-  toPublicAppWalletSwapOperation,
-  toPublicAppWalletSwapQuote,
-} from './app-wallet-swap-operation.mapper';
+import { AppWalletSwapDepositService } from './app-wallet-swap-deposit.service';
+import { mapAppWalletSwapOperationRecord } from './app-wallet-swap-operation.mapper';
 import {
   AppWalletSwapOperationRepository,
   toAppWalletSwapNullableJson,
@@ -36,6 +28,11 @@ import {
   describeAppWalletSwapPayloadShape,
   sanitizeAppWalletSwapPayload,
 } from './app-wallet-swap-payload-sanitizer';
+import {
+  toPublicAppWalletSwapOperation,
+  toPublicAppWalletSwapQuote,
+} from './app-wallet-swap-public.mapper';
+import { AppWalletSwapRefundService } from './app-wallet-swap-refund.service';
 import {
   extractCircleTransactionHash as extractCircleTransactionHashFromPayload,
   getNestedString as getNestedStringFromPayload,
@@ -46,8 +43,6 @@ import { AppWalletSwapTreasuryVerifierService } from './app-wallet-swap-treasury
 import {
   AppWalletSwapStablefxExecutorService,
   AppWalletSwapStablefxResponseError,
-  type AppWalletSwapStablefxApprovalResult,
-  type AppWalletSwapStablefxTradeState,
 } from './app-wallet-swap-stablefx-executor.service';
 import {
   APP_WALLET_SWAP_CHAIN,
@@ -57,6 +52,7 @@ import {
   AppWalletSwapDepositTxHashRequest,
   AppWalletSwapOperationRequest,
   AppWalletSwapOperationResponse,
+  AppWalletSwapProvider,
   AppWalletSwapQuoteRequest,
   AppWalletSwapQuoteResponse,
   AppWalletSwapToken,
@@ -73,8 +69,6 @@ const TOKEN_DECIMALS_BY_SYMBOL: Record<AppWalletSwapToken, number> = {
 };
 const DEFAULT_QUOTE_TTL_MS = 5 * 60 * 1000;
 const STABLEFX_MIN_BASE_UNITS = 10_000_000n;
-const STABLEFX_APP_WALLET_PAIRS = new Set(['USDC->EURC', 'EURC->USDC']);
-const DEFAULT_EXECUTION_POLL_TIMEOUT_MS = 10 * 60 * 1000;
 const DEFAULT_PROVIDER_REQUEST_TIMEOUT_MS = 20 * 1000;
 const EXECUTION_LEASE_MS = 15 * 60 * 1000;
 const UUID_PATTERN =
@@ -84,11 +78,10 @@ class TerminalExecutionError extends Error {}
 
 @Injectable()
 export class AppWalletSwapService {
-  private readonly logger = new Logger(AppWalletSwapService.name);
-
   constructor(
     private readonly userSwapService: UserSwapService,
-    private readonly depositVerifier: AppWalletSwapDepositVerifierService,
+    private readonly depositService: AppWalletSwapDepositService,
+    private readonly refundService: AppWalletSwapRefundService,
     private readonly treasuryVerifier: AppWalletSwapTreasuryVerifierService,
     private readonly circleExecutor: AppWalletSwapCircleExecutorService,
     private readonly stablefxExecutor: AppWalletSwapStablefxExecutorService,
@@ -114,8 +107,35 @@ export class AppWalletSwapService {
       toAddress: normalized.fromAddress,
       tokenIn: normalized.tokenIn,
       tokenOut: normalized.tokenOut,
+      ...(normalized.provider
+        ? {
+            provider: normalized.provider,
+            allowProviderFallback: false,
+          }
+        : {}),
     });
-    const quoteProvider = this.toAppWalletQuoteProvider(userSwapQuote.provider);
+    const quoteProvider = this.resolveAppWalletExecutionProvider(
+      userSwapQuote.provider,
+      userSwapQuote.raw,
+    );
+
+    if (normalized.provider && quoteProvider !== normalized.provider) {
+      throw new BadGatewayException({
+        code: APP_WALLET_SWAP_ERROR_CODES.EXECUTION_PROVIDER_INVALID,
+        message:
+          'App Wallet quote provider did not match the explicitly requested provider.',
+      });
+    }
+
+    if (
+      quoteProvider === 'stablefx' &&
+      BigInt(normalized.amountIn) < STABLEFX_MIN_BASE_UNITS
+    ) {
+      throw new BadRequestException({
+        code: APP_WALLET_SWAP_ERROR_CODES.STABLEFX_MIN_AMOUNT,
+        message: 'StableFX requires a minimum amount of 10 for this pair.',
+      });
+    }
 
     return {
       operationMode: APP_WALLET_SWAP_MODE,
@@ -139,7 +159,9 @@ export class AppWalletSwapService {
   ): Promise<AppWalletSwapOperationResponse> {
     const quote = await this.buildQuote(request);
     const now = new Date().toISOString();
-    const operation: AppWalletSwapOperationResponse = {
+    const operation: AppWalletSwapOperationResponse & {
+      provider: AppWalletSwapProvider;
+    } = {
       ...quote,
       operationId: randomUUID(),
       status: 'awaiting_user_deposit',
@@ -185,290 +207,26 @@ export class AppWalletSwapService {
     operationId: string,
     request: AppWalletSwapDepositRequest,
   ): Promise<AppWalletSwapOperationResponse> {
-    this.assertOperationId(operationId);
-
-    const operation = await this.getOperationForExecution(operationId);
-
-    if (operation.status !== 'awaiting_user_deposit') {
-      throw new BadRequestException({
-        code: APP_WALLET_SWAP_ERROR_CODES.INVALID_REQUEST,
-        message: 'App Wallet swap operation is not awaiting a user deposit.',
-      });
-    }
-
-    const depositTxHash = this.normalizeOptionalString(request.depositTxHash);
-    const circleWalletId = this.normalizeOptionalString(request.circleWalletId);
-    const circleTransactionId = this.normalizeOptionalString(
-      request.circleTransactionId,
-    );
-    const circleReferenceId = this.normalizeOptionalString(
-      request.circleReferenceId,
-    );
-
-    if (
-      !depositTxHash &&
-      !circleTransactionId &&
-      !circleReferenceId &&
-      !circleWalletId
-    ) {
-      throw new BadRequestException({
-        code: APP_WALLET_SWAP_ERROR_CODES.INVALID_REQUEST,
-        message:
-          'Provide depositTxHash, circleTransactionId, circleReferenceId, or circleWalletId.',
-      });
-    }
-
-    if (depositTxHash) {
-      this.assertDepositTxHash(depositTxHash);
-    }
-
-    const now = new Date().toISOString();
-    const updatedOperation = this.mapOperationRecord(
-      await this.operationRepository.update(operationId, {
-        status: 'deposit_submitted',
-        ...(depositTxHash ? { depositTxHash } : {}),
-        ...(circleWalletId ? { circleWalletId } : {}),
-        ...(circleTransactionId ? { circleTransactionId } : {}),
-        ...(circleReferenceId ? { circleReferenceId } : {}),
-        depositSubmittedAt: new Date(now),
-        updatedAt: new Date(now),
-      }),
-    );
-
-    if (!updatedOperation.depositTxHash) {
-      return this.resolveDepositTxHash(updatedOperation.operationId).catch(() =>
-        this.toPublicOperation(updatedOperation),
-      );
-    }
-
-    return this.toPublicOperation(updatedOperation);
+    return this.depositService.submitDeposit(operationId, request);
   }
 
   async attachDepositTxHash(
     operationId: string,
     request: AppWalletSwapDepositTxHashRequest,
   ): Promise<AppWalletSwapOperationResponse> {
-    this.assertOperationId(operationId);
-
-    const operation = await this.getOperationForExecution(operationId);
-
-    if (operation.status !== 'deposit_submitted') {
-      throw new BadRequestException({
-        code: APP_WALLET_SWAP_ERROR_CODES.INVALID_REQUEST,
-        message:
-          'App Wallet swap operation must be deposit_submitted before attaching a deposit txHash.',
-      });
-    }
-
-    const depositTxHash = this.normalizeOptionalString(request.depositTxHash);
-
-    if (!depositTxHash) {
-      throw new BadRequestException({
-        code: APP_WALLET_SWAP_ERROR_CODES.INVALID_REQUEST,
-        message: 'depositTxHash is required.',
-      });
-    }
-
-    this.assertDepositTxHash(depositTxHash);
-
-    return this.toPublicOperation(
-      this.mapOperationRecord(
-        await this.operationRepository.update(operationId, {
-          depositTxHash,
-          depositConfirmationError: null,
-          updatedAt: new Date(),
-        }),
-      ),
-    );
+    return this.depositService.attachDepositTxHash(operationId, request);
   }
 
   async resolveDepositTxHash(
     operationId: string,
   ): Promise<AppWalletSwapOperationResponse> {
-    this.assertOperationId(operationId);
-
-    const operation = await this.getOperationForExecution(operationId);
-
-    if (operation.status !== 'deposit_submitted') {
-      throw new BadRequestException({
-        code: APP_WALLET_SWAP_ERROR_CODES.INVALID_REQUEST,
-        message:
-          'App Wallet swap operation must be deposit_submitted before resolving a deposit txHash.',
-      });
-    }
-
-    if (operation.depositTxHash) {
-      return this.toPublicOperation(operation);
-    }
-
-    const lookupIds = [
-      operation.circleTransactionId,
-      operation.circleReferenceId,
-    ].filter((value): value is string => Boolean(value));
-
-    if (lookupIds.length === 0 && !operation.circleWalletId) {
-      throw new BadRequestException({
-        code: APP_WALLET_SWAP_ERROR_CODES.INVALID_REQUEST,
-        message:
-          'Circle transaction, reference id, or wallet id is required before resolving a deposit txHash.',
-      });
-    }
-
-    for (const lookupId of lookupIds) {
-      const transactionResponse = await this.circleExecutor
-        .getW3sTransaction(lookupId)
-        .catch(() => null);
-      const directMatch = findMatchingCircleDepositTransaction(
-        transactionResponse,
-        operation,
-        TOKEN_ADDRESS_BY_SYMBOL,
-      );
-      this.logRelaxedCircleDepositMatch(directMatch, operation);
-      const depositTxHash = extractCircleTransactionHashFromPayload(
-        directMatch?.transaction,
-      );
-
-      if (depositTxHash) {
-        return this.attachDepositTxHash(operationId, { depositTxHash });
-      }
-    }
-
-    const listTransactionsParams = operation.circleWalletId
-      ? { walletIds: operation.circleWalletId }
-      : {
-          blockchain: APP_WALLET_SWAP_CHAIN,
-          destinationAddress: operation.treasuryDepositAddress,
-        };
-
-    const transactionListResponse = await this.circleExecutor
-      .listW3sTransactions(listTransactionsParams)
-      .catch(() => null);
-
-    const matchingDeposit = findMatchingCircleDepositTransaction(
-      transactionListResponse,
-      operation,
-      TOKEN_ADDRESS_BY_SYMBOL,
-    );
-    this.logRelaxedCircleDepositMatch(matchingDeposit, operation);
-    const listDepositTxHash = extractCircleTransactionHashFromPayload(
-      matchingDeposit?.transaction,
-    );
-
-    if (listDepositTxHash) {
-      return this.attachDepositTxHash(operationId, {
-        depositTxHash: listDepositTxHash,
-      });
-    }
-
-    const diagnostic = buildDepositResolutionDiagnostic(
-      transactionListResponse,
-      operation,
-      TOKEN_ADDRESS_BY_SYMBOL,
-    );
-
-    if (diagnostic) {
-      this.logger.warn(
-        `App Wallet ${operation.tokenIn} deposit txHash unresolved for operation ${operation.operationId}: ${diagnostic}`,
-      );
-    }
-
-    return this.toPublicOperation(
-      this.mapOperationRecord(
-        await this.operationRepository.update(operationId, {
-          depositConfirmationError: diagnostic
-            ? `Deposit txHash is not available from Circle yet. Retry shortly. Candidate transaction shapes: ${diagnostic}`
-            : 'Deposit txHash is not available from Circle yet. Retry shortly.',
-          updatedAt: new Date(),
-        }),
-      ),
-    );
-  }
-
-  private logRelaxedCircleDepositMatch(
-    match: CircleDepositTransactionMatch | null,
-    operation: AppWalletSwapOperationResponse,
-  ): void {
-    if (match?.destinationAddressMissing) {
-      this.logger.log(
-        `App Wallet ${operation.tokenIn} deposit txHash matched operation ${operation.operationId} by token transfer fields with no Circle destinationAddress.`,
-      );
-    }
+    return this.depositService.resolveDepositTxHash(operationId);
   }
 
   async confirmDeposit(
     operationId: string,
   ): Promise<AppWalletSwapOperationResponse> {
-    this.assertOperationId(operationId);
-
-    const operation = await this.getOperationForExecution(operationId);
-
-    if (operation.status !== 'deposit_submitted') {
-      throw new BadRequestException({
-        code: APP_WALLET_SWAP_ERROR_CODES.INVALID_REQUEST,
-        message:
-          'App Wallet swap operation must be deposit_submitted before deposit confirmation.',
-      });
-    }
-
-    const now = new Date().toISOString();
-
-    if (!operation.depositTxHash) {
-      return this.toPublicOperation(
-        this.mapOperationRecord(
-          await this.operationRepository.update(operationId, {
-            depositConfirmationError:
-              'Deposit txHash is not available yet. Circle reference alone is not on-chain confirmation.',
-            updatedAt: new Date(now),
-          }),
-        ),
-      );
-    }
-
-    const verification = await this.depositVerifier
-      .verifyDeposit({
-        amountIn: operation.amountIn,
-        depositTxHash: operation.depositTxHash,
-        tokenIn: operation.tokenIn,
-        treasuryDepositAddress: operation.treasuryDepositAddress,
-        userWalletAddress: operation.userWalletAddress,
-      })
-      .catch(() => null);
-
-    if (!verification) {
-      return this.toPublicOperation(
-        this.mapOperationRecord(
-          await this.operationRepository.update(operationId, {
-            depositConfirmationError:
-              'Deposit could not be verified on-chain yet. Retry after the transaction is indexed.',
-            updatedAt: new Date(now),
-          }),
-        ),
-      );
-    }
-
-    if (!verification.confirmed) {
-      return this.toPublicOperation(
-        this.mapOperationRecord(
-          await this.operationRepository.update(operationId, {
-            depositConfirmationError:
-              verification.error ?? 'Deposit could not be confirmed on-chain.',
-            updatedAt: new Date(now),
-          }),
-        ),
-      );
-    }
-
-    return this.toPublicOperation(
-      this.mapOperationRecord(
-        await this.operationRepository.update(operationId, {
-          status: 'deposit_confirmed',
-          depositConfirmedAt: new Date(now),
-          depositConfirmedAmount: verification.confirmedAmount,
-          depositConfirmationError: null,
-          updatedAt: new Date(now),
-        }),
-      ),
-    );
+    return this.depositService.confirmDeposit(operationId);
   }
 
   async execute(operationId: string): Promise<AppWalletSwapOperationResponse> {
@@ -512,6 +270,7 @@ export class AppWalletSwapService {
   async refund(operationId: string): Promise<AppWalletSwapOperationResponse> {
     this.assertOperationId(operationId);
     let operation = await this.getOperationForExecution(operationId);
+    this.assertPersistedExecutionProvider(operation);
 
     if (operation.status === 'refunded') {
       return this.toPublicOperation(operation);
@@ -530,24 +289,7 @@ export class AppWalletSwapService {
       });
     }
 
-    const leaseId = randomUUID();
-    if (!(await this.claimExecution(operationId, leaseId))) {
-      return this.getOperation(operationId);
-    }
-
-    try {
-      operation = await this.getOperationForExecution(operationId);
-      operation = await this.submitRefundIfSafe(operation);
-      return this.toPublicOperation(
-        await this.confirmRefundIfPossible(operation),
-      );
-    } catch (error) {
-      return this.toPublicOperation(
-        await this.markExecutionError(operationId, error),
-      );
-    } finally {
-      await this.releaseExecution(operationId, leaseId);
-    }
+    return this.refundService.recover(operationId);
   }
 
   private async claimExecution(
@@ -660,12 +402,14 @@ export class AppWalletSwapService {
     }
 
     this.assertExecutionEnabled();
-    this.assertTreasuryExecutionConfig();
+    this.assertTreasuryExecutionConfig(operation.provider);
   }
 
-  private assertTreasuryExecutionConfig(): void {
-    const isStablefx =
-      process.env.WIZPAY_SWAP_PROVIDER?.trim().toLowerCase() === 'stablefx';
+  private assertTreasuryExecutionConfig(
+    provider: AppWalletSwapProvider | undefined,
+  ): void {
+    this.assertPersistedExecutionProviderValue(provider);
+    const isStablefx = provider === 'stablefx';
     const missing = [
       'CIRCLE_WALLET_ID_ARC',
       'CIRCLE_WALLET_ADDRESS_ARC',
@@ -696,18 +440,7 @@ export class AppWalletSwapService {
     operation: AppWalletSwapOperationResponse,
   ): Promise<AppWalletSwapOperationResponse> {
     if (this.isStablefxOperation(operation)) {
-      if (
-        operation.treasurySwapConfirmedAt &&
-        operation.treasurySwapActualOutput
-      ) {
-        return operation;
-      }
-
-      if (operation.treasurySwapId) {
-        return operation;
-      }
-
-      return this.submitStablefxTreasurySwap(operation);
+      return this.stablefxExecutor.submitTreasurySwapIfNeeded(operation);
     }
 
     if (operation.treasurySwapId || operation.treasurySwapTxHash) {
@@ -806,67 +539,11 @@ export class AppWalletSwapService {
     );
   }
 
-  private async submitStablefxTreasurySwap(
-    operation: AppWalletSwapOperationResponse,
-  ): Promise<AppWalletSwapOperationResponse> {
-    const now = new Date();
-    const treasuryAddress = this.getArcTreasuryDepositAddress();
-    const treasuryWalletId = this.getArcTreasuryWalletId();
-    const amountIn = operation.depositConfirmedAmount ?? operation.amountIn;
-
-    const pendingOperation = this.mapOperationRecord(
-      await this.operationRepository.update(operation.operationId, {
-        status: 'stablefx_quote_requested',
-        executionError: null,
-        updatedAt: now,
-      }),
-    );
-    const execution = await this.stablefxExecutor.createTradeExecution({
-      amountIn,
-      approvalIdempotencyKey: this.deriveIdempotencyKey(
-        pendingOperation.operationId,
-        `stablefx-${pendingOperation.tokenIn.toLowerCase()}-permit2-approval`,
-      ),
-      approvalRefId: `APP-WALLET-SWAP-${pendingOperation.operationId}-STABLEFX-${pendingOperation.tokenIn}-APPROVAL`,
-      chain: APP_WALLET_SWAP_CHAIN,
-      tokenIn: pendingOperation.tokenIn,
-      tokenInAddress: TOKEN_ADDRESS_BY_SYMBOL[pendingOperation.tokenIn],
-      tokenOut: pendingOperation.tokenOut,
-      tradeIdempotencyKey: this.deriveIdempotencyKey(
-        pendingOperation.operationId,
-        'stablefx-create-trade',
-      ),
-      treasuryAddress,
-      treasuryWalletId,
-    });
-    this.logStablefxTreasuryApproval(execution.approval);
-
-    return this.mapOperationRecord(
-      await this.operationRepository.update(pendingOperation.operationId, {
-        status: 'stablefx_trade_created',
-        treasurySwapId: execution.tradeId,
-        treasurySwapQuoteId: execution.quoteId,
-        treasurySwapSubmittedAt: new Date(),
-        treasurySwapExpectedOutput: toAppWalletSwapNullableJson(
-          execution.expectedOutput,
-        ),
-        rawTreasurySwap: toAppWalletSwapNullableJson({
-          provider: 'stablefx',
-          approval: execution.approval,
-          quote: this.sanitizeForPersistence(execution.quote),
-          trade: this.sanitizeForPersistence(execution.trade),
-        }),
-        executionError: null,
-        updatedAt: new Date(),
-      }),
-    );
-  }
-
   private async confirmTreasurySwapIfPossible(
     operation: AppWalletSwapOperationResponse,
   ): Promise<AppWalletSwapOperationResponse> {
     if (this.isStablefxOperation(operation)) {
-      return this.confirmStablefxTreasurySwapIfPossible(operation);
+      return this.stablefxExecutor.confirmTreasurySwapIfPossible(operation);
     }
 
     if (
@@ -961,162 +638,6 @@ export class AppWalletSwapService {
     );
   }
 
-  private async confirmStablefxTreasurySwapIfPossible(
-    operation: AppWalletSwapOperationResponse,
-  ): Promise<AppWalletSwapOperationResponse> {
-    if (
-      operation.treasurySwapConfirmedAt &&
-      operation.treasurySwapActualOutput
-    ) {
-      return operation;
-    }
-
-    if (!operation.treasurySwapId) {
-      return operation;
-    }
-
-    const tradeId = operation.treasurySwapId;
-    this.assertExecutionPollingWithinDeadline(operation);
-    let tradeState = await this.pollStablefxTrade(tradeId);
-    let trade = tradeState.raw;
-    const contractTradeId = tradeState.contractTradeId;
-    const status = tradeState.status;
-
-    if (tradeState.isFailure) {
-      throw new TerminalExecutionError(
-        `StableFX Treasury trade failed with status ${status}.`,
-      );
-    }
-
-    if (
-      contractTradeId &&
-      !operation.stablefxFundingRequestedAt &&
-      operation.status !== 'stablefx_funded' &&
-      operation.status !== 'stablefx_settled_to_treasury'
-    ) {
-      operation = this.mapOperationRecord(
-        await this.operationRepository.update(operation.operationId, {
-          status: 'stablefx_contract_ready',
-          rawTreasurySwap: toAppWalletSwapNullableJson({
-            provider: 'stablefx',
-            tradeId,
-            contractTradeId,
-            providerStatus: status,
-            trade: this.sanitizeForPersistence(trade),
-            observedAt: new Date().toISOString(),
-          }),
-          updatedAt: new Date(),
-        }),
-      );
-
-      const funding = await this.stablefxExecutor.prepareFunding({
-        contractTradeId,
-        memo: `WizPay App Wallet StableFX ${operation.tokenIn}->${operation.tokenOut} funding`,
-        treasuryWalletId: this.getArcTreasuryWalletId(),
-      });
-      operation = this.mapOperationRecord(
-        await this.operationRepository.update(operation.operationId, {
-          stablefxFundingRequestedAt: new Date(),
-          updatedAt: new Date(),
-        }),
-      );
-      const fund = await this.stablefxExecutor.fundTrade(funding.request);
-      const fundState = this.stablefxExecutor.interpretTrade(fund);
-
-      operation = this.mapOperationRecord(
-        await this.operationRepository.update(operation.operationId, {
-          status: 'stablefx_funded',
-          rawTreasurySwap: toAppWalletSwapNullableJson({
-            provider: 'stablefx',
-            tradeId,
-            contractTradeId,
-            providerStatus: fundState.status,
-            fund: this.sanitizeForPersistence(fund),
-            observedAt: new Date().toISOString(),
-          }),
-          updatedAt: new Date(),
-        }),
-      );
-
-      operation = this.mapOperationRecord(
-        await this.operationRepository.update(operation.operationId, {
-          stablefxFundedAt: new Date(),
-          updatedAt: new Date(),
-        }),
-      );
-      tradeState = await this.pollStablefxTrade(tradeId);
-      trade = tradeState.raw;
-    }
-
-    const settlementHash = tradeState.settlementHash;
-    const finalStatus = tradeState.status;
-
-    if (tradeState.isFailure) {
-      throw new TerminalExecutionError(
-        `StableFX Treasury trade failed with status ${finalStatus}.`,
-      );
-    }
-
-    if (!tradeState.isSettlementComplete) {
-      return this.mapOperationRecord(
-        await this.operationRepository.update(operation.operationId, {
-          rawTreasurySwap: toAppWalletSwapNullableJson({
-            provider: 'stablefx',
-            tradeId,
-            contractTradeId,
-            providerStatus: finalStatus,
-            trade: this.sanitizeForPersistence(trade),
-            observedAt: new Date().toISOString(),
-          }),
-          updatedAt: new Date(),
-        }),
-      );
-    }
-
-    const actualOutput =
-      tradeState.actualOutput ??
-      this.stringifyAmount(operation.treasurySwapExpectedOutput);
-
-    if (!actualOutput) {
-      return operation;
-    }
-
-    return this.mapOperationRecord(
-      await this.operationRepository.update(operation.operationId, {
-        status: 'treasury_swap_confirmed',
-        treasurySwapTxHash: settlementHash,
-        treasurySwapConfirmedAt: new Date(),
-        treasurySwapActualOutput: actualOutput,
-        rawTreasurySwap: toAppWalletSwapNullableJson({
-          provider: 'stablefx',
-          tradeId,
-          contractTradeId,
-          providerStatus: finalStatus,
-          settlementTxHash: settlementHash,
-          trade: this.sanitizeForPersistence(trade),
-          observedAt: new Date().toISOString(),
-        }),
-        executionError: null,
-        updatedAt: new Date(),
-      }),
-    );
-  }
-
-  private logStablefxTreasuryApproval(
-    approval: AppWalletSwapStablefxApprovalResult,
-  ): void {
-    this.logger.log(
-      `[stablefx-app-wallet-treasury-approval] provider=stablefx ` +
-        `tokenIn=${approval.tokenIn} tokenAddress=${approval.tokenAddress} ` +
-        `treasuryAddress=${approval.treasuryAddress} ` +
-        `approvalTarget=${approval.approvalTarget} ` +
-        `messageSpender=${approval.messageSpender ?? 'unavailable'} ` +
-        `allowanceBefore=${approval.allowanceBefore} ` +
-        `approvalTxHash=${approval.approvalTxHash ?? 'not_required'} ` +
-        `allowanceAfter=${approval.allowanceAfter}`,
-    );
-  }
-
   private async submitPayoutIfNeeded(
     operation: AppWalletSwapOperationResponse,
   ): Promise<AppWalletSwapOperationResponse> {
@@ -1163,169 +684,6 @@ export class AppWalletSwapService {
         rawPayout: toAppWalletSwapNullableJson(payout.snapshot),
         executionError: null,
         updatedAt: new Date(),
-      }),
-    );
-  }
-
-  private async submitRefundIfSafe(
-    operation: AppWalletSwapOperationResponse,
-  ): Promise<AppWalletSwapOperationResponse> {
-    if (operation.refundSubmittedAt || operation.refundTransactionId) {
-      return operation;
-    }
-
-    const refundAmount = operation.depositConfirmedAmount;
-    if (
-      !refundAmount ||
-      operation.treasurySwapConfirmedAt ||
-      operation.payoutSubmittedAt
-    ) {
-      throw new TerminalExecutionError(
-        'Refund is not safe because the verified deposit amount is unavailable or settlement/payout has already advanced.',
-      );
-    }
-
-    const fundingWasAttempted =
-      Boolean(operation.stablefxFundingRequestedAt) ||
-      Boolean(operation.stablefxFundedAt) ||
-      this.containsObjectKey(operation.rawTreasurySwap, 'fund');
-    if (fundingWasAttempted) {
-      if (!operation.treasurySwapId) {
-        throw new TerminalExecutionError(
-          'Refund is blocked because StableFX funding was submitted without a recoverable trade identifier.',
-        );
-      }
-      const trade = await this.pollStablefxTrade(operation.treasurySwapId);
-      if (!trade.isFailure) {
-        throw new TerminalExecutionError(
-          'Refund is blocked while the funded StableFX trade is not in a terminal failure/refund state.',
-        );
-      }
-    }
-
-    const balances = await this.withProviderTimeout(
-      this.circleExecutor.getWalletBalance(
-        this.getArcTreasuryWalletId(),
-        TOKEN_ADDRESS_BY_SYMBOL[operation.tokenIn],
-      ),
-      'Treasury balance verification timed out.',
-    );
-    const matchingBalance = balances.find((balance) =>
-      equalsIgnoreCase(
-        balance.tokenAddress,
-        TOKEN_ADDRESS_BY_SYMBOL[operation.tokenIn],
-      ),
-    );
-    const available = matchingBalance
-      ? normalizeTokenAmountToBaseUnits(
-          matchingBalance.amount,
-          TOKEN_DECIMALS_BY_SYMBOL[operation.tokenIn],
-        )
-      : null;
-
-    if (available === null || available < BigInt(refundAmount)) {
-      throw new TerminalExecutionError(
-        `Refund is blocked because the treasury does not hold the verified ${operation.tokenIn} deposit amount.`,
-      );
-    }
-
-    operation = this.mapOperationRecord(
-      await this.operationRepository.update(operation.operationId, {
-        status: 'refund_pending',
-        refundAmount,
-        executionError: null,
-        updatedAt: new Date(),
-      }),
-    );
-    const transfer = await this.circleExecutor.submitTransfer({
-      walletId: this.getArcTreasuryWalletId(),
-      network: APP_WALLET_SWAP_CHAIN,
-      token: operation.tokenIn,
-      toAddress: operation.userWalletAddress,
-      amount: this.circleExecutor.formatBaseUnits(refundAmount, 6),
-      idempotencyKey: this.deriveIdempotencyKey(
-        operation.operationId,
-        'deposit-refund',
-      ),
-    });
-
-    return this.mapOperationRecord(
-      await this.operationRepository.update(operation.operationId, {
-        status: 'refund_submitted',
-        refundTransactionId: transfer.txId,
-        refundTxHash: validTransactionHashOrNull(transfer.txHash),
-        refundSubmittedAt: new Date(),
-        rawRefund: toAppWalletSwapNullableJson({
-          provider: 'circle',
-          transactionId: transfer.txId,
-          txHash: validTransactionHashOrNull(transfer.txHash),
-          providerStatus: transfer.status,
-          transfer: this.sanitizeForPersistence(transfer),
-          observedAt: new Date().toISOString(),
-        }),
-        executionError: null,
-        updatedAt: new Date(),
-      }),
-    );
-  }
-
-  private async confirmRefundIfPossible(
-    operation: AppWalletSwapOperationResponse,
-  ): Promise<AppWalletSwapOperationResponse> {
-    if (operation.status === 'refunded') return operation;
-    if (!operation.refundSubmittedAt || !operation.refundAmount)
-      return operation;
-
-    const refundAmount = operation.refundAmount;
-    let txHash = operation.refundTxHash;
-    if (!txHash && operation.refundTransactionId) {
-      const status = await this.withProviderTimeout(
-        this.circleExecutor.getTransactionStatus(operation.refundTransactionId),
-        'Refund transaction polling timed out.',
-      );
-      if (isFailedCircleTransactionStatus(status.status)) {
-        throw new TerminalExecutionError(
-          `Refund Circle transaction failed with status ${status.status}${status.errorReason ? `: ${status.errorReason}` : ''}`,
-        );
-      }
-      txHash = validTransactionHashOrNull(status.txHash) ?? undefined;
-      operation = this.mapOperationRecord(
-        await this.operationRepository.update(operation.operationId, {
-          ...(txHash ? { refundTxHash: txHash } : {}),
-          rawRefund: toAppWalletSwapNullableJson({
-            provider: 'circle',
-            transactionId: operation.refundTransactionId,
-            txHash: txHash ?? null,
-            providerStatus: status.status,
-            status: this.sanitizeForPersistence(status),
-            observedAt: new Date().toISOString(),
-          }),
-          updatedAt: new Date(),
-        }),
-      );
-    }
-
-    if (!txHash) return operation;
-    const verification = await this.withProviderTimeout(
-      this.treasuryVerifier.verifyPayout({
-        tokenOut: operation.tokenIn,
-        txHash,
-        treasuryAddress: operation.treasuryDepositAddress,
-        userWalletAddress: operation.userWalletAddress,
-        payoutAmount: refundAmount,
-      }),
-      'Refund on-chain confirmation timed out.',
-    );
-    if (!verification.confirmed) return operation;
-
-    const confirmedAt = new Date();
-    return this.mapOperationRecord(
-      await this.operationRepository.update(operation.operationId, {
-        status: 'refunded',
-        refundTxHash: txHash,
-        refundConfirmedAt: confirmedAt,
-        executionError: null,
-        updatedAt: confirmedAt,
       }),
     );
   }
@@ -1497,14 +855,7 @@ export class AppWalletSwapService {
   private mapOperationRecord(
     record: AppWalletSwapOperation,
   ): AppWalletSwapOperationResponse {
-    const fallbackProvider = this.shouldUseStablefxTreasury(
-      record.tokenIn,
-      record.tokenOut,
-    )
-      ? 'stablefx'
-      : undefined;
-
-    return mapAppWalletSwapOperationRecord(record, fallbackProvider);
+    return mapAppWalletSwapOperationRecord(record);
   }
 
   toPublicOperation(
@@ -1593,20 +944,8 @@ export class AppWalletSwapService {
   private isStablefxOperation(
     operation: AppWalletSwapOperationResponse,
   ): boolean {
-    return (
-      operation.provider === 'stablefx' ||
-      this.shouldUseStablefxTreasury(operation.tokenIn, operation.tokenOut)
-    );
-  }
-
-  private shouldUseStablefxTreasury(
-    tokenIn: string,
-    tokenOut: string,
-  ): boolean {
-    return (
-      process.env.WIZPAY_SWAP_PROVIDER?.trim().toLowerCase() === 'stablefx' &&
-      STABLEFX_APP_WALLET_PAIRS.has(`${tokenIn}->${tokenOut}`)
-    );
+    this.assertPersistedExecutionProvider(operation);
+    return operation.provider === 'stablefx';
   }
 
   private attachQuoteProvider(
@@ -1623,10 +962,22 @@ export class AppWalletSwapService {
     };
   }
 
-  private toAppWalletQuoteProvider(
+  private resolveAppWalletExecutionProvider(
     provider: string | undefined,
-  ): 'swapkit' | 'stablefx' | undefined {
+    rawQuote: unknown,
+  ): AppWalletSwapProvider {
     if (provider === 'swapkit' || provider === 'stablefx') {
+      if (this.isRecord(rawQuote)) {
+        const rawProvider = rawQuote.provider;
+        if (rawProvider !== undefined && rawProvider !== provider) {
+          throw new BadGatewayException({
+            code: APP_WALLET_SWAP_ERROR_CODES.EXECUTION_PROVIDER_INVALID,
+            message:
+              'App Wallet quote returned conflicting execution providers.',
+          });
+        }
+      }
+
       return provider;
     }
 
@@ -1638,46 +989,11 @@ export class AppWalletSwapService {
       });
     }
 
-    return undefined;
-  }
-
-  private async pollStablefxTrade(
-    tradeId: string,
-  ): Promise<AppWalletSwapStablefxTradeState> {
-    return this.withProviderTimeout(
-      this.stablefxExecutor.getTradeState(tradeId),
-      'StableFX trade polling timed out.',
-    );
-  }
-
-  private containsObjectKey(value: unknown, targetKey: string): boolean {
-    if (Array.isArray(value)) {
-      return value.some((item) => this.containsObjectKey(item, targetKey));
-    }
-    if (!this.isRecord(value)) return false;
-    if (Object.prototype.hasOwnProperty.call(value, targetKey)) return true;
-    return Object.values(value).some((item) =>
-      this.containsObjectKey(item, targetKey),
-    );
-  }
-
-  private assertExecutionPollingWithinDeadline(
-    operation: AppWalletSwapOperationResponse,
-  ): void {
-    if (!operation.treasurySwapSubmittedAt) return;
-    const configured = Number(process.env.APP_WALLET_SWAP_POLL_TIMEOUT_MS);
-    const timeoutMs =
-      Number.isFinite(configured) && configured > 0
-        ? configured
-        : DEFAULT_EXECUTION_POLL_TIMEOUT_MS;
-    if (
-      Date.now() - new Date(operation.treasurySwapSubmittedAt).getTime() >=
-      timeoutMs
-    ) {
-      throw new TerminalExecutionError(
-        'StableFX execution polling timed out. The operation requires recovery or a verified refund.',
-      );
-    }
+    throw new ServiceUnavailableException({
+      code: APP_WALLET_SWAP_ERROR_CODES.EXECUTION_PROVIDER_INVALID,
+      message:
+        'App Wallet quote did not resolve to a supported execution provider.',
+    });
   }
 
   private async withProviderTimeout<T>(
@@ -1744,6 +1060,7 @@ export class AppWalletSwapService {
     const tokenOut = this.normalizeToken(request.tokenOut);
     const amountIn = request.amountIn?.trim();
     const fromAddress = this.normalizeAddress(request.fromAddress);
+    const provider = this.normalizeRequestedProvider(request.provider);
 
     if (request.chain !== APP_WALLET_SWAP_CHAIN) {
       throw new BadRequestException({
@@ -1766,22 +1083,30 @@ export class AppWalletSwapService {
       });
     }
 
-    if (
-      process.env.WIZPAY_SWAP_PROVIDER?.trim().toLowerCase() === 'stablefx' &&
-      BigInt(amountIn) < STABLEFX_MIN_BASE_UNITS
-    ) {
-      throw new BadRequestException({
-        code: APP_WALLET_SWAP_ERROR_CODES.STABLEFX_MIN_AMOUNT,
-        message: 'StableFX requires a minimum amount of 10 for this pair.',
-      });
-    }
-
     return {
       tokenIn,
       tokenOut,
       amountIn,
       fromAddress,
+      provider,
     };
+  }
+
+  private normalizeRequestedProvider(
+    provider: AppWalletSwapProvider | undefined,
+  ): AppWalletSwapProvider | undefined {
+    if (provider === undefined) {
+      return undefined;
+    }
+
+    if (provider === 'swapkit' || provider === 'stablefx') {
+      return provider;
+    }
+
+    throw new BadRequestException({
+      code: APP_WALLET_SWAP_ERROR_CODES.EXECUTION_PROVIDER_INVALID,
+      message: 'provider must be either swapkit or stablefx.',
+    });
   }
 
   private normalizeToken(value: string): AppWalletSwapToken {
@@ -1808,19 +1133,6 @@ export class AppWalletSwapService {
     }
 
     return normalized;
-  }
-
-  private normalizeOptionalString(value: unknown): string | undefined {
-    return typeof value === 'string' && value.trim() ? value.trim() : undefined;
-  }
-
-  private assertDepositTxHash(depositTxHash: string): void {
-    if (!/^0x[a-fA-F0-9]{64}$/.test(depositTxHash)) {
-      throw new BadRequestException({
-        code: APP_WALLET_SWAP_ERROR_CODES.INVALID_REQUEST,
-        message: 'depositTxHash must be a 32-byte transaction hash.',
-      });
-    }
   }
 
   private getArcTreasuryDepositAddress(): string {
@@ -1869,5 +1181,25 @@ export class AppWalletSwapService {
     }
 
     return Number(value) > 0;
+  }
+
+  private assertPersistedExecutionProvider(
+    operation: AppWalletSwapOperationResponse,
+  ): asserts operation is AppWalletSwapOperationResponse & {
+    provider: AppWalletSwapProvider;
+  } {
+    this.assertPersistedExecutionProviderValue(operation.provider);
+  }
+
+  private assertPersistedExecutionProviderValue(
+    provider: AppWalletSwapProvider | undefined,
+  ): asserts provider is AppWalletSwapProvider {
+    if (provider !== 'swapkit' && provider !== 'stablefx') {
+      throw new ServiceUnavailableException({
+        code: APP_WALLET_SWAP_ERROR_CODES.EXECUTION_PROVIDER_INVALID,
+        message:
+          'App Wallet swap execution provider is missing or invalid. This operation requires manual recovery review.',
+      });
+    }
   }
 }

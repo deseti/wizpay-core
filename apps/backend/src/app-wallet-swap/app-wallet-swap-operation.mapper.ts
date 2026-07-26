@@ -1,24 +1,18 @@
 import { AppWalletSwapOperation } from '@prisma/client';
 import {
   AppWalletSwapOperationResponse,
-  AppWalletSwapQuoteResponse,
+  AppWalletSwapProvider,
   AppWalletSwapToken,
 } from './app-wallet-swap.types';
-import { removeSensitiveAppWalletSwapFields } from './app-wallet-swap-payload-sanitizer';
 
 export function mapAppWalletSwapOperationRecord(
   record: AppWalletSwapOperation,
-  fallbackProvider?: 'swapkit' | 'stablefx',
 ): AppWalletSwapOperationResponse {
-  const rawQuote = record.rawQuote;
-  const persistedProvider =
-    typeof rawQuote === 'object' &&
-    rawQuote !== null &&
-    !Array.isArray(rawQuote) &&
-    (rawQuote.provider === 'stablefx' || rawQuote.provider === 'swapkit')
-      ? rawQuote.provider
+  const provider =
+    record.executionProvider === 'stablefx' ||
+    record.executionProvider === 'swapkit'
+      ? (record.executionProvider as AppWalletSwapProvider)
       : undefined;
-  const provider = persistedProvider ?? fallbackProvider;
 
   return {
     operationId: record.operationId,
@@ -122,30 +116,4 @@ export function mapAppWalletSwapOperationRecord(
     updatedAt: record.updatedAt.toISOString(),
     executionEnabled: record.executionEnabled,
   };
-}
-
-export function toPublicAppWalletSwapOperation(
-  operation: AppWalletSwapOperationResponse,
-): AppWalletSwapOperationResponse {
-  const {
-    rawQuote: _rawQuote,
-    rawTreasurySwap: _rawTreasurySwap,
-    rawPayout: _rawPayout,
-    rawRefund: _rawRefund,
-    ...publicOperation
-  } = operation;
-
-  return removeSensitiveAppWalletSwapFields(
-    publicOperation,
-  ) as AppWalletSwapOperationResponse;
-}
-
-export function toPublicAppWalletSwapQuote(
-  quote: AppWalletSwapQuoteResponse,
-): AppWalletSwapQuoteResponse {
-  const { rawQuote: _rawQuote, ...publicQuote } = quote;
-
-  return removeSensitiveAppWalletSwapFields(
-    publicQuote,
-  ) as AppWalletSwapQuoteResponse;
 }

@@ -2,10 +2,8 @@ import { AppWalletSwapOperation, Prisma } from '@prisma/client';
 import { MODULE_METADATA } from '@nestjs/common/constants';
 import { PrismaService } from '../database/prisma.service';
 import { AppWalletSwapModule } from './app-wallet-swap.module';
-import {
-  mapAppWalletSwapOperationRecord,
-  toPublicAppWalletSwapOperation,
-} from './app-wallet-swap-operation.mapper';
+import { mapAppWalletSwapOperationRecord } from './app-wallet-swap-operation.mapper';
+import { toPublicAppWalletSwapOperation } from './app-wallet-swap-public.mapper';
 import {
   AppWalletSwapOperationRepository,
   toAppWalletSwapNullableJson,
@@ -33,6 +31,7 @@ function createOperation(
     minimumOutput: '990000',
     expiresAt: '2026-07-20T10:05:00.000Z',
     status: 'deposit_submitted',
+    provider: 'stablefx',
     quoteId: 'quote-synthetic-1',
     rawQuote: { provider: 'stablefx', quoteId: 'quote-synthetic-1' },
     circleWalletId: 'wallet-synthetic-1',
@@ -62,6 +61,7 @@ function createRecord(
     minimumOutput: '990000',
     expiresAt: '2026-07-20T10:05:00.000Z',
     status: 'deposit_submitted',
+    executionProvider: 'stablefx',
     quoteId: 'quote-synthetic-1',
     rawQuote: { provider: 'stablefx', quoteId: 'quote-synthetic-1' },
     depositTxHash: null,
@@ -145,6 +145,7 @@ describe('AppWalletSwapOperationRepository', () => {
         amountIn: '1000000',
         expectedOutput: Prisma.JsonNull,
         minimumOutput: '990000',
+        executionProvider: 'stablefx',
         rawQuote: operation.rawQuote,
         rawTreasurySwap: operation.rawTreasurySwap,
         circleWalletId: 'wallet-synthetic-1',
@@ -423,7 +424,7 @@ describe('AppWalletSwapOperationRepository', () => {
       rawPayout: { rawCircleResponse: { status: 'synthetic' } },
     });
 
-    const operation = mapAppWalletSwapOperationRecord(record, 'stablefx');
+    const operation = mapAppWalletSwapOperationRecord(record);
     const publicOperation = toPublicAppWalletSwapOperation(operation);
 
     expect(operation).toMatchObject({
@@ -439,5 +440,23 @@ describe('AppWalletSwapOperationRepository', () => {
     expect(publicOperation).not.toHaveProperty('rawTreasurySwap');
     expect(publicOperation).not.toHaveProperty('rawPayout');
     expect(JSON.stringify(publicOperation)).not.toContain('authorization');
+  });
+
+  it('maps only the first-class execution provider and never infers it from rawQuote', () => {
+    const persistedSwapkit = mapAppWalletSwapOperationRecord(
+      createRecord({
+        executionProvider: 'swapkit',
+        rawQuote: { provider: 'stablefx' },
+      }),
+    );
+    const unresolvedLegacy = mapAppWalletSwapOperationRecord(
+      createRecord({
+        executionProvider: null,
+        rawQuote: { provider: 'stablefx' },
+      }),
+    );
+
+    expect(persistedSwapkit.provider).toBe('swapkit');
+    expect(unresolvedLegacy).not.toHaveProperty('provider');
   });
 });

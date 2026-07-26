@@ -149,7 +149,9 @@ describe('UserSwapService', () => {
     expect(quoteUrl.searchParams.get('fromAddress')).toBe(
       baseRequest.fromAddress,
     );
-    expect(quoteUrl.searchParams.get('toAddress')).toBe(baseRequest.fromAddress);
+    expect(quoteUrl.searchParams.get('toAddress')).toBe(
+      baseRequest.fromAddress,
+    );
     expect(quoteUrl.searchParams.get('amount')).toBe('10');
     expect(quoteUrl.searchParams.has('slippageBps')).toBe(false);
     expect(result).toMatchObject({
@@ -281,7 +283,9 @@ describe('UserSwapService', () => {
   it('retries and succeeds on the second attempt after an initial 404', async () => {
     enableUserSwap();
     fetchMock
-      .mockResolvedValueOnce(jsonResponse({ message: 'not found' }, { status: 404 }))
+      .mockResolvedValueOnce(
+        jsonResponse({ message: 'not found' }, { status: 404 }),
+      )
       .mockResolvedValueOnce(jsonResponse({ quoteId: 'quote-1' }));
     const service = new UserSwapService();
     const delaySpy = stubDelay(service);
@@ -298,8 +302,12 @@ describe('UserSwapService', () => {
   it('retries and succeeds on the third attempt after two transient failures', async () => {
     enableUserSwap();
     fetchMock
-      .mockResolvedValueOnce(jsonResponse({ message: 'not found' }, { status: 404 }))
-      .mockResolvedValueOnce(jsonResponse({ message: 'unavailable' }, { status: 503 }))
+      .mockResolvedValueOnce(
+        jsonResponse({ message: 'not found' }, { status: 404 }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({ message: 'unavailable' }, { status: 503 }),
+      )
       .mockResolvedValueOnce(jsonResponse({ quoteId: 'quote-2' }));
     const service = new UserSwapService();
     const delaySpy = stubDelay(service);
@@ -473,7 +481,10 @@ describe('UserSwapService', () => {
 
     // swapkit hits the Circle Stablecoin Kits quote endpoint.
     expect(getFetchUrl().pathname).toBe('/v1/stablecoinKits/quote');
-    expect(result).toMatchObject({ provider: 'swapkit', quoteId: 'quote-swapkit' });
+    expect(result).toMatchObject({
+      provider: 'swapkit',
+      quoteId: 'quote-swapkit',
+    });
   });
 
   it('routes to the StableFX provider when WIZPAY_SWAP_PROVIDER=stablefx', async () => {
@@ -614,6 +625,30 @@ describe('UserSwapService', () => {
     expect(getFetchUrl().pathname).toBe('/v1/exchange/stablefx/quotes');
   });
 
+  it('disables StableFX fallback for an explicitly constrained caller', async () => {
+    enableUserSwap();
+    process.env.CIRCLE_STABLEFX_API_KEY = 'stablefx-secret';
+    process.env.WIZPAY_STABLEFX_FALLBACK_TO_SWAPKIT = 'true';
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ code: 5000, message: 'upstream error' }, { status: 502 }),
+    );
+    const service = new UserSwapService();
+
+    await expect(
+      service.quote({
+        ...baseRequest,
+        provider: 'stablefx',
+        allowProviderFallback: false,
+      }),
+    ).rejects.toMatchObject({
+      response: {
+        code: 'USER_SWAP_STABLEFX_API_FAILED',
+      },
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(getFetchUrl().pathname).toBe('/v1/exchange/stablefx/quotes');
+  });
+
   it('falls back to swapkit on stablefx failure only when explicitly enabled', async () => {
     enableUserSwap();
     process.env.WIZPAY_SWAP_PROVIDER = 'stablefx';
@@ -621,7 +656,10 @@ describe('UserSwapService', () => {
     process.env.WIZPAY_STABLEFX_FALLBACK_TO_SWAPKIT = 'true';
     fetchMock
       .mockResolvedValueOnce(
-        jsonResponse({ code: 5000, message: 'upstream error' }, { status: 502 }),
+        jsonResponse(
+          { code: 5000, message: 'upstream error' },
+          { status: 502 },
+        ),
       )
       .mockResolvedValueOnce(jsonResponse({ quoteId: 'quote-fallback' }));
     const service = new UserSwapService();
@@ -630,7 +668,10 @@ describe('UserSwapService', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(getFetchUrl().pathname).toBe('/v1/stablecoinKits/quote');
-    expect(result).toMatchObject({ provider: 'swapkit', quoteId: 'quote-fallback' });
+    expect(result).toMatchObject({
+      provider: 'swapkit',
+      quoteId: 'quote-fallback',
+    });
   });
 
   it('never falls back when stablefx api key is missing, even if fallback is enabled', async () => {

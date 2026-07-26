@@ -3,6 +3,7 @@ import type { TokenSymbol } from "@/lib/wizpay";
 
 export const APP_WALLET_SWAP_CHAIN = "ARC-TESTNET" as const;
 export const APP_WALLET_SWAP_OPERATION_MODE = "treasury-mediated" as const;
+export type AppWalletSwapProvider = "stablefx" | "swapkit";
 
 export interface AppWalletSwapQuoteRequest {
   tokenIn: TokenSymbol;
@@ -10,6 +11,7 @@ export interface AppWalletSwapQuoteRequest {
   amountIn: string;
   fromAddress: string;
   chain: typeof APP_WALLET_SWAP_CHAIN;
+  provider?: AppWalletSwapProvider;
 }
 
 export interface AppWalletSwapQuoteResponse {
@@ -23,7 +25,7 @@ export interface AppWalletSwapQuoteResponse {
   minimumOutput: unknown;
   expiresAt: string;
   status: "quoted";
-  provider?: "swapkit" | "stablefx";
+  provider?: AppWalletSwapProvider;
   quoteId?: unknown;
   rawQuote?: unknown;
 }
@@ -195,4 +197,15 @@ export async function executeAppWalletSwapOperation(
   } finally {
     clearTimeout(timer);
   }
+}
+
+export async function refundAppWalletSwapOperation(
+  operationId: string,
+): Promise<AppWalletSwapOperationResponse> {
+  return backendFetch<AppWalletSwapOperationResponse>(
+    `/app-wallet-swap/operations/${encodeURIComponent(operationId)}/refund`,
+    {
+      method: "POST",
+    },
+  );
 }

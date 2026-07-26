@@ -1,7 +1,7 @@
 import {
   toPublicAppWalletSwapOperation,
   toPublicAppWalletSwapQuote,
-} from './app-wallet-swap-operation.mapper';
+} from './app-wallet-swap-public.mapper';
 import {
   removeSensitiveAppWalletSwapFields,
   sanitizeAppWalletSwapPayload,

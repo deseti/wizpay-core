@@ -6,10 +6,12 @@ import { PrismaService } from '../database/prisma.service';
 import { W3sAuthService } from '../modules/wallet/w3s-auth.service';
 import { CircleService } from '../adapters/circle.service';
 import { AppWalletSwapDepositVerifierService } from './app-wallet-swap-deposit-verifier.service';
+import { AppWalletSwapDepositService } from './app-wallet-swap-deposit.service';
 import { AppWalletSwapCircleExecutorService } from './app-wallet-swap-circle-executor.service';
 import { AppWalletSwapStablefxExecutorService } from './app-wallet-swap-stablefx-executor.service';
 import { AppWalletSwapOperationRepository } from './app-wallet-swap-operation.repository';
 import { AppWalletSwapPayoutExecutorService } from './app-wallet-swap-payout-executor.service';
+import { AppWalletSwapRefundService } from './app-wallet-swap-refund.service';
 import { getPayoutTransactionId } from './app-wallet-swap-provider-reference';
 import { AppWalletSwapService } from './app-wallet-swap.service';
 import { AppWalletSwapTreasuryVerifierService } from './app-wallet-swap-treasury-verifier.service';
@@ -214,6 +216,7 @@ describe('AppWalletSwapService', () => {
       fromAddress: TREASURY_ADDRESS,
       toAddress: USER_ADDRESS,
       chain: APP_WALLET_SWAP_CHAIN,
+      provider: 'swapkit',
       quoteId: 'quote-1',
       expectedOutput: '990000',
       minimumOutput: '970000',
@@ -377,23 +380,36 @@ describe('AppWalletSwapService', () => {
   });
 
   function createService(prismaService = prisma) {
+    const circleExecutor = new AppWalletSwapCircleExecutorService(
+      circleService as unknown as CircleService,
+      w3sAuthService as unknown as W3sAuthService,
+      blockchainService as unknown as BlockchainService,
+    );
+    const operationRepository = new AppWalletSwapOperationRepository(
+      prismaService as unknown as PrismaService,
+    );
+    const stablefxExecutor = new AppWalletSwapStablefxExecutorService(
+      stablefxExecutionService as unknown as StablefxExecutionService,
+      circleExecutor,
+      operationRepository,
+    );
+
     return new AppWalletSwapService(
       userSwapService as UserSwapService,
-      depositVerifier as AppWalletSwapDepositVerifierService,
+      new AppWalletSwapDepositService(
+        depositVerifier as AppWalletSwapDepositVerifierService,
+        circleExecutor,
+        operationRepository,
+      ),
+      new AppWalletSwapRefundService(
+        treasuryVerifier as AppWalletSwapTreasuryVerifierService,
+        circleExecutor,
+        stablefxExecutor,
+        operationRepository,
+      ),
       treasuryVerifier as AppWalletSwapTreasuryVerifierService,
-      new AppWalletSwapCircleExecutorService(
-        circleService as unknown as CircleService,
-        w3sAuthService as unknown as W3sAuthService,
-        blockchainService as unknown as BlockchainService,
-      ),
-      new AppWalletSwapStablefxExecutorService(
-        stablefxExecutionService as unknown as StablefxExecutionService,
-        new AppWalletSwapCircleExecutorService(
-          circleService as unknown as CircleService,
-          w3sAuthService as unknown as W3sAuthService,
-          blockchainService as unknown as BlockchainService,
-        ),
-      ),
+      circleExecutor,
+      stablefxExecutor,
       new AppWalletSwapPayoutExecutorService(
         new AppWalletSwapCircleExecutorService(
           circleService as unknown as CircleService,
@@ -401,9 +417,7 @@ describe('AppWalletSwapService', () => {
           blockchainService as unknown as BlockchainService,
         ),
       ),
-      new AppWalletSwapOperationRepository(
-        prismaService as unknown as PrismaService,
-      ),
+      operationRepository,
     );
   }
 
@@ -514,6 +528,7 @@ describe('AppWalletSwapService', () => {
             depositConfirmedAt: data.depositConfirmedAt ?? null,
             depositConfirmedAmount: data.depositConfirmedAmount ?? null,
             depositConfirmationError: data.depositConfirmationError ?? null,
+            executionProvider: data.executionProvider ?? null,
             treasurySwapId: data.treasurySwapId ?? null,
             treasurySwapQuoteId: data.treasurySwapQuoteId ?? null,
             treasurySwapTxHash: data.treasurySwapTxHash ?? null,
@@ -605,6 +620,7 @@ describe('AppWalletSwapService', () => {
     expect(result).toMatchObject({
       operationMode: APP_WALLET_SWAP_MODE,
       sourceChain: APP_WALLET_SWAP_CHAIN,
+      provider: 'swapkit',
       tokenIn: 'USDC',
       tokenOut: 'EURC',
       amountIn: baseRequest.amountIn,
@@ -612,6 +628,72 @@ describe('AppWalletSwapService', () => {
       expectedOutput: '990000',
       minimumOutput: '970000',
       status: 'quoted',
+    });
+  });
+
+  it.each(['stablefx', 'swapkit'] as const)(
+    'constrains an explicit %s quote without provider fallback',
+    async (provider) => {
+      const amountIn =
+        provider === 'stablefx' ? '17000000' : baseRequest.amountIn;
+      userSwapService.quote.mockResolvedValueOnce({
+        tokenIn: 'USDC',
+        tokenOut: 'EURC',
+        amountIn,
+        fromAddress: TREASURY_ADDRESS,
+        toAddress: USER_ADDRESS,
+        chain: APP_WALLET_SWAP_CHAIN,
+        provider,
+        quoteId: `${provider}-quote-1`,
+        expectedOutput: '990000',
+        minimumOutput: '970000',
+        expiresAt: '2026-05-16T12:00:00.000Z',
+        raw: { quoteId: `${provider}-quote-1`, provider },
+      });
+
+      const result = await createService().quote({
+        ...baseRequest,
+        amountIn,
+        provider,
+      });
+
+      expect(userSwapService.quote).toHaveBeenCalledWith({
+        amountIn,
+        chain: APP_WALLET_SWAP_CHAIN,
+        fromAddress: TREASURY_ADDRESS,
+        toAddress: USER_ADDRESS,
+        tokenIn: 'USDC',
+        tokenOut: 'EURC',
+        provider,
+        allowProviderFallback: false,
+      });
+      expect(result.provider).toBe(provider);
+    },
+  );
+
+  it('fails closed when an explicit provider returns a quote from another provider', async () => {
+    userSwapService.quote.mockResolvedValueOnce({
+      tokenIn: 'USDC',
+      tokenOut: 'EURC',
+      amountIn: '17000000',
+      fromAddress: TREASURY_ADDRESS,
+      toAddress: USER_ADDRESS,
+      chain: APP_WALLET_SWAP_CHAIN,
+      provider: 'swapkit',
+      expectedOutput: '16000000',
+      raw: { provider: 'swapkit' },
+    });
+
+    await expect(
+      createService().quote({
+        ...baseRequest,
+        amountIn: '17000000',
+        provider: 'stablefx',
+      }),
+    ).rejects.toMatchObject({
+      response: {
+        code: 'APP_WALLET_SWAP_EXECUTION_PROVIDER_INVALID',
+      },
     });
   });
 
@@ -627,12 +709,141 @@ describe('AppWalletSwapService', () => {
       tokenIn: 'USDC',
       tokenOut: 'EURC',
       amountIn: baseRequest.amountIn,
+      provider: 'swapkit',
       executionEnabled: false,
     });
     expect(result.operationId).toEqual(expect.any(String));
     expect(result).not.toHaveProperty('txHash');
     expect(result).not.toHaveProperty('transactionHash');
     expect(result).not.toHaveProperty('payoutTxHash');
+  });
+
+  it.each(['stablefx', 'swapkit'] as const)(
+    'creates a fresh %s quote and persists that provider for the operation',
+    async (provider) => {
+      const amountIn =
+        provider === 'stablefx' ? '17000000' : baseRequest.amountIn;
+      userSwapService.quote.mockResolvedValueOnce({
+        tokenIn: 'USDC',
+        tokenOut: 'EURC',
+        amountIn,
+        fromAddress: TREASURY_ADDRESS,
+        toAddress: USER_ADDRESS,
+        chain: APP_WALLET_SWAP_CHAIN,
+        provider,
+        quoteId: `${provider}-operation-quote`,
+        expectedOutput: '990000',
+        minimumOutput: '970000',
+        expiresAt: '2026-05-16T12:00:00.000Z',
+        raw: { quoteId: `${provider}-operation-quote`, provider },
+      });
+
+      const result = await createService().createOperation({
+        ...baseRequest,
+        amountIn,
+        provider,
+      });
+      const record = appWalletSwapOperationStore.get(result.operationId)!;
+
+      expect(userSwapService.quote).toHaveBeenCalledWith({
+        amountIn,
+        chain: APP_WALLET_SWAP_CHAIN,
+        fromAddress: TREASURY_ADDRESS,
+        toAddress: USER_ADDRESS,
+        tokenIn: 'USDC',
+        tokenOut: 'EURC',
+        provider,
+        allowProviderFallback: false,
+      });
+      expect(result.provider).toBe(provider);
+      expect(record.executionProvider).toBe(provider);
+    },
+  );
+
+  it('persists the actual swapkit provider returned by the quote', async () => {
+    process.env.WIZPAY_SWAP_PROVIDER = 'stablefx';
+
+    const result = await createService().createOperation(baseRequest);
+    const record = appWalletSwapOperationStore.get(result.operationId)!;
+
+    expect(result.provider).toBe('swapkit');
+    expect(record.executionProvider).toBe('swapkit');
+    expect(record.rawQuote).toMatchObject({ provider: 'swapkit' });
+  });
+
+  it('rejects xylonet for new App Wallet operations', async () => {
+    userSwapService.quote.mockResolvedValueOnce({
+      tokenIn: 'USDC',
+      tokenOut: 'EURC',
+      amountIn: baseRequest.amountIn,
+      fromAddress: TREASURY_ADDRESS,
+      toAddress: USER_ADDRESS,
+      chain: APP_WALLET_SWAP_CHAIN,
+      provider: 'xylonet',
+      expectedOutput: '990000',
+      raw: { provider: 'xylonet' },
+    });
+
+    await expect(
+      createService().createOperation(baseRequest),
+    ).rejects.toMatchObject({
+      response: {
+        code: 'APP_WALLET_SWAP_TREASURY_NOT_CONFIGURED',
+      },
+    });
+    expect(prisma.appWalletSwapOperation.create).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['missing', undefined],
+    ['invalid', 'synthetic-provider'],
+  ])(
+    'fails closed when the actual quote provider is %s',
+    async (_, provider) => {
+      userSwapService.quote.mockResolvedValueOnce({
+        tokenIn: 'USDC',
+        tokenOut: 'EURC',
+        amountIn: baseRequest.amountIn,
+        fromAddress: TREASURY_ADDRESS,
+        toAddress: USER_ADDRESS,
+        chain: APP_WALLET_SWAP_CHAIN,
+        provider,
+        expectedOutput: '990000',
+        raw: { quoteId: 'quote-without-supported-provider' },
+      });
+
+      await expect(
+        createService().createOperation(baseRequest),
+      ).rejects.toMatchObject({
+        response: {
+          code: 'APP_WALLET_SWAP_EXECUTION_PROVIDER_INVALID',
+        },
+      });
+      expect(prisma.appWalletSwapOperation.create).not.toHaveBeenCalled();
+    },
+  );
+
+  it('fails closed when normalized and raw quote providers conflict', async () => {
+    userSwapService.quote.mockResolvedValueOnce({
+      tokenIn: 'USDC',
+      tokenOut: 'EURC',
+      amountIn: baseRequest.amountIn,
+      fromAddress: TREASURY_ADDRESS,
+      toAddress: USER_ADDRESS,
+      chain: APP_WALLET_SWAP_CHAIN,
+      provider: 'swapkit',
+      expectedOutput: '990000',
+      raw: { provider: 'stablefx' },
+    });
+
+    await expect(
+      createService().createOperation(baseRequest),
+    ).rejects.toMatchObject({
+      response: {
+        code: 'APP_WALLET_SWAP_EXECUTION_PROVIDER_INVALID',
+      },
+    });
+    expect(prisma.appWalletSwapOperation.create).not.toHaveBeenCalled();
   });
 
   it('persists executionEnabled true for new operations when treasury execution env is enabled', async () => {
@@ -662,9 +873,11 @@ describe('AppWalletSwapService', () => {
       operationId: operation.operationId,
       status: 'awaiting_user_deposit',
       quoteId: 'quote-1',
+      provider: 'swapkit',
     });
     expect(persisted).not.toHaveProperty('rawQuote');
     expect(internalRecord.rawQuote).toMatchObject({ quoteId: 'quote-1' });
+    expect(internalRecord.executionProvider).toBe('swapkit');
   });
 
   it('keeps operations retrievable from a fresh service using the same database', async () => {
@@ -2084,6 +2297,88 @@ describe('AppWalletSwapService', () => {
     expect(circleService.executeContract).not.toHaveBeenCalled();
   });
 
+  it('fails closed for a legacy ambiguous operation before claiming a lease or calling a provider', async () => {
+    enableExecutionEnv();
+    const service = createService();
+    const operation = await createConfirmedOperation(service);
+    const record = appWalletSwapOperationStore.get(operation.operationId)!;
+    appWalletSwapOperationStore.set(operation.operationId, {
+      ...record,
+      executionProvider: null,
+    });
+    jest.clearAllMocks();
+
+    await expect(service.execute(operation.operationId)).rejects.toMatchObject({
+      response: {
+        code: 'APP_WALLET_SWAP_EXECUTION_PROVIDER_INVALID',
+      },
+    });
+    expect(prisma.appWalletSwapOperation.updateMany).not.toHaveBeenCalled();
+    expect(userSwapService.prepare).not.toHaveBeenCalled();
+    expect(stablefxExecutionService.createTrade).not.toHaveBeenCalled();
+    expect(circleService.executeContract).not.toHaveBeenCalled();
+    expect(circleService.transfer).not.toHaveBeenCalled();
+  });
+
+  it('fails closed for legacy ambiguous refund recovery before claiming a lease or transferring funds', async () => {
+    enableExecutionEnv();
+    const service = createService();
+    const operation = await createConfirmedOperation(service);
+    const record = appWalletSwapOperationStore.get(operation.operationId)!;
+    appWalletSwapOperationStore.set(operation.operationId, {
+      ...record,
+      status: 'execution_recovery_required',
+      executionProvider: null,
+    });
+    jest.clearAllMocks();
+
+    await expect(service.refund(operation.operationId)).rejects.toMatchObject({
+      response: {
+        code: 'APP_WALLET_SWAP_EXECUTION_PROVIDER_INVALID',
+      },
+    });
+    expect(prisma.appWalletSwapOperation.updateMany).not.toHaveBeenCalled();
+    expect(circleService.getWalletBalance).not.toHaveBeenCalled();
+    expect(circleService.transfer).not.toHaveBeenCalled();
+    expect(stablefxExecutionService.getTrade).not.toHaveBeenCalled();
+  });
+
+  it('keeps a persisted swapkit operation on swapkit after the environment changes', async () => {
+    enableExecutionEnv();
+    const service = createService();
+    const operation = await createConfirmedOperation(service);
+    process.env.WIZPAY_SWAP_PROVIDER = 'stablefx';
+    process.env.CIRCLE_STABLEFX_API_KEY = 'stablefx-secret';
+
+    const result = await service.execute(operation.operationId);
+
+    expect(result).toMatchObject({
+      provider: 'swapkit',
+      status: 'completed',
+    });
+    expect(userSwapService.prepare).toHaveBeenCalledTimes(1);
+    expect(stablefxExecutionService.createTradableQuote).not.toHaveBeenCalled();
+    expect(stablefxExecutionService.createTrade).not.toHaveBeenCalled();
+  });
+
+  it('keeps a persisted stablefx operation on stablefx after the environment changes', async () => {
+    const service = createService();
+    const operation = await createConfirmedStablefxOperation(service);
+    process.env.WIZPAY_SWAP_PROVIDER = 'swapkit';
+
+    const result = await service.execute(operation.operationId);
+
+    expect(result).toMatchObject({
+      provider: 'stablefx',
+      status: 'completed',
+    });
+    expect(stablefxExecutionService.createTradableQuote).toHaveBeenCalledTimes(
+      1,
+    );
+    expect(stablefxExecutionService.createTrade).toHaveBeenCalledTimes(1);
+    expect(userSwapService.prepare).not.toHaveBeenCalled();
+  });
+
   it('execute submits treasury swap and payout once, then completes', async () => {
     enableExecutionEnv();
     const service = createService();
@@ -2820,6 +3115,7 @@ describe('AppWalletSwapService', () => {
       treasurySwapId: 'existing-stablefx-trade',
       treasurySwapSubmittedAt: new Date(),
     });
+    process.env.WIZPAY_SWAP_PROVIDER = 'swapkit';
     stablefxExecutionService.getTrade.mockResolvedValueOnce({
       id: 'existing-stablefx-trade',
       status: 'complete',
@@ -2837,6 +3133,7 @@ describe('AppWalletSwapService', () => {
       'existing-stablefx-trade',
     );
     expect(stablefxExecutionService.createTrade).not.toHaveBeenCalled();
+    expect(userSwapService.prepare).not.toHaveBeenCalled();
   });
 
   it('serializes concurrent StableFX execute requests', async () => {

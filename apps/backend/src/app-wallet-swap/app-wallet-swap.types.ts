@@ -4,6 +4,7 @@ export const APP_WALLET_SWAP_MODE = 'treasury-mediated' as const;
 export type AppWalletSwapChain = typeof APP_WALLET_SWAP_CHAIN;
 export type AppWalletSwapMode = typeof APP_WALLET_SWAP_MODE;
 export type AppWalletSwapToken = 'USDC' | 'EURC';
+export type AppWalletSwapProvider = 'swapkit' | 'stablefx';
 
 export type AppWalletSwapOperationStatus =
   | 'quoted'
@@ -42,6 +43,7 @@ export const APP_WALLET_SWAP_ERROR_CODES = {
   EXECUTION_TIMEOUT: 'APP_WALLET_SWAP_EXECUTION_TIMEOUT',
   REFUND_NOT_SAFE: 'APP_WALLET_SWAP_REFUND_NOT_SAFE',
   STABLEFX_MIN_AMOUNT: 'STABLEFX_MIN_AMOUNT',
+  EXECUTION_PROVIDER_INVALID: 'APP_WALLET_SWAP_EXECUTION_PROVIDER_INVALID',
 } as const;
 
 export interface AppWalletSwapQuoteRequest {
@@ -50,6 +52,7 @@ export interface AppWalletSwapQuoteRequest {
   amountIn: string;
   fromAddress: string;
   chain: string;
+  provider?: AppWalletSwapProvider;
 }
 
 export interface AppWalletSwapQuoteResponse {
@@ -63,7 +66,7 @@ export interface AppWalletSwapQuoteResponse {
   minimumOutput: unknown;
   expiresAt: string;
   status: 'quoted';
-  provider?: 'swapkit' | 'stablefx';
+  provider: AppWalletSwapProvider;
   quoteId?: unknown;
   rawQuote?: unknown;
 }
@@ -74,7 +77,7 @@ export interface AppWalletSwapOperationRequest extends AppWalletSwapQuoteRequest
 
 export interface AppWalletSwapOperationResponse extends Omit<
   AppWalletSwapQuoteResponse,
-  'status'
+  'status' | 'provider'
 > {
   operationId: string;
   status: Exclude<AppWalletSwapOperationStatus, 'quoted'>;
@@ -113,6 +116,7 @@ export interface AppWalletSwapOperationResponse extends Omit<
   createdAt: string;
   updatedAt: string;
   executionEnabled: boolean;
+  provider?: AppWalletSwapProvider;
 }
 
 export interface AppWalletSwapDepositRequest {

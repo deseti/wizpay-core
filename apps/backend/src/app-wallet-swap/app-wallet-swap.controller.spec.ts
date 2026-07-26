@@ -4,6 +4,7 @@ import {
   APP_WALLET_SWAP_CHAIN,
   APP_WALLET_SWAP_MODE,
   AppWalletSwapOperationResponse,
+  AppWalletSwapQuoteResponse,
 } from './app-wallet-swap.types';
 
 const operationId = 'c3c25a1c-6c74-47a6-851a-03703c479b41';
@@ -24,6 +25,7 @@ function createPublicOperation(
     minimumOutput: '15900000',
     expiresAt: '2026-07-21T12:00:00.000Z',
     status: 'completed',
+    provider: 'stablefx',
     createdAt: '2026-07-21T11:00:00.000Z',
     updatedAt: '2026-07-21T11:05:00.000Z',
     executionEnabled: true,
@@ -67,6 +69,8 @@ function collectForbiddenPublicPaths(
 
 describe('AppWalletSwapController public operation contract', () => {
   const appWalletSwapService = {
+    quote: jest.fn(),
+    createOperation: jest.fn(),
     getOperation: jest.fn(),
     toPublicOperation: jest.fn((operation: AppWalletSwapOperationResponse) => {
       const {
@@ -79,7 +83,10 @@ describe('AppWalletSwapController public operation contract', () => {
       return publicOperation;
     }),
   } as unknown as jest.Mocked<
-    Pick<AppWalletSwapService, 'getOperation' | 'toPublicOperation'>
+    Pick<
+      AppWalletSwapService,
+      'quote' | 'createOperation' | 'getOperation' | 'toPublicOperation'
+    >
   >;
   const controller = new AppWalletSwapController(
     appWalletSwapService as unknown as AppWalletSwapService,
@@ -87,6 +94,40 @@ describe('AppWalletSwapController public operation contract', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+  });
+
+  it('keeps quote and operation responses under the existing data envelopes', async () => {
+    const request = {
+      tokenIn: 'EURC',
+      tokenOut: 'USDC',
+      amountIn: '17000000',
+      fromAddress: '0x1111111111111111111111111111111111111111',
+      chain: APP_WALLET_SWAP_CHAIN,
+      provider: 'stablefx' as const,
+    };
+    const quote: AppWalletSwapQuoteResponse = {
+      operationMode: APP_WALLET_SWAP_MODE,
+      sourceChain: APP_WALLET_SWAP_CHAIN,
+      tokenIn: 'EURC',
+      tokenOut: 'USDC',
+      amountIn: '17000000',
+      treasuryDepositAddress: '0x2222222222222222222222222222222222222222',
+      expectedOutput: '16000000',
+      minimumOutput: '15900000',
+      expiresAt: '2026-07-21T12:00:00.000Z',
+      status: 'quoted',
+      provider: 'stablefx',
+    };
+    const operation = createPublicOperation();
+    appWalletSwapService.quote.mockResolvedValueOnce(quote);
+    appWalletSwapService.createOperation.mockResolvedValueOnce(operation);
+
+    await expect(controller.quote(request)).resolves.toEqual({ data: quote });
+    await expect(controller.createOperation(request)).resolves.toEqual({
+      data: operation,
+    });
+    expect(appWalletSwapService.quote).toHaveBeenCalledWith(request);
+    expect(appWalletSwapService.createOperation).toHaveBeenCalledWith(request);
   });
 
   it('returns the operation under the existing data envelope', async () => {

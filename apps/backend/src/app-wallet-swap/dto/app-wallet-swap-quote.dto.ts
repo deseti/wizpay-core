@@ -1,4 +1,5 @@
-import { IsNotEmpty, IsString } from 'class-validator';
+import { IsIn, IsNotEmpty, IsOptional, IsString } from 'class-validator';
+import type { AppWalletSwapProvider } from '../app-wallet-swap.types';
 
 export class AppWalletSwapQuoteDto {
   @IsString()
@@ -20,4 +21,9 @@ export class AppWalletSwapQuoteDto {
   @IsString()
   @IsNotEmpty()
   chain!: string;
+
+  @IsOptional()
+  @IsString()
+  @IsIn(['swapkit', 'stablefx'])
+  provider?: AppWalletSwapProvider;
 }

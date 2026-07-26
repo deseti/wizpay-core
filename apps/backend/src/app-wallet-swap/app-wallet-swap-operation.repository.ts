@@ -1,7 +1,10 @@
 import { Injectable } from '@nestjs/common';
 import { AppWalletSwapOperation, Prisma } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
-import { AppWalletSwapOperationResponse } from './app-wallet-swap.types';
+import {
+  AppWalletSwapOperationResponse,
+  AppWalletSwapProvider,
+} from './app-wallet-swap.types';
 
 export function toAppWalletSwapNullableJson(
   value: unknown,
@@ -18,7 +21,9 @@ export class AppWalletSwapOperationRepository {
   constructor(private readonly prisma: PrismaService) {}
 
   create(
-    operation: AppWalletSwapOperationResponse,
+    operation: AppWalletSwapOperationResponse & {
+      provider: AppWalletSwapProvider;
+    },
   ): Promise<AppWalletSwapOperation> {
     return this.prisma.appWalletSwapOperation.create({
       data: this.toCreateInput(operation),
@@ -91,6 +96,7 @@ export class AppWalletSwapOperationRepository {
       minimumOutput: toAppWalletSwapNullableJson(operation.minimumOutput),
       expiresAt: operation.expiresAt,
       status: operation.status,
+      executionProvider: operation.provider,
       quoteId: toAppWalletSwapNullableJson(operation.quoteId),
       rawQuote: toAppWalletSwapNullableJson(operation.rawQuote),
       depositTxHash: operation.depositTxHash,

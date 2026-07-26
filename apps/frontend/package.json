@@ -12,7 +12,8 @@
     "dev:turbopack": "./scripts/with-root-env.sh next dev",
     "build": "./scripts/with-root-env.sh next build --no-lint",
     "start": "./scripts/with-root-env.sh next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test": "vitest run --maxWorkers=1 --no-file-parallelism"
   },
   "dependencies": {
     "@circle-fin/adapter-solana": "^1.5.5",
@@ -51,12 +52,19 @@
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
+    "@testing-library/dom": "^10.4.1",
+    "@testing-library/jest-dom": "^7.0.0",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.1",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "@vitejs/plugin-react": "^6.0.4",
     "eslint": "^9",
     "eslint-config-next": "16.2.2",
+    "jsdom": "^29.1.1",
     "tailwindcss": "^4.2.2",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "^4.1.10"
   }
 }

@@ -88,7 +88,10 @@ export class UserSwapService {
   private async quoteWithStablefxProvider(
     request: UserSwapQuoteRequest,
   ): Promise<UserSwapNormalizedQuote> {
-    if (!this.isStablefxFallbackEnabled()) {
+    if (
+      request.allowProviderFallback === false ||
+      !this.isStablefxFallbackEnabled()
+    ) {
       return this.quoteWithStablefx(request);
     }
 
@@ -380,7 +383,8 @@ export class UserSwapService {
               ? { 'Content-Type': 'application/json' }
               : {}),
           },
-          body: method === 'POST' && params ? JSON.stringify(params) : undefined,
+          body:
+            method === 'POST' && params ? JSON.stringify(params) : undefined,
         });
       } catch (error) {
         // Network/transport failure: preserve the existing immediate failure shape.
@@ -405,9 +409,9 @@ export class UserSwapService {
       ) {
         this.logger.warn(
           `[user-swap-circle] Route unavailable (no retry): ` +
-          `method=${method} path=${path} status=${response.status} ` +
-          `upstreamCode=${CIRCLE_ROUTE_UNAVAILABLE_CODE} ` +
-          `attempt=${attempt} maxAttempts=${CIRCLE_MAX_ATTEMPTS}`,
+            `method=${method} path=${path} status=${response.status} ` +
+            `upstreamCode=${CIRCLE_ROUTE_UNAVAILABLE_CODE} ` +
+            `attempt=${attempt} maxAttempts=${CIRCLE_MAX_ATTEMPTS}`,
         );
 
         throw new BadGatewayException({
@@ -427,9 +431,9 @@ export class UserSwapService {
       // or entity secret.
       this.logger.warn(
         `[user-swap-circle] Upstream non-OK response: ` +
-        `method=${method} path=${path} status=${response.status} ` +
-        `attempt=${attempt} maxAttempts=${CIRCLE_MAX_ATTEMPTS} ` +
-        `retryable=${isRetryable}`,
+          `method=${method} path=${path} status=${response.status} ` +
+          `attempt=${attempt} maxAttempts=${CIRCLE_MAX_ATTEMPTS} ` +
+          `retryable=${isRetryable}`,
       );
 
       if (isRetryable && hasAttemptsLeft) {
@@ -441,8 +445,8 @@ export class UserSwapService {
         // Transient status but no attempts left: report exhausted retries.
         this.logger.error(
           `[user-swap-circle] Exhausted retries for transient upstream failure: ` +
-          `method=${method} path=${path} status=${response.status} ` +
-          `attempts=${attempt} maxAttempts=${CIRCLE_MAX_ATTEMPTS}`,
+            `method=${method} path=${path} status=${response.status} ` +
+            `attempts=${attempt} maxAttempts=${CIRCLE_MAX_ATTEMPTS}`,
         );
       }
 
@@ -552,7 +556,9 @@ export class UserSwapService {
     };
   }
 
-  private findTransactionPayload(raw: unknown): UserSwapTransactionPayload | null {
+  private findTransactionPayload(
+    raw: unknown,
+  ): UserSwapTransactionPayload | null {
     const candidates = [
       this.findFirst(raw, ['transaction', 'tx', 'request']),
       this.findFirst(raw, ['transactionPayload', 'txPayload']),
@@ -583,7 +589,9 @@ export class UserSwapService {
     return null;
   }
 
-  private guardObjectResponse(raw: unknown): asserts raw is Record<string, unknown> {
+  private guardObjectResponse(
+    raw: unknown,
+  ): asserts raw is Record<string, unknown> {
     if (!this.isRecord(raw)) {
       throw new BadGatewayException({
         code: USER_SWAP_ERROR_CODES.CIRCLE_STABLECOIN_UNEXPECTED_RESPONSE,
@@ -617,9 +625,12 @@ export class UserSwapService {
     return undefined;
   }
 
-  private readOptionalSlippageBps(request: UserSwapQuoteRequest): number | undefined {
-    const slippageBps = (request as UserSwapQuoteRequest & { slippageBps?: unknown })
-      .slippageBps;
+  private readOptionalSlippageBps(
+    request: UserSwapQuoteRequest,
+  ): number | undefined {
+    const slippageBps = (
+      request as UserSwapQuoteRequest & { slippageBps?: unknown }
+    ).slippageBps;
 
     return typeof slippageBps === 'number' ? slippageBps : undefined;
   }

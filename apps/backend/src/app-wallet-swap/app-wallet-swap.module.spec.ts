@@ -7,9 +7,11 @@ import { StablefxExecutionService } from '../user-swap/stablefx-execution.servic
 import { UserSwapService } from '../user-swap/user-swap.service';
 import { AppWalletSwapCircleExecutorService } from './app-wallet-swap-circle-executor.service';
 import { AppWalletSwapDepositVerifierService } from './app-wallet-swap-deposit-verifier.service';
+import { AppWalletSwapDepositService } from './app-wallet-swap-deposit.service';
 import { AppWalletSwapModule } from './app-wallet-swap.module';
 import { AppWalletSwapOperationRepository } from './app-wallet-swap-operation.repository';
 import { AppWalletSwapPayoutExecutorService } from './app-wallet-swap-payout-executor.service';
+import { AppWalletSwapRefundService } from './app-wallet-swap-refund.service';
 import { AppWalletSwapService } from './app-wallet-swap.service';
 import { AppWalletSwapStablefxExecutorService } from './app-wallet-swap-stablefx-executor.service';
 import { AppWalletSwapTreasuryVerifierService } from './app-wallet-swap-treasury-verifier.service';
@@ -18,9 +20,11 @@ describe('AppWalletSwapModule wiring', () => {
   const appWalletProviders = [
     AppWalletSwapCircleExecutorService,
     AppWalletSwapDepositVerifierService,
+    AppWalletSwapDepositService,
     AppWalletSwapTreasuryVerifierService,
     AppWalletSwapOperationRepository,
     AppWalletSwapPayoutExecutorService,
+    AppWalletSwapRefundService,
     AppWalletSwapStablefxExecutorService,
     AppWalletSwapService,
   ];
