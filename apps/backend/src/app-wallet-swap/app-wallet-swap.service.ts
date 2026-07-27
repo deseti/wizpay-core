@@ -3,6 +3,7 @@ import {
   BadRequestException,
   BadGatewayException,
   Injectable,
+  Logger,
   NotFoundException,
   ServiceUnavailableException,
 } from '@nestjs/common';
@@ -38,6 +39,12 @@ import {
   getNestedString as getNestedStringFromPayload,
   validTransactionHashOrNull,
 } from './app-wallet-swap-provider-reference';
+import {
+  buildSwapkitRouteUnavailableDiagnostics,
+  isCircleRouteUnavailableError,
+  readSwapkitBaseUnitAmount,
+  toSwapkitRouteUnavailableError,
+} from './app-wallet-swap-swapkit-quote';
 import { AppWalletSwapPayoutExecutorService } from './app-wallet-swap-payout-executor.service';
 import { AppWalletSwapTreasuryVerifierService } from './app-wallet-swap-treasury-verifier.service';
 import {
@@ -78,6 +85,8 @@ class TerminalExecutionError extends Error {}
 
 @Injectable()
 export class AppWalletSwapService {
+  private readonly logger = new Logger(AppWalletSwapService.name);
+
   constructor(
     private readonly userSwapService: UserSwapService,
     private readonly depositService: AppWalletSwapDepositService,
@@ -100,20 +109,10 @@ export class AppWalletSwapService {
   ): Promise<AppWalletSwapQuoteResponse> {
     const normalized = this.normalizeRequest(request);
     const treasuryDepositAddress = this.getArcTreasuryDepositAddress();
-    const userSwapQuote = await this.userSwapService.quote({
-      amountIn: normalized.amountIn,
-      chain: APP_WALLET_SWAP_CHAIN,
-      fromAddress: treasuryDepositAddress,
-      toAddress: normalized.fromAddress,
-      tokenIn: normalized.tokenIn,
-      tokenOut: normalized.tokenOut,
-      ...(normalized.provider
-        ? {
-            provider: normalized.provider,
-            allowProviderFallback: false,
-          }
-        : {}),
-    });
+    const userSwapQuote = await this.requestProviderQuote(
+      normalized,
+      treasuryDepositAddress,
+    );
     const quoteProvider = this.resolveAppWalletExecutionProvider(
       userSwapQuote.provider,
       userSwapQuote.raw,
@@ -137,6 +136,13 @@ export class AppWalletSwapService {
       });
     }
 
+    // SwapKit executes against an on-chain slippage floor, so a quote without a
+    // usable minimum output must fail closed here — before an operation row
+    // exists and before any deposit is requested from the user.
+    if (quoteProvider === 'swapkit') {
+      this.assertSwapkitMinimumOutput(userSwapQuote.minimumOutput, normalized);
+    }
+
     return {
       operationMode: APP_WALLET_SWAP_MODE,
       sourceChain: APP_WALLET_SWAP_CHAIN,
@@ -152,6 +158,84 @@ export class AppWalletSwapService {
       quoteId: userSwapQuote.quoteId,
       rawQuote: this.attachQuoteProvider(userSwapQuote.raw, quoteProvider),
     };
+  }
+
+  // Requests the provider quote and translates Circle's structured
+  // route-unavailable answer into a stable WizPay domain error. The provider
+  // is never switched here: a route rejection fails closed and the caller keeps
+  // whatever provider they selected.
+  private async requestProviderQuote(
+    normalized: ReturnType<AppWalletSwapService['normalizeRequest']>,
+    treasuryDepositAddress: string,
+  ) {
+    try {
+      return await this.userSwapService.quote({
+        amountIn: normalized.amountIn,
+        chain: APP_WALLET_SWAP_CHAIN,
+        fromAddress: treasuryDepositAddress,
+        toAddress: normalized.fromAddress,
+        tokenIn: normalized.tokenIn,
+        tokenOut: normalized.tokenOut,
+        ...(normalized.provider
+          ? {
+              provider: normalized.provider,
+              allowProviderFallback: false,
+            }
+          : {}),
+      });
+    } catch (error) {
+      // Only the Circle Stablecoin Kits (swapkit) path can produce this,
+      // so the classification is provider-accurate without inspecting the
+      // requested provider.
+      if (isCircleRouteUnavailableError(error)) {
+        const diagnostics = buildSwapkitRouteUnavailableDiagnostics({
+          error,
+          tokenIn: normalized.tokenIn,
+          tokenOut: normalized.tokenOut,
+          amountIn: normalized.amountIn,
+        });
+
+        this.logger.warn(
+          `[app-wallet-swap-swapkit] Route unavailable: ` +
+            `provider=${diagnostics.provider} ` +
+            `direction=${diagnostics.direction} ` +
+            `amountIn=${diagnostics.amountIn} ` +
+            `upstreamStatus=${diagnostics.upstreamStatus ?? 'unknown'} ` +
+            `upstreamCode=${diagnostics.upstreamCode ?? 'unknown'} ` +
+            `traceId=${diagnostics.traceId ?? 'none'}`,
+        );
+
+        throw toSwapkitRouteUnavailableError({
+          error,
+          tokenIn: normalized.tokenIn,
+          tokenOut: normalized.tokenOut,
+          amountIn: normalized.amountIn,
+        });
+      }
+
+      throw error;
+    }
+  }
+
+  private assertSwapkitMinimumOutput(
+    minimumOutput: unknown,
+    normalized: { tokenIn: AppWalletSwapToken; tokenOut: AppWalletSwapToken },
+  ): void {
+    if (readSwapkitBaseUnitAmount(minimumOutput) !== null) {
+      return;
+    }
+
+    this.logger.warn(
+      `[app-wallet-swap-swapkit] Quote rejected: no positive minimum output. ` +
+        `direction=${normalized.tokenIn}->${normalized.tokenOut}`,
+    );
+
+    throw new BadGatewayException({
+      code: APP_WALLET_SWAP_ERROR_CODES.SWAPKIT_QUOTE_MINIMUM_OUTPUT_INVALID,
+      message:
+        'SwapKit quote did not include a usable minimum output, so this swap cannot be executed safely.',
+      provider: 'swapkit',
+    });
   }
 
   async createOperation(
@@ -465,9 +549,19 @@ export class AppWalletSwapService {
       tokenIn: pendingOperation.tokenIn,
       tokenOut: pendingOperation.tokenOut,
     });
+    // The floor that actually protects this execution is the one returned by
+    // the prepare call we are about to submit, not the earlier indicative
+    // quote. Persist it so confirmation can verify against it even after a
+    // restart, and so operations quoted before this fix can still be resumed.
+    const preparedMinimumOutput = readSwapkitBaseUnitAmount(
+      prepared.minimumOutput,
+    );
     const rawTreasurySwapBase = toAppWalletSwapNullableJson({
       prepare: this.sanitizeForPersistence(prepared.raw),
       transactionShape: describeAppWalletSwapPayloadShape(prepared.transaction),
+      ...(preparedMinimumOutput
+        ? { minimumOutput: preparedMinimumOutput }
+        : {}),
     });
     const operationWithRawPrepare = this.mapOperationRecord(
       await this.operationRepository.update(pendingOperation.operationId, {
@@ -531,6 +625,9 @@ export class AppWalletSwapService {
           rawTreasurySwap: toAppWalletSwapNullableJson({
             prepare: this.sanitizeForPersistence(prepared.raw),
             execution: this.sanitizeForPersistence(execution.raw),
+            ...(preparedMinimumOutput
+              ? { minimumOutput: preparedMinimumOutput }
+              : {}),
           }),
           executionError: null,
           updatedAt: new Date(),
@@ -601,12 +698,22 @@ export class AppWalletSwapService {
       return operation;
     }
 
+    // Fail closed before confirming any financial outcome: without a positive
+    // floor the on-chain check would accept any non-zero output.
+    const minimumOutput = this.resolveTreasurySwapMinimumOutput(operation);
+
+    if (!minimumOutput) {
+      throw new TerminalExecutionError(
+        'SwapKit treasury swap has no verifiable minimum output, so the swap result cannot be confirmed safely.',
+      );
+    }
+
     const verification = await this.treasuryVerifier
       .verifyTreasurySwap({
         txHash,
         tokenOut: operation.tokenOut,
         treasuryAddress: operation.treasuryDepositAddress,
-        minimumOutput: this.stringifyAmount(operation.minimumOutput),
+        minimumOutput,
       })
       .catch(() => null);
 
@@ -635,6 +742,42 @@ export class AppWalletSwapService {
         executionError: null,
         updatedAt: new Date(),
       }),
+    );
+  }
+
+  /**
+   * Resolves the slippage floor used to verify a SwapKit treasury swap.
+   *
+   * Preferred source is the operation's quoted minimum output. Operations
+   * created before the quote parser fix persisted `minimumOutput: null`; for
+   * those, the floor recorded from the prepare response that was actually
+   * submitted is used, so in-flight operations stay resumable. Returns
+   * undefined when neither source yields a positive base-unit amount.
+   */
+  private resolveTreasurySwapMinimumOutput(
+    operation: AppWalletSwapOperationResponse,
+  ): string | undefined {
+    const quoted = readSwapkitBaseUnitAmount(operation.minimumOutput);
+
+    if (quoted) {
+      return quoted;
+    }
+
+    const rawTreasurySwap = operation.rawTreasurySwap;
+
+    if (!this.isRecord(rawTreasurySwap)) {
+      return undefined;
+    }
+
+    return (
+      readSwapkitBaseUnitAmount(rawTreasurySwap.minimumOutput) ??
+      readSwapkitBaseUnitAmount(
+        this.findFirst(rawTreasurySwap, [
+          'prepare.stopLimit',
+          'prepare.minimumOutput',
+        ]),
+      ) ??
+      undefined
     );
   }
 

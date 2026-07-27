@@ -165,6 +165,166 @@ describe('UserSwapService', () => {
     });
   });
 
+  // Mirrors the USDC->EURC assertion above. The reverse direction previously
+  // had no outbound-parameter coverage at all.
+  it('maps EURC to USDC onto reversed Circle token addresses', async () => {
+    enableUserSwap();
+    fetchMock.mockResolvedValueOnce(jsonResponse({ quoteId: 'quote-rev' }));
+    const service = new UserSwapService();
+
+    const result = await service.quote({
+      ...baseRequest,
+      tokenIn: 'EURC',
+      tokenOut: 'USDC',
+      amountIn: '30000000',
+    });
+    const quoteUrl = getFetchUrl();
+
+    expect(quoteUrl.searchParams.get('tokenInAddress')).toBe(
+      USER_SWAP_EURC_ADDRESS,
+    );
+    expect(quoteUrl.searchParams.get('tokenOutAddress')).toBe(
+      USER_SWAP_USDC_ADDRESS,
+    );
+    expect(quoteUrl.searchParams.get('tokenInChain')).toBe(
+      USER_SWAP_STABLECOIN_KITS_CHAIN,
+    );
+    expect(quoteUrl.searchParams.get('tokenOutChain')).toBe(
+      USER_SWAP_STABLECOIN_KITS_CHAIN,
+    );
+    expect(quoteUrl.searchParams.get('amount')).toBe('30000000');
+    expect(result).toMatchObject({ tokenIn: 'EURC', tokenOut: 'USDC' });
+  });
+
+  // Base units are passed straight through in both directions: both USDC and
+  // EURC use 6 decimals on Arc, so 30 tokens is always "30000000".
+  it.each([
+    ['USDC', 'EURC', USER_SWAP_USDC_ADDRESS, USER_SWAP_EURC_ADDRESS],
+    ['EURC', 'USDC', USER_SWAP_EURC_ADDRESS, USER_SWAP_USDC_ADDRESS],
+  ])(
+    'preserves %s to %s base units without rescaling',
+    async (tokenIn, tokenOut, inAddress, outAddress) => {
+      enableUserSwap();
+      fetchMock.mockResolvedValueOnce(jsonResponse({ quoteId: 'q' }));
+      const service = new UserSwapService();
+
+      await service.quote({
+        ...baseRequest,
+        tokenIn,
+        tokenOut,
+        amountIn: '30000000',
+      });
+      const quoteUrl = getFetchUrl();
+
+      expect(quoteUrl.searchParams.get('amount')).toBe('30000000');
+      expect(quoteUrl.searchParams.get('tokenInAddress')).toBe(inAddress);
+      expect(quoteUrl.searchParams.get('tokenOutAddress')).toBe(outAddress);
+    },
+  );
+
+  // Response shape verified against the schema shipped in @circle-fin/swap-kit
+  // (getQuoteResponseSchema): { quote: { estimatedAmount, minAmount, route },
+  // feeContext }. Both amounts are base-unit numeric strings.
+  it('parses expected and minimum output from the Circle quote schema', async () => {
+    enableUserSwap();
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        quote: {
+          estimatedAmount: '34960000',
+          minAmount: '34260000',
+          route: { provider: 'lifi', steps: [] },
+        },
+        feeContext: {
+          type: 'output',
+          tokenAddress: USER_SWAP_USDC_ADDRESS,
+          tokenSymbol: 'USDC',
+          minAmount: '1000',
+          estimatedAmount: '1100',
+        },
+      }),
+    );
+    const service = new UserSwapService();
+
+    const result = await service.quote({
+      ...baseRequest,
+      tokenIn: 'EURC',
+      tokenOut: 'USDC',
+      amountIn: '30000000',
+    });
+
+    expect(result.expectedOutput).toBe('34960000');
+    expect(result.minimumOutput).toBe('34260000');
+  });
+
+  // feeContext carries its own minAmount/estimatedAmount for fees. Those must
+  // never be read as the swap output.
+  it('does not read swap outputs from feeContext', async () => {
+    enableUserSwap();
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        quote: {
+          estimatedAmount: '34960000',
+          minAmount: '34260000',
+          route: { provider: 'lifi', steps: [] },
+        },
+        feeContext: {
+          type: 'output',
+          tokenAddress: USER_SWAP_USDC_ADDRESS,
+          tokenSymbol: 'USDC',
+          minAmount: '1000',
+          estimatedAmount: '1100',
+        },
+      }),
+    );
+    const service = new UserSwapService();
+
+    const result = await service.quote(baseRequest);
+
+    expect(result.expectedOutput).not.toBe('1100');
+    expect(result.minimumOutput).not.toBe('1000');
+  });
+
+  it('leaves outputs undefined when the quote carries no amounts', async () => {
+    enableUserSwap();
+    fetchMock.mockResolvedValueOnce(jsonResponse({ quoteId: 'quote-empty' }));
+    const service = new UserSwapService();
+
+    const result = await service.quote(baseRequest);
+
+    expect(result.expectedOutput).toBeUndefined();
+    expect(result.minimumOutput).toBeUndefined();
+  });
+
+  it('carries bounded upstream diagnostics on a route-unavailable error', async () => {
+    enableUserSwap();
+    fetchMock.mockImplementation(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({ code: 331001, message: 'No route available' }),
+          {
+            status: 404,
+            headers: {
+              'Content-Type': 'application/json',
+              'x-request-id': 'req-abc-123',
+            },
+          },
+        ),
+      ),
+    );
+    const service = new UserSwapService();
+    stubDelay(service);
+
+    await expect(service.quote(baseRequest)).rejects.toMatchObject({
+      response: {
+        reason: 'CIRCLE_ROUTE_UNAVAILABLE',
+        upstreamStatus: 404,
+        upstreamCode: 331001,
+        upstreamMessage: 'No route available',
+        traceId: 'req-abc-123',
+      },
+    });
+  });
+
   it('includes optional quote slippageBps when provided', async () => {
     enableUserSwap();
     fetchMock.mockResolvedValueOnce(jsonResponse({ quoteId: 'quote-1' }));
@@ -173,6 +333,42 @@ describe('UserSwapService', () => {
     await service.quote({ ...baseRequest, slippageBps: 150 });
 
     expect(getFetchUrl().searchParams.get('slippageBps')).toBe('150');
+  });
+
+  // Response shape verified against the schema shipped in @circle-fin/swap-kit
+  // (createSwapResponseSchema): top-level `estimatedAmount` and `stopLimit`,
+  // both base-unit numeric strings.
+  it('parses expected and minimum output from the Circle prepare schema', async () => {
+    enableUserSwap();
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        tokenInAddress: USER_SWAP_EURC_ADDRESS,
+        tokenInChain: USER_SWAP_STABLECOIN_KITS_CHAIN,
+        tokenOutAddress: USER_SWAP_USDC_ADDRESS,
+        tokenOutChain: USER_SWAP_STABLECOIN_KITS_CHAIN,
+        fromAddress: baseRequest.fromAddress,
+        toAddress: baseRequest.fromAddress,
+        amount: '30000000',
+        estimatedAmount: '34960000',
+        stopLimit: '34260000',
+        transaction: {
+          to: '0x0000000000000000000000000000000000000001',
+          data: '0x1234',
+          value: '0',
+        },
+      }),
+    );
+    const service = new UserSwapService();
+
+    const result = await service.prepare({
+      ...baseRequest,
+      tokenIn: 'EURC',
+      tokenOut: 'USDC',
+      amountIn: '30000000',
+    });
+
+    expect(result.expectedOutput).toBe('34960000');
+    expect(result.minimumOutput).toBe('34260000');
   });
 
   it('calls Circle swap API with API-compatible body for prepare but does not sign', async () => {

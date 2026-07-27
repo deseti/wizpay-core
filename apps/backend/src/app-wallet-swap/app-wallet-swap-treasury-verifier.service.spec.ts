@@ -111,6 +111,7 @@ describe('AppWalletSwapTreasuryVerifierService', () => {
         tokenOut: 'EURC',
         txHash: TX_HASH,
         treasuryAddress: TREASURY_ADDRESS,
+        minimumOutput: '1000',
       }),
     ).resolves.toEqual({
       confirmed: false,
@@ -118,6 +119,42 @@ describe('AppWalletSwapTreasuryVerifierService', () => {
         'Treasury swap transaction did not include a matching EURC transfer to the treasury.',
     });
   });
+
+  it.each([
+    ['missing', undefined],
+    ['empty', ''],
+    ['zero', '0'],
+    ['non-numeric', 'abc'],
+    ['decimal', '10.5'],
+    ['negative', '-1000'],
+  ])(
+    'fails closed instead of confirming against a %s minimum output',
+    async (_label, minimumOutput) => {
+      getTransactionReceipt.mockResolvedValueOnce(
+        receipt([
+          transferLog(
+            USER_SWAP_EURC_ADDRESS,
+            OTHER_ADDRESS,
+            TREASURY_ADDRESS,
+            1000n,
+          ),
+        ]),
+      );
+
+      await expect(
+        service.verifyTreasurySwap({
+          tokenOut: 'EURC',
+          txHash: TX_HASH,
+          treasuryAddress: TREASURY_ADDRESS,
+          minimumOutput: minimumOutput as string,
+        }),
+      ).resolves.toEqual({
+        confirmed: false,
+        error:
+          'Treasury swap minimum output is missing or invalid, so the swap output cannot be verified.',
+      });
+    },
+  );
 
   it('confirms payout only for the exact treasury-to-user token transfer', async () => {
     getTransactionReceipt.mockResolvedValueOnce(

@@ -28,6 +28,20 @@ const TOKEN_ADDRESS_BY_SYMBOL = {
   EURC: USER_SWAP_EURC_ADDRESS,
 } as const;
 
+// Accepts only a positive base-unit integer string. Returns null for anything
+// else so callers cannot confirm a swap against an implicit zero floor.
+function readPositiveBaseUnits(value: string | undefined): bigint | null {
+  const candidate = value?.trim();
+
+  if (!candidate || !/^\d+$/.test(candidate)) {
+    return null;
+  }
+
+  const parsed = BigInt(candidate);
+
+  return parsed > 0n ? parsed : null;
+}
+
 function readArcRpcUrl() {
   const configured =
     process.env.ARC_TESTNET_RPC_URL ??
@@ -71,9 +85,18 @@ export class AppWalletSwapTreasuryVerifierService {
     }
 
     const treasuryAddress = request.treasuryAddress as Address;
-    const minimumOutput = request.minimumOutput
-      ? BigInt(request.minimumOutput)
-      : 0n;
+    // Fail closed: a missing or malformed floor must never degrade into a
+    // zero minimum that accepts any positive output.
+    const minimumOutput = readPositiveBaseUnits(request.minimumOutput);
+
+    if (minimumOutput === null) {
+      return {
+        confirmed: false,
+        error:
+          'Treasury swap minimum output is missing or invalid, so the swap output cannot be verified.',
+      };
+    }
+
     const tokenOutAddress = TOKEN_ADDRESS_BY_SYMBOL[request.tokenOut] as Address;
     let received = 0n;
 

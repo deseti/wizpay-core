@@ -30,6 +30,7 @@ import {
   canExecuteAppWalletOperation,
   canRequestAppWalletRefund,
   getAppWalletOperationMessage,
+  getAppWalletQuoteErrorMessage,
   getAppWalletQuoteProvider,
 } from "./app-wallet-swap-view-model";
 import { useAppWalletSwapPoller } from "./use-app-wallet-swap-poller";
@@ -213,7 +214,18 @@ export function useAppWalletSwapOperation({
       }
       return nextQuote;
     } catch (error) {
-      const message = getFriendlyErrorMessage(error);
+      const { tokenIn, tokenOut } = getRequestBase();
+      const message = getAppWalletQuoteErrorMessage(error, {
+        tokenIn,
+        tokenOut,
+      });
+
+      // Drop any previous quote so stale expected/minimum output cannot stay on
+      // screen next to a failed quote. The entered amount and token direction
+      // are deliberately left untouched so the user can just lower the amount.
+      // The selected provider is never changed here.
+      setQuote(null);
+      setQuoteWalletMode(null);
       setErrorMessage(message);
       toast({
         title: "Quote unavailable",

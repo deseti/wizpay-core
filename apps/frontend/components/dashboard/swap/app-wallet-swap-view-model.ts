@@ -1,11 +1,14 @@
-import type {
-  AppWalletSwapOperationResponse,
-  AppWalletSwapProvider,
+import { BackendApiError } from "@/lib/backend-api";
+import {
+  SWAPKIT_ROUTE_UNAVAILABLE_CODE,
+  type AppWalletSwapOperationResponse,
+  type AppWalletSwapProvider,
 } from "@/lib/app-wallet-swap-service";
 import {
   formatUserSwapQuoteAmount,
   getUserSwapExpectedOutputDisplay,
 } from "@/lib/user-swap-quote-parser";
+import { getFriendlyErrorMessage, type TokenSymbol } from "@/lib/wizpay";
 
 export type AppWalletSwapPhase =
   | "confirm_deposit"
@@ -22,6 +25,36 @@ export function getAppWalletQuoteProvider(
   return quote?.provider === "stablefx" || quote?.provider === "swapkit"
     ? quote.provider
     : undefined;
+}
+
+function readBackendErrorCode(error: unknown): string | null {
+  if (error instanceof BackendApiError && error.code) {
+    return error.code;
+  }
+
+  return null;
+}
+
+/**
+ * Turns an App Wallet quote failure into a user-facing message.
+ *
+ * The known route-unavailable case gets a concrete next step instead of a
+ * generic backend/Circle infrastructure error. Every other error keeps the
+ * existing generic handling. This never changes the selected provider — the
+ * user decides whether to retry with a smaller amount or pick StableFX.
+ */
+export function getAppWalletQuoteErrorMessage(
+  error: unknown,
+  direction: { tokenIn: TokenSymbol; tokenOut: TokenSymbol },
+): string {
+  if (readBackendErrorCode(error) === SWAPKIT_ROUTE_UNAVAILABLE_CODE) {
+    return (
+      `SwapKit has no ${direction.tokenIn} → ${direction.tokenOut} route for this amount. ` +
+      "Try a smaller amount or select StableFX."
+    );
+  }
+
+  return getFriendlyErrorMessage(error);
 }
 
 export function getOperationExpectedOutput(

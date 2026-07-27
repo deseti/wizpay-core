@@ -50,10 +50,15 @@ const CIRCLE_RETRY_DELAYS_MS = [750, 1500] as const;
 // unavailability. Observed as HTTP 404 with body { code: 331001,
 // message: "No route available" }. This is not a transient transport failure,
 // so it must fail closed without retrying.
-const CIRCLE_ROUTE_UNAVAILABLE_CODE = 331001;
+export const CIRCLE_ROUTE_UNAVAILABLE_CODE = 331001;
 // Stable internal reason surfaced in the error details so callers can detect
 // route unavailability without depending on the upstream HTTP status alone.
-const CIRCLE_ROUTE_UNAVAILABLE_REASON = 'CIRCLE_ROUTE_UNAVAILABLE';
+// Exported so provider-specific callers classify structurally instead of
+// matching the English message.
+export const CIRCLE_ROUTE_UNAVAILABLE_REASON = 'CIRCLE_ROUTE_UNAVAILABLE';
+// Response headers Circle may use to correlate a request. Only these are read;
+// no other header (notably Authorization) is ever inspected or logged.
+const CIRCLE_TRACE_ID_HEADERS = ['x-request-id', 'x-correlation-id'] as const;
 
 @Injectable()
 export class UserSwapService {
@@ -407,10 +412,15 @@ export class UserSwapService {
         response.status === 404 &&
         this.readUpstreamErrorCode(raw) === CIRCLE_ROUTE_UNAVAILABLE_CODE
       ) {
+        const traceId = this.readTraceId(response);
+        const upstreamMessage = this.readUpstreamErrorMessage(raw);
+
         this.logger.warn(
           `[user-swap-circle] Route unavailable (no retry): ` +
             `method=${method} path=${path} status=${response.status} ` +
             `upstreamCode=${CIRCLE_ROUTE_UNAVAILABLE_CODE} ` +
+            `upstreamMessage=${upstreamMessage ?? 'unknown'} ` +
+            `traceId=${traceId ?? 'none'} ` +
             `attempt=${attempt} maxAttempts=${CIRCLE_MAX_ATTEMPTS}`,
         );
 
@@ -420,6 +430,12 @@ export class UserSwapService {
           // Stable internal reason so callers can detect route unavailability.
           reason: CIRCLE_ROUTE_UNAVAILABLE_REASON,
           message: 'Circle Stablecoin Kits route unavailable.',
+          // Bounded, non-sensitive upstream diagnostics. Added alongside the
+          // existing fields so current consumers are unaffected.
+          upstreamStatus: response.status,
+          upstreamCode: CIRCLE_ROUTE_UNAVAILABLE_CODE,
+          ...(upstreamMessage ? { upstreamMessage } : {}),
+          ...(traceId ? { traceId } : {}),
           details: raw,
         });
       }
@@ -491,6 +507,33 @@ export class UserSwapService {
     return undefined;
   }
 
+  // Reads Circle's own error text from a parsed error body. Bounded so a large
+  // or hostile upstream payload cannot flood the logs. Never reads secrets.
+  private readUpstreamErrorMessage(raw: unknown): string | undefined {
+    if (!this.isRecord(raw) || typeof raw.message !== 'string') {
+      return undefined;
+    }
+
+    const message = raw.message.trim();
+
+    return message ? message.slice(0, 200) : undefined;
+  }
+
+  // Reads a correlation id from the response headers, when present, so an
+  // upstream route rejection can be raised with Circle support. Only the
+  // allowlisted headers above are read.
+  private readTraceId(response: Response): string | undefined {
+    for (const header of CIRCLE_TRACE_ID_HEADERS) {
+      const value = response.headers?.get?.(header)?.trim();
+
+      if (value) {
+        return value.slice(0, 100);
+      }
+    }
+
+    return undefined;
+  }
+
   private normalizeQuoteResponse(
     request: ReturnType<UserSwapService['normalizeBaseRequest']>,
     raw: unknown,
@@ -500,17 +543,27 @@ export class UserSwapService {
     return {
       ...request,
       provider: 'swapkit',
+      // `quote.estimatedAmount` / `quote.minAmount` are the fields the current
+      // Circle Stablecoin Kits quote endpoint actually returns (base units).
+      // Verified against the shipped SDK response schema in
+      // @circle-fin/swap-kit (getQuoteResponseSchema). They are appended last
+      // so any previously-handled shape still takes precedence. The paths are
+      // fully qualified on purpose: the sibling `feeContext` object carries
+      // its own `estimatedAmount`/`minAmount` for fees, which must never be
+      // mistaken for the swap output.
       expectedOutput: this.findFirst(raw, [
         'estimatedOutput',
         'expectedOutput',
         'amountOut',
         'buyAmount',
+        'quote.estimatedAmount',
       ]),
       minimumOutput: this.findFirst(raw, [
         'minimumOutput',
         'minOutput',
         'stopLimit',
         'minAmountOut',
+        'quote.minAmount',
       ]),
       fees: this.findFirst(raw, ['fees', 'fee']),
       expiresAt: this.findFirst(raw, ['expiresAt', 'expiration', 'validUntil']),
@@ -539,11 +592,17 @@ export class UserSwapService {
     return {
       ...request,
       slippageBps,
+      // The Circle Stablecoin Kits swap (prepare) response carries the
+      // slippage-protected floor as top-level `stopLimit` (already matched
+      // below) and the estimate as top-level `estimatedAmount`. Verified
+      // against the shipped SDK response schema in @circle-fin/swap-kit
+      // (createSwapResponseSchema).
       expectedOutput: this.findFirst(raw, [
         'estimatedOutput',
         'expectedOutput',
         'amountOut',
         'buyAmount',
+        'estimatedAmount',
       ]),
       minimumOutput: this.findFirst(raw, [
         'minimumOutput',

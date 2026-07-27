@@ -44,6 +44,16 @@ export const APP_WALLET_SWAP_ERROR_CODES = {
   REFUND_NOT_SAFE: 'APP_WALLET_SWAP_REFUND_NOT_SAFE',
   STABLEFX_MIN_AMOUNT: 'STABLEFX_MIN_AMOUNT',
   EXECUTION_PROVIDER_INVALID: 'APP_WALLET_SWAP_EXECUTION_PROVIDER_INVALID',
+  // Circle answered that it cannot route this direction at this amount.
+  // Direction- and amount-dependent, so it is never a permanent pair block.
+  SWAPKIT_ROUTE_UNAVAILABLE: 'SWAPKIT_ROUTE_UNAVAILABLE',
+  // A SwapKit quote returned without a usable slippage-protected floor.
+  // Fails closed at quote time, before any operation exists.
+  SWAPKIT_QUOTE_MINIMUM_OUTPUT_INVALID:
+    'SWAPKIT_QUOTE_MINIMUM_OUTPUT_INVALID',
+  // No positive minimum output could be derived for on-chain verification.
+  // Fails closed before financial execution is confirmed.
+  SWAPKIT_MINIMUM_OUTPUT_UNVERIFIABLE: 'SWAPKIT_MINIMUM_OUTPUT_UNVERIFIABLE',
 } as const;
 
 export interface AppWalletSwapQuoteRequest {
@@ -148,7 +158,11 @@ export interface AppWalletSwapTreasurySwapVerificationRequest {
   tokenOut: AppWalletSwapToken;
   txHash: string;
   treasuryAddress: string;
-  minimumOutput?: string;
+  /**
+   * Slippage-protected floor in base units. Required: a treasury swap must
+   * never be confirmed against an implicit zero minimum.
+   */
+  minimumOutput: string;
 }
 
 export interface AppWalletSwapTreasurySwapVerificationResult {

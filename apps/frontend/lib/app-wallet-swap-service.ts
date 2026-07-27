@@ -5,6 +5,13 @@ export const APP_WALLET_SWAP_CHAIN = "ARC-TESTNET" as const;
 export const APP_WALLET_SWAP_OPERATION_MODE = "treasury-mediated" as const;
 export type AppWalletSwapProvider = "stablefx" | "swapkit";
 
+/**
+ * Backend domain error code returned when Circle cannot route the requested
+ * direction at the requested amount. Direction- and amount-dependent, so it is
+ * never a permanent block on the pair.
+ */
+export const SWAPKIT_ROUTE_UNAVAILABLE_CODE = "SWAPKIT_ROUTE_UNAVAILABLE";
+
 export interface AppWalletSwapQuoteRequest {
   tokenIn: TokenSymbol;
   tokenOut: TokenSymbol;
