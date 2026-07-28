@@ -8,6 +8,7 @@ import { AppWalletSwapDepositService } from './app-wallet-swap-deposit.service';
 import { AppWalletSwapCircleExecutorService } from './app-wallet-swap-circle-executor.service';
 import { AppWalletSwapOperationRepository } from './app-wallet-swap-operation.repository';
 import { AppWalletSwapPayoutExecutorService } from './app-wallet-swap-payout-executor.service';
+import { AppWalletSwapPayoutService } from './app-wallet-swap-payout.service';
 import { AppWalletSwapRefundService } from './app-wallet-swap-refund.service';
 import { AppWalletSwapTreasuryVerifierService } from './app-wallet-swap-treasury-verifier.service';
 import { AppWalletSwapController } from './app-wallet-swap.controller';
@@ -24,6 +25,7 @@ import { AppWalletSwapStablefxExecutorService } from './app-wallet-swap-stablefx
     AppWalletSwapTreasuryVerifierService,
     AppWalletSwapOperationRepository,
     AppWalletSwapPayoutExecutorService,
+    AppWalletSwapPayoutService,
     AppWalletSwapRefundService,
     AppWalletSwapStablefxExecutorService,
     AppWalletSwapService,

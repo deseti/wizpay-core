@@ -37,6 +37,7 @@ import {
   APP_WALLET_SWAP_CHAIN,
   APP_WALLET_SWAP_ERROR_CODES,
   AppWalletSwapOperationResponse,
+  AppWalletSwapProvider,
   AppWalletSwapToken,
 } from './app-wallet-swap.types';
 
@@ -63,6 +64,26 @@ export class AppWalletSwapRefundService {
   ) {}
 
   async recover(operationId: string): Promise<AppWalletSwapOperationResponse> {
+    const currentOperation = await this.getOperation(operationId);
+    this.assertPersistedExecutionProvider(currentOperation);
+
+    if (currentOperation.status === 'refunded') {
+      return this.toPublicOperation(currentOperation);
+    }
+    if (
+      ![
+        'execution_recovery_required',
+        'execution_failed',
+        'refund_pending',
+        'refund_submitted',
+      ].includes(currentOperation.status)
+    ) {
+      throw new BadRequestException({
+        code: APP_WALLET_SWAP_ERROR_CODES.REFUND_NOT_SAFE,
+        message: 'This App Wallet swap operation is not eligible for recovery.',
+      });
+    }
+
     const leaseId = randomUUID();
     if (!(await this.claimExecution(operationId, leaseId))) {
       return this.getPublicOperation(operationId);
@@ -431,5 +452,19 @@ export class AppWalletSwapRefundService {
 
   private isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
+  }
+
+  private assertPersistedExecutionProvider(
+    operation: AppWalletSwapOperationResponse,
+  ): asserts operation is AppWalletSwapOperationResponse & {
+    provider: AppWalletSwapProvider;
+  } {
+    if (operation.provider !== 'swapkit' && operation.provider !== 'stablefx') {
+      throw new ServiceUnavailableException({
+        code: APP_WALLET_SWAP_ERROR_CODES.EXECUTION_PROVIDER_INVALID,
+        message:
+          'App Wallet swap execution provider is missing or invalid. This operation requires manual recovery review.',
+      });
+    }
   }
 }

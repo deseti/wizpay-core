@@ -11,6 +11,7 @@ import { AppWalletSwapCircleExecutorService } from './app-wallet-swap-circle-exe
 import { AppWalletSwapStablefxExecutorService } from './app-wallet-swap-stablefx-executor.service';
 import { AppWalletSwapOperationRepository } from './app-wallet-swap-operation.repository';
 import { AppWalletSwapPayoutExecutorService } from './app-wallet-swap-payout-executor.service';
+import { AppWalletSwapPayoutService } from './app-wallet-swap-payout.service';
 import { AppWalletSwapRefundService } from './app-wallet-swap-refund.service';
 import { getPayoutTransactionId } from './app-wallet-swap-provider-reference';
 import { AppWalletSwapService } from './app-wallet-swap.service';
@@ -410,12 +411,16 @@ describe('AppWalletSwapService', () => {
       treasuryVerifier as AppWalletSwapTreasuryVerifierService,
       circleExecutor,
       stablefxExecutor,
-      new AppWalletSwapPayoutExecutorService(
-        new AppWalletSwapCircleExecutorService(
-          circleService as unknown as CircleService,
-          w3sAuthService as unknown as W3sAuthService,
-          blockchainService as unknown as BlockchainService,
+      new AppWalletSwapPayoutService(
+        new AppWalletSwapPayoutExecutorService(
+          new AppWalletSwapCircleExecutorService(
+            circleService as unknown as CircleService,
+            w3sAuthService as unknown as W3sAuthService,
+            blockchainService as unknown as BlockchainService,
+          ),
         ),
+        treasuryVerifier as AppWalletSwapTreasuryVerifierService,
+        operationRepository,
       ),
       operationRepository,
     );
@@ -2807,7 +2812,9 @@ describe('AppWalletSwapService', () => {
       expect(confirmed.provider).toBe('swapkit');
       expect(executed.provider).toBe('swapkit');
       // StableFX is never engaged for a swapkit operation.
-      expect(stablefxExecutionService.createTradableQuote).not.toHaveBeenCalled();
+      expect(
+        stablefxExecutionService.createTradableQuote,
+      ).not.toHaveBeenCalled();
       expect(stablefxExecutionService.createTrade).not.toHaveBeenCalled();
     });
   });

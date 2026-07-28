@@ -19,6 +19,8 @@ import {
   USER_SWAP_USDC_ADDRESS,
   USER_SWAP_EURC_ADDRESS,
 } from '../../user-swap/user-swap.service';
+import { PayrollFxStablefxLifecycleService } from '../../payroll-fx/payroll-fx-stablefx-lifecycle.service';
+import { PayrollFxStablefxRecoveryService } from '../../payroll-fx/payroll-fx-stablefx-recovery.service';
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -40,6 +42,7 @@ export interface FxSettlementResult {
   targetAmount: string;
   txHash: string | null;
   status: 'settled' | 'failed';
+  operationId?: string;
 }
 
 // ─── Constants ──────────────────────────────────────────────────────
@@ -79,22 +82,38 @@ const STABLEFX_PAYROLL_PAIRS = new Set(['USDC->EURC', 'EURC->USDC']);
 @Injectable()
 export class PayrollFxSettlementService {
   private readonly logger = new Logger(PayrollFxSettlementService.name);
+  private readonly stablefxLifecycleService: PayrollFxStablefxLifecycleService;
 
   constructor(
     private readonly userSwapService: UserSwapService,
     private readonly circleService: CircleService,
     private readonly configService: ConfigService,
     @Optional()
-    private readonly stablefxExecutionService: StablefxExecutionService = new StablefxExecutionService(),
+    stablefxExecutionService: StablefxExecutionService = new StablefxExecutionService(),
     @Optional()
-    private readonly blockchainService?: BlockchainService,
-  ) {}
+    blockchainService?: BlockchainService,
+    @Optional()
+    stablefxLifecycleService?: PayrollFxStablefxLifecycleService,
+    @Optional()
+    private readonly stablefxRecoveryService?: PayrollFxStablefxRecoveryService,
+  ) {
+    this.stablefxLifecycleService =
+      stablefxLifecycleService ??
+      new PayrollFxStablefxLifecycleService(
+        stablefxExecutionService,
+        circleService,
+        configService,
+        blockchainService,
+      );
+  }
 
   /**
    * Check whether cross-currency payroll settlement is available.
    */
   isSettlementAvailable(): boolean {
-    return this.getMissingConfig().length === 0;
+    return (
+      this.getMissingConfig(this.isStablefxProviderSelected()).length === 0
+    );
   }
 
   /**
@@ -102,7 +121,13 @@ export class PayrollFxSettlementService {
    *   prepare swap → execute (direct or adapter) → wait for confirmation.
    */
   async settle(request: FxSettlementRequest): Promise<FxSettlementResult> {
-    const missingConfig = this.getMissingConfig();
+    const existingStablefxOperation =
+      (await this.stablefxRecoveryService?.hasExistingOperation(
+        request.referenceId,
+      )) ?? false;
+    const stablefxSelected =
+      existingStablefxOperation || this.isStablefxProviderSelected();
+    const missingConfig = this.getMissingConfig(stablefxSelected);
 
     if (missingConfig.length > 0) {
       throw new ServiceUnavailableException({
@@ -121,8 +146,11 @@ export class PayrollFxSettlementService {
         `treasury=${treasuryAddress}`,
     );
 
-    if (this.shouldUseStablefxSettlement(request)) {
-      return this.settleWithStablefxTreasury(request, treasuryAddress);
+    if (this.shouldUseStablefxSettlement(request, stablefxSelected)) {
+      if (this.stablefxRecoveryService) {
+        return this.stablefxRecoveryService.settle(request, treasuryAddress);
+      }
+      return this.stablefxLifecycleService.settle(request, treasuryAddress);
     }
 
     // ── Step 1: Prepare swap via UserSwapService (App Kit / SwapKit) ──
@@ -168,7 +196,9 @@ export class PayrollFxSettlementService {
     // ── Step 2: Execute the swap ──────────────────────────────────────
     // Try direct contract execution first (transaction.to + transaction.data).
     // Fall back to adapter execution (executionParams + signature) if direct is unavailable.
-    const directExecution = this.tryBuildDirectContractExecution(prepared.transaction);
+    const directExecution = this.tryBuildDirectContractExecution(
+      prepared.transaction,
+    );
 
     let txHash: string | null;
 
@@ -215,127 +245,11 @@ export class PayrollFxSettlementService {
       sourceToken: request.sourceToken,
       targetToken: request.targetToken,
       sourceAmount: request.sourceAmount,
-      targetAmount: String(prepared.expectedOutput ?? prepared.minimumOutput ?? request.sourceAmount),
-      txHash,
-      status: 'settled',
-    };
-  }
-
-  private async settleWithStablefxTreasury(
-    request: FxSettlementRequest,
-    treasuryAddress: string,
-  ): Promise<FxSettlementResult> {
-    this.logStablefxPayrollPhase(request, 'tradable_quote');
-
-    const quote = await this.stablefxExecutionService.createTradableQuote({
-      amountIn: request.sourceAmount,
-      chain: USER_SWAP_ALLOWED_CHAIN,
-      fromAddress: treasuryAddress,
-      recipientAddress: treasuryAddress,
-      tokenIn: request.sourceToken,
-      tokenOut: request.targetToken,
-    });
-    const quoteId = this.stringifyUnknown(quote.id ?? quote.quoteId);
-    const typedData = this.getTypedDataObject(quote);
-
-    if (!quoteId || !typedData || !this.isRecord(typedData.message)) {
-      throw new BadGatewayException({
-        code: 'PAYROLL_FX_SETTLEMENT_STABLEFX_FAILED',
-        message:
-          'StableFX payroll settlement quote did not include quoteId and signable typedData.',
-      });
-    }
-
-    await this.ensureStablefxTreasuryTokenAllowance({
-      amountIn: request.sourceAmount,
-      referenceId: request.referenceId,
-      tokenIn: request.sourceToken,
-      treasuryAddress,
-      typedData,
-    });
-
-    this.logStablefxPayrollPhase(request, 'sign_quote');
-    const signedQuote = await this.circleService.signTypedData({
-      walletId: this.getTreasuryWalletId(),
-      typedData,
-      memo: `WizPay Payroll StableFX ${request.sourceToken}->${request.targetToken} quote`,
-    });
-
-    this.logStablefxPayrollPhase(request, 'create_trade');
-    const trade = await this.stablefxExecutionService.createTrade({
-      idempotencyKey: this.buildIdempotencyKey(
-        `${request.referenceId}:stablefx-create-trade`,
+      targetAmount: String(
+        prepared.expectedOutput ??
+          prepared.minimumOutput ??
+          request.sourceAmount,
       ),
-      quoteId,
-      address: treasuryAddress,
-      selectedAddress: treasuryAddress,
-      message: typedData.message,
-      signature: signedQuote.signature,
-      tokenIn: request.sourceToken,
-      tokenOut: request.targetToken,
-      walletMode: 'app',
-    });
-    const tradeId = this.resolveStablefxTradeId(trade);
-    const { contractTradeId } =
-      await this.waitForStablefxContractTradeId(request, tradeId, trade);
-
-    this.logStablefxPayrollPhase(request, 'funding_presign');
-    const fundingPresign =
-      await this.stablefxExecutionService.createFundingPresign({
-        contractTradeId,
-      });
-    const fundingTypedData = this.getTypedDataObject(fundingPresign);
-
-    if (
-      !fundingTypedData ||
-      !this.isRecord(fundingTypedData.message)
-    ) {
-      throw new BadGatewayException({
-        code: 'PAYROLL_FX_SETTLEMENT_STABLEFX_FAILED',
-        message:
-          'StableFX payroll settlement funding presign did not include signable typedData.',
-      });
-    }
-
-    this.logStablefxPayrollPhase(request, 'sign_funding');
-    const signedFunding = await this.circleService.signTypedData({
-      walletId: this.getTreasuryWalletId(),
-      typedData: fundingTypedData,
-      memo: `WizPay Payroll StableFX ${request.sourceToken}->${request.targetToken} funding`,
-    });
-
-    this.logStablefxPayrollPhase(request, 'fund');
-    const fund = await this.stablefxExecutionService.fund({
-      permit2: fundingTypedData.message,
-      signature: signedFunding.signature,
-    });
-    const settledTrade = await this.waitForStablefxSettlement(
-      request,
-      tradeId,
-    );
-    const txHash =
-      this.extractStablefxSettlementHash(settledTrade) ??
-      this.extractStablefxSettlementHash(fund);
-    if (!txHash) {
-      throw new BadGatewayException({
-        code: 'PAYROLL_FX_SETTLEMENT_STABLEFX_FAILED',
-        message:
-          'StableFX payroll settlement completed without a settlement transaction hash.',
-      });
-    }
-
-    const targetAmount =
-      this.readStablefxToAmountBaseUnits(settledTrade) ??
-      this.readStablefxToAmountBaseUnits(quote) ??
-      request.sourceAmount;
-
-    this.logStablefxPayrollPhase(request, 'settled');
-
-    return {
-      sourceToken: request.sourceToken,
-      targetToken: request.targetToken,
-      sourceAmount: request.sourceAmount,
-      targetAmount,
       txHash,
       status: 'settled',
     };
@@ -495,9 +409,7 @@ export class PayrollFxSettlementService {
     );
     const swapTxHash: string = await swap.execute();
 
-    this.logger.log(
-      `Payroll FX adapter — swap submitted txHash=${swapTxHash}`,
-    );
+    this.logger.log(`Payroll FX adapter — swap submitted txHash=${swapTxHash}`);
 
     // Step 3: Wait for confirmation
     if (typeof adapter.waitForTransaction === 'function') {
@@ -518,170 +430,21 @@ export class PayrollFxSettlementService {
     return validTxHash;
   }
 
-  private async waitForStablefxContractTradeId(
-    request: FxSettlementRequest,
-    tradeId: string,
-    initialTrade: Record<string, unknown>,
-  ): Promise<{ contractTradeId: string; trade: Record<string, unknown> }> {
-    let trade = initialTrade;
-    let contractTradeId = this.resolveStablefxContractTradeId(trade);
-
-    for (let attempt = 1; attempt <= 20; attempt += 1) {
-      const status = this.resolveStablefxStatus(trade);
-
-      if (contractTradeId) {
-        this.logStablefxPayrollPhase(request, 'contract_ready');
-        return { contractTradeId, trade };
-      }
-
-      if (this.isStablefxFailureStatus(status)) {
-        throw new BadGatewayException({
-          code: 'PAYROLL_FX_SETTLEMENT_STABLEFX_FAILED',
-          message: `StableFX payroll trade failed before funding with status ${status}.`,
-        });
-      }
-
-      this.logStablefxPayrollPhase(request, 'get_trade');
-      await this.delay(2_000);
-      trade = await this.stablefxExecutionService.getTrade(tradeId);
-      contractTradeId = this.resolveStablefxContractTradeId(trade);
-    }
-
-    throw new BadGatewayException({
-      code: 'PAYROLL_FX_SETTLEMENT_STABLEFX_FAILED',
-      message:
-        'StableFX payroll trade was created but contractTradeId was not ready before timeout.',
-    });
-  }
-
-  private async waitForStablefxSettlement(
-    request: FxSettlementRequest,
-    tradeId: string,
-  ): Promise<Record<string, unknown>> {
-    let latest: Record<string, unknown> | null = null;
-
-    for (let attempt = 1; attempt <= 30; attempt += 1) {
-      this.logStablefxPayrollPhase(request, 'get_trade');
-      latest = await this.stablefxExecutionService.getTrade(tradeId);
-      const status = this.resolveStablefxStatus(latest);
-      const settlementHash = this.extractStablefxSettlementHash(latest);
-
-      if (
-        settlementHash ||
-        ['complete', 'completed', 'settled'].includes(status.toLowerCase())
-      ) {
-        return latest;
-      }
-
-      if (this.isStablefxFailureStatus(status)) {
-        throw new BadGatewayException({
-          code: 'PAYROLL_FX_SETTLEMENT_STABLEFX_FAILED',
-          message: `StableFX payroll trade failed during settlement with status ${status}.`,
-        });
-      }
-
-      await this.delay(3_000);
-    }
-
-    if (latest) {
-      return latest;
-    }
-
-    throw new BadGatewayException({
-      code: 'PAYROLL_FX_SETTLEMENT_STABLEFX_FAILED',
-      message: 'StableFX payroll trade status was not available after funding.',
-    });
-  }
-
-  private async ensureStablefxTreasuryTokenAllowance(input: {
-    amountIn: string;
-    referenceId: string;
-    tokenIn: string;
-    treasuryAddress: string;
-    typedData: Record<string, unknown>;
-  }): Promise<void> {
-    if (!this.blockchainService) {
-      throw new ServiceUnavailableException({
-        code: 'PAYROLL_FX_SETTLEMENT_UNAVAILABLE',
-        message:
-          'StableFX payroll settlement requires BlockchainService for treasury token approval.',
-      });
-    }
-
-    const approvalTarget = this.getStablefxPermit2ApprovalTarget(
-      input.typedData,
-    );
-    const tokenAddress = this.resolveTokenAddress(input.tokenIn);
-    const requiredAllowance = BigInt(input.amountIn);
-    const allowanceBefore = (
-      await this.blockchainService.getAllowance(
-        input.treasuryAddress,
-        approvalTarget,
-        tokenAddress,
-      )
-    ).allowance;
-    let approvalTxHash: string | null = null;
-    let allowanceAfter = allowanceBefore;
-
-    if (BigInt(allowanceBefore) < requiredAllowance) {
-      const approval = await this.circleService.executeContract({
-        walletId: this.getTreasuryWalletId(),
-        contractAddress: tokenAddress,
-        callData: this.blockchainService.buildERC20ApproveData(
-          approvalTarget,
-          requiredAllowance,
-        ) as `0x${string}`,
-        network: USER_SWAP_ALLOWED_CHAIN,
-        idempotencyKey: this.buildIdempotencyKey(
-          `${input.referenceId}:stablefx-${input.tokenIn.toLowerCase()}-approval`,
-        ),
-        refId: `PAYROLL-FX-${input.referenceId}-STABLEFX-${input.tokenIn}-APPROVAL`,
-      });
-      const completed = await this.circleService.waitForTransactionComplete(
-        approval.txId,
-      );
-
-      approvalTxHash = completed.txHash ?? approval.txHash ?? null;
-      allowanceAfter = (
-        await this.blockchainService.getAllowance(
-          input.treasuryAddress,
-          approvalTarget,
-          tokenAddress,
-        )
-      ).allowance;
-
-      if (BigInt(allowanceAfter) < requiredAllowance) {
-        throw new BadGatewayException({
-          code: 'PAYROLL_FX_SETTLEMENT_STABLEFX_FAILED',
-          message:
-            'StableFX payroll treasury token approval completed but allowance is still insufficient.',
-        });
-      }
-    }
-
-    this.logger.log(
-      `[payroll-fx-settlement] provider=stablefx payroll-fx settlement ` +
-        `phase=allowance_check sourceToken=${input.tokenIn} ` +
-        `sourceAmount=${input.amountIn} referenceId=${input.referenceId} ` +
-        `treasuryAddress=${input.treasuryAddress} tokenAddress=${tokenAddress} ` +
-        `approvalTarget=${approvalTarget} allowanceBefore=${allowanceBefore} ` +
-        `approvalTxHash=${approvalTxHash ?? 'not_required'} allowanceAfter=${allowanceAfter}`,
-    );
-  }
-
   // ════════════════════════════════════════════════════════════════════
   //  Private helpers
   // ════════════════════════════════════════════════════════════════════
 
-  private getMissingConfig(): string[] {
+  private getMissingConfig(stablefxSelected: boolean): string[] {
     const missing: string[] = [];
-    const stablefxSelected = this.isStablefxProviderSelected();
 
     if (this.configService.get<string>('WIZPAY_USER_SWAP_ENABLED') !== 'true') {
       missing.push('WIZPAY_USER_SWAP_ENABLED=true');
     }
 
-    if (this.configService.get<string>('WIZPAY_USER_SWAP_ALLOW_TESTNET') !== 'true') {
+    if (
+      this.configService.get<string>('WIZPAY_USER_SWAP_ALLOW_TESTNET') !==
+      'true'
+    ) {
       missing.push('WIZPAY_USER_SWAP_ALLOW_TESTNET=true');
     }
 
@@ -693,7 +456,9 @@ export class PayrollFxSettlementService {
     }
 
     if (
-      this.configService.get<string>('APP_WALLET_TREASURY_SWAP_EXECUTION_ENABLED') !== 'true'
+      this.configService.get<string>(
+        'APP_WALLET_TREASURY_SWAP_EXECUTION_ENABLED',
+      ) !== 'true'
     ) {
       missing.push('APP_WALLET_TREASURY_SWAP_EXECUTION_ENABLED=true');
     }
@@ -709,9 +474,12 @@ export class PayrollFxSettlementService {
     return missing;
   }
 
-  private shouldUseStablefxSettlement(request: FxSettlementRequest): boolean {
+  private shouldUseStablefxSettlement(
+    request: FxSettlementRequest,
+    stablefxSelected: boolean,
+  ): boolean {
     return (
-      this.isStablefxProviderSelected() &&
+      stablefxSelected &&
       STABLEFX_PAYROLL_PAIRS.has(
         `${request.sourceToken.toUpperCase()}->${request.targetToken.toUpperCase()}`,
       )
@@ -733,21 +501,6 @@ export class PayrollFxSettlementService {
         ?.trim()
         .toLowerCase() === 'true'
     );
-  }
-
-  private getTreasuryWalletId(): string {
-    const walletId = this.configService
-      .get<string>('CIRCLE_WALLET_ID_ARC')
-      ?.trim();
-
-    if (!walletId) {
-      throw new ServiceUnavailableException({
-        code: 'PAYROLL_FX_SETTLEMENT_UNAVAILABLE',
-        message: 'Treasury wallet ID (CIRCLE_WALLET_ID_ARC) is not configured.',
-      });
-    }
-
-    return walletId;
   }
 
   private getTreasuryAddress(): string {
@@ -790,177 +543,6 @@ export class PayrollFxSettlementService {
     return address;
   }
 
-  private logStablefxPayrollPhase(
-    request: FxSettlementRequest,
-    phase: string,
-  ): void {
-    this.logger.log(
-      `[payroll-fx-settlement] provider=stablefx payroll-fx settlement ` +
-        `sourceToken=${request.sourceToken} targetToken=${request.targetToken} ` +
-        `sourceAmount=${request.sourceAmount} referenceId=${request.referenceId} ` +
-        `phase=${phase}`,
-    );
-  }
-
-  private getTypedDataObject(raw: unknown): Record<string, unknown> | null {
-    const typedData = this.getNestedValue(raw, ['typedData']);
-    return this.isRecord(typedData) ? typedData : null;
-  }
-
-  private getStablefxPermit2ApprovalTarget(
-    typedData: Record<string, unknown>,
-  ): string {
-    const approvalTarget = this.validContractAddressOrNull(
-      this.getNestedString(typedData, ['domain', 'verifyingContract']),
-    );
-
-    if (!approvalTarget) {
-      throw new BadGatewayException({
-        code: 'PAYROLL_FX_SETTLEMENT_STABLEFX_FAILED',
-        message:
-          'StableFX payroll quote typedData did not include a valid Permit2 verifyingContract approval target.',
-      });
-    }
-
-    return approvalTarget;
-  }
-
-  private resolveStablefxTradeId(raw: unknown): string {
-    const tradeId =
-      this.getNestedString(raw, ['id']) ??
-      this.getNestedString(raw, ['tradeId']) ??
-      this.getNestedString(raw, ['data', 'id']) ??
-      this.getNestedString(raw, ['data', 'tradeId']);
-
-    if (!tradeId) {
-      throw new BadGatewayException({
-        code: 'PAYROLL_FX_SETTLEMENT_STABLEFX_FAILED',
-        message: 'StableFX create_trade did not return a trade identifier.',
-      });
-    }
-
-    return tradeId;
-  }
-
-  private resolveStablefxContractTradeId(raw: unknown): string | null {
-    return (
-      this.getNestedString(raw, ['contractTradeId']) ??
-      this.getNestedString(raw, ['data', 'contractTradeId']) ??
-      this.getNestedString(raw, ['trade', 'contractTradeId']) ??
-      this.getNestedString(raw, ['data', 'trade', 'contractTradeId'])
-    );
-  }
-
-  private resolveStablefxStatus(raw: unknown): string {
-    return (
-      this.getNestedString(raw, ['status']) ??
-      this.getNestedString(raw, ['data', 'status']) ??
-      'unknown'
-    );
-  }
-
-  private isStablefxFailureStatus(status: string): boolean {
-    return ['failed', 'rejected', 'expired', 'breached', 'refunded'].includes(
-      status.toLowerCase(),
-    );
-  }
-
-  private extractStablefxSettlementHash(raw: unknown): string | null {
-    return this.validTxHashOrNull(
-      this.getNestedString(raw, ['settlementTransactionHash']) ??
-        this.getNestedString(raw, ['data', 'settlementTransactionHash']) ??
-        this.getNestedString(raw, [
-          'contractTransactions',
-          'makerDeliver',
-          'txHash',
-        ]) ??
-        this.getNestedString(raw, [
-          'data',
-          'contractTransactions',
-          'makerDeliver',
-          'txHash',
-        ]) ??
-        this.getNestedString(raw, [
-          'contractTransactions',
-          'takerDeliver',
-          'txHash',
-        ]) ??
-        this.getNestedString(raw, [
-          'data',
-          'contractTransactions',
-          'takerDeliver',
-          'txHash',
-        ]),
-    );
-  }
-
-  private readStablefxToAmountBaseUnits(raw: unknown): string | null {
-    const amount =
-      this.getNestedString(raw, ['to', 'amount']) ??
-      this.getNestedString(raw, ['data', 'to', 'amount']);
-
-    return amount ? this.decimalToBaseUnits(amount, 6) : null;
-  }
-
-  private decimalToBaseUnits(value: string, decimals: number): string {
-    const [wholeRaw, fractionRaw = ''] = value.trim().split('.');
-    const whole = wholeRaw || '0';
-    const fraction = fractionRaw.padEnd(decimals, '0').slice(0, decimals);
-
-    if (!/^\d+$/.test(whole) || !/^\d*$/.test(fraction)) {
-      return value;
-    }
-
-    return (
-      BigInt(whole) * 10n ** BigInt(decimals) +
-      BigInt(fraction || '0')
-    ).toString();
-  }
-
-  private stringifyUnknown(value: unknown): string | null {
-    if (typeof value === 'string' && value.trim()) {
-      return value.trim();
-    }
-
-    if (typeof value === 'number' || typeof value === 'bigint') {
-      return String(value);
-    }
-
-    return null;
-  }
-
-  private getNestedString(raw: unknown, path: string[]): string | null {
-    const value = this.getNestedValue(raw, path);
-
-    if (typeof value === 'string' && value.trim()) {
-      return value.trim();
-    }
-
-    if (typeof value === 'number' || typeof value === 'bigint') {
-      return String(value);
-    }
-
-    return null;
-  }
-
-  private getNestedValue(raw: unknown, path: string[]): unknown {
-    let current = raw;
-
-    for (const key of path) {
-      if (!this.isRecord(current)) {
-        return undefined;
-      }
-
-      current = current[key];
-    }
-
-    return current;
-  }
-
-  private async delay(ms: number): Promise<void> {
-    await new Promise((resolve) => setTimeout(resolve, ms));
-  }
-
   // ── Transaction inspection ──────────────────────────────────────────
 
   private tryBuildDirectContractExecution(transaction: {
@@ -973,7 +555,9 @@ export class PayrollFxSettlementService {
     return contractAddress && callData ? { contractAddress, callData } : null;
   }
 
-  private getRawTransaction(prepared: UserSwapPrepareResponse): Record<string, unknown> {
+  private getRawTransaction(
+    prepared: UserSwapPrepareResponse,
+  ): Record<string, unknown> {
     const raw = prepared.transaction?.raw;
     return this.isRecord(raw) ? raw : {};
   }
@@ -988,13 +572,13 @@ export class PayrollFxSettlementService {
   // ── Adapter execution helpers (same logic as AppWalletSwapService) ──
 
   private async createCircleWalletsAdapter(): Promise<any> {
-    const { createCircleWalletsAdapter } = await import(
-      '@circle-fin/adapter-circle-wallets'
-    );
+    const { createCircleWalletsAdapter } =
+      await import('@circle-fin/adapter-circle-wallets');
 
     return createCircleWalletsAdapter({
       apiKey: this.configService.get<string>('CIRCLE_API_KEY') ?? '',
-      entitySecret: this.configService.get<string>('CIRCLE_ENTITY_SECRET') ?? '',
+      entitySecret:
+        this.configService.get<string>('CIRCLE_ENTITY_SECRET') ?? '',
     });
   }
 
@@ -1017,13 +601,34 @@ export class PayrollFxSettlementService {
         }
 
         return {
-          target: this.normalizeAddressField(instruction.target, `instruction[${index}].target`),
-          data: this.normalizeHexField(instruction.data, `instruction[${index}].data`),
-          value: this.normalizeBigIntField(instruction.value, `instruction[${index}].value`),
-          tokenIn: this.normalizeAddressField(instruction.tokenIn, `instruction[${index}].tokenIn`),
-          amountToApprove: this.normalizeBigIntField(instruction.amountToApprove, `instruction[${index}].amountToApprove`),
-          tokenOut: this.normalizeAddressField(instruction.tokenOut, `instruction[${index}].tokenOut`),
-          minTokenOut: this.normalizeBigIntField(instruction.minTokenOut, `instruction[${index}].minTokenOut`),
+          target: this.normalizeAddressField(
+            instruction.target,
+            `instruction[${index}].target`,
+          ),
+          data: this.normalizeHexField(
+            instruction.data,
+            `instruction[${index}].data`,
+          ),
+          value: this.normalizeBigIntField(
+            instruction.value,
+            `instruction[${index}].value`,
+          ),
+          tokenIn: this.normalizeAddressField(
+            instruction.tokenIn,
+            `instruction[${index}].tokenIn`,
+          ),
+          amountToApprove: this.normalizeBigIntField(
+            instruction.amountToApprove,
+            `instruction[${index}].amountToApprove`,
+          ),
+          tokenOut: this.normalizeAddressField(
+            instruction.tokenOut,
+            `instruction[${index}].tokenOut`,
+          ),
+          minTokenOut: this.normalizeBigIntField(
+            instruction.minTokenOut,
+            `instruction[${index}].minTokenOut`,
+          ),
         };
       },
     );
@@ -1038,8 +643,14 @@ export class PayrollFxSettlementService {
           }
 
           return {
-            token: this.normalizeAddressField(token.token, `token[${index}].token`),
-            beneficiary: this.normalizeAddressField(token.beneficiary, `token[${index}].beneficiary`),
+            token: this.normalizeAddressField(
+              token.token,
+              `token[${index}].token`,
+            ),
+            beneficiary: this.normalizeAddressField(
+              token.beneficiary,
+              `token[${index}].beneficiary`,
+            ),
           };
         })
       : [];
@@ -1053,7 +664,10 @@ export class PayrollFxSettlementService {
     };
   }
 
-  private resolvePreparedInputAmount(raw: unknown, fallbackAmount: string): bigint {
+  private resolvePreparedInputAmount(
+    raw: unknown,
+    fallbackAmount: string,
+  ): bigint {
     if (this.isRecord(raw)) {
       const rawAmount = raw.amount;
       if (
@@ -1096,9 +710,11 @@ export class PayrollFxSettlementService {
 
   private normalizeBigIntField(value: unknown, field: string): bigint {
     if (typeof value === 'bigint') return value;
-    if (typeof value === 'number' && Number.isInteger(value) && value >= 0) return BigInt(value);
+    if (typeof value === 'number' && Number.isInteger(value) && value >= 0)
+      return BigInt(value);
     if (typeof value === 'string' && /^\d+$/.test(value)) return BigInt(value);
-    if (typeof value === 'string' && /^0x[0-9a-fA-F]+$/.test(value)) return BigInt(value);
+    if (typeof value === 'string' && /^0x[0-9a-fA-F]+$/.test(value))
+      return BigInt(value);
 
     throw new BadGatewayException({
       code: 'PAYROLL_FX_SETTLEMENT_EXECUTION_FAILED',
@@ -1189,7 +805,8 @@ export class PayrollFxSettlementService {
       const e = error as Record<string, unknown>;
       if (e.response && typeof e.response === 'object') {
         const r = e.response as Record<string, unknown>;
-        if (r.details !== undefined) return JSON.stringify(r.details).slice(0, 500);
+        if (r.details !== undefined)
+          return JSON.stringify(r.details).slice(0, 500);
       }
     }
     return 'none';

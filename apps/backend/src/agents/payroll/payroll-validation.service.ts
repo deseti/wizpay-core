@@ -6,6 +6,7 @@ import { BlockchainService } from '../../adapters/blockchain.service';
 // ─── Types ──────────────────────────────────────────────────────────
 
 export interface ValidatedRecipient {
+  originalIndex: number;
   address: string;
   originalAddress?: string;
   resolvedFromAns?: boolean;
@@ -155,6 +156,7 @@ export class PayrollValidationService {
         const numAmount = Number(amountStr);
         if (!isNaN(numAmount) && numAmount > 0) {
           validatedRecipients.push({
+            originalIndex: i,
             address: normalizedAddress,
             originalAddress: typeof address === 'string' ? address.trim() : undefined,
             resolvedFromAns: resolvedAddress.resolvedFromAns,

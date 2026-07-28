@@ -1,4 +1,5 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
+import { PayrollFxPayoutPlanService } from '../payroll-fx/payroll-fx-payout-plan.service';
 import { CreatePayrollTaskResult } from '../task/task.types';
 import { TaskService } from '../task/task.service';
 
@@ -19,9 +20,17 @@ import { TaskService } from '../task/task.service';
 export class PayrollInitService {
   private readonly logger = new Logger(PayrollInitService.name);
 
-  constructor(private readonly taskService: TaskService) {}
+  constructor(
+    private readonly taskService: TaskService,
+    @Optional()
+    private readonly payrollFxPayoutPlans?: PayrollFxPayoutPlanService,
+  ) {}
 
-  async prepare(payload: Record<string, unknown>): Promise<CreatePayrollTaskResult> {
-    return this.taskService.createPayrollTask(payload);
+  async prepare(
+    payload: Record<string, unknown>,
+  ): Promise<CreatePayrollTaskResult> {
+    const task = await this.taskService.createPayrollTask(payload);
+    await this.payrollFxPayoutPlans?.createForTaskIfEligible(task.taskId);
+    return task;
   }
 }

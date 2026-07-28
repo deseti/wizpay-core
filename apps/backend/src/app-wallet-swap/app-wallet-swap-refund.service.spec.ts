@@ -4,7 +4,7 @@ import { createHash } from 'crypto';
 import { AppWalletSwapCircleExecutorService } from './app-wallet-swap-circle-executor.service';
 import { AppWalletSwapDepositService } from './app-wallet-swap-deposit.service';
 import { AppWalletSwapOperationRepository } from './app-wallet-swap-operation.repository';
-import { AppWalletSwapPayoutExecutorService } from './app-wallet-swap-payout-executor.service';
+import { AppWalletSwapPayoutService } from './app-wallet-swap-payout.service';
 import { AppWalletSwapRefundService } from './app-wallet-swap-refund.service';
 import { AppWalletSwapService } from './app-wallet-swap.service';
 import {
@@ -22,7 +22,6 @@ import {
 } from '../user-swap/user-swap.service';
 
 const OPERATION_ID = '11111111-1111-4111-8111-111111111111';
-const MISSING_OPERATION_ID = '22222222-2222-4222-8222-222222222222';
 const USER_ADDRESS = '0x90ab859240b941eaf0cbcbf42df5086e0ad54147';
 const TREASURY_ADDRESS = '0xbbd70b01a1cabc96d5b7b129ae1aaabdf50dd40b';
 const REFUND_TX_HASH =
@@ -216,16 +215,71 @@ describe('AppWalletSwapRefundService', () => {
     process.env = originalEnv;
   });
 
-  it('claims a 15-minute database-backed lease before refund work', async () => {
+  it('validates admission then claims a 15-minute database-backed lease before financial work', async () => {
     await service.recover(OPERATION_ID);
 
     const [, leaseId, claimedAt, expiresAt] =
       repository.claimExecutionLease.mock.calls[0];
     expect(leaseId).toEqual(expect.any(String));
     expect(expiresAt.getTime() - claimedAt.getTime()).toBe(15 * 60 * 1000);
+    expect(repository.findById.mock.invocationCallOrder[0]).toBeLessThan(
+      repository.claimExecutionLease.mock.invocationCallOrder[0],
+    );
     expect(
       repository.claimExecutionLease.mock.invocationCallOrder[0],
-    ).toBeLessThan(repository.findById.mock.invocationCallOrder[0]);
+    ).toBeLessThan(repository.findById.mock.invocationCallOrder[1]);
+  });
+
+  it('rejects a missing operation before lease acquisition', async () => {
+    record = null;
+
+    await expect(service.recover(OPERATION_ID)).rejects.toMatchObject({
+      response: { code: 'APP_WALLET_SWAP_INVALID_REQUEST' },
+    });
+    expect(repository.claimExecutionLease).not.toHaveBeenCalled();
+  });
+
+  it('fails closed for a NULL legacy provider before lease acquisition', async () => {
+    record = createRecord({ executionProvider: null });
+
+    await expect(service.recover(OPERATION_ID)).rejects.toMatchObject({
+      response: { code: 'APP_WALLET_SWAP_EXECUTION_PROVIDER_INVALID' },
+    });
+    expect(repository.claimExecutionLease).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    'awaiting_user_deposit',
+    'deposit_confirmed',
+    'treasury_swap_submitted',
+    'completed',
+  ] as AppWalletSwapOperationStatus[])(
+    'rejects ineligible %s lifecycle state before lease acquisition',
+    async (status) => {
+      record = createRecord({ status });
+
+      await expect(service.recover(OPERATION_ID)).rejects.toMatchObject({
+        response: { code: 'APP_WALLET_SWAP_REFUND_NOT_SAFE' },
+      });
+      expect(repository.claimExecutionLease).not.toHaveBeenCalled();
+    },
+  );
+
+  it('returns an already-refunded public operation without lease acquisition', async () => {
+    record = createRecord({
+      status: 'refunded',
+      refundAmount: '1000000',
+      refundTransactionId: 'refund-transaction-1',
+      refundTxHash: REFUND_TX_HASH,
+      refundSubmittedAt: UPDATED_AT,
+      refundConfirmedAt: UPDATED_AT,
+    });
+
+    const result = await service.recover(OPERATION_ID);
+
+    expect(result.status).toBe('refunded');
+    expect(result.provider).toBe('swapkit');
+    expect(repository.claimExecutionLease).not.toHaveBeenCalled();
   });
 
   it('returns current public state without financial side effects on lease contention', async () => {
@@ -775,20 +829,10 @@ describe('AppWalletSwapRefundService', () => {
 });
 
 describe('AppWalletSwapService refund admission boundary', () => {
-  let record: AppWalletSwapOperation | null;
-  let repository: jest.Mocked<
-    Pick<AppWalletSwapOperationRepository, 'findById'>
-  >;
   let refundService: jest.Mocked<Pick<AppWalletSwapRefundService, 'recover'>>;
   let service: AppWalletSwapService;
 
   beforeEach(() => {
-    record = createRecord();
-    repository = {
-      findById: jest.fn(async (operationId) =>
-        record?.operationId === operationId ? record : null,
-      ),
-    };
     refundService = {
       recover: jest.fn().mockResolvedValue({
         operationId: OPERATION_ID,
@@ -802,82 +846,21 @@ describe('AppWalletSwapService refund admission boundary', () => {
       {} as AppWalletSwapTreasuryVerifierService,
       {} as AppWalletSwapCircleExecutorService,
       {} as AppWalletSwapStablefxExecutorService,
-      {} as AppWalletSwapPayoutExecutorService,
-      repository as AppWalletSwapOperationRepository,
+      {} as AppWalletSwapPayoutService,
+      {} as AppWalletSwapOperationRepository,
     );
   });
 
-  it('rejects malformed operation IDs before repository or stage access', async () => {
+  it('rejects malformed operation IDs before stage access', async () => {
     await expect(service.refund('not-a-uuid')).rejects.toBeInstanceOf(
       BadRequestException,
     );
-    expect(repository.findById).not.toHaveBeenCalled();
     expect(refundService.recover).not.toHaveBeenCalled();
   });
 
-  it('rejects missing operations before stage access', async () => {
-    await expect(service.refund(MISSING_OPERATION_ID)).rejects.toMatchObject({
-      response: { code: 'APP_WALLET_SWAP_INVALID_REQUEST' },
-    });
-    expect(refundService.recover).not.toHaveBeenCalled();
+  it('delegates valid operation IDs without duplicating lifecycle admission', async () => {
+    await service.refund(OPERATION_ID);
+
+    expect(refundService.recover).toHaveBeenCalledWith(OPERATION_ID);
   });
-
-  it('fails closed for a NULL legacy provider before stage lease acquisition', async () => {
-    record = createRecord({ executionProvider: null });
-
-    await expect(service.refund(OPERATION_ID)).rejects.toMatchObject({
-      response: { code: 'APP_WALLET_SWAP_EXECUTION_PROVIDER_INVALID' },
-    });
-    expect(refundService.recover).not.toHaveBeenCalled();
-  });
-
-  it.each([
-    'awaiting_user_deposit',
-    'deposit_confirmed',
-    'treasury_swap_submitted',
-    'completed',
-  ] as AppWalletSwapOperationStatus[])(
-    'rejects ineligible %s lifecycle state before stage access',
-    async (status) => {
-      record = createRecord({ status });
-
-      await expect(service.refund(OPERATION_ID)).rejects.toMatchObject({
-        response: { code: 'APP_WALLET_SWAP_REFUND_NOT_SAFE' },
-      });
-      expect(refundService.recover).not.toHaveBeenCalled();
-    },
-  );
-
-  it('returns an already-refunded public operation without stage access', async () => {
-    record = createRecord({
-      status: 'refunded',
-      refundAmount: '1000000',
-      refundTransactionId: 'refund-transaction-1',
-      refundTxHash: REFUND_TX_HASH,
-      refundSubmittedAt: UPDATED_AT,
-      refundConfirmedAt: UPDATED_AT,
-    });
-
-    const result = await service.refund(OPERATION_ID);
-
-    expect(result.status).toBe('refunded');
-    expect(result.provider).toBe('swapkit');
-    expect(refundService.recover).not.toHaveBeenCalled();
-  });
-
-  it.each([
-    'execution_recovery_required',
-    'execution_failed',
-    'refund_pending',
-    'refund_submitted',
-  ] as AppWalletSwapOperationStatus[])(
-    'delegates eligible %s lifecycle state to the refund stage',
-    async (status) => {
-      record = createRecord({ status });
-
-      await service.refund(OPERATION_ID);
-
-      expect(refundService.recover).toHaveBeenCalledWith(OPERATION_ID);
-    },
-  );
 });

@@ -8,6 +8,7 @@ import {
   HttpStatus,
   Inject,
   Logger,
+  Optional,
   Param,
   ParseIntPipe,
   ParseUUIDPipe,
@@ -30,6 +31,8 @@ import type { AppWalletSwapToken } from '../app-wallet-swap/app-wallet-swap.type
 import { OFFICIAL_STABLEFX_AUTH_REQUIRED } from '../fx/stablefx-cutover.guard';
 import { TaskType } from '../task/task-type.enum';
 import type { ReportTaskUnitInput } from '../task/task.types';
+import { PayrollFxStablefxLifecycleService } from '../payroll-fx/payroll-fx-stablefx-lifecycle.service';
+import { PayrollFxStablefxRecoveryService } from '../payroll-fx/payroll-fx-stablefx-recovery.service';
 
 @Controller('tasks')
 export class TaskController {
@@ -45,6 +48,10 @@ export class TaskController {
     private readonly circleService: CircleService,
     private readonly payrollFxSettlementService: PayrollFxSettlementService,
     private readonly appWalletDepositVerifier: AppWalletSwapDepositVerifierService,
+    @Optional()
+    private readonly payrollFxStablefxLifecycle?: PayrollFxStablefxLifecycleService,
+    @Optional()
+    private readonly payrollFxStablefxRecovery?: PayrollFxStablefxRecoveryService,
   ) {}
 
   @Post('fx/quote')
@@ -198,13 +205,13 @@ export class TaskController {
 
     this.logger.log(
       `[payroll-fx-settle-diag] Verification params: ` +
-      `referenceId=${referenceId} ` +
-      `sourceToken=${sourceToken} ` +
-      `targetToken=${targetToken} ` +
-      `sourceAmount=${sourceAmount} ` +
-      `walletAddress=${walletAddress} ` +
-      `treasuryDepositAddress=${this.getArcTreasuryDepositAddress()} ` +
-      `sourceFundingTxHash=${sourceFundingTxHash}`,
+        `referenceId=${referenceId} ` +
+        `sourceToken=${sourceToken} ` +
+        `targetToken=${targetToken} ` +
+        `sourceAmount=${sourceAmount} ` +
+        `walletAddress=${walletAddress} ` +
+        `treasuryDepositAddress=${this.getArcTreasuryDepositAddress()} ` +
+        `sourceFundingTxHash=${sourceFundingTxHash}`,
     );
 
     const fundingVerification =
@@ -219,13 +226,13 @@ export class TaskController {
     if (!fundingVerification.confirmed) {
       this.logger.warn(
         `[payroll-fx-settle-diag] FUNDING VERIFICATION FAILED: ` +
-        `referenceId=${referenceId} ` +
-        `error="${fundingVerification.error}" ` +
-        `sourceAmount=${sourceAmount} ` +
-        `walletAddress=${walletAddress} ` +
-        `treasuryDepositAddress=${this.getArcTreasuryDepositAddress()} ` +
-        `sourceFundingTxHash=${sourceFundingTxHash} ` +
-        `tokenIn=${sourceToken}`,
+          `referenceId=${referenceId} ` +
+          `error="${fundingVerification.error}" ` +
+          `sourceAmount=${sourceAmount} ` +
+          `walletAddress=${walletAddress} ` +
+          `treasuryDepositAddress=${this.getArcTreasuryDepositAddress()} ` +
+          `sourceFundingTxHash=${sourceFundingTxHash} ` +
+          `tokenIn=${sourceToken}`,
       );
       throw new BadRequestException({
         code: 'PAYROLL_FX_SOURCE_FUNDING_UNCONFIRMED',
@@ -255,37 +262,95 @@ export class TaskController {
       });
     }
 
-    // Step 2: Transfer targetToken from treasury to user's wallet
-    const payoutAmount = this.formatBaseUnitsToHuman(settlement.targetAmount, 6);
-    const payoutTransfer = await this.circleService.transfer({
-      network: 'ARC-TESTNET',
-      token: targetToken,
-      toAddress: walletAddress,
-      amount: payoutAmount,
-      idempotencyKey: `payroll-fx-payout-${referenceId}`,
-    });
-
-    this.logger.log(
-      `App Wallet payroll FX payout submitted referenceId=${referenceId} txId=${payoutTransfer.txId ?? 'null'} txHash=${payoutTransfer.txHash ?? 'null'}`,
+    const { operationId, ...publicSettlement } = settlement;
+    const payoutAmount = this.formatBaseUnitsToHuman(
+      settlement.targetAmount,
+      6,
     );
+    let payoutTransactionId: string | null = null;
+    let payoutTxHash: string | null = null;
 
-    // Step 3: Wait for payout confirmation
-    let payoutTxHash = payoutTransfer.txHash;
+    try {
+      if (operationId && this.payrollFxStablefxRecovery) {
+        const payout = await this.payrollFxStablefxRecovery.payout(
+          operationId,
+          {
+            referenceId,
+            targetToken,
+            walletAddress,
+            payoutAmount,
+          },
+        );
+        payoutTransactionId = payout.transactionId;
+        payoutTxHash = payout.transactionHash;
+      } else {
+        const payoutTransfer = await this.circleService.transfer({
+          network: 'ARC-TESTNET',
+          token: targetToken,
+          toAddress: walletAddress,
+          amount: payoutAmount,
+          idempotencyKey: `payroll-fx-payout-${referenceId}`,
+        });
+        payoutTransactionId = payoutTransfer.txId ?? null;
+        payoutTxHash = payoutTransfer.txHash ?? null;
 
-    if (!payoutTxHash && payoutTransfer.txId) {
-      const confirmed = await this.circleService.waitForTransactionComplete(
-        payoutTransfer.txId,
+        if (operationId && this.payrollFxStablefxLifecycle) {
+          await this.payrollFxStablefxLifecycle.recordPayoutSubmission(
+            operationId,
+            {
+              transactionId: payoutTransactionId,
+              transactionHash: payoutTxHash,
+            },
+          );
+        }
+
+        if (!payoutTxHash && payoutTransactionId) {
+          const confirmed =
+            await this.circleService.waitForTransactionComplete(
+              payoutTransactionId,
+            );
+          payoutTxHash = confirmed.txHash;
+        }
+
+        if (operationId && this.payrollFxStablefxLifecycle) {
+          await this.payrollFxStablefxLifecycle.recordPayoutCompletion(
+            operationId,
+            {
+              transactionId: payoutTransactionId,
+              transactionHash: payoutTxHash,
+              confirmedAt: new Date(),
+            },
+          );
+        }
+      }
+      this.logger.log(
+        `App Wallet payroll FX payout submitted referenceId=${referenceId} ` +
+          `operationId=${operationId ?? 'not-applicable'} ` +
+          `txId=${payoutTransactionId ?? 'null'} txHash=${payoutTxHash ?? 'null'}`,
       );
-      payoutTxHash = confirmed.txHash;
+    } catch (error) {
+      if (
+        operationId &&
+        this.payrollFxStablefxLifecycle &&
+        !this.payrollFxStablefxRecovery
+      ) {
+        await this.payrollFxStablefxLifecycle.recordPayoutFailure(
+          operationId,
+          error,
+        );
+      }
+      throw error;
     }
 
     this.logger.log(
-      `App Wallet payroll FX settle completed referenceId=${referenceId} settlementTxHash=${settlement.txHash} payoutTxHash=${payoutTxHash ?? 'null'}`,
+      `App Wallet payroll FX settle completed referenceId=${referenceId} ` +
+        `operationId=${operationId ?? 'not-applicable'} ` +
+        `settlementTxHash=${settlement.txHash} payoutTxHash=${payoutTxHash ?? 'null'}`,
     );
 
     return {
       data: {
-        ...settlement,
+        ...publicSettlement,
         payoutTxHash: payoutTxHash ?? null,
         payoutAmount: settlement.targetAmount,
         sourceFundingTxHash,

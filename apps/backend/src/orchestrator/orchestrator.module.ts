@@ -11,6 +11,7 @@ import { AppWalletSwapDepositVerifierService } from '../app-wallet-swap/app-wall
 import { OrchestratorService } from './orchestrator.service';
 import { PayrollInitService } from './payroll-init.service';
 import { TaskController } from './task.controller';
+import { PayrollFxModule } from '../payroll-fx/payroll-fx.module';
 
 @Module({
   imports: [
@@ -21,6 +22,7 @@ import { TaskController } from './task.controller';
     forwardRef(() => QueueModule),
     forwardRef(() => AgentsModule),
     ExecutionModule,
+    PayrollFxModule,
   ],
   controllers: [TaskController],
   providers: [

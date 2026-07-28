@@ -11,6 +11,7 @@ import { AppWalletSwapDepositService } from './app-wallet-swap-deposit.service';
 import { AppWalletSwapModule } from './app-wallet-swap.module';
 import { AppWalletSwapOperationRepository } from './app-wallet-swap-operation.repository';
 import { AppWalletSwapPayoutExecutorService } from './app-wallet-swap-payout-executor.service';
+import { AppWalletSwapPayoutService } from './app-wallet-swap-payout.service';
 import { AppWalletSwapRefundService } from './app-wallet-swap-refund.service';
 import { AppWalletSwapService } from './app-wallet-swap.service';
 import { AppWalletSwapStablefxExecutorService } from './app-wallet-swap-stablefx-executor.service';
@@ -24,6 +25,7 @@ describe('AppWalletSwapModule wiring', () => {
     AppWalletSwapTreasuryVerifierService,
     AppWalletSwapOperationRepository,
     AppWalletSwapPayoutExecutorService,
+    AppWalletSwapPayoutService,
     AppWalletSwapRefundService,
     AppWalletSwapStablefxExecutorService,
     AppWalletSwapService,
@@ -63,6 +65,9 @@ describe('AppWalletSwapModule wiring', () => {
     );
     expect(moduleRef.get(AppWalletSwapPayoutExecutorService)).toBeInstanceOf(
       AppWalletSwapPayoutExecutorService,
+    );
+    expect(moduleRef.get(AppWalletSwapPayoutService)).toBeInstanceOf(
+      AppWalletSwapPayoutService,
     );
   });
 });

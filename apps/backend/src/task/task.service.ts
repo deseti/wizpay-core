@@ -165,12 +165,14 @@ export class TaskService {
         referenceId: this.getBatchReferenceId(referenceId, batch.index),
         recipientCount: batch.recipients.length,
         recipients: batch.recipients.map((recipient) => ({
+          recipientIndex: recipient.originalIndex,
           address: recipient.address,
           ...(recipient.originalAddress
             ? { originalAddress: recipient.originalAddress }
             : {}),
           ...(recipient.resolvedFromAns ? { resolvedFromAns: true } : {}),
           amount: recipient.amount,
+          amountBaseUnits: recipient.amountUnits.toString(),
           targetToken: recipient.targetToken,
         })),
         sourceToken,

@@ -7,20 +7,151 @@ datasource db {
 }
 
 model Task {
-  id             String            @id @default(uuid()) @db.Uuid
-  type           String
-  status         String
-  totalUnits     Int               @default(0)
-  completedUnits Int               @default(0)
-  failedUnits    Int               @default(0)
-  metadata       Json?
-  payload        Json
-  result         Json?
-  createdAt      DateTime          @default(now())
-  updatedAt      DateTime          @updatedAt
-  logs           TaskLog[]
-  units          TaskUnit[]
-  transactions   TaskTransaction[]
+  id                  String               @id @default(uuid()) @db.Uuid
+  type                String
+  status              String
+  totalUnits          Int                  @default(0)
+  completedUnits      Int                  @default(0)
+  failedUnits         Int                  @default(0)
+  metadata            Json?
+  payload             Json
+  result              Json?
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+  logs                TaskLog[]
+  units               TaskUnit[]
+  transactions        TaskTransaction[]
+  payrollFxOperations PayrollFxOperation[]
+  payrollFxPayoutPlan PayrollFxPayoutPlan?
+}
+
+enum PayrollFxExecutionProvider {
+  STABLEFX @map("stablefx")
+  SWAPKIT  @map("swapkit")
+}
+
+enum PayrollFxWalletMode {
+  APP @map("app")
+}
+
+enum PayrollFxOperationStatus {
+  CREATED
+  QUOTE_PENDING
+  QUOTE_READY
+  APPROVAL_PENDING
+  SUBMITTED
+  FUNDING_PENDING
+  SETTLEMENT_PENDING
+  SETTLED
+  PAYOUT_PENDING
+  COMPLETED
+  RECOVERY_REQUIRED
+  FAILED
+}
+
+model PayrollFxOperation {
+  operationId                     String                     @id @default(uuid()) @db.Uuid
+  idempotencyKey                  String                     @unique
+  taskId                          String?                    @db.Uuid
+  walletMode                      PayrollFxWalletMode
+  executionProvider               PayrollFxExecutionProvider
+  sourceTokenAddress              String
+  destinationTokenAddress         String
+  sourceTokenSymbol               String
+  destinationTokenSymbol          String
+  network                         String
+  sourceWalletAddress             String
+  treasuryWalletAddress           String
+  amountInBaseUnits               String
+  requestedMinimumOutputBaseUnits String?
+  status                          PayrollFxOperationStatus   @default(CREATED)
+  failureCode                     String?
+  failureMessage                  String?
+  quoteId                         String?
+  quoteExpiresAt                  DateTime?
+  expectedOutputBaseUnits         String?
+  actualOutputBaseUnits           String?
+  providerOperationId             String?
+  approvalTransactionId           String?
+  approvalTransactionHash         String?
+  fundingTransactionId            String?
+  fundingTransactionHash          String?
+  settlementTransactionId         String?
+  settlementTransactionHash       String?
+  payoutTransactionId             String?
+  payoutTransactionHash           String?
+  approvalTargetAddress           String?
+  lastProviderStatus              String?
+  diagnosticSnapshot              Json?
+  executionLeaseId                String?
+  executionLeaseExpiresAt         DateTime?
+  executionAttemptCount           Int                        @default(0)
+  lastAttemptStartedAt            DateTime?
+  lastAttemptFinishedAt           DateTime?
+  recoveryFromStatus              PayrollFxOperationStatus?
+  submittedAt                     DateTime?
+  fundingConfirmedAt              DateTime?
+  settledAt                       DateTime?
+  payoutConfirmedAt               DateTime?
+  completedAt                     DateTime?
+  createdAt                       DateTime                   @default(now())
+  updatedAt                       DateTime                   @updatedAt
+  task                            Task?                      @relation(fields: [taskId], references: [id], onDelete: Restrict)
+  payoutPlan                      PayrollFxPayoutPlan?
+
+  @@unique([taskId])
+  @@index([executionProvider, providerOperationId])
+  @@index([status, failureCode])
+  @@index([executionLeaseExpiresAt])
+}
+
+enum PayrollFxPayoutPlanStatus {
+  PLANNED
+}
+
+enum PayrollFxPayoutAllocationStatus {
+  PLANNED
+}
+
+model PayrollFxPayoutPlan {
+  id                            String                      @id @default(uuid()) @db.Uuid
+  operationId                   String                      @unique @db.Uuid
+  taskId                        String                      @unique @db.Uuid
+  executionProvider             PayrollFxExecutionProvider
+  network                       String
+  tokenAddress                  String
+  tokenDecimals                 Int
+  sourceWalletAddress           String
+  settledBudgetBaseUnits        String
+  totalRequestedWeightBaseUnits String
+  totalAllocatedBaseUnits       String
+  dustBaseUnits                 String
+  allocationAlgorithmVersion    String
+  immutableInputHash            String                      @unique
+  status                        PayrollFxPayoutPlanStatus   @default(PLANNED)
+  createdAt                     DateTime                    @default(now())
+  operation                     PayrollFxOperation          @relation(fields: [operationId], references: [operationId], onDelete: Restrict)
+  task                          Task                        @relation(fields: [taskId], references: [id], onDelete: Restrict)
+  allocations                   PayrollFxPayoutAllocation[]
+}
+
+model PayrollFxPayoutAllocation {
+  id                       String                          @id @default(uuid()) @db.Uuid
+  planId                   String                          @db.Uuid
+  recipientLineId          String
+  recipientIndex           Int
+  recipientAddress         String
+  destinationTokenAddress  String
+  requestedWeightBaseUnits String
+  allocatedAmountBaseUnits String
+  deterministicRank        Int
+  status                   PayrollFxPayoutAllocationStatus @default(PLANNED)
+  createdAt                DateTime                        @default(now())
+  plan                     PayrollFxPayoutPlan             @relation(fields: [planId], references: [id], onDelete: Cascade)
+
+  @@unique([planId, recipientLineId])
+  @@unique([planId, recipientIndex])
+  @@index([planId, deterministicRank])
 }
 
 model TaskLog {

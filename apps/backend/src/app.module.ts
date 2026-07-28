@@ -4,6 +4,7 @@ import { TreasuryModule } from './treasury/treasury.module';
 import { AdaptersModule } from './adapters/adapters.module';
 import { AgentsModule } from './agents/agents.module';
 import { AnalyticsModule } from './analytics/analytics.module';
+import { PayrollFxModule } from './payroll-fx/payroll-fx.module';
 import { AppConfigModule } from './config/app-config.module';
 import { DatabaseModule } from './database/database.module';
 import { FxModule } from './fx/fx.module';
@@ -32,6 +33,7 @@ import { UserSwapModule } from './user-swap/user-swap.module';
     UserSwapModule,
     AppWalletSwapModule,
     AnalyticsModule,
+    PayrollFxModule,
   ],
 })
 export class AppModule {}
