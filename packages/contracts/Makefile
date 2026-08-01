@@ -7,7 +7,7 @@ test:
 	forge test
 
 deploy:
-	forge script script/Deploy.s.sol:Deploy --rpc-url $$ARC_TESTNET_RPC_URL --broadcast
+	forge script script/Deploy.s.sol:Deploy --rpc-url https://rpc.testnet.arc.io --broadcast
 
 anvil:
 	anvil

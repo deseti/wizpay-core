@@ -14,7 +14,6 @@ import {
   ARC_REGISTRY_ABI,
   ARC_REGISTRY_ADDRESS_CONFIG_KEY,
   ARC_RPC_URL_CONFIG_KEY,
-  DEFAULT_ARC_RPC_URL,
   DEFAULT_ARC_REGISTRY_ADDRESS,
   NEXT_PUBLIC_ANS_REGISTRY_CONFIG_KEY,
   NEXT_PUBLIC_ARC_TESTNET_RPC_URL_CONFIG_KEY,
@@ -22,6 +21,7 @@ import {
   PUBLIC_RESOLVER_ABI,
   RPC_URL_CONFIG_KEY,
 } from './ans.constants';
+import { resolveArcTestnetRpcUrl } from '../config/arc-rpc';
 import {
   type AnsDomainResolution,
   type ParsedAnsDomain,
@@ -247,42 +247,23 @@ export class AnsService {
   }
 
   private readConfiguredRpcUrl(): string {
-    const configuredRpcUrl = this.configService
-      .get<string>(ARC_RPC_URL_CONFIG_KEY)
-      ?.trim();
-
-    if (configuredRpcUrl) {
-      return configuredRpcUrl;
-    }
-
-    const legacyRpcUrl = this.configService
-      .get<string>(RPC_URL_CONFIG_KEY)
-      ?.trim();
-
-    if (legacyRpcUrl) {
-      return legacyRpcUrl;
-    }
-
-    const sharedFrontendRpcUrl = this.configService
-      .get<string>(NEXT_PUBLIC_ARC_TESTNET_RPC_URL_CONFIG_KEY)
-      ?.trim();
-
-    if (sharedFrontendRpcUrl) {
-      return sharedFrontendRpcUrl;
-    }
-
-    const genericFrontendRpcUrl = this.configService
-      .get<string>(NEXT_PUBLIC_RPC_URL_CONFIG_KEY)
-      ?.trim();
-
-    if (genericFrontendRpcUrl) {
-      return genericFrontendRpcUrl;
-    }
-
-    this.logger.warn(
-      `ANS RPC URL is not configured via ${ARC_RPC_URL_CONFIG_KEY}, ${RPC_URL_CONFIG_KEY}, ${NEXT_PUBLIC_ARC_TESTNET_RPC_URL_CONFIG_KEY}, or ${NEXT_PUBLIC_RPC_URL_CONFIG_KEY}. Falling back to ${DEFAULT_ARC_RPC_URL}.`,
-    );
-
-    return DEFAULT_ARC_RPC_URL;
+    return resolveArcTestnetRpcUrl([
+      {
+        name: ARC_RPC_URL_CONFIG_KEY,
+        value: this.configService.get<string>(ARC_RPC_URL_CONFIG_KEY),
+      },
+      {
+        name: RPC_URL_CONFIG_KEY,
+        value: this.configService.get<string>(RPC_URL_CONFIG_KEY),
+      },
+      {
+        name: NEXT_PUBLIC_ARC_TESTNET_RPC_URL_CONFIG_KEY,
+        value: this.configService.get<string>(NEXT_PUBLIC_ARC_TESTNET_RPC_URL_CONFIG_KEY),
+      },
+      {
+        name: NEXT_PUBLIC_RPC_URL_CONFIG_KEY,
+        value: this.configService.get<string>(NEXT_PUBLIC_RPC_URL_CONFIG_KEY),
+      },
+    ]);
   }
 }

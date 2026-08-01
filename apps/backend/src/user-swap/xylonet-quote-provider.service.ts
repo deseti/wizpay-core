@@ -21,10 +21,14 @@ import {
   type UserSwapNormalizedQuote,
   type UserSwapToken,
 } from './user-swap.types';
+import {
+  ARC_TESTNET_RPC_URL,
+  resolveArcTestnetRpcUrl,
+} from '../config/arc-rpc';
 
 export const USER_SWAP_ARC_TESTNET_CHAIN_ID = 5_042_002;
 export const USER_SWAP_XYLONET_DEFAULT_RPC_URL =
-  'https://rpc.testnet.arc.network';
+  ARC_TESTNET_RPC_URL;
 export const USER_SWAP_XYLONET_USDC_ADDRESS =
   '0x3600000000000000000000000000000000000000' as const;
 export const USER_SWAP_XYLONET_EURC_ADDRESS =
@@ -291,13 +295,13 @@ export class XylonetQuoteProviderService {
   }
 
   private getRpcUrl(): string {
-    return (
-      process.env.ARC_TESTNET_RPC_URL?.trim() ||
-      process.env.NEXT_PUBLIC_ARC_TESTNET_RPC_URL?.trim() ||
-      process.env.ARC_TESTNET_RPC_URLS?.split(/[\s,]+/)[0]?.trim() ||
-      process.env.NEXT_PUBLIC_ARC_TESTNET_RPC_URLS?.split(/[\s,]+/)[0]?.trim() ||
-      USER_SWAP_XYLONET_DEFAULT_RPC_URL
-    );
+    return resolveArcTestnetRpcUrl([
+      { name: 'ARC_TESTNET_RPC_URL', value: process.env.ARC_TESTNET_RPC_URL },
+      {
+        name: 'NEXT_PUBLIC_ARC_TESTNET_RPC_URL',
+        value: process.env.NEXT_PUBLIC_ARC_TESTNET_RPC_URL,
+      },
+    ]);
   }
 
   private getErrorMessage(error: unknown): string {

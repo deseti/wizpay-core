@@ -1,6 +1,6 @@
 import type { Abi } from 'viem';
 
-export const DEFAULT_ARC_RPC_URL = 'https://rpc.testnet.arc.network';
+export { ARC_TESTNET_RPC_URL as DEFAULT_ARC_RPC_URL } from '../config/arc-rpc';
 export const DEFAULT_ARC_REGISTRY_ADDRESS =
   '0x3885E01e3439fc094B083E834Fb4cD36211BEd84';
 

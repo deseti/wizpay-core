@@ -5,12 +5,18 @@ import {
   SolanaDevnet,
 } from "@circle-fin/app-kit/chains";
 import type { CircleTransferBlockchain } from "@/lib/transfer-service";
+import { ARC_TESTNET_RPC_URL } from "@/lib/wagmi";
+
+const circleArcTestnet: ChainDefinition = {
+  ...ArcTestnet,
+  rpcEndpoints: [ARC_TESTNET_RPC_URL],
+};
 
 export const APP_KIT_CHAIN_BY_BRIDGE_CHAIN: Record<
   CircleTransferBlockchain,
   ChainDefinition
 > = {
-  "ARC-TESTNET": ArcTestnet,
+  "ARC-TESTNET": circleArcTestnet,
   "ETH-SEPOLIA": EthereumSepolia,
   "SOLANA-DEVNET": SolanaDevnet,
 };

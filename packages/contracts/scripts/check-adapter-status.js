@@ -1,9 +1,11 @@
 import { ethers } from 'ethers';
 import dotenv from 'dotenv';
 
+import { readArcTestnetRpcUrl } from './arc-rpc.js';
+
 dotenv.config();
 
-const RPC_URL = process.env.ARC_TESTNET_RPC_URL;
+const RPC_URL = readArcTestnetRpcUrl();
 const ADAPTER_ADDRESS = process.env.STABLEFX_ADAPTER_ADDRESS;
 const EURC = process.env.ARC_EURC;
 const USDC = process.env.ARC_USDC;

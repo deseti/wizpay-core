@@ -1,13 +1,8 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { CircleClient } from './circle.client';
+import { ARC_TESTNET_RPC_URL } from '../../config/arc-rpc';
 
 const ETH_SEPOLIA_RPC_URL = 'https://ethereum-sepolia-rpc.publicnode.com';
-const ARC_TESTNET_RPC_URL = 'https://rpc.testnet.arc.network/';
-const ARC_TESTNET_RPC_FALLBACK_URLS = [
-  'https://rpc.testnet.arc.network/',
-  'https://rpc.quicknode.testnet.arc.network/',
-  'https://rpc.blockdaemon.testnet.arc.network/',
-];
 const SOLANA_DEVNET_RPC_URL = 'https://api.devnet.solana.com';
 const SOLANA_MIN_FEE_BALANCE_LAMPORTS = 0.01 * 1_000_000_000; // 0.01 SOL
 const SOLANA_TOP_UP_TARGET_LAMPORTS = 0.05 * 1_000_000_000; // 0.05 SOL
@@ -774,34 +769,31 @@ export class CircleBridgeService {
    * waiting for Circle's API to timeout.
    */
   private async validateArcTestnetRpcReachable(): Promise<void> {
-    for (const rpcUrl of ARC_TESTNET_RPC_FALLBACK_URLS) {
-      try {
-        const res = await fetch(rpcUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            jsonrpc: '2.0',
-            id: Date.now(),
-            method: 'eth_chainId',
-            params: [],
-          }),
-          signal: AbortSignal.timeout(5_000),
-        });
+    try {
+      const res = await fetch(ARC_TESTNET_RPC_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: Date.now(),
+          method: 'eth_chainId',
+          params: [],
+        }),
+        signal: AbortSignal.timeout(5_000),
+      });
 
-        const json = (await res.json()) as { result?: string; error?: unknown };
+      const json = (await res.json()) as { result?: string; error?: unknown };
 
-        if (json.result) {
-          this.logger.debug(`Arc Testnet RPC reachable at ${rpcUrl}`);
-          return;
-        }
-      } catch {
-        // Try next URL
-        continue;
+      if (json.result) {
+        this.logger.debug(`Arc Testnet RPC reachable at ${ARC_TESTNET_RPC_URL}`);
+        return;
       }
+    } catch {
+      // The required endpoint is the only permitted Arc Testnet RPC.
     }
 
     this.logger.error(
-      `Arc Testnet RPC is unreachable from all known endpoints: ${ARC_TESTNET_RPC_FALLBACK_URLS.join(', ')}`,
+      `Arc Testnet RPC is unreachable: ${ARC_TESTNET_RPC_URL}`,
     );
     throw new BadRequestException({
       code: 'CIRCLE_BRIDGE_EXECUTION_FAILED',
@@ -810,7 +802,7 @@ export class CircleBridgeService {
       details: {
         failedStep: { name: 'Burn on source chain', errorMessage: 'Arc Testnet RPC unreachable' },
         sourceBlockchain: 'ARC-TESTNET',
-        rpcEndpoints: ARC_TESTNET_RPC_FALLBACK_URLS,
+        rpcEndpoints: [ARC_TESTNET_RPC_URL],
       },
     });
   }

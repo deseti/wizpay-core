@@ -2,6 +2,8 @@ import { ethers } from 'ethers';
 import fetch from 'node-fetch';
 import dotenv from 'dotenv';
 
+import { readArcTestnetRpcUrl } from './arc-rpc.js';
+
 dotenv.config();
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -22,7 +24,7 @@ if (process.env.NEXT_PUBLIC_USE_REAL_STABLEFX === 'true') {
 }
 
 const PRIVATE_KEY = process.env.PRIVATE_KEY;
-const RPC_URL = process.env.ARC_TESTNET_RPC_URL;
+const RPC_URL = readArcTestnetRpcUrl();
 const ADAPTER_ADDRESS = process.env.STABLEFX_ADAPTER_ADDRESS;
 const EURC = process.env.ARC_EURC;
 const USDC = process.env.ARC_USDC;

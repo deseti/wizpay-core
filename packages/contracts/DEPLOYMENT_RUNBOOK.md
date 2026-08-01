@@ -4,7 +4,7 @@ Generated from repository state. All commands are deterministic and assume:
 - Working directory: `packages/contracts/`
 - `.env.stablefx` exists with secrets populated
 - Foundry toolchain available at `~/.foundry/bin/`
-- Arc Testnet RPC: `https://rpc.testnet.arc.network` (chain ID: `5042002`)
+- Arc Testnet RPC: `https://rpc.testnet.arc.io` (chain ID: `5042002`)
 
 ---
 
@@ -17,7 +17,7 @@ Generated from repository state. All commands are deterministic and assume:
 | EURC | `0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a` |
 | USYC | `0xe9185F0c5F296Ed1797AaE4238D26CCaBEadb86C` |
 | Chain ID | `5042002` |
-| RPC | `https://rpc.testnet.arc.network` |
+| RPC | `https://rpc.testnet.arc.io` |
 | Explorer | `https://testnet.arcscan.app` |
 
 ---
@@ -70,7 +70,7 @@ Test result: ok. X passed; 0 failed; ...
 
 ```bash
 cast balance <YOUR_DEPLOYER_ADDRESS> \
-  --rpc-url https://rpc.testnet.arc.network
+  --rpc-url https://rpc.testnet.arc.io
 ```
 
 **Expected:** Non-zero balance (USDC is gas on Arc).
@@ -83,7 +83,7 @@ cast balance <YOUR_DEPLOYER_ADDRESS> \
 cd packages/contracts
 
 forge script script/DeployStableFXAdapterV2.s.sol:DeployStableFXAdapterV2 \
-  --rpc-url https://rpc.testnet.arc.network \
+  --rpc-url https://rpc.testnet.arc.io \
   --env-file .env.stablefx
 ```
 
@@ -122,7 +122,7 @@ SIMULATION COMPLETE. To broadcast these transactions, add --broadcast ...
 cd packages/contracts
 
 forge script script/DeployStableFXAdapterV2.s.sol:DeployStableFXAdapterV2 \
-  --rpc-url https://rpc.testnet.arc.network \
+  --rpc-url https://rpc.testnet.arc.io \
   --chain-id 5042002 \
   --broadcast \
   --verify \
@@ -166,7 +166,7 @@ cat broadcast/DeployStableFXAdapterV2.s.sol/5042002/run-latest.json | jq '.trans
 cd packages/contracts
 
 forge script script/ConfigureStableFXAdapterV2.s.sol:ConfigureStableFXAdapterV2 \
-  --rpc-url https://rpc.testnet.arc.network \
+  --rpc-url https://rpc.testnet.arc.io \
   --env-file .env.stablefx
 ```
 
@@ -188,7 +188,7 @@ SIMULATION COMPLETE. To broadcast these transactions, add --broadcast ...
 cd packages/contracts
 
 forge script script/ConfigureStableFXAdapterV2.s.sol:ConfigureStableFXAdapterV2 \
-  --rpc-url https://rpc.testnet.arc.network \
+  --rpc-url https://rpc.testnet.arc.io \
   --chain-id 5042002 \
   --broadcast \
   --env-file .env.stablefx
@@ -224,7 +224,7 @@ cat broadcast/ConfigureStableFXAdapterV2.s.sol/5042002/run-latest.json | jq '.tr
 
 ```bash
 cast call <NEW_DEPLOYED_ADDRESS> "owner()(address)" \
-  --rpc-url https://rpc.testnet.arc.network
+  --rpc-url https://rpc.testnet.arc.io
 ```
 
 **Expected:** `<INITIAL_OWNER>`
@@ -233,7 +233,7 @@ cast call <NEW_DEPLOYED_ADDRESS> "owner()(address)" \
 
 ```bash
 cast call <NEW_DEPLOYED_ADDRESS> "baseAsset()(address)" \
-  --rpc-url https://rpc.testnet.arc.network
+  --rpc-url https://rpc.testnet.arc.io
 ```
 
 **Expected:** `0x3600000000000000000000000000000000000000`
@@ -243,7 +243,7 @@ cast call <NEW_DEPLOYED_ADDRESS> "baseAsset()(address)" \
 ```bash
 cast call <NEW_DEPLOYED_ADDRESS> "isAcceptedToken(address)(bool)" \
   0x3600000000000000000000000000000000000000 \
-  --rpc-url https://rpc.testnet.arc.network
+  --rpc-url https://rpc.testnet.arc.io
 ```
 
 **Expected:** `true`
@@ -251,7 +251,7 @@ cast call <NEW_DEPLOYED_ADDRESS> "isAcceptedToken(address)(bool)" \
 ```bash
 cast call <NEW_DEPLOYED_ADDRESS> "isAcceptedToken(address)(bool)" \
   0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a \
-  --rpc-url https://rpc.testnet.arc.network
+  --rpc-url https://rpc.testnet.arc.io
 ```
 
 **Expected:** `true`
@@ -263,7 +263,7 @@ cast call <NEW_DEPLOYED_ADDRESS> "isAcceptedToken(address)(bool)" \
 cast call <NEW_DEPLOYED_ADDRESS> "getExchangeRate(address,address)(uint256)" \
   0x3600000000000000000000000000000000000000 \
   0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a \
-  --rpc-url https://rpc.testnet.arc.network
+  --rpc-url https://rpc.testnet.arc.io
 ```
 
 **Expected:** `920000000000000000` (0.92e18)
@@ -273,7 +273,7 @@ cast call <NEW_DEPLOYED_ADDRESS> "getExchangeRate(address,address)(uint256)" \
 cast call <NEW_DEPLOYED_ADDRESS> "getExchangeRate(address,address)(uint256)" \
   0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a \
   0x3600000000000000000000000000000000000000 \
-  --rpc-url https://rpc.testnet.arc.network
+  --rpc-url https://rpc.testnet.arc.io
 ```
 
 **Expected:** `1087000000000000000` (1.087e18)
@@ -281,13 +281,13 @@ cast call <NEW_DEPLOYED_ADDRESS> "getExchangeRate(address,address)(uint256)" \
 ### 5.5 Verify LP token metadata
 
 ```bash
-cast call <NEW_DEPLOYED_ADDRESS> "name()(string)" --rpc-url https://rpc.testnet.arc.network
+cast call <NEW_DEPLOYED_ADDRESS> "name()(string)" --rpc-url https://rpc.testnet.arc.io
 # Expected: "StableFX Liquidity Provider"
 
-cast call <NEW_DEPLOYED_ADDRESS> "symbol()(string)" --rpc-url https://rpc.testnet.arc.network
+cast call <NEW_DEPLOYED_ADDRESS> "symbol()(string)" --rpc-url https://rpc.testnet.arc.io
 # Expected: "SFX-LP"
 
-cast call <NEW_DEPLOYED_ADDRESS> "decimals()(uint8)" --rpc-url https://rpc.testnet.arc.network
+cast call <NEW_DEPLOYED_ADDRESS> "decimals()(uint8)" --rpc-url https://rpc.testnet.arc.io
 # Expected: 6
 ```
 
@@ -421,23 +421,23 @@ npm run build
 # 1. Approve adapter to spend USDC
 cast send 0x3600000000000000000000000000000000000000 \
   "approve(address,uint256)" <NEW_DEPLOYED_ADDRESS> 1000000 \
-  --rpc-url https://rpc.testnet.arc.network \
+  --rpc-url https://rpc.testnet.arc.io \
   --private-key $PRIVATE_KEY
 
 # 2. Add liquidity (USDC)
 cast send <NEW_DEPLOYED_ADDRESS> \
   "addLiquidity(address,uint256)" 0x3600000000000000000000000000000000000000 1000000 \
-  --rpc-url https://rpc.testnet.arc.network \
+  --rpc-url https://rpc.testnet.arc.io \
   --private-key $PRIVATE_KEY
 
 # 3. Check LP balance
 cast call <NEW_DEPLOYED_ADDRESS> "balanceOf(address)(uint256)" <YOUR_ADDRESS> \
-  --rpc-url https://rpc.testnet.arc.network
+  --rpc-url https://rpc.testnet.arc.io
 
 # 4. Remove liquidity (same token = USDC)
 cast send <NEW_DEPLOYED_ADDRESS> \
   "removeLiquidity(address,uint256)" 0x3600000000000000000000000000000000000000 <LP_SHARES> \
-  --rpc-url https://rpc.testnet.arc.network \
+  --rpc-url https://rpc.testnet.arc.io \
   --private-key $PRIVATE_KEY
 ```
 
@@ -454,7 +454,7 @@ cast send <NEW_DEPLOYED_ADDRESS> \
 # After depositing USDC, attempt to withdraw EURC
 cast send <NEW_DEPLOYED_ADDRESS> \
   "removeLiquidity(address,uint256)" 0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a <LP_SHARES> \
-  --rpc-url https://rpc.testnet.arc.network \
+  --rpc-url https://rpc.testnet.arc.io \
   --private-key $PRIVATE_KEY
 ```
 
@@ -467,7 +467,7 @@ The WizPay router (`0x87ACE45582f45cC81AC1E627E875AE84cbd75946`) references its 
 To verify payroll still works:
 ```bash
 cast call 0x87ACE45582f45cC81AC1E627E875AE84cbd75946 "fxEngine()(address)" \
-  --rpc-url https://rpc.testnet.arc.network
+  --rpc-url https://rpc.testnet.arc.io
 ```
 
 **Expected:** Returns the FX engine address currently configured on WizPay (may or may not be the new adapter — depends on whether you call `updateFXEngine` on WizPay separately).
@@ -481,7 +481,7 @@ If you want WizPay to route swaps through the **new** adapter:
 ```bash
 cast send 0x87ACE45582f45cC81AC1E627E875AE84cbd75946 \
   "updateFXEngine(address)" <NEW_DEPLOYED_ADDRESS> \
-  --rpc-url https://rpc.testnet.arc.network \
+  --rpc-url https://rpc.testnet.arc.io \
   --private-key $WIZPAY_OWNER_PRIVATE_KEY
 ```
 

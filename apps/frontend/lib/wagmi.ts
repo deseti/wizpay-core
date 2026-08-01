@@ -11,11 +11,19 @@ import { createConfig, fallback, http } from "wagmi";
 import { defineChain, type Chain } from "viem";
 import { sepolia } from "viem/chains";
 
-const DEFAULT_ARC_TESTNET_RPC_URLS = [
-  "https://rpc.testnet.arc.network",
-  "https://rpc.quicknode.testnet.arc.network",
-  "https://rpc.blockdaemon.testnet.arc.network",
-];
+export const ARC_TESTNET_RPC_URL = "https://rpc.testnet.arc.io";
+
+const configuredArcTestnetRpcUrl =
+  process.env.NEXT_PUBLIC_ARC_TESTNET_RPC_URL?.trim();
+
+if (
+  configuredArcTestnetRpcUrl &&
+  configuredArcTestnetRpcUrl !== ARC_TESTNET_RPC_URL
+) {
+  throw new Error(
+    `NEXT_PUBLIC_ARC_TESTNET_RPC_URL must be exactly ${ARC_TESTNET_RPC_URL}.`
+  );
+}
 
 const DEFAULT_ETHEREUM_SEPOLIA_RPC_URLS = [
   "https://ethereum-sepolia-rpc.publicnode.com",
@@ -49,14 +57,6 @@ function createFallbackTransport(urls: string[]) {
   );
 }
 
-export const ARC_TESTNET_RPC_URLS = parseRpcUrls(
-  process.env.NEXT_PUBLIC_ARC_TESTNET_RPC_URL,
-  process.env.NEXT_PUBLIC_ARC_TESTNET_RPC_URLS,
-  DEFAULT_ARC_TESTNET_RPC_URLS
-);
-
-export const ARC_TESTNET_RPC_URL = ARC_TESTNET_RPC_URLS[0];
-
 export const ETHEREUM_SEPOLIA_RPC_URLS = parseRpcUrls(
   process.env.NEXT_PUBLIC_ETHEREUM_SEPOLIA_RPC_URL,
   process.env.NEXT_PUBLIC_ETHEREUM_SEPOLIA_RPC_URLS,
@@ -82,10 +82,10 @@ export const arcTestnet = defineChain({
   },
   rpcUrls: {
     default: {
-      http: ARC_TESTNET_RPC_URLS,
+      http: [ARC_TESTNET_RPC_URL],
     },
     public: {
-      http: ARC_TESTNET_RPC_URLS,
+      http: [ARC_TESTNET_RPC_URL],
     },
   },
   blockExplorers: {
@@ -157,7 +157,10 @@ export const config = createConfig({
   connectors,
   ssr: true,
   transports: {
-    [arcTestnet.id]: createFallbackTransport(ARC_TESTNET_RPC_URLS),
+    [arcTestnet.id]: http(ARC_TESTNET_RPC_URL, {
+      retryCount: 1,
+      timeout: 10_000,
+    }),
     [ethereumSepolia.id]: createFallbackTransport(
       ETHEREUM_SEPOLIA_RPC_URLS
     ),

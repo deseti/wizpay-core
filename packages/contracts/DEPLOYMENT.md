@@ -1,6 +1,6 @@
 # StableFXAdapter_V2 Deployment Guide
 
-Deterministic deployment and configuration workflow for `StableFXAdapter_V2`.  
+Deterministic deployment and configuration workflow for `StableFXAdapter_V2`.
 This process is **isolated** from the WizPay deployment flow (`Deploy.s.sol`).
 
 ## Architecture
@@ -85,7 +85,7 @@ RATE_B_TO_A=1087000000000000000
 
 ```bash
 forge script script/DeployStableFXAdapterV2.s.sol:DeployStableFXAdapterV2 \
-  --rpc-url https://rpc.testnet.arc.network \
+  --rpc-url https://rpc.testnet.arc.io \
   --env-file .env.stablefx
 ```
 
@@ -106,7 +106,7 @@ forge script script/DeployStableFXAdapterV2.s.sol:DeployStableFXAdapterV2 \
 
 ```bash
 forge script script/DeployStableFXAdapterV2.s.sol:DeployStableFXAdapterV2 \
-  --rpc-url https://rpc.testnet.arc.network \
+  --rpc-url https://rpc.testnet.arc.io \
   --chain-id 5042002 \
   --broadcast \
   --verify \
@@ -139,7 +139,7 @@ After deployment, set `ADAPTER_ADDRESS` in your env file, then run the configura
 
 ```bash
 forge script script/ConfigureStableFXAdapterV2.s.sol:ConfigureStableFXAdapterV2 \
-  --rpc-url https://rpc.testnet.arc.network \
+  --rpc-url https://rpc.testnet.arc.io \
   --env-file .env.stablefx
 ```
 
@@ -156,7 +156,7 @@ forge script script/ConfigureStableFXAdapterV2.s.sol:ConfigureStableFXAdapterV2 
 
 ```bash
 forge script script/ConfigureStableFXAdapterV2.s.sol:ConfigureStableFXAdapterV2 \
-  --rpc-url https://rpc.testnet.arc.network \
+  --rpc-url https://rpc.testnet.arc.io \
   --chain-id 5042002 \
   --broadcast \
   --env-file .env.stablefx
@@ -188,11 +188,11 @@ forge verify-contract <DEPLOYED_ADDRESS> \
 ```bash
 # Check owner
 cast call <DEPLOYED_ADDRESS> "owner()(address)" \
-  --rpc-url https://rpc.testnet.arc.network
+  --rpc-url https://rpc.testnet.arc.io
 
 # Check base asset
 cast call <DEPLOYED_ADDRESS> "baseAsset()(address)" \
-  --rpc-url https://rpc.testnet.arc.network
+  --rpc-url https://rpc.testnet.arc.io
 ```
 
 ### Verify Configuration State
@@ -200,23 +200,23 @@ cast call <DEPLOYED_ADDRESS> "baseAsset()(address)" \
 ```bash
 # Check accepted token
 cast call <DEPLOYED_ADDRESS> "isAcceptedToken(address)(bool)" <TOKEN_ADDRESS> \
-  --rpc-url https://rpc.testnet.arc.network
+  --rpc-url https://rpc.testnet.arc.io
 
 # Check exchange rate
 cast call <DEPLOYED_ADDRESS> "getExchangeRate(address,address)(uint256)" <TOKEN_A> <TOKEN_B> \
-  --rpc-url https://rpc.testnet.arc.network
+  --rpc-url https://rpc.testnet.arc.io
 ```
 
 ### Verify LP Token Metadata
 
 ```bash
-cast call <DEPLOYED_ADDRESS> "name()(string)" --rpc-url https://rpc.testnet.arc.network
+cast call <DEPLOYED_ADDRESS> "name()(string)" --rpc-url https://rpc.testnet.arc.io
 # → "StableFX Liquidity Provider"
 
-cast call <DEPLOYED_ADDRESS> "symbol()(string)" --rpc-url https://rpc.testnet.arc.network
+cast call <DEPLOYED_ADDRESS> "symbol()(string)" --rpc-url https://rpc.testnet.arc.io
 # → "SFX-LP"
 
-cast call <DEPLOYED_ADDRESS> "decimals()(uint8)" --rpc-url https://rpc.testnet.arc.network
+cast call <DEPLOYED_ADDRESS> "decimals()(uint8)" --rpc-url https://rpc.testnet.arc.io
 # → 6
 ```
 
@@ -267,7 +267,7 @@ If you prefer individual `cast send` calls over the configuration script:
 
 ```bash
 cast send <DEPLOYED_ADDRESS> "addAcceptedToken(address)" <TOKEN_ADDRESS> \
-  --rpc-url https://rpc.testnet.arc.network \
+  --rpc-url https://rpc.testnet.arc.io \
   --private-key $PRIVATE_KEY
 ```
 
@@ -277,13 +277,13 @@ cast send <DEPLOYED_ADDRESS> "addAcceptedToken(address)" <TOKEN_ADDRESS> \
 # USDC → EURC
 cast send <DEPLOYED_ADDRESS> "setExchangeRate(address,address,uint256)" \
   <USDC_ADDRESS> <EURC_ADDRESS> 920000000000000000 \
-  --rpc-url https://rpc.testnet.arc.network \
+  --rpc-url https://rpc.testnet.arc.io \
   --private-key $PRIVATE_KEY
 
 # EURC → USDC (reciprocal)
 cast send <DEPLOYED_ADDRESS> "setExchangeRate(address,address,uint256)" \
   <EURC_ADDRESS> <USDC_ADDRESS> 1087000000000000000 \
-  --rpc-url https://rpc.testnet.arc.network \
+  --rpc-url https://rpc.testnet.arc.io \
   --private-key $PRIVATE_KEY
 ```
 

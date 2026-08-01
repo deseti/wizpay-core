@@ -184,7 +184,7 @@ NEXT_PUBLIC_CIRCLE_KIT_KEY=
 BACKEND_API_BASE_URL=http://localhost:4000
 NEXT_PUBLIC_BACKEND_API_BASE_URL=http://localhost:4000
 
-NEXT_PUBLIC_ARC_TESTNET_RPC_URL=https://rpc.testnet.arc.network
+NEXT_PUBLIC_ARC_TESTNET_RPC_URL=https://rpc.testnet.arc.io
 NEXT_PUBLIC_ETHEREUM_SEPOLIA_RPC_URL=https://ethereum-sepolia-rpc.publicnode.com
 ```
 

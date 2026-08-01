@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createHash, randomBytes } from 'crypto';
 import { SolanaService } from './solana.service';
+import { resolveArcTestnetRpcUrl } from '../config/arc-rpc';
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -123,12 +124,17 @@ export class BlockchainService {
   ) {}
 
   private get rpcUrl(): string {
-    return (
-      this.configService.get<string>('RPC_URL') ||
-      this.configService.get<string>('ARC_RPC_URL') ||
-      this.configService.get<string>('NEXT_PUBLIC_ARC_TESTNET_RPC_URL') ||
-      'https://rpc.testnet.arc.network'
-    );
+    return resolveArcTestnetRpcUrl([
+      { name: 'RPC_URL', value: this.configService.get<string>('RPC_URL') },
+      {
+        name: 'ARC_RPC_URL',
+        value: this.configService.get<string>('ARC_RPC_URL'),
+      },
+      {
+        name: 'NEXT_PUBLIC_ARC_TESTNET_RPC_URL',
+        value: this.configService.get<string>('NEXT_PUBLIC_ARC_TESTNET_RPC_URL'),
+      },
+    ]);
   }
 
   private get chainId(): number {
@@ -149,11 +155,7 @@ export class BlockchainService {
   getChainRpcUrl(chain: string): string {
     switch (chain.toUpperCase()) {
       case 'ARC-TESTNET':
-        return (
-          this.configService.get<string>('ARC_RPC_URL') ||
-          this.configService.get<string>('NEXT_PUBLIC_ARC_TESTNET_RPC_URL') ||
-          'https://rpc-testnet.arc.money'
-        );
+        return this.rpcUrl;
       case 'ETH-SEPOLIA':
         return (
           this.configService.get<string>('ETH_SEPOLIA_RPC_URL') ||

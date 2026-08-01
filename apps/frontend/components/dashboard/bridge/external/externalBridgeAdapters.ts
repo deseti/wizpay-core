@@ -13,10 +13,16 @@ import {
 } from "viem";
 
 import type { InjectedSolanaWalletProvider } from "@/components/providers/SolanaWalletProvider";
+import { ARC_TESTNET_RPC_URL } from "@/lib/wagmi";
+
+const circleArcTestnet = {
+  ...ArcTestnet,
+  rpcEndpoints: [ARC_TESTNET_RPC_URL],
+};
 
 const EXTERNAL_EVM_CAPABILITIES = {
   addressContext: "user-controlled" as const,
-  supportedChains: [ArcTestnet, EthereumSepolia],
+  supportedChains: [circleArcTestnet, EthereumSepolia],
 };
 
 const EXTERNAL_SOLANA_CAPABILITIES = {

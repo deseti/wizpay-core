@@ -32,6 +32,7 @@ export type ExecuteTransactionParams = {
   chainId?: number;
   contractAddress: Address;
   functionName: string;
+  idempotencyKey?: string;
   memo?: string;
   refId: string;
 };
@@ -255,6 +256,7 @@ export function useTransactionExecutor() {
       contractAddress: params.contractAddress,
       callData,
       feeLevel: CIRCLE_FEE_LEVEL,
+      idempotencyKey: params.idempotencyKey,
       memo: params.memo,
       refId: params.refId,
     });

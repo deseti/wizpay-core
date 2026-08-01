@@ -665,6 +665,14 @@ export class W3sAuthService {
         payload.error ||
         payload.message ||
         `Circle user request failed with status ${response.status}.`;
+      this.logger.error(
+        `Circle user API error [${response.status}] ${input.method} ${input.path}: ${message}`,
+        {
+          bodyLength: JSON.stringify(payload).length,
+          code: payload.code,
+          path: input.path,
+        },
+      );
       const error = new Error(message) as Error & {
         code?: string | number;
         details?: unknown;
@@ -675,6 +683,9 @@ export class W3sAuthService {
       error.details = {
         bodyKeys: input.body ? Object.keys(input.body) : [],
         circleMessage: payload.message,
+        circleError: payload.error,
+        circleStatus: response.status,
+        method: input.method,
         path: input.path,
       };
       error.status = response.status;

@@ -1,10 +1,12 @@
 import { ethers } from 'ethers';
 import dotenv from 'dotenv';
 
+import { readArcTestnetRpcUrl } from './arc-rpc.js';
+
 dotenv.config();
 
 const PRIVATE_KEY = process.env.PRIVATE_KEY;
-const RPC_URL = process.env.ARC_TESTNET_RPC_URL;
+const RPC_URL = readArcTestnetRpcUrl();
 
 // ARC Contract Addresses
 const FX_ESCROW = '0x1f91886C7028986aD885ffCee0e40b75C9cd5aC1';

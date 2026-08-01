@@ -2,10 +2,12 @@ import { ethers } from 'ethers';
 import fetch from 'node-fetch';
 import dotenv from 'dotenv';
 
+import { readArcTestnetRpcUrl } from './arc-rpc.js';
+
 dotenv.config();
 
 const PRIVATE_KEY = process.env.PRIVATE_KEY;
-const RPC_URL = process.env.ARC_TESTNET_RPC_URL;
+const RPC_URL = readArcTestnetRpcUrl();
 const STABLEFX_ADAPTER_ADDRESS = process.env.STABLEFX_ADAPTER_ADDRESS;
 
 // Addresses

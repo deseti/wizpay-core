@@ -56,7 +56,7 @@ All steps execute atomically - if any step fails, the entire transaction reverts
 
 ### ARC Testnet
 - **Chain ID**: 5042002
-- **RPC Endpoint**: `https://rpc.testnet.arc.network`
+- **RPC Endpoint**: `https://rpc.testnet.arc.io`
 - **Native Gas Token**: USDC (18 decimals for gas, 6 decimals for ERC-20)
 - **Block Explorer**: https://testnet.arcscan.app
 - **Faucet**: https://faucet.circle.com
@@ -334,7 +334,7 @@ forge script script/Deploy.s.sol:Deploy --rpc-url "$ARC_TESTNET_RPC_URL" --broad
 ```bash
 # Wallet & Network
 PRIVATE_KEY=your_private_key_here
-ARC_TESTNET_RPC_URL=https://rpc.testnet.arc.network
+ARC_TESTNET_RPC_URL=https://rpc.testnet.arc.io
 
 # Deployment Config
 FEE_BPS=10                    # 0.1% fee

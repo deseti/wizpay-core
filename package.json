@@ -15,7 +15,8 @@
     "dev:frontend": "npm run dev -w frontend",
     "build": "npm run build -w backend && npm run build -w frontend && npm run build -w wizpay_router",
     "lint": "npm run lint -w backend && npm run lint -w frontend",
-    "test": "npm run test:backend && npm run test:contracts",
+    "test": "npm run test:arc-rpc && npm run test:backend && npm run test:contracts",
+    "test:arc-rpc": "node scripts/check-arc-testnet-rpc.mjs",
     "test:backend": "npm run test -w backend",
     "test:contracts": "npm run test -w wizpay_router"
   },

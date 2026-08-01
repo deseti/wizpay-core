@@ -29,7 +29,7 @@ function getRpcErrorText(error: unknown, depth = 0): string {
   return parts.join(" ").toLowerCase()
 }
 
-function isTransientAnsRpcError(error: unknown) {
+export function isTransientAnsRpcError(error: unknown) {
   const errorText = getRpcErrorText(error)
 
   if (

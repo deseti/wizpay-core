@@ -15,4 +15,4 @@ remappings = [
 ]
 
 [rpc_endpoints]
-arc_testnet = "${ARC_TESTNET_RPC_URL}"
+arc_testnet = "https://rpc.testnet.arc.io"

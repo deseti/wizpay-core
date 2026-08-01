@@ -2,12 +2,14 @@ import fetch from 'node-fetch';
 import { ethers } from 'ethers';
 import dotenv from 'dotenv';
 
+import { readArcTestnetRpcUrl } from './arc-rpc.js';
+
 dotenv.config();
 
 const CIRCLE_API_KEY = process.env.CIRCLE_API_KEY;
 const CIRCLE_API_BASE_URL = process.env.CIRCLE_API_BASE_URL || 'https://api-sandbox.circle.com';
 const PRIVATE_KEY = process.env.PRIVATE_KEY;
-const RPC_URL = process.env.ARC_TESTNET_RPC_URL;
+const RPC_URL = readArcTestnetRpcUrl();
 
 /**
  * Circle StableFX Integration - Get Real-Time Rate via RFQ

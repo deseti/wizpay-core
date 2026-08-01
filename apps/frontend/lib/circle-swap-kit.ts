@@ -9,6 +9,7 @@ import {
 import type { Address, Hex, PublicClient, WalletClient } from "viem";
 
 import type { UserSwapPrepareResponse } from "@/lib/user-swap-service";
+import { ARC_TESTNET_RPC_URL } from "@/lib/wagmi";
 
 export type CircleSwapToken = "USDC" | "EURC";
 
@@ -19,8 +20,13 @@ export const USER_SWAP_EURC_ADDRESS =
 
 type ArcSwapAdapter = NonNullable<ReturnType<typeof createArcSwapAdapter>>;
 
+const circleArcTestnet = {
+  ...ArcTestnet,
+  rpcEndpoints: [ARC_TESTNET_RPC_URL],
+};
+
 type AdapterContext = {
-  chain: typeof ArcTestnet;
+  chain: typeof circleArcTestnet;
 };
 
 type PreparedAction = {
@@ -38,7 +44,7 @@ type AdapterWithActions = {
   waitForTransaction?: (
     txHash: string,
     options: unknown,
-    chain: typeof ArcTestnet,
+    chain: typeof circleArcTestnet,
   ) => Promise<unknown>;
 };
 
@@ -92,7 +98,7 @@ export function createArcSwapAdapter(
     },
     {
       addressContext: "user-controlled",
-      supportedChains: [ArcTestnet],
+      supportedChains: [circleArcTestnet],
     }
   );
 }
@@ -302,7 +308,7 @@ async function approveSwapInput(params: {
   tokenInAddress: Address;
   inputAmount: bigint;
 }) {
-  const adapterContract = ArcTestnet.kitContracts?.adapter;
+  const adapterContract = circleArcTestnet.kitContracts?.adapter;
 
   if (!adapterContract) {
     throw new Error(
@@ -322,7 +328,11 @@ async function approveSwapInput(params: {
   const approvalTxHash = await approval.execute();
 
   if (params.adapter.waitForTransaction) {
-    await params.adapter.waitForTransaction(approvalTxHash, undefined, ArcTestnet);
+    await params.adapter.waitForTransaction(
+      approvalTxHash,
+      undefined,
+      circleArcTestnet,
+    );
   }
 }
 
@@ -356,7 +366,7 @@ export async function executePreparedArcUserSwap(params: {
   tokenIn: CircleSwapToken;
 }) {
   const adapter = params.adapter as unknown as AdapterWithActions;
-  const context: AdapterContext = { chain: ArcTestnet };
+  const context: AdapterContext = { chain: circleArcTestnet };
   const transaction = getRawTransaction(params.prepared);
 
   if (!isRecord(transaction)) {

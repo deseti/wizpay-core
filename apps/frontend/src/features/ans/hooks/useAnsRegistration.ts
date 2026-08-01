@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useMemo, useState } from "react"
+import { useCallback, useMemo, useRef, useState } from "react"
 import { type Address, type Hex } from "viem"
 import { useQuery } from "@tanstack/react-query"
 import { usePublicClient } from "wagmi"
@@ -8,7 +8,10 @@ import { usePublicClient } from "wagmi"
 import { ERC20_ABI } from "@/constants/erc20"
 import { useActiveWalletAddress } from "@/hooks/useActiveWalletAddress"
 import { useToast } from "@/hooks/use-toast"
-import { useTransactionExecutor } from "@/hooks/useTransactionExecutor"
+import {
+  useTransactionExecutor,
+  type ExecuteTransactionResult,
+} from "@/hooks/useTransactionExecutor"
 import { arcTestnet } from "@/lib/wagmi"
 
 import {
@@ -16,7 +19,19 @@ import {
   ANS_NAMESPACE_CONTROLLER_ABI,
 } from "../contracts/abis"
 import { getAnsContractsConfig } from "../services/ans-config"
-import { runAnsRpcRead } from "../services/ans-rpc"
+import {
+  isTransientAnsRpcError,
+  runAnsRpcRead,
+} from "../services/ans-rpc"
+import {
+  executeAnsFlowOnce,
+  executeAnsStepOnce,
+} from "../services/ans-registration-flow"
+import { assertSuccessfulAnsReceipt } from "../services/ans-registration-confirmation"
+import {
+  toAnsRegistrationError,
+  type AnsRegistrationStage,
+} from "../services/ans-registration-errors"
 import { recordAnsRegistrationActivity } from "../utils/storage"
 import type {
   AnsDomainLookup,
@@ -59,22 +74,6 @@ function waitFor(ms: number) {
   })
 }
 
-function getReadableErrorMessage(error: unknown) {
-  if (typeof error === "object" && error !== null) {
-    const shortMessage = Reflect.get(error, "shortMessage")
-    if (typeof shortMessage === "string") {
-      return shortMessage
-    }
-
-    const message = Reflect.get(error, "message")
-    if (typeof message === "string") {
-      return message
-    }
-  }
-
-  return "Transaction rejected or failed."
-}
-
 function isHexTransactionHash(value: string | null | undefined): value is Hex {
   return /^0x[a-fA-F0-9]{64}$/.test(value ?? "")
 }
@@ -98,6 +97,11 @@ export function useAnsRegistration({
   const [registrationHash, setRegistrationHash] = useState<string | null>(null)
   const [submissionHash, setSubmissionHash] = useState<string | null>(null)
   const [confirmation, setConfirmation] = useState<AnsRegistrationConfirmation | null>(null)
+  const approvalSubmissionRef = useRef<ExecuteTransactionResult | null>(null)
+  const registrationSubmissionRef = useRef<ExecuteTransactionResult | null>(null)
+  const approvalInFlightRef = useRef<Promise<void> | null>(null)
+  const submitInFlightRef = useRef<Promise<AnsRegistrationConfirmation> | null>(null)
+  const idempotencyKeysRef = useRef(new Map<string, string>())
 
   const requiredAmount = lookup?.rentPrice ?? 0n
 
@@ -172,7 +176,114 @@ export function useAnsRegistration({
     setRegistrationHash(null)
     setSubmissionHash(null)
     setConfirmation(null)
+    approvalSubmissionRef.current = null
+    registrationSubmissionRef.current = null
+    approvalInFlightRef.current = null
+    submitInFlightRef.current = null
+    idempotencyKeysRef.current.clear()
   }, [])
+
+  const getIdempotencyKey = useCallback(
+    (action: "approve" | "register") => {
+      const key = `${action}:${lookup?.target.domain ?? "unknown"}:${walletAddress ?? "unknown"}`
+      const existing = idempotencyKeysRef.current.get(key)
+
+      if (existing) {
+        return existing
+      }
+
+      const created = crypto.randomUUID()
+      idempotencyKeysRef.current.set(key, created)
+      return created
+    },
+    [lookup?.target.domain, walletAddress]
+  )
+
+  const handleRegistrationError = useCallback(
+    (error: unknown, stage: AnsRegistrationStage) => {
+      const nextError = toAnsRegistrationError(error, stage)
+      setStep("error")
+      setErrorMessage(nextError.message)
+      return nextError
+    },
+    []
+  )
+
+  const readCurrentAllowance = useCallback(async () => {
+    if (!publicClient || !lookup || !walletAddress) {
+      throw new Error("ANS allowance state is not ready yet.")
+    }
+
+    return runAnsRpcRead(
+      [
+        "registration-allowance-preflight",
+        walletAddress.toLowerCase(),
+        lookup.namespaceSnapshot.controller.toLowerCase(),
+      ].join(":"),
+      () =>
+        publicClient.readContract({
+          address: contracts.usdc,
+          abi: ERC20_ABI,
+          functionName: "allowance",
+          args: [walletAddress, lookup.namespaceSnapshot.controller],
+        })
+    )
+  }, [contracts.usdc, lookup, publicClient, walletAddress])
+
+  const readRegistrationState = useCallback(async () => {
+    if (!publicClient || !lookup || !walletAddress) {
+      throw new Error("ANS registration state is not ready yet.")
+    }
+
+    const [ownerResult, expiryResult, availableResult] = await runAnsRpcRead(
+      [
+        "registration-preflight",
+        lookup.target.domain,
+        walletAddress.toLowerCase(),
+      ].join(":"),
+      () =>
+        publicClient.multicall({
+          allowFailure: true,
+          multicallAddress: ARC_MULTICALL3_ADDRESS,
+          contracts: [
+            {
+              address: lookup.namespaceSnapshot.registrar,
+              abi: ANS_NAMESPACE_REGISTRAR_ABI,
+              functionName: "ownerOf",
+              args: [lookup.tokenId],
+            },
+            {
+              address: lookup.namespaceSnapshot.registrar,
+              abi: ANS_NAMESPACE_REGISTRAR_ABI,
+              functionName: "nameExpires",
+              args: [lookup.tokenId],
+            },
+            {
+              address: lookup.namespaceSnapshot.controller,
+              abi: ANS_NAMESPACE_CONTROLLER_ABI,
+              functionName: "available",
+              args: [lookup.target.label],
+            },
+          ],
+        })
+    )
+
+    const owner =
+      ownerResult.status === "success" ? (ownerResult.result as Address) : null
+
+    if (expiryResult.status === "failure") {
+      throw expiryResult.error
+    }
+
+    if (availableResult.status === "failure") {
+      throw availableResult.error
+    }
+
+    const expiresAt = expiryResult.result as bigint
+    const available = availableResult.result === true
+
+    return { available, expiresAt, owner }
+  }, [lookup, publicClient, walletAddress])
 
   const recoverApprovalTransactionHash = useCallback(
     async ({
@@ -191,15 +302,27 @@ export function useAnsRegistration({
       }
 
       for (let attempt = 0; attempt < MAX_CONFIRMATION_POLLS; attempt += 1) {
-        const logs = await publicClient.getLogs({
-          address: contracts.usdc,
-          event: ERC20_APPROVAL_EVENT,
-          args: {
-            owner: ownerAddress,
-            spender: spenderAddress,
-          },
-          fromBlock: startBlock,
-        })
+        let logs
+        try {
+          logs = await runAnsRpcRead(
+            `approval-log:${ownerAddress}:${spenderAddress}:${startBlock}:${attempt}`,
+            () =>
+              publicClient.getLogs({
+                address: contracts.usdc,
+                event: ERC20_APPROVAL_EVENT,
+                args: {
+                  owner: ownerAddress,
+                  spender: spenderAddress,
+                },
+                fromBlock: startBlock,
+              })
+          )
+        } catch (error) {
+          if (isTransientAnsRpcError(error)) {
+            return null
+          }
+          throw error
+        }
 
         const matchedLog = [...logs]
           .reverse()
@@ -241,15 +364,27 @@ export function useAnsRegistration({
       }
 
       for (let attempt = 0; attempt < MAX_CONFIRMATION_POLLS; attempt += 1) {
-        const logs = await publicClient.getLogs({
-          address: registrarAddress,
-          event: ERC721_TRANSFER_EVENT,
-          args: {
-            to: ownerAddress,
-            tokenId,
-          },
-          fromBlock: startBlock,
-        })
+        let logs
+        try {
+          logs = await runAnsRpcRead(
+            `registration-log:${ownerAddress}:${tokenId}:${startBlock}:${attempt}`,
+            () =>
+              publicClient.getLogs({
+                address: registrarAddress,
+                event: ERC721_TRANSFER_EVENT,
+                args: {
+                  to: ownerAddress,
+                  tokenId,
+                },
+                fromBlock: startBlock,
+              })
+          )
+        } catch (error) {
+          if (isTransientAnsRpcError(error)) {
+            return null
+          }
+          throw error
+        }
 
         const matchedLog = [...logs]
           .reverse()
@@ -290,18 +425,27 @@ export function useAnsRegistration({
 
       if (txHash) {
         try {
-          await publicClient.waitForTransactionReceipt({
-            hash: txHash,
-            confirmations: 1,
-          })
-        } catch {
-          // Keep polling allowance even when the receipt read is unavailable.
+          const receipt = await runAnsRpcRead(`approval-receipt:${txHash}`, () =>
+            publicClient.getTransactionReceipt({ hash: txHash })
+          )
+          assertSuccessfulAnsReceipt("approval", txHash, receipt.status)
+        } catch (error) {
+          if (!isTransientAnsRpcError(error)) {
+            const message = error instanceof Error ? error.message : String(error)
+            if (!message.toLowerCase().includes("not found")) {
+              throw error
+            }
+          }
         }
       }
 
       for (let attempt = 0; attempt < MAX_CONFIRMATION_POLLS; attempt += 1) {
-        const result = await refetchTokenState()
-        if ((result.data?.allowance ?? 0n) >= minimumAllowance) {
+        try {
+          const currentAllowance = await readCurrentAllowance()
+          if (currentAllowance < minimumAllowance) {
+            throw new Error("ANS allowance is still pending confirmation.")
+          }
+
           if (!txHash && recoveryContext) {
             return recoverApprovalTransactionHash({
               minimumAllowance,
@@ -312,6 +456,13 @@ export function useAnsRegistration({
           }
 
           return txHash
+        } catch (error) {
+          const isPending =
+            error instanceof Error &&
+            error.message === "ANS allowance is still pending confirmation."
+          if (!isPending && !isTransientAnsRpcError(error)) {
+            throw error
+          }
         }
 
         if (attempt < MAX_CONFIRMATION_POLLS - 1) {
@@ -323,7 +474,7 @@ export function useAnsRegistration({
         "Approval completed, but the USDC allowance did not refresh before the timeout window ended."
       )
     },
-    [publicClient, recoverApprovalTransactionHash, refetchTokenState]
+    [publicClient, readCurrentAllowance, recoverApprovalTransactionHash]
   )
 
   const waitForOwnershipUpdate = useCallback(
@@ -339,54 +490,51 @@ export function useAnsRegistration({
 
       if (txHash) {
         try {
-          await publicClient.waitForTransactionReceipt({
-            hash: txHash,
-            confirmations: 1,
-          })
-        } catch {
-          // Fall through to polling the registrar state directly.
+          const receipt = await runAnsRpcRead(`registration-receipt:${txHash}`, () =>
+            publicClient.getTransactionReceipt({ hash: txHash })
+          )
+          assertSuccessfulAnsReceipt("registration", txHash, receipt.status)
+        } catch (error) {
+          if (!isTransientAnsRpcError(error)) {
+            const message = error instanceof Error ? error.message : String(error)
+            if (!message.toLowerCase().includes("not found")) {
+              throw error
+            }
+          }
         }
       }
 
       const expectedOwner = ownerAddress.toLowerCase()
 
       for (let attempt = 0; attempt < MAX_CONFIRMATION_POLLS; attempt += 1) {
-        const expiresAt = await publicClient.readContract({
-          address: nextLookup.namespaceSnapshot.registrar,
-          abi: ANS_NAMESPACE_REGISTRAR_ABI,
-          functionName: "nameExpires",
-          args: [nextLookup.tokenId],
-        })
-
-        let owner: Address | null = null
         try {
-          owner = await publicClient.readContract({
-            address: nextLookup.namespaceSnapshot.registrar,
-            abi: ANS_NAMESPACE_REGISTRAR_ABI,
-            functionName: "ownerOf",
-            args: [nextLookup.tokenId],
-          })
-        } catch {
-          owner = null
-        }
+          const state = await readRegistrationState()
+          if (
+            state.owner?.toLowerCase() === expectedOwner &&
+            state.expiresAt > BigInt(Math.floor(Date.now() / 1000))
+          ) {
+            const resolvedTxHash = txHash
+              ? txHash
+              : await recoverRegistrationTransactionHash({
+                  ownerAddress,
+                  registrarAddress: nextLookup.namespaceSnapshot.registrar,
+                  startBlock,
+                  tokenId: nextLookup.tokenId,
+                })
 
-        if (
-          owner?.toLowerCase() === expectedOwner &&
-          expiresAt > BigInt(Math.floor(Date.now() / 1000))
-        ) {
-          const resolvedTxHash = txHash
-            ? txHash
-            : await recoverRegistrationTransactionHash({
-                ownerAddress,
-                registrarAddress: nextLookup.namespaceSnapshot.registrar,
-                startBlock,
-                tokenId: nextLookup.tokenId,
-              })
+            return {
+              ownerAddress: state.owner,
+              expiresAt: state.expiresAt,
+              txHash: resolvedTxHash,
+            }
+          }
 
-          return {
-            ownerAddress: owner,
-            expiresAt,
-            txHash: resolvedTxHash,
+          if (state.owner && !state.available) {
+            throw new Error("This ANS name was registered by another wallet.")
+          }
+        } catch (error) {
+          if (!isTransientAnsRpcError(error)) {
+            throw error
           }
         }
 
@@ -399,7 +547,7 @@ export function useAnsRegistration({
         "Registration challenge completed, but ownership did not refresh before the timeout window ended."
       )
     },
-    [publicClient, recoverRegistrationTransactionHash]
+    [publicClient, readRegistrationState, recoverRegistrationTransactionHash]
   )
 
   const performApproval = useCallback(async ({ showToast = true }: { showToast?: boolean } = {}) => {
@@ -419,31 +567,55 @@ export function useAnsRegistration({
     setErrorMessage(null)
 
     try {
-      const result = await executeTransaction({
-        abi: ERC20_ABI,
-        args: [lookup.namespaceSnapshot.controller, lookup.rentPrice],
-        chainId: arcTestnet.id,
-        contractAddress: contracts.usdc,
-        functionName: "approve",
-        refId: `ANS-APPROVE-${lookup.target.domain}-${Date.now()}`,
+      await executeAnsStepOnce({
+        pendingSubmission: approvalSubmissionRef,
+        checkCompleted: async () => {
+          try {
+            return (await readCurrentAllowance()) >= lookup.rentPrice ? true : null
+          } catch (error) {
+            throw toAnsRegistrationError(error, "approval_preflight")
+          }
+        },
+        submit: async () => {
+          try {
+            const result = await executeTransaction({
+              abi: ERC20_ABI,
+              args: [lookup.namespaceSnapshot.controller, lookup.rentPrice],
+              chainId: arcTestnet.id,
+              contractAddress: contracts.usdc,
+              functionName: "approve",
+              idempotencyKey: getIdempotencyKey("approve"),
+              refId: `ANS-APPROVE-${lookup.target.domain}`,
+            })
+            const nextApprovalHash = result.txHash ?? result.hash
+            setApprovalHash(nextApprovalHash)
+            setSubmissionHash(nextApprovalHash)
+            return result
+          } catch (error) {
+            throw toAnsRegistrationError(error, "approval")
+          }
+        },
+        confirm: async (result) => {
+          const nextApprovalHash = result.txHash ?? result.hash
+          const resolvedApprovalHash = await waitForAllowanceUpdate(
+            result.txHash,
+            lookup.rentPrice,
+            {
+              ownerAddress: walletAddress,
+              spenderAddress: lookup.namespaceSnapshot.controller,
+              startBlock: result.startBlock,
+            }
+          )
+
+          if (resolvedApprovalHash && resolvedApprovalHash !== nextApprovalHash) {
+            setApprovalHash(resolvedApprovalHash)
+            setSubmissionHash(resolvedApprovalHash)
+          }
+
+          return true
+        },
       })
-
-      const nextApprovalHash = result.txHash ?? result.hash
-
-      setApprovalHash(nextApprovalHash)
-      setSubmissionHash(nextApprovalHash)
-      const resolvedApprovalHash = await waitForAllowanceUpdate(result.txHash, lookup.rentPrice, {
-        ownerAddress: walletAddress,
-        spenderAddress: lookup.namespaceSnapshot.controller,
-        startBlock: result.startBlock,
-      })
-
-      if (resolvedApprovalHash && resolvedApprovalHash !== nextApprovalHash) {
-        setApprovalHash(resolvedApprovalHash)
-        setSubmissionHash(resolvedApprovalHash)
-      }
-
-      await refetchTokenState()
+      void refetchTokenState().catch(() => undefined)
       setStep("idle")
 
       if (showToast) {
@@ -453,16 +625,16 @@ export function useAnsRegistration({
         })
       }
     } catch (error) {
-      const message = getReadableErrorMessage(error)
-      setStep("error")
-      setErrorMessage(message)
-      throw new Error(message)
+      throw handleRegistrationError(error, "approval_confirmation")
     }
   }, [
     contracts.usdc,
     executeTransaction,
+    getIdempotencyKey,
+    handleRegistrationError,
     lookup,
     publicClient,
+    readCurrentAllowance,
     refetchTokenState,
     toast,
     waitForAllowanceUpdate,
@@ -470,7 +642,9 @@ export function useAnsRegistration({
   ])
 
   const approve = useCallback(async () => {
-    await performApproval({ showToast: true })
+    await executeAnsFlowOnce(approvalInFlightRef, () =>
+      performApproval({ showToast: true })
+    )
   }, [performApproval])
 
   const performRegistration = useCallback(async () => {
@@ -482,10 +656,6 @@ export function useAnsRegistration({
       throw new Error("Connect the active wallet before registering.")
     }
 
-    if (!lookup.available) {
-      throw new Error("This name is no longer available.")
-    }
-
     if (insufficientBalance) {
       throw new Error("The active wallet does not have enough USDC for this registration.")
     }
@@ -495,38 +665,75 @@ export function useAnsRegistration({
 
     try {
       const resolverAddress = lookup.namespaceSnapshot.defaultResolver || contracts.resolver
-      const result = await executeTransaction({
-        abi: ANS_NAMESPACE_CONTROLLER_ABI,
-        args: [
-          lookup.target.label,
-          walletAddress,
-          lookup.durationSeconds,
-          resolverAddress,
-          walletAddress,
-          [],
-          [],
-        ],
-        chainId: arcTestnet.id,
-        contractAddress: lookup.namespaceSnapshot.controller,
-        functionName: "register",
-        refId: `ANS-REGISTER-${lookup.target.domain}-${Date.now()}`,
+      let submittedReference = registrationSubmissionRef.current?.hash ?? null
+      const nextConfirmation = await executeAnsStepOnce({
+        pendingSubmission: registrationSubmissionRef,
+        checkCompleted: async () => {
+          let state
+          try {
+            state = await readRegistrationState()
+          } catch (error) {
+            throw toAnsRegistrationError(error, "registration_preflight")
+          }
+          const isCurrentOwner =
+            state.owner?.toLowerCase() === walletAddress.toLowerCase() &&
+            state.expiresAt > BigInt(Math.floor(Date.now() / 1000))
+
+          if (isCurrentOwner) {
+            return {
+              ownerAddress: state.owner!,
+              expiresAt: state.expiresAt,
+              txHash: registrationSubmissionRef.current?.txHash ?? null,
+            }
+          }
+
+          if (!state.available) {
+            throw new Error("This ANS name is no longer available.")
+          }
+
+          return null
+        },
+        submit: async () => {
+          try {
+            const result = await executeTransaction({
+              abi: ANS_NAMESPACE_CONTROLLER_ABI,
+              args: [
+                lookup.target.label,
+                walletAddress,
+                lookup.durationSeconds,
+                resolverAddress,
+                walletAddress,
+                [],
+                [],
+              ],
+              chainId: arcTestnet.id,
+              contractAddress: lookup.namespaceSnapshot.controller,
+              functionName: "register",
+              idempotencyKey: getIdempotencyKey("register"),
+              refId: `ANS-REGISTER-${lookup.target.domain}`,
+            })
+            const nextRegistrationHash = result.txHash ?? result.hash
+            submittedReference = nextRegistrationHash
+            setRegistrationHash(nextRegistrationHash)
+            setSubmissionHash(nextRegistrationHash)
+            return result
+          } catch (error) {
+            throw toAnsRegistrationError(error, "registration")
+          }
+        },
+        confirm: (result) =>
+          waitForOwnershipUpdate(
+            result.txHash,
+            lookup,
+            walletAddress,
+            result.startBlock
+          ),
       })
 
-      const nextRegistrationHash = result.txHash ?? result.hash
+      const resolvedRegistrationHash =
+        nextConfirmation.txHash ?? submittedReference
 
-      setRegistrationHash(nextRegistrationHash)
-      setSubmissionHash(nextRegistrationHash)
-
-      const nextConfirmation = await waitForOwnershipUpdate(
-        result.txHash,
-        lookup,
-        walletAddress,
-        result.startBlock
-      )
-
-      const resolvedRegistrationHash = nextConfirmation.txHash ?? nextRegistrationHash
-
-      if (resolvedRegistrationHash !== nextRegistrationHash) {
+      if (resolvedRegistrationHash) {
         setRegistrationHash(resolvedRegistrationHash)
         setSubmissionHash(resolvedRegistrationHash)
       }
@@ -542,7 +749,7 @@ export function useAnsRegistration({
       })
 
       setConfirmation(nextConfirmation)
-      await refetchTokenState()
+      void refetchTokenState().catch(() => undefined)
       setStep("success")
 
       toast({
@@ -554,37 +761,41 @@ export function useAnsRegistration({
 
       return nextConfirmation
     } catch (error) {
-      const message = getReadableErrorMessage(error)
-      setStep("error")
-      setErrorMessage(message)
-      throw new Error(message)
+      throw handleRegistrationError(error, "registration_confirmation")
     }
   }, [
     contracts.resolver,
     executeTransaction,
+    getIdempotencyKey,
+    handleRegistrationError,
     insufficientBalance,
     lookup,
     onRegistered,
     refetchTokenState,
+    readRegistrationState,
     toast,
     waitForOwnershipUpdate,
     walletAddress,
   ])
 
-  const register = useCallback(async () => {
-    if (needsApproval) {
-      throw new Error("Approve USDC first, then submit the registration.")
-    }
+  const register = useCallback(() => {
+    return executeAnsFlowOnce(submitInFlightRef, async () => {
+      if (needsApproval) {
+        throw new Error("Approve USDC first, then submit the registration.")
+      }
 
-    return performRegistration()
+      return performRegistration()
+    })
   }, [needsApproval, performRegistration])
 
-  const submit = useCallback(async () => {
-    if (needsApproval) {
-      await performApproval({ showToast: false })
-    }
+  const submit = useCallback(() => {
+    return executeAnsFlowOnce(submitInFlightRef, async () => {
+      if (needsApproval) {
+        await performApproval({ showToast: false })
+      }
 
-    return performRegistration()
+      return performRegistration()
+    })
   }, [needsApproval, performApproval, performRegistration])
 
   return {

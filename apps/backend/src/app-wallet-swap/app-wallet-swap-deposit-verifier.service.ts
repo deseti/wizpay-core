@@ -15,9 +15,9 @@ import {
   AppWalletSwapDepositVerificationRequest,
   AppWalletSwapDepositVerificationResult,
 } from './app-wallet-swap.types';
+import { resolveArcTestnetRpcUrl } from '../config/arc-rpc';
 
 const ARC_TESTNET_CHAIN_ID = 5_042_002;
-const DEFAULT_ARC_TESTNET_RPC_URL = 'https://rpc.testnet.arc.network';
 const TRANSFER_EVENT = parseAbiItem(
   'event Transfer(address indexed from, address indexed to, uint256 value)',
 );
@@ -42,13 +42,13 @@ const TOKEN_ADDRESS_BY_SYMBOL = {
 } as const;
 
 function readArcRpcUrl() {
-  const configured =
-    process.env.ARC_TESTNET_RPC_URL ??
-    process.env.NEXT_PUBLIC_ARC_TESTNET_RPC_URL ??
-    process.env.ARC_TESTNET_RPC_URLS?.split(/[\s,]+/)[0] ??
-    process.env.NEXT_PUBLIC_ARC_TESTNET_RPC_URLS?.split(/[\s,]+/)[0];
-
-  return configured?.trim() || DEFAULT_ARC_TESTNET_RPC_URL;
+  return resolveArcTestnetRpcUrl([
+    { name: 'ARC_TESTNET_RPC_URL', value: process.env.ARC_TESTNET_RPC_URL },
+    {
+      name: 'NEXT_PUBLIC_ARC_TESTNET_RPC_URL',
+      value: process.env.NEXT_PUBLIC_ARC_TESTNET_RPC_URL,
+    },
+  ]);
 }
 
 @Injectable()
