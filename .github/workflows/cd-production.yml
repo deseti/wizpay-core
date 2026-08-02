@@ -36,12 +36,14 @@ jobs:
             -o StrictHostKeyChecking=yes \
             "${{ secrets.WIZPAY_VM_USER }}@${{ secrets.WIZPAY_VM_HOST }}" \
             'set -euo pipefail
-             cd /home/sultonyana4/wizpay-core
-             git fetch origin main
-             git reset --hard origin/main
+             cd /home/ubuntu/wizpay
              test -z "$(git status --short)"
-             docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build --force-recreate backend frontend nginx
-             test "$(docker inspect -f '{{.State.Health.Status}}' wizpay-core-backend-1)" = "healthy"
-             test "$(docker inspect -f '{{.State.Health.Status}}' wizpay-core-frontend-1)" = "healthy"
+             git fetch origin main
+             git merge --ff-only origin/main
+             docker compose build backend frontend
+             docker compose up -d backend frontend
+             test "$(docker inspect -f "{{.State.Health.Status}}" wizpay-backend-1)" = "healthy"
+             test "$(docker inspect -f "{{.State.Health.Status}}" wizpay-frontend-1)" = "healthy"
              curl -fsS http://127.0.0.1:3000 >/dev/null
-             docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"'
+             curl -fsS http://127.0.0.1:4000/health >/dev/null
+             docker compose ps'
