@@ -27,7 +27,6 @@ async function renderOperation(
   fireEvent.change(screen.getByPlaceholderText("0.0"), {
     target: { value: "1" },
   });
-  await userEvent.click(screen.getByRole("button", { name: "Preview quote" }));
   await waitFor(() =>
     expect(swapScreenMocks.appWallet.quote).toHaveBeenCalled(),
   );
@@ -176,9 +175,7 @@ describe("SwapScreen refund and recovery", () => {
       provider: "swapkit",
     });
 
-    const provider = screen.getAllByRole("combobox")[2];
-    expect(provider).toBeDisabled();
-    expect(provider).toHaveTextContent("SwapKit");
+    expect(screen.getAllByText("SwapKit").length).toBeGreaterThan(0);
   });
 
   it("treats refunded as terminal", async () => {
@@ -193,7 +190,7 @@ describe("SwapScreen refund and recovery", () => {
     expect(
       screen.queryByRole("button", { name: "Retry status check" }),
     ).toBeNull();
-    expect(screen.getAllByRole("combobox")[2]).toBeDisabled();
+    expect(screen.getAllByText("Auto-selected").length).toBeGreaterThan(0);
   });
 
   it("surfaces backend refund rejection through existing error and toast behavior", async () => {

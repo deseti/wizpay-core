@@ -5,6 +5,19 @@ export type AppWalletSwapChain = typeof APP_WALLET_SWAP_CHAIN;
 export type AppWalletSwapMode = typeof APP_WALLET_SWAP_MODE;
 export type AppWalletSwapToken = 'USDC' | 'EURC';
 export type AppWalletSwapProvider = 'swapkit' | 'stablefx';
+export const APP_WALLET_SWAP_ROUTING_THRESHOLD_BASE_UNITS = 10_000_000n;
+
+export function resolveAppWalletSwapProvider(
+  amountInBaseUnits: string,
+): AppWalletSwapProvider {
+  if (!/^\d+$/.test(amountInBaseUnits)) {
+    throw new Error('App Wallet amount must be an integer base-unit string.');
+  }
+
+  return BigInt(amountInBaseUnits) < APP_WALLET_SWAP_ROUTING_THRESHOLD_BASE_UNITS
+    ? 'swapkit'
+    : 'stablefx';
+}
 
 export type AppWalletSwapOperationStatus =
   | 'quoted'

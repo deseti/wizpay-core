@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { type Address, type Hex, isAddress } from "viem";
 import {
   ArrowRightLeft,
@@ -43,6 +43,8 @@ import {
   executePreparedArcUserSwap,
 } from "@/lib/circle-swap-kit";
 import {
+  APP_WALLET_SWAP_CHAIN,
+  quoteAppWalletSwap,
   type AppWalletSwapProvider,
   type AppWalletSwapQuoteResponse,
 } from "@/lib/app-wallet-swap-service";
@@ -66,6 +68,8 @@ import {
   getUserSwapExpectedOutputDisplay,
   getUserSwapExpectedOutputValue,
   getUserSwapMinimumOutputDisplay,
+  getUserSwapMinimumOutputValue,
+  parseUserSwapQuoteAmount,
 } from "@/lib/user-swap-quote-parser";
 import {
   EXPLORER_BASE_URL,
@@ -79,7 +83,10 @@ import {
 } from "@/lib/wizpay";
 import { arcTestnet } from "@/lib/wagmi";
 import { AppWalletSwapProgress } from "./swap/AppWalletSwapProgress";
-import { getAppWalletQuoteProvider } from "./swap/app-wallet-swap-view-model";
+import {
+  getAppWalletQuoteErrorMessage,
+  getAppWalletQuoteProvider,
+} from "./swap/app-wallet-swap-view-model";
 import {
   useAppWalletSwapOperation,
   type SwapRequestStatus,
@@ -144,7 +151,6 @@ function shortenHash(hash: string | undefined) {
   return `${hash.slice(0, 10)}...${hash.slice(-8)}`;
 }
 
-
 function getPreparedAmountOut(
   prepared: UserSwapPrepareResponse,
   tokenOut: TokenSymbol,
@@ -192,6 +198,59 @@ function addressesMatch(first: string | undefined, second: string | undefined) {
   return Boolean(
     first && second && first.toLowerCase() === second.toLowerCase(),
   );
+}
+
+const APP_WALLET_QUOTE_DEBOUNCE_MS = 500;
+const APP_WALLET_ROUTING_THRESHOLD_BASE_UNITS = 10_000_000n;
+
+function resolveAutomaticAppWalletProvider(
+  amountInBaseUnits: string,
+): AppWalletSwapProvider | undefined {
+  if (!/^\d+$/.test(amountInBaseUnits) || BigInt(amountInBaseUnits) <= 0n) {
+    return undefined;
+  }
+
+  return BigInt(amountInBaseUnits) < APP_WALLET_ROUTING_THRESHOLD_BASE_UNITS
+    ? "swapkit"
+    : "stablefx";
+}
+
+function buildAppWalletQuoteRequestKey(input: {
+  amountIn: string;
+  fromAddress: string;
+  provider: AppWalletSwapProvider | undefined;
+  tokenIn: TokenSymbol;
+  tokenOut: TokenSymbol;
+}) {
+  return [
+    input.fromAddress.toLowerCase(),
+    input.tokenIn,
+    input.tokenOut,
+    input.amountIn,
+    input.provider ?? "backend-default",
+    APP_WALLET_SWAP_CHAIN,
+  ].join("|");
+}
+
+function isQuoteExpired(expiresAt: string | undefined) {
+  if (!expiresAt?.trim()) {
+    return false;
+  }
+
+  const timestamp = Date.parse(expiresAt);
+  return !Number.isFinite(timestamp) || timestamp <= Date.now();
+}
+
+function hasPositiveQuoteAmount(value: unknown, token: TokenSymbol) {
+  const parsed = parseUserSwapQuoteAmount(value, token);
+  return parsed !== null && parsed.units > 0n;
+}
+
+function logAppWalletQuoteEvent(
+  event: string,
+  details: Record<string, string | number>,
+) {
+  console.info(`[app-wallet-quote] ${event}`, details);
 }
 
 function looksLikeAddress(value: unknown): value is string {
@@ -631,8 +690,7 @@ export function SwapScreen() {
     AppWalletSwapProvider | undefined
   >(undefined);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [requestStatus, setRequestStatus] =
-    useState<SwapRequestStatus>("idle");
+  const [requestStatus, setRequestStatus] = useState<SwapRequestStatus>("idle");
   const [quote, setQuote] = useState<SwapQuoteState | null>(null);
   const [quoteWalletMode, setQuoteWalletMode] = useState<
     "circle" | "external" | null
@@ -640,6 +698,13 @@ export function SwapScreen() {
   const [successState, setSuccessState] = useState<SwapSuccessState | null>(
     null,
   );
+  const [quoteRetryNonce, setQuoteRetryNonce] = useState(0);
+  const quoteRequestKeyRef = useRef<string | null>(null);
+  const quoteSuccessfulKeyRef = useRef<string | null>(null);
+  const quoteInFlightKeyRef = useRef<string | null>(null);
+  const quoteSequenceRef = useRef(0);
+  const quoteAbortControllerRef = useRef<AbortController | null>(null);
+  const quoteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const tokenInConfig = SUPPORTED_TOKENS[tokenIn];
   const amountInUnits = useMemo(
@@ -680,6 +745,23 @@ export function SwapScreen() {
             : null;
   const formInvalid =
     !walletAddress || tokenIn === tokenOut || amountInUnits <= 0n;
+  const automaticAppWalletProvider =
+    isCircleWalletMode && !formInvalid
+      ? resolveAutomaticAppWalletProvider(amountInBaseUnits)
+      : undefined;
+  const resolvedAppWalletProvider = isCircleWalletMode
+    ? automaticAppWalletProvider
+    : appWalletSwapProvider;
+  const appWalletQuoteRequestKey =
+    isCircleWalletMode && walletAddress && !formInvalid
+      ? buildAppWalletQuoteRequestKey({
+          amountIn: amountInBaseUnits,
+          fromAddress: walletAddress,
+          provider: automaticAppWalletProvider,
+          tokenIn,
+          tokenOut,
+        })
+      : null;
   const rawQuoteProvider = getQuoteProvider(quote);
   const quoteMatchesForm =
     quote !== null &&
@@ -689,12 +771,22 @@ export function SwapScreen() {
     quote.amountIn === amountInBaseUnits &&
     (!isExternalWalletMode || rawQuoteProvider === externalSwapProvider) &&
     (!isCircleWalletMode ||
-      !appWalletSwapProvider ||
-      rawQuoteProvider === appWalletSwapProvider) &&
+      !automaticAppWalletProvider ||
+      rawQuoteProvider === automaticAppWalletProvider) &&
     (!("fromAddress" in quote) ||
       quote.fromAddress.toLowerCase() === walletAddress?.toLowerCase());
+  const appWalletQuoteIsValid =
+    isCircleWalletMode &&
+    quoteMatchesForm &&
+    appWalletQuoteRequestKey !== null &&
+    quoteRequestKeyRef.current === appWalletQuoteRequestKey &&
+    quote?.sourceChain === APP_WALLET_SWAP_CHAIN &&
+    !isQuoteExpired(quote.expiresAt) &&
+    hasPositiveQuoteAmount(getUserSwapExpectedOutputValue(quote), tokenOut) &&
+    (rawQuoteProvider !== "swapkit" ||
+      hasPositiveQuoteAmount(getUserSwapMinimumOutputValue(quote), tokenOut));
   const appWalletLifecycle = useAppWalletSwapOperation({
-    appWalletSwapProvider,
+    appWalletSwapProvider: resolvedAppWalletProvider,
     formInvalid,
     getRequestBase,
     isCircleWalletMode,
@@ -703,6 +795,7 @@ export function SwapScreen() {
       quoteWalletMode === "circle" && quote && "operationMode" in quote
         ? quote
         : null,
+    quoteIsValid: appWalletQuoteIsValid,
     quoteMatchesForm,
     setAppWalletSwapProvider,
     setErrorMessage,
@@ -715,8 +808,8 @@ export function SwapScreen() {
   const quoteProvider = quoteMatchesForm ? rawQuoteProvider : undefined;
   const displayedAppWalletProvider = appWalletOperation
     ? appWalletOperation.provider
-    : appWalletSwapProvider ??
-      (quoteMatchesForm ? getAppWalletQuoteProvider(quote) : undefined);
+    : (resolvedAppWalletProvider ??
+      (quoteMatchesForm ? getAppWalletQuoteProvider(quote) : undefined));
   const isStablefxQuote = quoteProvider === "stablefx";
   const isXylonetSelected =
     isExternalWalletMode && externalSwapProvider === "xylonet";
@@ -734,12 +827,19 @@ export function SwapScreen() {
     tokenOut,
     walletMode,
   });
-  const expectedOutput = quoteMatchesForm
+  const quoteIsDisplayable = isCircleWalletMode
+    ? appWalletQuoteIsValid
+    : quoteMatchesForm;
+  const expectedOutput = quoteIsDisplayable
     ? getUserSwapExpectedOutputDisplay(quote, tokenOut)
     : null;
-  const minimumOutput = quoteMatchesForm
+  const minimumOutput = quoteIsDisplayable
     ? getUserSwapMinimumOutputDisplay(quote, tokenOut)
     : null;
+  const quoteExpiry =
+    quoteIsDisplayable && quote?.expiresAt
+      ? new Date(quote.expiresAt).toLocaleTimeString()
+      : null;
   const busy = requestStatus !== "idle" || isGuarded;
   const quoteDisabled =
     busy ||
@@ -748,13 +848,223 @@ export function SwapScreen() {
     Boolean(modeBlockMessage);
   const swapDisabled =
     quoteDisabled ||
-    (isCircleWalletMode && !quoteMatchesForm && requestStatus !== "idle") ||
+    (isCircleWalletMode && !appWalletQuoteIsValid) ||
     (isStablefxQuote && !stablefxCapability.enabled);
+
+  useEffect(() => {
+    if (!isCircleWalletMode || !appWalletQuoteRequestKey) return;
+
+    if (
+      quote &&
+      (quoteRequestKeyRef.current !== appWalletQuoteRequestKey ||
+        !quoteMatchesForm)
+    ) {
+      quoteRequestKeyRef.current = null;
+      quoteSuccessfulKeyRef.current = null;
+      setQuote(null);
+      setQuoteWalletMode(null);
+      logAppWalletQuoteEvent("invalidated", {
+        amountIn: amountInBaseUnits,
+        provider: automaticAppWalletProvider ?? "none",
+        reason: "form_changed",
+        sequence: quoteSequenceRef.current,
+        tokenPair: `${tokenIn}->${tokenOut}`,
+      });
+    }
+  }, [
+    amountInBaseUnits,
+    appWalletQuoteRequestKey,
+    automaticAppWalletProvider,
+    isCircleWalletMode,
+    quote,
+    quoteMatchesForm,
+    setQuote,
+    setQuoteWalletMode,
+    tokenIn,
+    tokenOut,
+  ]);
+
+  useEffect(() => {
+    if (!isCircleWalletMode || !appWalletQuoteRequestKey || modeBlockMessage) {
+      return;
+    }
+
+    if (
+      quoteSuccessfulKeyRef.current === appWalletQuoteRequestKey ||
+      quoteInFlightKeyRef.current === appWalletQuoteRequestKey
+    ) {
+      return;
+    }
+
+    if (quoteTimerRef.current) clearTimeout(quoteTimerRef.current);
+
+    logAppWalletQuoteEvent("scheduled", {
+      amountIn: amountInBaseUnits,
+      debounceMs: APP_WALLET_QUOTE_DEBOUNCE_MS,
+      provider: automaticAppWalletProvider ?? "none",
+      sequence: quoteSequenceRef.current + 1,
+      tokenPair: `${tokenIn}->${tokenOut}`,
+    });
+
+    let cancelled = false;
+    quoteTimerRef.current = setTimeout(async () => {
+      if (cancelled) return;
+
+      quoteAbortControllerRef.current?.abort();
+      const controller = new AbortController();
+      quoteAbortControllerRef.current = controller;
+      const sequence = ++quoteSequenceRef.current;
+      quoteInFlightKeyRef.current = appWalletQuoteRequestKey;
+      setRequestStatus("quoting");
+      setErrorMessage(null);
+      logAppWalletQuoteEvent("request_started", {
+        amountIn: amountInBaseUnits,
+        provider: automaticAppWalletProvider ?? "none",
+        sequence,
+        tokenPair: `${tokenIn}->${tokenOut}`,
+      });
+
+      try {
+        const nextQuote = await quoteAppWalletSwap(
+          {
+            amountIn: amountInBaseUnits,
+            chain: APP_WALLET_SWAP_CHAIN,
+            fromAddress: walletAddress!,
+            tokenIn,
+            tokenOut,
+            ...(automaticAppWalletProvider
+              ? { provider: automaticAppWalletProvider }
+              : {}),
+          },
+          { signal: controller.signal },
+        );
+
+        if (
+          cancelled ||
+          controller.signal.aborted ||
+          sequence !== quoteSequenceRef.current
+        ) {
+          logAppWalletQuoteEvent("stale_response_ignored", {
+            amountIn: amountInBaseUnits,
+            sequence,
+            tokenPair: `${tokenIn}->${tokenOut}`,
+          });
+          return;
+        }
+
+        setQuote(nextQuote);
+        setQuoteWalletMode("circle");
+        quoteRequestKeyRef.current = appWalletQuoteRequestKey;
+        quoteSuccessfulKeyRef.current = appWalletQuoteRequestKey;
+        const resolvedProvider = getAppWalletQuoteProvider(nextQuote);
+        if (resolvedProvider) {
+          const resolvedRequestKey = buildAppWalletQuoteRequestKey({
+            amountIn: amountInBaseUnits,
+            fromAddress: walletAddress!,
+            provider: resolvedProvider,
+            tokenIn,
+            tokenOut,
+          });
+          quoteRequestKeyRef.current = resolvedRequestKey;
+          quoteSuccessfulKeyRef.current = resolvedRequestKey;
+          if (resolvedProvider !== automaticAppWalletProvider) {
+            setQuote(null);
+            setQuoteWalletMode(null);
+            setErrorMessage(
+              "The backend returned a provider that does not match automatic App Wallet routing.",
+            );
+            return;
+          }
+          setAppWalletSwapProvider(resolvedProvider);
+        }
+        logAppWalletQuoteEvent("request_succeeded", {
+          amountIn: amountInBaseUnits,
+          expiresAt: nextQuote.expiresAt,
+          provider: resolvedProvider ?? "unknown",
+          sequence,
+          tokenPair: `${tokenIn}->${tokenOut}`,
+        });
+      } catch (error) {
+        if (
+          cancelled ||
+          controller.signal.aborted ||
+          sequence !== quoteSequenceRef.current
+        ) {
+          logAppWalletQuoteEvent("request_cancelled", {
+            amountIn: amountInBaseUnits,
+            sequence,
+            tokenPair: `${tokenIn}->${tokenOut}`,
+          });
+          return;
+        }
+
+        const message = getAppWalletQuoteErrorMessage(error, {
+          tokenIn,
+          tokenOut,
+        });
+        quoteRequestKeyRef.current = null;
+        quoteSuccessfulKeyRef.current = null;
+        setQuote(null);
+        setQuoteWalletMode(null);
+        setErrorMessage(message);
+        logAppWalletQuoteEvent("request_failed", {
+          amountIn: amountInBaseUnits,
+          provider: automaticAppWalletProvider ?? "none",
+          sequence,
+          tokenPair: `${tokenIn}->${tokenOut}`,
+        });
+      } finally {
+        if (sequence === quoteSequenceRef.current) {
+          quoteInFlightKeyRef.current = null;
+          quoteAbortControllerRef.current = null;
+          setRequestStatus("idle");
+        }
+      }
+    }, APP_WALLET_QUOTE_DEBOUNCE_MS);
+
+    return () => {
+      cancelled = true;
+      if (quoteTimerRef.current) {
+        clearTimeout(quoteTimerRef.current);
+        quoteTimerRef.current = null;
+      }
+      if (quoteInFlightKeyRef.current === appWalletQuoteRequestKey) {
+        quoteSequenceRef.current += 1;
+        quoteAbortControllerRef.current?.abort();
+        quoteAbortControllerRef.current = null;
+        quoteInFlightKeyRef.current = null;
+      }
+    };
+  }, [
+    amountInBaseUnits,
+    appWalletQuoteRequestKey,
+    automaticAppWalletProvider,
+    isCircleWalletMode,
+    modeBlockMessage,
+    quoteRetryNonce,
+    setAppWalletSwapProvider,
+    setErrorMessage,
+    setQuote,
+    setQuoteWalletMode,
+    setRequestStatus,
+    tokenIn,
+    tokenOut,
+    walletAddress,
+  ]);
 
   function resetSwapFeedback() {
     setErrorMessage(null);
     setSuccessState(null);
     appWalletLifecycle.reset();
+    quoteAbortControllerRef.current?.abort();
+    quoteAbortControllerRef.current = null;
+    quoteInFlightKeyRef.current = null;
+    quoteRequestKeyRef.current = null;
+    quoteSuccessfulKeyRef.current = null;
+    if (quoteTimerRef.current) {
+      clearTimeout(quoteTimerRef.current);
+      quoteTimerRef.current = null;
+    }
     setQuote(null);
     setQuoteWalletMode(null);
   }
@@ -1398,10 +1708,21 @@ export function SwapScreen() {
       return;
     }
 
+    if (isCircleWalletMode && !appWalletQuoteIsValid) {
+      setErrorMessage(
+        "Wait for a current, valid App Wallet quote before confirming the swap.",
+      );
+      return;
+    }
+
     setErrorMessage(null);
 
     try {
-      const activeQuote = quoteMatchesForm ? quote : await requestQuote();
+      const activeQuote = isCircleWalletMode
+        ? quote
+        : quoteMatchesForm
+          ? quote
+          : await requestQuote();
 
       if (!activeQuote) {
         return;
@@ -1492,7 +1813,19 @@ export function SwapScreen() {
       });
     } catch (error) {
       const message = getFriendlyErrorMessage(error);
-      setErrorMessage(message);
+      if (isCircleWalletMode) {
+        quoteRequestKeyRef.current = null;
+        quoteSuccessfulKeyRef.current = null;
+        setQuote(null);
+        setQuoteWalletMode(null);
+        setErrorMessage(
+          message === "Internal server error"
+            ? "App Wallet operation could not be created. The quote was invalidated; retry after local provider configuration is repaired."
+            : message,
+        );
+      } else {
+        setErrorMessage(message);
+      }
       toast({
         title: "Swap failed",
         description: message,
@@ -1663,26 +1996,18 @@ export function SwapScreen() {
                       App Wallet only
                     </div>
                   </div>
-                  <Select
-                    value={displayedAppWalletProvider}
-                    disabled={busy || Boolean(appWalletOperation)}
-                    onValueChange={(value) => {
-                      if (appWalletOperation) {
-                        return;
-                      }
-
-                      resetSwapFeedback();
-                      setAppWalletSwapProvider(value as AppWalletSwapProvider);
-                    }}
-                  >
-                    <SelectTrigger className="h-10 w-[180px] rounded-xl border-border/40 bg-background/50">
-                      <SelectValue placeholder="Backend default" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="stablefx">StableFX</SelectItem>
-                      <SelectItem value="swapkit">SwapKit</SelectItem>
-                    </SelectContent>
-                  </Select>
+                  <div className="text-right">
+                    <div className="font-mono text-sm text-foreground">
+                      {displayedAppWalletProvider
+                        ? APP_WALLET_SWAP_PROVIDER_LABELS[
+                            displayedAppWalletProvider
+                          ]
+                        : "—"}
+                    </div>
+                    <div className="text-xs text-muted-foreground/60">
+                      Auto-selected
+                    </div>
+                  </div>
                 </div>
               </div>
             ) : null}
@@ -1712,6 +2037,14 @@ export function SwapScreen() {
                   {minimumOutput ?? "-"}
                 </span>
               </div>
+              {quoteExpiry ? (
+                <div className="flex justify-between gap-3 text-muted-foreground/70">
+                  <span>Quote expiry</span>
+                  <span className="font-mono text-foreground">
+                    {quoteExpiry}
+                  </span>
+                </div>
+              ) : null}
               <div className="flex justify-between gap-3 text-muted-foreground/70">
                 <span>Slippage</span>
                 <span className="font-mono text-foreground">2%</span>
@@ -1770,6 +2103,19 @@ export function SwapScreen() {
                 >
                   Dismiss
                 </Button>
+                {isCircleWalletMode && !formInvalid ? (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => {
+                      setErrorMessage(null);
+                      setQuoteRetryNonce((value) => value + 1);
+                    }}
+                    className="shrink-0 text-destructive hover:text-destructive/80"
+                  >
+                    Retry quote
+                  </Button>
+                ) : null}
               </div>
             )}
 
@@ -1782,21 +2128,31 @@ export function SwapScreen() {
               )}
 
             <div className="grid gap-3 sm:grid-cols-2">
-              <Button
-                variant="outline"
-                onClick={() => void requestQuote()}
-                disabled={quoteDisabled}
-                className="h-12 text-base"
-              >
-                {requestStatus === "quoting" ? (
-                  <span className="flex items-center gap-2">
-                    <span className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
-                    Quoting...
-                  </span>
-                ) : (
-                  "Preview quote"
-                )}
-              </Button>
+              {isExternalWalletMode ? (
+                <Button
+                  variant="outline"
+                  onClick={() => void requestQuote()}
+                  disabled={quoteDisabled}
+                  className="h-12 text-base"
+                >
+                  {requestStatus === "quoting" ? (
+                    <span className="flex items-center gap-2">
+                      <span className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
+                      Quoting...
+                    </span>
+                  ) : (
+                    "Preview quote"
+                  )}
+                </Button>
+              ) : (
+                <div className="flex h-12 items-center justify-center rounded-md border border-border/40 bg-background/20 text-sm text-muted-foreground">
+                  {requestStatus === "quoting"
+                    ? "Getting quote..."
+                    : appWalletQuoteIsValid
+                      ? "Quote updated automatically"
+                      : "Enter a valid amount to get a quote"}
+                </div>
+              )}
               <Button
                 onClick={() => void guard(handleSwap)}
                 disabled={swapDisabled}
@@ -1862,9 +2218,7 @@ export function SwapScreen() {
         isCircleWalletMode={isCircleWalletMode}
         isGuarded={isGuarded}
         isOpen={appWalletLifecycle.isOperationOpen}
-        isRefundConfirmationOpen={
-          appWalletLifecycle.isRefundConfirmationOpen
-        }
+        isRefundConfirmationOpen={appWalletLifecycle.isRefundConfirmationOpen}
         onCopy={(value, label) => void copyToClipboard(value, label)}
         onExecute={() => void guard(appWalletLifecycle.executeSwap)}
         onOpenChange={appWalletLifecycle.setIsOperationOpen}
@@ -1873,9 +2227,7 @@ export function SwapScreen() {
           appWalletLifecycle.setIsRefundConfirmationOpen
         }
         onReset={resetSwapFeedback}
-        onSubmitDeposit={() =>
-          void guard(appWalletLifecycle.submitDeposit)
-        }
+        onSubmitDeposit={() => void guard(appWalletLifecycle.submitDeposit)}
         operation={appWalletOperation}
         requestStatus={requestStatus}
       />

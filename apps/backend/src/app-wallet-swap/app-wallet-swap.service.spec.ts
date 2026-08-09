@@ -18,6 +18,7 @@ import { AppWalletSwapTreasuryVerifierService } from './app-wallet-swap-treasury
 import {
   APP_WALLET_SWAP_CHAIN,
   APP_WALLET_SWAP_MODE,
+  resolveAppWalletSwapProvider,
 } from './app-wallet-swap.types';
 import {
   USER_SWAP_EURC_ADDRESS,
@@ -375,6 +376,22 @@ describe('AppWalletSwapService', () => {
     prisma = createPrismaMock(appWalletSwapOperationStore);
   });
 
+  it.each([
+    ['1', 'swapkit'],
+    ['5000000', 'swapkit'],
+    ['9999999', 'swapkit'],
+    ['10000000', 'stablefx'],
+    ['100000000', 'stablefx'],
+  ] as const)('routes exact base-unit amount %s to %s', (amount, provider) => {
+    expect(resolveAppWalletSwapProvider(amount)).toBe(provider);
+  });
+
+  it('rejects non-integer routing input instead of using floating point', () => {
+    expect(() => resolveAppWalletSwapProvider('9.999999')).toThrow(
+      'integer base-unit string',
+    );
+  });
+
   afterAll(() => {
     process.env = originalEnv;
   });
@@ -610,9 +627,11 @@ describe('AppWalletSwapService', () => {
     const result = await createService().quote(baseRequest);
 
     expect(userSwapService.quote).toHaveBeenCalledWith({
+      allowProviderFallback: false,
       amountIn: baseRequest.amountIn,
       chain: APP_WALLET_SWAP_CHAIN,
       fromAddress: TREASURY_ADDRESS,
+      provider: 'swapkit',
       toAddress: USER_ADDRESS,
       tokenIn: 'USDC',
       tokenOut: 'EURC',
@@ -631,11 +650,20 @@ describe('AppWalletSwapService', () => {
     });
   });
 
+  it('keeps quote requests side-effect free and does not create an operation', async () => {
+    const result = await createService().quote(baseRequest);
+
+    expect(result.status).toBe('quoted');
+    expect(prisma.appWalletSwapOperation.create).not.toHaveBeenCalled();
+    expect(prisma.appWalletSwapOperation.update).not.toHaveBeenCalled();
+    expect(prisma.appWalletSwapOperation.updateMany).not.toHaveBeenCalled();
+  });
+
   it('mirrors the quote request for the EURC to USDC direction', async () => {
     userSwapService.quote.mockResolvedValueOnce({
       tokenIn: 'EURC',
       tokenOut: 'USDC',
-      amountIn: '30000000',
+      amountIn: '1000000',
       fromAddress: TREASURY_ADDRESS,
       toAddress: USER_ADDRESS,
       chain: APP_WALLET_SWAP_CHAIN,
@@ -649,13 +677,13 @@ describe('AppWalletSwapService', () => {
       ...baseRequest,
       tokenIn: 'EURC',
       tokenOut: 'USDC',
-      amountIn: '30000000',
+      amountIn: '1000000',
       provider: 'swapkit',
     });
 
     expect(userSwapService.quote).toHaveBeenCalledWith({
       allowProviderFallback: false,
-      amountIn: '30000000',
+      amountIn: '1000000',
       chain: APP_WALLET_SWAP_CHAIN,
       fromAddress: TREASURY_ADDRESS,
       provider: 'swapkit',
@@ -667,7 +695,7 @@ describe('AppWalletSwapService', () => {
       provider: 'swapkit',
       tokenIn: 'EURC',
       tokenOut: 'USDC',
-      amountIn: '30000000',
+      amountIn: '1000000',
       expectedOutput: '34960000',
       minimumOutput: '34260000',
     });
@@ -696,7 +724,7 @@ describe('AppWalletSwapService', () => {
       await expect(
         createService().quote({
           ...baseRequest,
-          amountIn: '30000000',
+          amountIn: '5000000',
           provider: 'swapkit',
         }),
       ).rejects.toMatchObject({
@@ -707,7 +735,7 @@ describe('AppWalletSwapService', () => {
           direction: 'USDC->EURC',
           tokenIn: 'USDC',
           tokenOut: 'EURC',
-          amountIn: '30000000',
+          amountIn: '5000000',
           upstreamStatus: 404,
           upstreamCode: 331001,
           traceId: 'req-abc-123',
@@ -776,7 +804,7 @@ describe('AppWalletSwapService', () => {
       await expect(
         createService().createOperation({
           ...baseRequest,
-          amountIn: '30000000',
+          amountIn: '5000000',
           provider: 'swapkit',
         }),
       ).rejects.toMatchObject({
@@ -1001,6 +1029,51 @@ describe('AppWalletSwapService', () => {
       expect(record.executionProvider).toBe(provider);
     },
   );
+
+  it('re-requests the provider quote during operation creation instead of using the displayed quoteId', async () => {
+    userSwapService.quote
+      .mockResolvedValueOnce({
+        tokenIn: 'USDC',
+        tokenOut: 'EURC',
+        amountIn: baseRequest.amountIn,
+        fromAddress: TREASURY_ADDRESS,
+        toAddress: USER_ADDRESS,
+        chain: APP_WALLET_SWAP_CHAIN,
+        provider: 'swapkit',
+        quoteId: 'displayed-quote-1',
+        expectedOutput: '990000',
+        minimumOutput: '970000',
+        expiresAt: '2099-01-01T00:00:00.000Z',
+        raw: { quoteId: 'displayed-quote-1', provider: 'swapkit' },
+      })
+      .mockResolvedValueOnce({
+        tokenIn: 'USDC',
+        tokenOut: 'EURC',
+        amountIn: baseRequest.amountIn,
+        fromAddress: TREASURY_ADDRESS,
+        toAddress: USER_ADDRESS,
+        chain: APP_WALLET_SWAP_CHAIN,
+        provider: 'swapkit',
+        quoteId: 'operation-quote-2',
+        expectedOutput: '980000',
+        minimumOutput: '960000',
+        expiresAt: '2099-01-01T00:01:00.000Z',
+        raw: { quoteId: 'operation-quote-2', provider: 'swapkit' },
+      });
+
+    const service = createService();
+    const displayed = await service.quote(baseRequest);
+    const operation = await service.createOperation({
+      ...baseRequest,
+      provider: displayed.provider,
+      quoteId: String(displayed.quoteId),
+    });
+
+    expect(userSwapService.quote).toHaveBeenCalledTimes(2);
+    expect(operation.quoteId).toBe('operation-quote-2');
+    expect(operation.expectedOutput).toBe('980000');
+    expect(operation.minimumOutput).toBe('960000');
+  });
 
   it('persists the actual swapkit provider returned by the quote', async () => {
     process.env.WIZPAY_SWAP_PROVIDER = 'stablefx';
@@ -1679,6 +1752,7 @@ describe('AppWalletSwapService', () => {
       ...baseRequest,
       tokenIn: 'EURC',
       tokenOut: 'USDC',
+      provider: 'swapkit',
       amountIn: '1000000',
     });
     const submitted = await service.submitDeposit(operation.operationId, {
@@ -2687,6 +2761,7 @@ describe('AppWalletSwapService', () => {
       toAddress: TREASURY_ADDRESS,
       tokenIn: 'EURC',
       tokenOut: 'USDC',
+      provider: 'swapkit',
     });
     expect(treasuryVerifier.verifyTreasurySwap).toHaveBeenCalledWith({
       txHash:

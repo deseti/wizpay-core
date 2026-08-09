@@ -290,7 +290,7 @@ export function createAppWalletQuote(
   return {
     amountIn: "1000000",
     expectedOutput: "990000",
-    expiresAt: "2026-07-26T00:05:00.000Z",
+    expiresAt: "2099-01-01T00:05:00.000Z",
     minimumOutput: "970000",
     operationMode: "treasury-mediated",
     provider,
@@ -342,7 +342,9 @@ export function resetSwapScreenMocks() {
   swapScreenMocks.wallet.address = "0x1111111111111111111111111111111111111111";
   swapScreenMocks.wallet.mode = "circle";
 
-  swapScreenMocks.appWallet.quote.mockResolvedValue(createAppWalletQuote());
+  swapScreenMocks.appWallet.quote.mockResolvedValue(
+    createAppWalletQuote("swapkit"),
+  );
   swapScreenMocks.appWallet.createOperation.mockResolvedValue(
     createAppWalletOperation(),
   );

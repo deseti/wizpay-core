@@ -113,10 +113,12 @@ export interface AppWalletSwapDepositTxHashRequest {
 
 export async function quoteAppWalletSwap(
   params: AppWalletSwapQuoteRequest,
+  options: Pick<RequestInit, "signal"> = {},
 ): Promise<AppWalletSwapQuoteResponse> {
   return backendFetch<AppWalletSwapQuoteResponse>("/app-wallet-swap/quote", {
     method: "POST",
     body: JSON.stringify(params),
+    ...options,
   });
 }
 

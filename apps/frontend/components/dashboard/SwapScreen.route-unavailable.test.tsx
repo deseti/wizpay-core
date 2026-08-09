@@ -1,5 +1,4 @@
 import { fireEvent, screen, waitFor } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { BackendApiError } from "@/lib/backend-api";
@@ -18,14 +17,6 @@ function routeUnavailableError() {
   );
 }
 
-function getProviderSelect() {
-  return screen.getAllByRole("combobox")[2];
-}
-
-async function selectSwapKit() {
-  await userEvent.selectOptions(getProviderSelect(), "swapkit");
-}
-
 function enterAmount(value: string) {
   fireEvent.change(screen.getByPlaceholderText("0.0"), {
     target: { value },
@@ -33,7 +24,9 @@ function enterAmount(value: string) {
 }
 
 async function previewQuote() {
-  await userEvent.click(screen.getByRole("button", { name: "Preview quote" }));
+  await waitFor(() =>
+    expect(swapScreenMocks.appWallet.quote).toHaveBeenCalled(),
+  );
 }
 
 describe("SwapScreen App Wallet SwapKit route unavailability", () => {
@@ -44,8 +37,7 @@ describe("SwapScreen App Wallet SwapKit route unavailability", () => {
   it("shows the actionable SwapKit message instead of a generic failure", async () => {
     swapScreenMocks.appWallet.quote.mockRejectedValue(routeUnavailableError());
     renderSwapScreen();
-    await selectSwapKit();
-    enterAmount("30");
+    enterAmount("1");
 
     await previewQuote();
 
@@ -59,33 +51,32 @@ describe("SwapScreen App Wallet SwapKit route unavailability", () => {
   it("keeps SwapKit selected and does not switch to StableFX", async () => {
     swapScreenMocks.appWallet.quote.mockRejectedValue(routeUnavailableError());
     renderSwapScreen();
-    await selectSwapKit();
-    enterAmount("30");
+    enterAmount("1");
 
     await previewQuote();
     await waitFor(() =>
       expect(swapScreenMocks.appWallet.quote).toHaveBeenCalled(),
     );
 
-    expect(getProviderSelect()).toHaveValue("swapkit");
+    expect(screen.getAllByText("SwapKit").length).toBeGreaterThan(0);
     expect(swapScreenMocks.appWallet.createOperation).not.toHaveBeenCalled();
     // Only the one explicitly requested provider was ever quoted.
     expect(swapScreenMocks.appWallet.quote).toHaveBeenCalledTimes(1);
     expect(swapScreenMocks.appWallet.quote).toHaveBeenCalledWith(
       expect.objectContaining({ provider: "swapkit" }),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
   });
 
   it("keeps the entered amount and direction editable after the failure", async () => {
     swapScreenMocks.appWallet.quote.mockRejectedValue(routeUnavailableError());
     renderSwapScreen();
-    await selectSwapKit();
-    enterAmount("30");
+    enterAmount("1");
 
     await previewQuote();
     await screen.findByText(/Try a smaller amount or select StableFX\./);
 
-    expect(screen.getByPlaceholderText("0.0")).toHaveValue(30);
+    expect(screen.getByPlaceholderText("0.0")).toHaveValue(1);
     expect(screen.getAllByRole("combobox")[0]).toHaveValue("USDC");
     expect(screen.getAllByRole("combobox")[1]).toHaveValue("EURC");
   });
@@ -98,7 +89,6 @@ describe("SwapScreen App Wallet SwapKit route unavailability", () => {
       }),
     );
     renderSwapScreen();
-    await selectSwapKit();
     enterAmount("1");
     await previewQuote();
     expect(
@@ -109,7 +99,7 @@ describe("SwapScreen App Wallet SwapKit route unavailability", () => {
     ).toBeInTheDocument();
 
     swapScreenMocks.appWallet.quote.mockRejectedValue(routeUnavailableError());
-    enterAmount("30");
+    enterAmount("5");
     await previewQuote();
     await screen.findByText(/Try a smaller amount or select StableFX\./);
 
@@ -121,29 +111,28 @@ describe("SwapScreen App Wallet SwapKit route unavailability", () => {
     ).toBeNull();
   });
 
-  it("lets the user switch to StableFX manually and get a fresh quote", async () => {
+  it("routes a threshold amount to StableFX after a SwapKit failure", async () => {
     swapScreenMocks.appWallet.quote.mockRejectedValueOnce(
       routeUnavailableError(),
     );
     renderSwapScreen();
-    await selectSwapKit();
-    enterAmount("30");
+    enterAmount("1");
     await previewQuote();
     await screen.findByText(/Try a smaller amount or select StableFX\./);
 
     swapScreenMocks.appWallet.quote.mockResolvedValue(
       createAppWalletQuote("stablefx"),
     );
-    await userEvent.selectOptions(getProviderSelect(), "stablefx");
-    enterAmount("30");
+    enterAmount("10");
     await previewQuote();
 
     await waitFor(() =>
       expect(swapScreenMocks.appWallet.quote).toHaveBeenLastCalledWith(
         expect.objectContaining({ provider: "stablefx" }),
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
       ),
     );
-    expect(getProviderSelect()).toHaveValue("stablefx");
+    expect(screen.getAllByText("StableFX").length).toBeGreaterThan(0);
   });
 
   it("preserves the working EURC to USDC SwapKit quote", async () => {
@@ -151,15 +140,16 @@ describe("SwapScreen App Wallet SwapKit route unavailability", () => {
       createAppWalletQuote("swapkit", {
         tokenIn: "EURC",
         tokenOut: "USDC",
-        amountIn: "30000000",
+        amountIn: "1000000",
         expectedOutput: "34960000",
         minimumOutput: "34260000",
       }),
     );
     renderSwapScreen();
-    await selectSwapKit();
-    await userEvent.selectOptions(screen.getAllByRole("combobox")[0], "EURC");
-    enterAmount("30");
+    fireEvent.change(screen.getAllByRole("combobox")[0], {
+      target: { value: "EURC" },
+    });
+    enterAmount("1");
 
     await previewQuote();
 
@@ -168,9 +158,10 @@ describe("SwapScreen App Wallet SwapKit route unavailability", () => {
         expect.objectContaining({
           tokenIn: "EURC",
           tokenOut: "USDC",
-          amountIn: "30000000",
+          amountIn: "1000000",
           provider: "swapkit",
         }),
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
       ),
     );
     expect(
@@ -193,8 +184,7 @@ describe("SwapScreen App Wallet SwapKit route unavailability", () => {
       ),
     );
     renderSwapScreen();
-    await selectSwapKit();
-    enterAmount("30");
+    enterAmount("1");
 
     await previewQuote();
 

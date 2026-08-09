@@ -63,6 +63,7 @@ import {
   AppWalletSwapQuoteRequest,
   AppWalletSwapQuoteResponse,
   AppWalletSwapToken,
+  resolveAppWalletSwapProvider,
 } from './app-wallet-swap.types';
 
 const SUPPORTED_TOKENS = new Set<AppWalletSwapToken>(['USDC', 'EURC']);
@@ -108,9 +109,21 @@ export class AppWalletSwapService {
     request: AppWalletSwapQuoteRequest,
   ): Promise<AppWalletSwapQuoteResponse> {
     const normalized = this.normalizeRequest(request);
+    const routedProvider = resolveAppWalletSwapProvider(normalized.amountIn);
+
+    if (normalized.provider && normalized.provider !== routedProvider) {
+      throw new BadRequestException({
+        code: APP_WALLET_SWAP_ERROR_CODES.EXECUTION_PROVIDER_INVALID,
+        message:
+          `App Wallet automatically routes this amount to ${routedProvider}; ` +
+          `the requested provider cannot be used.`,
+      });
+    }
+
+    const routedRequest = { ...normalized, provider: routedProvider };
     const treasuryDepositAddress = this.getArcTreasuryDepositAddress();
     const userSwapQuote = await this.requestProviderQuote(
-      normalized,
+      routedRequest,
       treasuryDepositAddress,
     );
     const quoteProvider = this.resolveAppWalletExecutionProvider(
@@ -118,7 +131,7 @@ export class AppWalletSwapService {
       userSwapQuote.raw,
     );
 
-    if (normalized.provider && quoteProvider !== normalized.provider) {
+    if (quoteProvider !== routedProvider) {
       throw new BadGatewayException({
         code: APP_WALLET_SWAP_ERROR_CODES.EXECUTION_PROVIDER_INVALID,
         message:
@@ -548,6 +561,7 @@ export class AppWalletSwapService {
       toAddress: treasuryAddress,
       tokenIn: pendingOperation.tokenIn,
       tokenOut: pendingOperation.tokenOut,
+      provider: pendingOperation.provider,
     });
     // The floor that actually protects this execution is the one returned by
     // the prepare call we are about to submit, not the earlier indicative

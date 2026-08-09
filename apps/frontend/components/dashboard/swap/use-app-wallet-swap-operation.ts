@@ -65,6 +65,7 @@ interface UseAppWalletSwapOperationOptions {
   isCircleWalletMode: boolean;
   modeBlockMessage: string | null;
   quote: AppWalletSwapQuoteResponse | null;
+  quoteIsValid: boolean;
   quoteMatchesForm: boolean;
   setAppWalletSwapProvider: (
     provider: AppWalletSwapProvider | undefined,
@@ -160,6 +161,7 @@ export function useAppWalletSwapOperation({
   isCircleWalletMode,
   modeBlockMessage,
   quote,
+  quoteIsValid,
   quoteMatchesForm,
   setAppWalletSwapProvider,
   setErrorMessage,
@@ -202,9 +204,7 @@ export function useAppWalletSwapOperation({
       const nextQuote = await quoteAppWalletSwap({
         ...getRequestBase(),
         chain: APP_WALLET_SWAP_CHAIN,
-        ...(appWalletSwapProvider
-          ? { provider: appWalletSwapProvider }
-          : {}),
+        ...(appWalletSwapProvider ? { provider: appWalletSwapProvider } : {}),
       });
       setQuote(nextQuote);
       setQuoteWalletMode("circle");
@@ -250,7 +250,15 @@ export function useAppWalletSwapOperation({
   ]);
 
   const createDepositInstruction = useCallback(async () => {
-    const activeQuote = quoteMatchesForm ? quote : await requestQuote();
+    if (isCircleWalletMode && (!quoteMatchesForm || !quoteIsValid || !quote)) {
+      setErrorMessage(
+        "Wait for a current, valid App Wallet quote before confirming the swap.",
+      );
+      return;
+    }
+
+    const activeQuote =
+      quoteMatchesForm && quoteIsValid ? quote : await requestQuote();
 
     if (!activeQuote) {
       return;
@@ -281,6 +289,7 @@ export function useAppWalletSwapOperation({
   }, [
     getRequestBase,
     quote,
+    quoteIsValid,
     quoteMatchesForm,
     requestQuote,
     setErrorMessage,
@@ -385,12 +394,7 @@ export function useAppWalletSwapOperation({
         autoProgressRef.current = false;
       }
     },
-    [
-      arcWallet?.id,
-      getWalletBalances,
-      scheduleObservation,
-      toast,
-    ],
+    [arcWallet?.id, getWalletBalances, scheduleObservation, toast],
   );
 
   const submitDeposit = useCallback(async () => {
@@ -447,9 +451,7 @@ export function useAppWalletSwapOperation({
       setIsOperationOpen(false);
 
       try {
-        challengeResult = await executeChallenge(
-          transferChallenge.challengeId,
-        );
+        challengeResult = await executeChallenge(transferChallenge.challengeId);
       } finally {
         setIsOperationOpen(true);
       }
@@ -643,12 +645,7 @@ export function useAppWalletSwapOperation({
         description: getAppWalletOperationMessage(updatedOperation),
       });
     },
-    [
-      arcWallet?.id,
-      getWalletBalances,
-      setErrorMessage,
-      toast,
-    ],
+    [arcWallet?.id, getWalletBalances, setErrorMessage, toast],
   );
 
   const executeSwap = useCallback(async () => {
@@ -672,13 +669,7 @@ export function useAppWalletSwapOperation({
     } finally {
       setRequestStatus("idle");
     }
-  }, [
-    executeOperation,
-    operation,
-    setErrorMessage,
-    setRequestStatus,
-    toast,
-  ]);
+  }, [executeOperation, operation, setErrorMessage, setRequestStatus, toast]);
 
   const requestRefund = useCallback(async () => {
     const currentOperation = operation;

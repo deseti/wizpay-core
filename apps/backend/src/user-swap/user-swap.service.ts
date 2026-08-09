@@ -178,6 +178,16 @@ export class UserSwapService {
   async prepare(
     request: UserSwapPrepareRequest,
   ): Promise<UserSwapPrepareResponse> {
+    const provider = request.provider
+      ? this.getActiveProvider(request.provider)
+      : undefined;
+    if (provider !== undefined && provider !== 'swapkit') {
+      throw new BadRequestException({
+        code: USER_SWAP_ERROR_CODES.PROVIDER_UNSUPPORTED,
+        message: 'SwapKit prepare requires the persisted swapkit provider.',
+      });
+    }
+
     const normalized = this.normalizeBaseRequest(request);
     const slippageBps = request.slippageBps ?? DEFAULT_SLIPPAGE_BPS;
     const raw = await this.callCircleStablecoinApi('/v1/stablecoinKits/swap', {
