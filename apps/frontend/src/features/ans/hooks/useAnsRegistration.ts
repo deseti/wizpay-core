@@ -27,7 +27,12 @@ import {
   executeAnsFlowOnce,
   executeAnsStepOnce,
 } from "../services/ans-registration-flow"
-import { assertSuccessfulAnsReceipt } from "../services/ans-registration-confirmation"
+import {
+  assertAnsArcTestnetChain,
+  assertSuccessfulAnsReceipt,
+  requireAnsTransactionHash,
+  waitForAnsTransactionReceipt,
+} from "../services/ans-registration-confirmation"
 import {
   toAnsRegistrationError,
   type AnsRegistrationStage,
@@ -86,7 +91,8 @@ export function useAnsRegistration({
   onRegistered?: (domain: string) => void
 }) {
   const contracts = getAnsContractsConfig()
-  const { walletAddress } = useActiveWalletAddress()
+  const { walletAddress, walletMode } = useActiveWalletAddress()
+  const isExternalWallet = walletMode === "external"
   const { executeTransaction } = useTransactionExecutor()
   const { toast } = useToast()
   const publicClient = usePublicClient({ chainId: arcTestnet.id })
@@ -424,16 +430,25 @@ export function useAnsRegistration({
       }
 
       if (txHash) {
-        try {
-          const receipt = await runAnsRpcRead(`approval-receipt:${txHash}`, () =>
-            publicClient.getTransactionReceipt({ hash: txHash })
-          )
-          assertSuccessfulAnsReceipt("approval", txHash, receipt.status)
-        } catch (error) {
-          if (!isTransientAnsRpcError(error)) {
-            const message = error instanceof Error ? error.message : String(error)
-            if (!message.toLowerCase().includes("not found")) {
-              throw error
+        if (isExternalWallet) {
+          await waitForAnsTransactionReceipt({
+            action: "approval",
+            expectedContract: contracts.usdc,
+            hash: txHash,
+            publicClient,
+          })
+        } else {
+          try {
+            const receipt = await runAnsRpcRead(`approval-receipt:${txHash}`, () =>
+              publicClient.getTransactionReceipt({ hash: txHash })
+            )
+            assertSuccessfulAnsReceipt("approval", txHash, receipt.status)
+          } catch (error) {
+            if (!isTransientAnsRpcError(error)) {
+              const message = error instanceof Error ? error.message : String(error)
+              if (!message.toLowerCase().includes("not found")) {
+                throw error
+              }
             }
           }
         }
@@ -474,7 +489,13 @@ export function useAnsRegistration({
         "Approval completed, but the USDC allowance did not refresh before the timeout window ended."
       )
     },
-    [publicClient, readCurrentAllowance, recoverApprovalTransactionHash]
+    [
+      contracts.usdc,
+      isExternalWallet,
+      publicClient,
+      readCurrentAllowance,
+      recoverApprovalTransactionHash,
+    ]
   )
 
   const waitForOwnershipUpdate = useCallback(
@@ -489,16 +510,25 @@ export function useAnsRegistration({
       }
 
       if (txHash) {
-        try {
-          const receipt = await runAnsRpcRead(`registration-receipt:${txHash}`, () =>
-            publicClient.getTransactionReceipt({ hash: txHash })
-          )
-          assertSuccessfulAnsReceipt("registration", txHash, receipt.status)
-        } catch (error) {
-          if (!isTransientAnsRpcError(error)) {
-            const message = error instanceof Error ? error.message : String(error)
-            if (!message.toLowerCase().includes("not found")) {
-              throw error
+        if (isExternalWallet) {
+          await waitForAnsTransactionReceipt({
+            action: "registration",
+            expectedContract: nextLookup.namespaceSnapshot.controller,
+            hash: txHash,
+            publicClient,
+          })
+        } else {
+          try {
+            const receipt = await runAnsRpcRead(`registration-receipt:${txHash}`, () =>
+              publicClient.getTransactionReceipt({ hash: txHash })
+            )
+            assertSuccessfulAnsReceipt("registration", txHash, receipt.status)
+          } catch (error) {
+            if (!isTransientAnsRpcError(error)) {
+              const message = error instanceof Error ? error.message : String(error)
+              if (!message.toLowerCase().includes("not found")) {
+                throw error
+              }
             }
           }
         }
@@ -547,7 +577,12 @@ export function useAnsRegistration({
         "Registration challenge completed, but ownership did not refresh before the timeout window ended."
       )
     },
-    [publicClient, readRegistrationState, recoverRegistrationTransactionHash]
+    [
+      isExternalWallet,
+      publicClient,
+      readRegistrationState,
+      recoverRegistrationTransactionHash,
+    ]
   )
 
   const performApproval = useCallback(async ({ showToast = true }: { showToast?: boolean } = {}) => {
@@ -561,6 +596,10 @@ export function useAnsRegistration({
 
     if (!publicClient) {
       throw new Error("Arc public client is not ready yet.")
+    }
+
+    if (isExternalWallet) {
+      assertAnsArcTestnetChain(await publicClient.getChainId())
     }
 
     setStep("approving")
@@ -587,7 +626,9 @@ export function useAnsRegistration({
               idempotencyKey: getIdempotencyKey("approve"),
               refId: `ANS-APPROVE-${lookup.target.domain}`,
             })
-            const nextApprovalHash = result.txHash ?? result.hash
+            const nextApprovalHash = isExternalWallet
+              ? requireAnsTransactionHash(result.txHash, "approval")
+              : result.txHash ?? result.hash
             setApprovalHash(nextApprovalHash)
             setSubmissionHash(nextApprovalHash)
             return result
@@ -639,6 +680,7 @@ export function useAnsRegistration({
     toast,
     waitForAllowanceUpdate,
     walletAddress,
+    isExternalWallet,
   ])
 
   const approve = useCallback(async () => {
@@ -658,6 +700,13 @@ export function useAnsRegistration({
 
     if (insufficientBalance) {
       throw new Error("The active wallet does not have enough USDC for this registration.")
+    }
+
+    if (isExternalWallet) {
+      if (!publicClient) {
+        throw new Error("Arc Testnet public client is unavailable for External Wallet ANS registration.")
+      }
+      assertAnsArcTestnetChain(await publicClient.getChainId())
     }
 
     setStep("registering")
@@ -712,7 +761,9 @@ export function useAnsRegistration({
               idempotencyKey: getIdempotencyKey("register"),
               refId: `ANS-REGISTER-${lookup.target.domain}`,
             })
-            const nextRegistrationHash = result.txHash ?? result.hash
+            const nextRegistrationHash = isExternalWallet
+              ? requireAnsTransactionHash(result.txHash, "registration")
+              : result.txHash ?? result.hash
             submittedReference = nextRegistrationHash
             setRegistrationHash(nextRegistrationHash)
             setSubmissionHash(nextRegistrationHash)
@@ -776,6 +827,8 @@ export function useAnsRegistration({
     toast,
     waitForOwnershipUpdate,
     walletAddress,
+    isExternalWallet,
+    publicClient,
   ])
 
   const register = useCallback(() => {

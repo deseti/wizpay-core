@@ -201,6 +201,7 @@ function addressesMatch(first: string | undefined, second: string | undefined) {
 }
 
 const APP_WALLET_QUOTE_DEBOUNCE_MS = 500;
+const EXTERNAL_WALLET_QUOTE_DEBOUNCE_MS = 500;
 const APP_WALLET_ROUTING_THRESHOLD_BASE_UNITS = 10_000_000n;
 
 function resolveAutomaticAppWalletProvider(
@@ -691,10 +692,13 @@ export function SwapScreen() {
   >(undefined);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [requestStatus, setRequestStatus] = useState<SwapRequestStatus>("idle");
-  const [quote, setQuote] = useState<SwapQuoteState | null>(null);
-  const [quoteWalletMode, setQuoteWalletMode] = useState<
+  const [appWalletQuote, setAppWalletQuote] =
+    useState<AppWalletSwapQuoteResponse | null>(null);
+  const [appWalletQuoteWalletMode, setAppWalletQuoteWalletMode] = useState<
     "circle" | "external" | null
   >(null);
+  const [externalWalletQuote, setExternalWalletQuote] =
+    useState<UserSwapQuoteResponse | null>(null);
   const [successState, setSuccessState] = useState<SwapSuccessState | null>(
     null,
   );
@@ -705,6 +709,13 @@ export function SwapScreen() {
   const quoteSequenceRef = useRef(0);
   const quoteAbortControllerRef = useRef<AbortController | null>(null);
   const quoteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const externalQuoteRequestKeyRef = useRef<string | null>(null);
+  const externalQuoteInFlightKeyRef = useRef<string | null>(null);
+  const externalQuoteSequenceRef = useRef(0);
+  const externalQuoteAbortControllerRef = useRef<AbortController | null>(null);
+  const externalQuoteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
 
   const tokenInConfig = SUPPORTED_TOKENS[tokenIn];
   const amountInUnits = useMemo(
@@ -744,7 +755,10 @@ export function SwapScreen() {
             ? "Arc Testnet public client is not ready yet."
             : null;
   const formInvalid =
-    !walletAddress || tokenIn === tokenOut || amountInUnits <= 0n;
+    !walletAddress ||
+    tokenIn === tokenOut ||
+    (isExternalWalletMode && (!tokenIn || !tokenOut)) ||
+    amountInUnits <= 0n;
   const automaticAppWalletProvider =
     isCircleWalletMode && !formInvalid
       ? resolveAutomaticAppWalletProvider(amountInBaseUnits)
@@ -762,6 +776,24 @@ export function SwapScreen() {
           tokenOut,
         })
       : null;
+  const externalQuoteRequestKey =
+    isExternalWalletMode && walletAddress && !formInvalid
+      ? [
+          walletAddress.toLowerCase(),
+          tokenIn,
+          tokenOut,
+          amountInBaseUnits,
+          externalSwapProvider,
+          USER_SWAP_CHAIN,
+          Number(PREVIEW_SLIPPAGE_BPS),
+        ].join("|")
+      : null;
+  const quote = isCircleWalletMode ? appWalletQuote : externalWalletQuote;
+  const quoteWalletMode = isCircleWalletMode
+    ? appWalletQuoteWalletMode
+    : externalWalletQuote
+      ? "external"
+      : null;
   const rawQuoteProvider = getQuoteProvider(quote);
   const quoteMatchesForm =
     quote !== null &&
@@ -778,13 +810,20 @@ export function SwapScreen() {
   const appWalletQuoteIsValid =
     isCircleWalletMode &&
     quoteMatchesForm &&
+    appWalletQuote !== null &&
     appWalletQuoteRequestKey !== null &&
     quoteRequestKeyRef.current === appWalletQuoteRequestKey &&
-    quote?.sourceChain === APP_WALLET_SWAP_CHAIN &&
-    !isQuoteExpired(quote.expiresAt) &&
-    hasPositiveQuoteAmount(getUserSwapExpectedOutputValue(quote), tokenOut) &&
+    appWalletQuote?.sourceChain === APP_WALLET_SWAP_CHAIN &&
+    !isQuoteExpired(appWalletQuote?.expiresAt) &&
+    hasPositiveQuoteAmount(getUserSwapExpectedOutputValue(appWalletQuote), tokenOut) &&
     (rawQuoteProvider !== "swapkit" ||
-      hasPositiveQuoteAmount(getUserSwapMinimumOutputValue(quote), tokenOut));
+      hasPositiveQuoteAmount(getUserSwapMinimumOutputValue(appWalletQuote), tokenOut));
+  const externalWalletQuoteIsValid =
+    isExternalWalletMode &&
+    quoteMatchesForm &&
+    externalWalletQuote !== null &&
+    !isQuoteExpired(externalWalletQuote.expiresAt) &&
+    hasPositiveQuoteAmount(getUserSwapExpectedOutputValue(externalWalletQuote), tokenOut);
   const appWalletLifecycle = useAppWalletSwapOperation({
     appWalletSwapProvider: resolvedAppWalletProvider,
     formInvalid,
@@ -799,8 +838,8 @@ export function SwapScreen() {
     quoteMatchesForm,
     setAppWalletSwapProvider,
     setErrorMessage,
-    setQuote: (nextQuote) => setQuote(nextQuote),
-    setQuoteWalletMode,
+    setQuote: (nextQuote) => setAppWalletQuote(nextQuote),
+    setQuoteWalletMode: setAppWalletQuoteWalletMode,
     setRequestStatus,
     toast,
   });
@@ -829,7 +868,7 @@ export function SwapScreen() {
   });
   const quoteIsDisplayable = isCircleWalletMode
     ? appWalletQuoteIsValid
-    : quoteMatchesForm;
+    : externalWalletQuoteIsValid;
   const expectedOutput = quoteIsDisplayable
     ? getUserSwapExpectedOutputDisplay(quote, tokenOut)
     : null;
@@ -849,6 +888,7 @@ export function SwapScreen() {
   const swapDisabled =
     quoteDisabled ||
     (isCircleWalletMode && !appWalletQuoteIsValid) ||
+    (isExternalWalletMode && !externalWalletQuoteIsValid) ||
     (isStablefxQuote && !stablefxCapability.enabled);
 
   useEffect(() => {
@@ -861,8 +901,8 @@ export function SwapScreen() {
     ) {
       quoteRequestKeyRef.current = null;
       quoteSuccessfulKeyRef.current = null;
-      setQuote(null);
-      setQuoteWalletMode(null);
+      setAppWalletQuote(null);
+      setAppWalletQuoteWalletMode(null);
       logAppWalletQuoteEvent("invalidated", {
         amountIn: amountInBaseUnits,
         provider: automaticAppWalletProvider ?? "none",
@@ -878,8 +918,8 @@ export function SwapScreen() {
     isCircleWalletMode,
     quote,
     quoteMatchesForm,
-    setQuote,
-    setQuoteWalletMode,
+    setAppWalletQuote,
+    setAppWalletQuoteWalletMode,
     tokenIn,
     tokenOut,
   ]);
@@ -952,8 +992,8 @@ export function SwapScreen() {
           return;
         }
 
-        setQuote(nextQuote);
-        setQuoteWalletMode("circle");
+        setAppWalletQuote(nextQuote);
+        setAppWalletQuoteWalletMode("circle");
         quoteRequestKeyRef.current = appWalletQuoteRequestKey;
         quoteSuccessfulKeyRef.current = appWalletQuoteRequestKey;
         const resolvedProvider = getAppWalletQuoteProvider(nextQuote);
@@ -968,8 +1008,8 @@ export function SwapScreen() {
           quoteRequestKeyRef.current = resolvedRequestKey;
           quoteSuccessfulKeyRef.current = resolvedRequestKey;
           if (resolvedProvider !== automaticAppWalletProvider) {
-            setQuote(null);
-            setQuoteWalletMode(null);
+            setAppWalletQuote(null);
+            setAppWalletQuoteWalletMode(null);
             setErrorMessage(
               "The backend returned a provider that does not match automatic App Wallet routing.",
             );
@@ -1004,8 +1044,8 @@ export function SwapScreen() {
         });
         quoteRequestKeyRef.current = null;
         quoteSuccessfulKeyRef.current = null;
-        setQuote(null);
-        setQuoteWalletMode(null);
+        setAppWalletQuote(null);
+        setAppWalletQuoteWalletMode(null);
         setErrorMessage(message);
         logAppWalletQuoteEvent("request_failed", {
           amountIn: amountInBaseUnits,
@@ -1044,11 +1084,144 @@ export function SwapScreen() {
     quoteRetryNonce,
     setAppWalletSwapProvider,
     setErrorMessage,
-    setQuote,
-    setQuoteWalletMode,
+    setAppWalletQuote,
+    setAppWalletQuoteWalletMode,
     setRequestStatus,
     tokenIn,
     tokenOut,
+    walletAddress,
+  ]);
+
+  useEffect(() => {
+    if (!isExternalWalletMode) return;
+
+    if (
+      quote &&
+      (!externalQuoteRequestKey ||
+        quoteWalletMode !== "external" ||
+        !quoteMatchesForm ||
+        externalQuoteRequestKeyRef.current !== externalQuoteRequestKey)
+    ) {
+      externalQuoteRequestKeyRef.current = null;
+      setExternalWalletQuote(null);
+    }
+  }, [
+    externalQuoteRequestKey,
+    isExternalWalletMode,
+    quote,
+    quoteMatchesForm,
+    quoteWalletMode,
+  ]);
+
+  useEffect(() => {
+    if (
+      !isExternalWalletMode ||
+      !externalQuoteRequestKey ||
+      modeBlockMessage
+    ) {
+      return;
+    }
+
+    if (
+      externalQuoteRequestKeyRef.current === externalQuoteRequestKey ||
+      externalQuoteInFlightKeyRef.current === externalQuoteRequestKey
+    ) {
+      return;
+    }
+
+    if (externalQuoteTimerRef.current) {
+      clearTimeout(externalQuoteTimerRef.current);
+    }
+
+    let cancelled = false;
+    externalQuoteTimerRef.current = setTimeout(async () => {
+      if (cancelled) return;
+
+      externalQuoteAbortControllerRef.current?.abort();
+      const controller = new AbortController();
+      externalQuoteAbortControllerRef.current = controller;
+      const sequence = ++externalQuoteSequenceRef.current;
+      externalQuoteInFlightKeyRef.current = externalQuoteRequestKey;
+      setRequestStatus("quoting");
+      setErrorMessage(null);
+
+      try {
+        const nextQuote = await quoteUserSwap(
+          {
+            amountIn: amountInBaseUnits,
+            chain: USER_SWAP_CHAIN,
+            fromAddress: walletAddress!,
+            provider: externalSwapProvider,
+            slippageBps: Number(PREVIEW_SLIPPAGE_BPS),
+            tokenIn,
+            tokenOut,
+          },
+          { signal: controller.signal },
+        );
+
+        if (
+          cancelled ||
+          controller.signal.aborted ||
+          sequence !== externalQuoteSequenceRef.current
+        ) {
+          return;
+        }
+
+        setExternalWalletQuote(nextQuote);
+        externalQuoteRequestKeyRef.current = externalQuoteRequestKey;
+      } catch (error) {
+        if (
+          cancelled ||
+          controller.signal.aborted ||
+          sequence !== externalQuoteSequenceRef.current
+        ) {
+          return;
+        }
+
+        externalQuoteRequestKeyRef.current = null;
+        setExternalWalletQuote(null);
+        const message = getFriendlyErrorMessage(error);
+        setErrorMessage(message);
+        toast({
+          title: "Quote unavailable",
+          description: message,
+          variant: "destructive",
+        });
+      } finally {
+        if (sequence === externalQuoteSequenceRef.current) {
+          externalQuoteInFlightKeyRef.current = null;
+          externalQuoteAbortControllerRef.current = null;
+          setRequestStatus("idle");
+        }
+      }
+    }, EXTERNAL_WALLET_QUOTE_DEBOUNCE_MS);
+
+    return () => {
+      cancelled = true;
+      if (externalQuoteTimerRef.current) {
+        clearTimeout(externalQuoteTimerRef.current);
+        externalQuoteTimerRef.current = null;
+      }
+      if (externalQuoteInFlightKeyRef.current === externalQuoteRequestKey) {
+        externalQuoteSequenceRef.current += 1;
+        externalQuoteAbortControllerRef.current?.abort();
+        externalQuoteAbortControllerRef.current = null;
+        externalQuoteInFlightKeyRef.current = null;
+      }
+    };
+  }, [
+    amountInBaseUnits,
+    externalQuoteRequestKey,
+    externalSwapProvider,
+    isExternalWalletMode,
+    modeBlockMessage,
+    quoteRetryNonce,
+    setErrorMessage,
+    setExternalWalletQuote,
+    setRequestStatus,
+    tokenIn,
+    tokenOut,
+    toast,
     walletAddress,
   ]);
 
@@ -1065,8 +1238,18 @@ export function SwapScreen() {
       clearTimeout(quoteTimerRef.current);
       quoteTimerRef.current = null;
     }
-    setQuote(null);
-    setQuoteWalletMode(null);
+    externalQuoteAbortControllerRef.current?.abort();
+    externalQuoteAbortControllerRef.current = null;
+    externalQuoteInFlightKeyRef.current = null;
+    externalQuoteRequestKeyRef.current = null;
+    externalQuoteSequenceRef.current += 1;
+    if (externalQuoteTimerRef.current) {
+      clearTimeout(externalQuoteTimerRef.current);
+      externalQuoteTimerRef.current = null;
+    }
+    setAppWalletQuote(null);
+    setAppWalletQuoteWalletMode(null);
+    setExternalWalletQuote(null);
   }
 
   function getRequestBase() {
@@ -1107,8 +1290,7 @@ export function SwapScreen() {
         provider: externalSwapProvider,
         slippageBps: Number(PREVIEW_SLIPPAGE_BPS),
       });
-      setQuote(nextQuote);
-      setQuoteWalletMode(walletMode);
+      setExternalWalletQuote(nextQuote);
       return nextQuote;
     } catch (error) {
       const message = getFriendlyErrorMessage(error);
@@ -1715,12 +1897,19 @@ export function SwapScreen() {
       return;
     }
 
+    if (isExternalWalletMode && !externalWalletQuoteIsValid) {
+      setErrorMessage(
+        "Wait for a current, valid External Wallet quote before confirming the swap.",
+      );
+      return;
+    }
+
     setErrorMessage(null);
 
     try {
       const activeQuote = isCircleWalletMode
         ? quote
-        : quoteMatchesForm
+        : externalWalletQuoteIsValid
           ? quote
           : await requestQuote();
 
@@ -1816,8 +2005,8 @@ export function SwapScreen() {
       if (isCircleWalletMode) {
         quoteRequestKeyRef.current = null;
         quoteSuccessfulKeyRef.current = null;
-        setQuote(null);
-        setQuoteWalletMode(null);
+        setAppWalletQuote(null);
+        setAppWalletQuoteWalletMode(null);
         setErrorMessage(
           message === "Internal server error"
             ? "App Wallet operation could not be created. The quote was invalidated; retry after local provider configuration is repaired."
@@ -1967,7 +2156,6 @@ export function SwapScreen() {
                     value={externalSwapProvider}
                     onValueChange={(value) => {
                       resetSwapFeedback();
-                      setQuote(null);
                       setExternalSwapProvider(
                         value as ExternalWalletSwapProvider,
                       );
@@ -2103,7 +2291,7 @@ export function SwapScreen() {
                 >
                   Dismiss
                 </Button>
-                {isCircleWalletMode && !formInvalid ? (
+                {!formInvalid ? (
                   <Button
                     variant="ghost"
                     size="sm"
@@ -2129,21 +2317,13 @@ export function SwapScreen() {
 
             <div className="grid gap-3 sm:grid-cols-2">
               {isExternalWalletMode ? (
-                <Button
-                  variant="outline"
-                  onClick={() => void requestQuote()}
-                  disabled={quoteDisabled}
-                  className="h-12 text-base"
-                >
-                  {requestStatus === "quoting" ? (
-                    <span className="flex items-center gap-2">
-                      <span className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
-                      Quoting...
-                    </span>
-                  ) : (
-                    "Preview quote"
-                  )}
-                </Button>
+                <div className="flex h-12 items-center justify-center rounded-md border border-border/40 bg-background/20 text-sm text-muted-foreground">
+                  {requestStatus === "quoting"
+                    ? "Getting quote..."
+                    : quoteIsDisplayable
+                      ? "Quote updated automatically"
+                      : "Enter a valid amount to get a quote"}
+                </div>
               ) : (
                 <div className="flex h-12 items-center justify-center rounded-md border border-border/40 bg-background/20 text-sm text-muted-foreground">
                   {requestStatus === "quoting"

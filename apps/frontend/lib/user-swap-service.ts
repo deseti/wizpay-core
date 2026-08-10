@@ -47,6 +47,7 @@ export interface UserSwapQuoteResponse {
   chain: typeof USER_SWAP_CHAIN;
   /** Active backend provider that produced this quote. */
   provider?: UserSwapProvider;
+  expiresAt?: string;
   expectedOutput?: unknown;
   minimumOutput?: unknown;
   routerAddress?: unknown;
@@ -123,10 +124,12 @@ export interface StablefxFundingPresignResponse {
 
 export async function quoteUserSwap(
   params: UserSwapQuoteRequest,
+  init?: Pick<RequestInit, "signal">,
 ): Promise<UserSwapQuoteResponse> {
   return backendFetch<UserSwapQuoteResponse>("/user-swap/quote", {
     method: "POST",
     body: JSON.stringify(params),
+    ...init,
   });
 }
 

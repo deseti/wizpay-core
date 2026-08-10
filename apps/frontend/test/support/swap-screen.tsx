@@ -341,6 +341,7 @@ export function resetSwapScreenMocks() {
 
   swapScreenMocks.wallet.address = "0x1111111111111111111111111111111111111111";
   swapScreenMocks.wallet.mode = "circle";
+  swapScreenMocks.walletClient.chain = { id: 5042002 };
 
   swapScreenMocks.appWallet.quote.mockResolvedValue(
     createAppWalletQuote("swapkit"),
