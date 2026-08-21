@@ -3,7 +3,7 @@ import type { TokenSymbol } from "@/lib/wizpay";
 
 export const APP_WALLET_SWAP_CHAIN = "ARC-TESTNET" as const;
 export const APP_WALLET_SWAP_OPERATION_MODE = "treasury-mediated" as const;
-export type AppWalletSwapProvider = "stablefx" | "swapkit";
+export type AppWalletSwapProvider = "stablefx" | "swapkit" | "xylonet";
 
 /**
  * Backend domain error code returned when Circle cannot route the requested
@@ -22,12 +22,15 @@ export interface AppWalletSwapQuoteRequest {
 }
 
 export interface AppWalletSwapQuoteResponse {
-  operationMode: typeof APP_WALLET_SWAP_OPERATION_MODE;
+  operationMode:
+    | typeof APP_WALLET_SWAP_OPERATION_MODE
+    | "direct-user-controlled";
+  executionMode?: "direct-user-controlled";
   sourceChain: typeof APP_WALLET_SWAP_CHAIN;
   tokenIn: TokenSymbol;
   tokenOut: TokenSymbol;
   amountIn: string;
-  treasuryDepositAddress: string;
+  treasuryDepositAddress?: string;
   expectedOutput: unknown;
   minimumOutput: unknown;
   expiresAt: string;
@@ -35,6 +38,11 @@ export interface AppWalletSwapQuoteResponse {
   provider?: AppWalletSwapProvider;
   quoteId?: unknown;
   rawQuote?: unknown;
+  circleWalletId?: string;
+  walletAddress?: string;
+  executorAddress?: string;
+  routerAddress?: string;
+  recipientAddress?: string;
 }
 
 export interface AppWalletSwapOperationResponse extends Omit<
@@ -98,7 +106,189 @@ export interface AppWalletSwapOperationResponse extends Omit<
   createdAt: string;
   updatedAt: string;
   executionEnabled: boolean;
+  executionMode?: "direct-user-controlled";
+  lifecycleStage?: AppWalletXylonetLifecycleStage;
+  terminalStatus?: AppWalletXylonetTerminalStatus;
+  failureReason?: string;
+  approvalChallengeId?: string;
+  swapChallengeId?: string;
+  approvalTransactionId?: string;
+  swapTransactionId?: string;
+  approvalTransactionHash?: string;
+  swapTransactionHash?: string;
+  walletAddress?: string;
+  executorAddress?: string;
+  routerAddress?: string;
+  recipientAddress?: string;
 }
+
+export type AppWalletXylonetLifecycleStage =
+  | "created"
+  | "approval_challenge_creating"
+  | "awaiting_approval_confirmation"
+  | "approval_submitted"
+  | "approval_confirmed"
+  | "swap_challenge_creating"
+  | "awaiting_swap_confirmation"
+  | "swap_submitted"
+  | "output_verified"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "rejected"
+  | "expired"
+  | "timed_out";
+
+export type AppWalletXylonetTerminalStatus =
+  | "confirmed"
+  | "failed"
+  | "cancelled"
+  | "rejected"
+  | "expired"
+  | "timed_out";
+
+export interface AppWalletXylonetOperationResponse {
+  operationId: string;
+  executionMode: "direct-user-controlled";
+  provider: "xylonet";
+  applicationUserId: string;
+  circleWalletId: string;
+  walletAddress: string;
+  chain: typeof APP_WALLET_SWAP_CHAIN;
+  chainId: 5042002;
+  tokenIn: TokenSymbol;
+  tokenOut: TokenSymbol;
+  tokenInAddress: string;
+  tokenOutAddress: string;
+  amountIn: string;
+  expectedOutput: string;
+  minimumOutput: string;
+  slippageBps: number;
+  feeBps: number;
+  routerAddress: string;
+  executorAddress: string;
+  recipientAddress: string;
+  deadline: string;
+  lifecycleStage: AppWalletXylonetLifecycleStage;
+  terminalStatus?: AppWalletXylonetTerminalStatus;
+  failureReason?: string;
+  approvalChallengeId?: string;
+  swapChallengeId?: string;
+  approvalTransactionId?: string;
+  swapTransactionId?: string;
+  approvalTransactionHash?: string;
+  swapTransactionHash?: string;
+  createdAt: string;
+  updatedAt: string;
+  completedAt?: string;
+}
+
+export interface AppWalletXylonetRequest {
+  walletId: string;
+  walletAddress: string;
+  chain: typeof APP_WALLET_SWAP_CHAIN;
+  tokenIn: TokenSymbol;
+  tokenOut: TokenSymbol;
+  amountIn: string;
+  slippageBps: number;
+}
+
+function userTokenHeaders(userToken: string) {
+  return { "X-User-Token": userToken };
+}
+
+export async function quoteAppWalletXylonetSwap(
+  params: AppWalletXylonetRequest,
+  userToken: string,
+  options: Pick<RequestInit, "signal"> = {},
+): Promise<AppWalletSwapQuoteResponse> {
+  return backendFetch<AppWalletSwapQuoteResponse>(
+    "/app-wallet-swap/xylonet/quote",
+    {
+      method: "POST",
+      headers: userTokenHeaders(userToken),
+      body: JSON.stringify(params),
+      ...options,
+    },
+  );
+}
+
+export async function createAppWalletXylonetOperation(
+  params: AppWalletXylonetRequest,
+  userToken: string,
+) {
+  return backendFetch<AppWalletXylonetOperationResponse>(
+    "/app-wallet-swap/xylonet/operations",
+    {
+      method: "POST",
+      headers: userTokenHeaders(userToken),
+      body: JSON.stringify(params),
+    },
+  );
+}
+
+export async function getAppWalletXylonetOperation(
+  operationId: string,
+  userToken: string,
+) {
+  return backendFetch<AppWalletXylonetOperationResponse>(
+    `/app-wallet-swap/xylonet/operations/${encodeURIComponent(operationId)}`,
+    { headers: userTokenHeaders(userToken) },
+  );
+}
+
+async function postXylonetOperation(
+  operationId: string,
+  action: string,
+  userToken: string,
+  body?: unknown,
+) {
+  return backendFetch<AppWalletXylonetOperationResponse>(
+    `/app-wallet-swap/xylonet/operations/${encodeURIComponent(operationId)}/${action}`,
+    {
+      method: "POST",
+      headers: userTokenHeaders(userToken),
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    },
+  );
+}
+
+export const createAppWalletXylonetApprovalChallenge = (
+  operationId: string,
+  userToken: string,
+) => postXylonetOperation(operationId, "approval-challenge", userToken);
+export const createAppWalletXylonetSwapChallenge = (
+  operationId: string,
+  userToken: string,
+) => postXylonetOperation(operationId, "swap-challenge", userToken);
+export const pollAppWalletXylonetOperation = (
+  operationId: string,
+  userToken: string,
+) => postXylonetOperation(operationId, "poll", userToken);
+export const recordAppWalletXylonetChallengeResult = (
+  operationId: string,
+  stage: "approval" | "swap",
+  result: {
+    status:
+      | "PENDING"
+      | "IN_PROGRESS"
+      | "INITIATED"
+      | "SUBMITTED"
+      | "COMPLETE"
+      | "COMPLETED"
+      | "SUCCESS"
+      | "SUCCEEDED"
+      | "FAILED"
+      | "CANCELLED"
+      | "CANCELED"
+      | "REJECTED"
+      | "DENIED"
+      | "EXPIRED"
+      | "TIMED_OUT";
+    reason?: string;
+  },
+  userToken: string,
+) => postXylonetOperation(operationId, `${stage}-result`, userToken, result);
 
 export interface AppWalletSwapDepositRequest {
   depositTxHash?: string;

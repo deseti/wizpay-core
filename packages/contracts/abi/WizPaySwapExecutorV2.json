@@ -1,0 +1,10 @@
+[
+  {"type":"constructor","inputs":[{"name":"initialOwner","type":"address"},{"name":"initialFeeRecipient","type":"address"},{"name":"initialFeeBps","type":"uint256"}],"stateMutability":"nonpayable"},
+  {"type":"function","name":"executeSwap","inputs":[{"name":"router","type":"address"},{"name":"tokenIn","type":"address"},{"name":"tokenOut","type":"address"},{"name":"amountIn","type":"uint256"},{"name":"minAmountOut","type":"uint256"},{"name":"recipient","type":"address"},{"name":"deadline","type":"uint256"}],"outputs":[{"name":"amountOut","type":"uint256"}],"stateMutability":"nonpayable"},
+  {"type":"function","name":"setRouterAllowed","inputs":[{"name":"router","type":"address"},{"name":"allowed","type":"bool"}],"outputs":[],"stateMutability":"nonpayable"},
+  {"type":"function","name":"setTokenAllowed","inputs":[{"name":"token","type":"address"},{"name":"allowed","type":"bool"}],"outputs":[],"stateMutability":"nonpayable"},
+  {"type":"function","name":"pause","inputs":[],"outputs":[],"stateMutability":"nonpayable"},
+  {"type":"function","name":"unpause","inputs":[],"outputs":[],"stateMutability":"nonpayable"},
+  {"type":"function","name":"rescueTokens","inputs":[{"name":"token","type":"address"},{"name":"to","type":"address"},{"name":"amount","type":"uint256"}],"outputs":[],"stateMutability":"nonpayable"},
+  {"type":"event","name":"WizPaySwapExecuted","inputs":[{"name":"user","type":"address","indexed":true},{"name":"router","type":"address","indexed":true},{"name":"tokenIn","type":"address","indexed":true},{"name":"tokenOut","type":"address","indexed":false},{"name":"amountIn","type":"uint256","indexed":false},{"name":"feeAmount","type":"uint256","indexed":false},{"name":"netAmountIn","type":"uint256","indexed":false},{"name":"amountOut","type":"uint256","indexed":false},{"name":"recipient","type":"address","indexed":false}],"anonymous":false}
+]

@@ -120,6 +120,10 @@ export class AppWalletSwapService {
       });
     }
 
+    if (routedProvider === 'swapkit') {
+      this.rejectUnsupportedUserControlledSwapkit('quote');
+    }
+
     const routedRequest = { ...normalized, provider: routedProvider };
     const treasuryDepositAddress = this.getArcTreasuryDepositAddress();
     const userSwapQuote = await this.requestProviderQuote(
@@ -147,13 +151,6 @@ export class AppWalletSwapService {
         code: APP_WALLET_SWAP_ERROR_CODES.STABLEFX_MIN_AMOUNT,
         message: 'StableFX requires a minimum amount of 10 for this pair.',
       });
-    }
-
-    // SwapKit executes against an on-chain slippage floor, so a quote without a
-    // usable minimum output must fail closed here — before an operation row
-    // exists and before any deposit is requested from the user.
-    if (quoteProvider === 'swapkit') {
-      this.assertSwapkitMinimumOutput(userSwapQuote.minimumOutput, normalized);
     }
 
     return {
@@ -230,27 +227,6 @@ export class AppWalletSwapService {
     }
   }
 
-  private assertSwapkitMinimumOutput(
-    minimumOutput: unknown,
-    normalized: { tokenIn: AppWalletSwapToken; tokenOut: AppWalletSwapToken },
-  ): void {
-    if (readSwapkitBaseUnitAmount(minimumOutput) !== null) {
-      return;
-    }
-
-    this.logger.warn(
-      `[app-wallet-swap-swapkit] Quote rejected: no positive minimum output. ` +
-        `direction=${normalized.tokenIn}->${normalized.tokenOut}`,
-    );
-
-    throw new BadGatewayException({
-      code: APP_WALLET_SWAP_ERROR_CODES.SWAPKIT_QUOTE_MINIMUM_OUTPUT_INVALID,
-      message:
-        'SwapKit quote did not include a usable minimum output, so this swap cannot be executed safely.',
-      provider: 'swapkit',
-    });
-  }
-
   async createOperation(
     request: AppWalletSwapOperationRequest,
   ): Promise<AppWalletSwapOperationResponse> {
@@ -304,6 +280,10 @@ export class AppWalletSwapService {
     operationId: string,
     request: AppWalletSwapDepositRequest,
   ): Promise<AppWalletSwapOperationResponse> {
+    const operation = await this.getOperationForExecution(operationId);
+    if (operation.provider === 'swapkit') {
+      this.rejectUnsupportedUserControlledSwapkit('deposit');
+    }
     return this.depositService.submitDeposit(operationId, request);
   }
 
@@ -333,6 +313,10 @@ export class AppWalletSwapService {
 
     if (operation.status === 'completed') {
       return this.toPublicOperation(operation);
+    }
+
+    if (operation.provider === 'swapkit') {
+      this.rejectUnsupportedUserControlledSwapkit('execute');
     }
 
     this.assertExecutableOperation(operation);
@@ -1330,6 +1314,26 @@ export class AppWalletSwapService {
 
   private isExecutionEnabled(): boolean {
     return process.env.APP_WALLET_TREASURY_SWAP_EXECUTION_ENABLED === 'true';
+  }
+
+  private rejectUnsupportedUserControlledSwapkit(stage: string): never {
+    const flagEnabled =
+      process.env.APP_WALLET_SWAPKIT_USER_CONTROLLED_ENABLED === 'true';
+    this.logger.warn(
+      `[app-wallet-swap] provider=swapkit mode=user-controlled ` +
+        `stage=${stage} enabled=${flagEnabled} outcome=blocked ` +
+        `treasuryFallback=false`,
+    );
+
+    throw new ServiceUnavailableException({
+      code: APP_WALLET_SWAP_ERROR_CODES.SWAPKIT_USER_CONTROLLED_UNAVAILABLE,
+      message: flagEnabled
+        ? 'User-Controlled App Wallet SwapKit execution is unavailable because Circle does not document a supported SwapKit-to-W3S User-Controlled Wallet execution adapter. No treasury fallback was used.'
+        : 'User-Controlled App Wallet SwapKit execution is disabled. No treasury fallback was used.',
+      executionMode: 'user-controlled',
+      provider: 'swapkit',
+      treasuryFallback: false,
+    });
   }
 
   private isPositiveDecimal(value: string): boolean {

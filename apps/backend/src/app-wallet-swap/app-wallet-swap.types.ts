@@ -67,6 +67,8 @@ export const APP_WALLET_SWAP_ERROR_CODES = {
   // No positive minimum output could be derived for on-chain verification.
   // Fails closed before financial execution is confirmed.
   SWAPKIT_MINIMUM_OUTPUT_UNVERIFIABLE: 'SWAPKIT_MINIMUM_OUTPUT_UNVERIFIABLE',
+  SWAPKIT_USER_CONTROLLED_UNAVAILABLE:
+    'APP_WALLET_SWAPKIT_USER_CONTROLLED_UNAVAILABLE',
 } as const;
 
 export interface AppWalletSwapQuoteRequest {

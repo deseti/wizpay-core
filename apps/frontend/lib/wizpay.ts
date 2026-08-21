@@ -19,6 +19,8 @@ export interface RecipientDraft {
 }
 
 export const EXPLORER_BASE_URL = "https://testnet.arcscan.app";
+export const ARC_TESTNET_CHAIN_ID = 5_042_002;
+export const ARC_MAINNET_CHAIN_ID = 5_042;
 export const PREVIEW_SLIPPAGE_BPS = 200n;
 export const GAS_BUFFER_BPS = 1500n;
 export const MAX_REFERENCE_ID_LENGTH = 64;
@@ -84,8 +86,28 @@ export function isTransactionHash(
   return /^0x[a-fA-F0-9]{64}$/.test(value ?? "");
 }
 
-export function getExplorerTxUrl(hash: string | null | undefined) {
-  return isTransactionHash(hash) ? `${EXPLORER_BASE_URL}/tx/${hash}` : null;
+export function getExplorerBaseUrlForChain(chainId: number): string | null {
+  if (chainId === ARC_TESTNET_CHAIN_ID) return EXPLORER_BASE_URL;
+  if (chainId !== ARC_MAINNET_CHAIN_ID) return null;
+
+  const configured = process.env.NEXT_PUBLIC_ARC_MAINNET_EXPLORER_URL?.trim();
+  if (!configured) return null;
+  try {
+    const url = new URL(configured);
+    return url.protocol === "https:" ? configured.replace(/\/+$/, "") : null;
+  } catch {
+    return null;
+  }
+}
+
+export function getExplorerTxUrl(
+  hash: string | null | undefined,
+  chainId = ARC_TESTNET_CHAIN_ID,
+) {
+  const explorerBaseUrl = getExplorerBaseUrlForChain(chainId);
+  return isTransactionHash(hash) && explorerBaseUrl
+    ? `${explorerBaseUrl}/tx/${hash}`
+    : null;
 }
 
 export function sameAddress(left?: string, right?: string): boolean {

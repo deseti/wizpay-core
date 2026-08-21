@@ -19,6 +19,15 @@ export type StablefxSignDiagnostic = {
   walletId: string;
 };
 
+export type UserContractExecutionChallengeInput = {
+  callData: string;
+  contractAddress: string;
+  idempotencyKey: string;
+  refId: string;
+  userToken: string;
+  walletId: string;
+};
+
 const stablefxSignDiagnostics = new Map<string, StablefxSignDiagnostic>();
 
 export function getStablefxSignDiagnostic(input: {
@@ -118,9 +127,7 @@ export class W3sAuthService {
         return this.bridgeActionStatus(params);
       case 'getTransaction':
         return this.getTransaction(
-          typeof params.transactionId === 'string'
-            ? params.transactionId
-            : '',
+          typeof params.transactionId === 'string' ? params.transactionId : '',
         );
       case 'getWalletBalances':
         return this.getWalletBalances(params);
@@ -135,13 +142,78 @@ export class W3sAuthService {
               ? params.destinationAddress
               : undefined,
           walletIds:
-            typeof params.walletIds === 'string'
-              ? params.walletIds
-              : undefined,
+            typeof params.walletIds === 'string' ? params.walletIds : undefined,
         });
       default:
         throw new Error(`Unknown W3S action: ${action}`);
     }
+  }
+
+  /** User-scoped contract execution used by direct App Wallet operations. */
+  async createUserContractExecutionChallenge(
+    input: UserContractExecutionChallengeInput,
+  ): Promise<W3sActionResult> {
+    return this.circleUserRequest({
+      body: {
+        callData: input.callData,
+        contractAddress: input.contractAddress,
+        feeLevel: 'MEDIUM',
+        idempotencyKey: input.idempotencyKey,
+        refId: input.refId,
+        walletId: input.walletId,
+      },
+      method: 'POST',
+      path: '/v1/w3s/user/transactions/contractExecution',
+      userToken: input.userToken,
+    });
+  }
+
+  /** Read a transaction with the same authenticated user context that created it. */
+  async getUserTransaction(
+    transactionId: string,
+    userToken: string,
+  ): Promise<W3sActionResult> {
+    const normalizedTransactionId = transactionId.trim();
+    if (!normalizedTransactionId) {
+      throw new Error('Missing required field: transactionId');
+    }
+
+    return this.circleUserRequest({
+      method: 'GET',
+      path: `/v1/w3s/transactions/${encodeURIComponent(normalizedTransactionId)}`,
+      userToken,
+    });
+  }
+
+  /** List only transactions visible to the authenticated Circle user. */
+  async listUserTransactions(
+    input: { walletId: string },
+    userToken: string,
+  ): Promise<W3sActionResult> {
+    const query = new URLSearchParams({
+      pageSize: '50',
+      walletIds: input.walletId,
+    });
+    return this.circleUserRequest({
+      method: 'GET',
+      path: `/v1/w3s/transactions?${query.toString()}`,
+      userToken,
+    });
+  }
+
+  async getUserChallenge(
+    challengeId: string,
+    userToken: string,
+  ): Promise<W3sActionResult> {
+    const normalizedChallengeId = challengeId.trim();
+    if (!normalizedChallengeId) {
+      throw new Error('Missing required field: challengeId');
+    }
+    return this.circleUserRequest({
+      method: 'GET',
+      path: `/v1/w3s/user/challenges/${encodeURIComponent(normalizedChallengeId)}`,
+      userToken,
+    });
   }
   /**
    * Creates a social login device token via Circle's server-side API.
@@ -302,9 +374,7 @@ export class W3sAuthService {
     };
   }
 
-  private bridgeActionStatus(
-    params: Record<string, unknown>,
-  ): W3sActionResult {
+  private bridgeActionStatus(params: Record<string, unknown>): W3sActionResult {
     const normalized = this.normalizeBridgeActionParams(params);
 
     return {
@@ -387,9 +457,12 @@ export class W3sAuthService {
     const stablefxDiagnostics = stablefxDiagnosticsEnabled
       ? this.readStablefxDiagnostics(path, bodyParams)
       : null;
-    const currentAppWalletAddress = stablefxDiagnosticsEnabled && stablefxDiagnostics
-      ? await this.resolveCurrentAppWalletAddress(stablefxDiagnostics.walletId)
-      : null;
+    const currentAppWalletAddress =
+      stablefxDiagnosticsEnabled && stablefxDiagnostics
+        ? await this.resolveCurrentAppWalletAddress(
+            stablefxDiagnostics.walletId,
+          )
+        : null;
     const circleBodyParams = { ...bodyParams };
     delete circleBodyParams.stablefxDiagnostics;
 
@@ -438,17 +511,15 @@ export class W3sAuthService {
   private readStablefxDiagnostics(
     path: string,
     body: Record<string, unknown>,
-  ):
-    | {
-        amount: string;
-        expectedSignerAddress: string;
-        fromCurrency: string;
-        quoteId: string;
-        recipientAddress: string;
-        toCurrency: string;
-        walletId: string;
-      }
-    | null {
+  ): {
+    amount: string;
+    expectedSignerAddress: string;
+    fromCurrency: string;
+    quoteId: string;
+    recipientAddress: string;
+    toCurrency: string;
+    walletId: string;
+  } | null {
     if (path !== '/v1/w3s/user/sign/typedData') {
       return null;
     }
@@ -740,7 +811,9 @@ export class W3sAuthService {
 
     if (typeof normalized.destinationAddress === 'string') {
       const destAddr = normalized.destinationAddress.trim();
-      normalized.destinationAddress = destAddr.startsWith('0x') ? destAddr.toLowerCase() : destAddr;
+      normalized.destinationAddress = destAddr.startsWith('0x')
+        ? destAddr.toLowerCase()
+        : destAddr;
     }
 
     if (Array.isArray(normalized.amounts)) {

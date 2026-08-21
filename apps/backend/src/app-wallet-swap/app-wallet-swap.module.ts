@@ -13,6 +13,7 @@ import { AppWalletSwapTreasuryVerifierService } from './app-wallet-swap-treasury
 import { AppWalletSwapController } from './app-wallet-swap.controller';
 import { AppWalletSwapService } from './app-wallet-swap.service';
 import { AppWalletSwapStablefxExecutorService } from './app-wallet-swap-stablefx-executor.service';
+import { AppWalletXylonetUserControlledExecutorService } from './app-wallet-xylonet-user-controlled-executor.service';
 
 @Module({
   imports: [AdaptersModule, DatabaseModule, UserSwapModule, WalletModule],
@@ -26,6 +27,7 @@ import { AppWalletSwapStablefxExecutorService } from './app-wallet-swap-stablefx
     AppWalletSwapPayoutExecutorService,
     AppWalletSwapRefundService,
     AppWalletSwapStablefxExecutorService,
+    AppWalletXylonetUserControlledExecutorService,
     AppWalletSwapService,
   ],
 })

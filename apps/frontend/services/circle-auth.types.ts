@@ -86,7 +86,7 @@ export type GoogleOAuthDiagnostics = {
 export type W3SSdkInstance = {
   execute: (
     challengeId: string,
-    callback: (error?: unknown, result?: unknown) => void
+    callback: (error?: unknown, result?: unknown) => void,
   ) => void;
   getDeviceId: () => Promise<string>;
   performLogin: (provider: unknown) => Promise<void>;
@@ -101,7 +101,7 @@ export type W3SSdkInstance = {
 export type W3SSdkModule = {
   W3SSdk?: new (
     config: Record<string, unknown>,
-    onLoginComplete: (error: unknown, result: unknown) => void
+    onLoginComplete: (error: unknown, result: unknown) => void,
   ) => W3SSdkInstance;
 };
 
@@ -120,13 +120,13 @@ export type CircleWalletContextValue = {
   closeLogin: () => void;
   ensureSessionReady: () => Promise<void>;
   createContractExecutionChallenge: (
-    payload: Record<string, unknown>
+    payload: Record<string, unknown>,
   ) => Promise<CircleChallengeHandle>;
   createTransferChallenge: (
-    payload: Record<string, unknown>
+    payload: Record<string, unknown>,
   ) => Promise<CircleChallengeHandle>;
   createTypedDataChallenge: (
-    payload: Record<string, unknown>
+    payload: Record<string, unknown>,
   ) => Promise<CircleChallengeHandle>;
   executeChallenge: (challengeId: string) => Promise<unknown>;
   getWalletBalances: (walletId: string) => Promise<CircleWalletTokenBalance[]>;
@@ -147,6 +147,8 @@ export type CircleWalletContextValue = {
   /** Save a Solana address manually (for passkey users who have no Circle Solana wallet). */
   savePasskeySolanaAddress: (address: string) => void;
   userEmail: string | null;
+  /** Current Circle User-Controlled session token; send only as X-User-Token. */
+  userToken: string | null;
   verifyEmailOtp: () => void;
   wallets: CircleUserWallet[];
 };

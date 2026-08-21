@@ -1,0 +1,23 @@
+{
+  "network": "arc-testnet",
+  "chainId": 5042002,
+  "rpcUrl": "https://rpc.testnet.arc.io",
+  "contract": "WizPaySwapExecutorV2",
+  "address": "0x7B5573759576AD3AD9F9E3b4425ad68FD2b525ed",
+  "explorerUrl": "https://testnet.arcscan.app/address/0x7B5573759576AD3AD9F9E3b4425ad68FD2b525ed",
+  "sourceVerified": true,
+  "constructor": {
+    "initialOwner": "0xAA557eb00063ad487BFe0304Bd04B4d45114b721",
+    "initialFeeRecipient": "0xAA557eb00063ad487BFe0304Bd04B4d45114b721",
+    "initialFeeBps": 25
+  },
+  "liveConfiguration": {
+    "paused": false,
+    "routerAllowlist": ["0x73742278c31a76dBb0D2587d03ef92E6E2141023"],
+    "tokenAllowlist": [
+      "0x3600000000000000000000000000000000000000",
+      "0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a"
+    ]
+  },
+  "status": "deployed-and-read-only-verified"
+}

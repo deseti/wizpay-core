@@ -458,6 +458,76 @@ describe('AppWalletSwapService', () => {
     process.env.CIRCLE_STABLEFX_API_KEY = 'stablefx-secret';
   }
 
+  describe('User-Controlled App Wallet SwapKit custody guard', () => {
+    it.each(['true', 'false'])(
+      'fails closed before quote or persistence when the feature flag is %s',
+      async (flagValue) => {
+        process.env.APP_WALLET_SWAPKIT_USER_CONTROLLED_ENABLED = flagValue;
+
+        await expect(createService().quote(baseRequest)).rejects.toMatchObject({
+          status: 503,
+          response: {
+            code: 'APP_WALLET_SWAPKIT_USER_CONTROLLED_UNAVAILABLE',
+            executionMode: 'user-controlled',
+            provider: 'swapkit',
+            treasuryFallback: false,
+          },
+        });
+
+        expect(userSwapService.quote).not.toHaveBeenCalled();
+        expect(prisma.appWalletSwapOperation.create).not.toHaveBeenCalled();
+        expect(circleService.executeContract).not.toHaveBeenCalled();
+        expect(circleService.transfer).not.toHaveBeenCalled();
+      },
+    );
+
+    it('blocks a persisted SwapKit operation before lease, prepare, or treasury execution', async () => {
+      process.env.APP_WALLET_SWAPKIT_USER_CONTROLLED_ENABLED = 'true';
+      userSwapService.quote.mockResolvedValueOnce({
+        tokenIn: 'EURC',
+        tokenOut: 'USDC',
+        amountIn: '17000000',
+        fromAddress: TREASURY_ADDRESS,
+        toAddress: USER_ADDRESS,
+        chain: APP_WALLET_SWAP_CHAIN,
+        provider: 'stablefx',
+        quoteId: 'seed-only',
+        expectedOutput: '16000000',
+        raw: { provider: 'stablefx' },
+      });
+      const service = createService();
+      const seeded = await service.createOperation({
+        ...baseRequest,
+        tokenIn: 'EURC',
+        tokenOut: 'USDC',
+        amountIn: '17000000',
+      });
+      const record = appWalletSwapOperationStore.get(seeded.operationId)!;
+      appWalletSwapOperationStore.set(seeded.operationId, {
+        ...record,
+        executionProvider: 'swapkit',
+        status: 'deposit_confirmed',
+        depositTxHash,
+        depositConfirmedAt: new Date(),
+        depositConfirmedAmount: record.amountIn,
+      });
+      jest.clearAllMocks();
+
+      await expect(service.execute(seeded.operationId)).rejects.toMatchObject({
+        status: 503,
+        response: {
+          code: 'APP_WALLET_SWAPKIT_USER_CONTROLLED_UNAVAILABLE',
+          treasuryFallback: false,
+        },
+      });
+
+      expect(prisma.appWalletSwapOperation.updateMany).not.toHaveBeenCalled();
+      expect(userSwapService.prepare).not.toHaveBeenCalled();
+      expect(circleService.executeContract).not.toHaveBeenCalled();
+      expect(circleService.transfer).not.toHaveBeenCalled();
+    });
+  });
+
   async function createConfirmedOperation(service = createService()) {
     const operation = await service.createOperation(baseRequest);
     const submitted = await service.submitDeposit(operation.operationId, {

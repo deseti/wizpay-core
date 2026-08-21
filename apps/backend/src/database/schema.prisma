@@ -169,6 +169,57 @@ model AppWalletSwapOperation {
   @@index([executionLeaseExpiresAt])
 }
 
+model AppWalletXylonetOperation {
+  operationId                String    @id @db.Uuid
+  applicationUserId          String
+  executionMode              String
+  circleWalletId             String
+  walletAddress              String
+  chain                      String
+  chainId                    Int
+  tokenIn                    String
+  tokenOut                   String
+  tokenInAddress             String
+  tokenOutAddress            String
+  amountIn                   String
+  expectedOutput             String
+  minimumOutput              String
+  slippageBps                Int
+  feeBps                     Int
+  routerAddress              String
+  executorAddress            String
+  recipientAddress           String
+  deadline                   String
+  approvalIdempotencyKey     String    @unique @db.Uuid
+  swapIdempotencyKey         String    @unique @db.Uuid
+  approvalChallengeId        String?   @unique
+  swapChallengeId            String?   @unique
+  approvalTransactionId      String?   @unique
+  swapTransactionId          String?   @unique
+  approvalTransactionHash    String?
+  swapTransactionHash        String?
+  lifecycleStage             String
+  terminalStatus             String?
+  failureReason              String?
+  pollAttempts               Int       @default(0)
+  approvalChallengeCreatedAt DateTime?
+  approvalSubmittedAt        DateTime?
+  approvalConfirmedAt        DateTime?
+  swapChallengeCreatedAt     DateTime?
+  swapSubmittedAt            DateTime?
+  swapConfirmedAt            DateTime?
+  completedAt                DateTime?
+  createdAt                  DateTime  @default(now())
+  updatedAt                  DateTime  @updatedAt
+
+  @@index([applicationUserId])
+  @@index([circleWalletId])
+  @@index([lifecycleStage])
+  @@index([terminalStatus])
+  @@index([approvalTransactionHash])
+  @@index([swapTransactionHash])
+}
+
 model BridgeTransaction {
   id        String   @id @default(uuid())
   taskId    String   @unique
