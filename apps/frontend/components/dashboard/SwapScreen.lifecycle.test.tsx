@@ -25,7 +25,7 @@ async function renderOperation(
   );
   const view = renderSwapScreen();
   fireEvent.change(screen.getByPlaceholderText("0.0"), {
-    target: { value: "1" },
+    target: { value: "10" },
   });
   await waitFor(() =>
     expect(swapScreenMocks.appWallet.quote).toHaveBeenCalled(),
@@ -209,8 +209,8 @@ describe("SwapScreen App Wallet lifecycle", () => {
     await userEvent.click(screen.getByRole("button", { name: "Done" }));
 
     expect(screen.queryByRole("dialog")).toBeNull();
-    expect(screen.getByPlaceholderText("0.0")).toHaveValue(1);
-    expect(screen.getAllByText("SwapKit").length).toBeGreaterThan(0);
+    expect(screen.getByPlaceholderText("0.0")).toHaveValue(10);
+    expect(screen.getAllByText("StableFX").length).toBeGreaterThan(0);
     expect(screen.getByRole("button", { name: "Confirm swap" })).toBeDisabled();
   });
 });

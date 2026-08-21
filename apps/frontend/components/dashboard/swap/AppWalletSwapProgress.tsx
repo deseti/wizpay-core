@@ -19,9 +19,12 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import type { AppWalletSwapOperationResponse } from "@/lib/app-wallet-swap-service";
+import type {
+  AppWalletSwapOperationResponse,
+  AppWalletXylonetOperationResponse,
+} from "@/lib/app-wallet-swap-service";
 import { formatUserSwapQuoteAmount } from "@/lib/user-swap-quote-parser";
-import { EXPLORER_BASE_URL } from "@/lib/wizpay";
+import { EXPLORER_BASE_URL, getExplorerTxUrl } from "@/lib/wizpay";
 
 import {
   canExecuteAppWalletOperation,
@@ -39,6 +42,7 @@ import type { SwapRequestStatus } from "./use-app-wallet-swap-operation";
 const APP_WALLET_SWAP_PROVIDER_LABELS = {
   stablefx: "StableFX",
   swapkit: "SwapKit",
+  xylonet: "XyloNet Direct",
 } as const;
 
 interface AppWalletSwapProgressProps {
@@ -53,8 +57,17 @@ interface AppWalletSwapProgressProps {
   onRefundConfirmationOpenChange: (open: boolean) => void;
   onReset: () => void;
   onSubmitDeposit: () => void;
-  operation: AppWalletSwapOperationResponse | null;
+  operation:
+    | AppWalletSwapOperationResponse
+    | AppWalletXylonetOperationResponse
+    | null;
   requestStatus: SwapRequestStatus;
+}
+
+function isDirectOperation(
+  operation: AppWalletSwapProgressProps["operation"],
+): operation is AppWalletXylonetOperationResponse {
+  return operation?.executionMode === "direct-user-controlled";
 }
 
 function ProgressStep({
@@ -144,6 +157,200 @@ export function AppWalletSwapProgress({
   requestStatus,
 }: AppWalletSwapProgressProps) {
   const [advancedDetailsOpen, setAdvancedDetailsOpen] = useState(false);
+  if (isDirectOperation(operation)) {
+    const stage = operation.lifecycleStage;
+    const terminal = Boolean(operation.terminalStatus);
+    const completed = stage === "completed";
+    const approvalDone = [
+      "approval_confirmed",
+      "swap_challenge_creating",
+      "awaiting_swap_confirmation",
+      "swap_submitted",
+      "output_verified",
+      "completed",
+    ].includes(stage);
+    const swapStarted = [
+      "swap_challenge_creating",
+      "awaiting_swap_confirmation",
+      "swap_submitted",
+      "output_verified",
+      "completed",
+    ].includes(stage);
+    const busy = requestStatus !== "idle" || isGuarded;
+    const swapExplorerUrl = getExplorerTxUrl(
+      operation.swapTransactionHash,
+      operation.chainId,
+    );
+    const actionLabel =
+      stage === "awaiting_approval_confirmation"
+        ? "Confirm approval"
+        : stage === "approval_submitted"
+          ? "Check approval"
+          : stage === "awaiting_swap_confirmation"
+            ? "Confirm swap"
+            : stage === "swap_submitted"
+              ? "Check transaction"
+              : stage === "approval_confirmed"
+                ? "Create swap challenge"
+                : "Start User-Controlled swap";
+
+    return (
+      <Dialog open={isOpen} onOpenChange={onOpenChange}>
+        <DialogContent className="glass-card max-w-lg border-border/40 bg-background/95">
+          <DialogHeader>
+            <DialogTitle>
+              {completed
+                ? "User-Controlled swap completed"
+                : terminal
+                  ? "User-Controlled swap stopped"
+                  : "User-Controlled App Wallet swap"}
+            </DialogTitle>
+            <DialogDescription>
+              {completed
+                ? "The Arc transaction and output token delivery were independently verified."
+                : (operation.failureReason ??
+                  "Your wallet approves the executor, then calls the hardened executor directly. No treasury wallet is involved.")}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-2">
+            <ProgressStep
+              label="Approval challenge"
+              status={
+                approvalDone
+                  ? "done"
+                  : stage.includes("approval") || stage === "created"
+                    ? "active"
+                    : "pending"
+              }
+            />
+            <ProgressStep
+              label="Swap challenge"
+              status={completed ? "done" : swapStarted ? "active" : "pending"}
+            />
+            <ProgressStep
+              label="Arc transaction confirmed"
+              status={
+                completed
+                  ? "done"
+                  : stage === "swap_submitted"
+                    ? "active"
+                    : "pending"
+              }
+            />
+            <ProgressStep
+              label="Output verified"
+              status={completed ? "done" : "pending"}
+            />
+          </div>
+
+          <div className="space-y-2 rounded-xl border border-border/40 bg-background/45 p-4 text-sm">
+            <DetailRow label="Execution mode" value="User-Controlled direct" />
+            <DetailRow label="Provider" value="XyloNet" />
+            <DetailRow label="Stage" value={stage} />
+            <DetailRow
+              label="Executor"
+              value={operation.executorAddress}
+              onCopy={() => onCopy(operation.executorAddress, "Executor")}
+            />
+            {operation.approvalChallengeId ? (
+              <DetailRow
+                label="Approval challenge"
+                value={operation.approvalChallengeId}
+                onCopy={() =>
+                  onCopy(
+                    operation.approvalChallengeId!,
+                    "Approval challenge ID",
+                  )
+                }
+              />
+            ) : null}
+            {operation.approvalTransactionId ? (
+              <DetailRow
+                label="Approval transaction"
+                value={operation.approvalTransactionId}
+                onCopy={() =>
+                  onCopy(
+                    operation.approvalTransactionId!,
+                    "Approval transaction ID",
+                  )
+                }
+              />
+            ) : null}
+            {operation.swapChallengeId ? (
+              <DetailRow
+                label="Swap challenge"
+                value={operation.swapChallengeId}
+                onCopy={() =>
+                  onCopy(operation.swapChallengeId!, "Swap challenge ID")
+                }
+              />
+            ) : null}
+            {operation.swapTransactionId ? (
+              <DetailRow
+                label="Swap transaction"
+                value={operation.swapTransactionId}
+                onCopy={() =>
+                  onCopy(operation.swapTransactionId!, "Swap transaction ID")
+                }
+              />
+            ) : null}
+            {operation.swapTransactionHash ? (
+              <DetailRow
+                label="Swap transaction hash"
+                value={operation.swapTransactionHash}
+                onCopy={() =>
+                  onCopy(
+                    operation.swapTransactionHash!,
+                    "Swap transaction hash",
+                  )
+                }
+              />
+            ) : completed ? (
+              <DetailRow
+                label="Swap transaction hash"
+                value="Pending from Circle"
+              />
+            ) : null}
+            {swapExplorerUrl ? (
+              <a
+                href={swapExplorerUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-1 text-sky-300 hover:text-sky-200"
+              >
+                View transaction on ArcScan
+                <ExternalLink className="h-3.5 w-3.5" />
+              </a>
+            ) : completed ? (
+              <p className="text-muted-foreground/70">
+                ArcScan link pending until Circle returns the on-chain
+                transaction hash.
+              </p>
+            ) : null}
+          </div>
+
+          <div className="flex gap-3">
+            {!terminal ? (
+              <Button
+                className="flex-1"
+                onClick={onSubmitDeposit}
+                disabled={busy}
+              >
+                {busy ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : null}
+                {actionLabel}
+              </Button>
+            ) : null}
+            <Button variant="outline" onClick={onReset} disabled={busy}>
+              {completed ? "Done" : "Close"}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+    );
+  }
   const phase = getAppWalletSwapPhase(operation);
   const isRefundFlow = operation
     ? isAppWalletRefundStatus(operation.status)
@@ -163,9 +370,7 @@ export function AppWalletSwapProgress({
     Boolean(operation?.executionError) &&
     (isFailed || operation?.status === "execution_recovery_required");
   const refundActionAvailable = Boolean(
-    operation &&
-      isCircleWalletMode &&
-      canRequestAppWalletRefund(operation),
+    operation && isCircleWalletMode && canRequestAppWalletRefund(operation),
   );
 
   return (
@@ -221,8 +426,7 @@ export function AppWalletSwapProgress({
                         status={
                           operation.status === "refund_pending"
                             ? "active"
-                            : operation.status ===
-                                "execution_recovery_required"
+                            : operation.status === "execution_recovery_required"
                               ? "pending"
                               : "done"
                         }
@@ -242,9 +446,7 @@ export function AppWalletSwapProgress({
                     <>
                       <ProgressStep
                         label="Confirm deposit"
-                        status={
-                          phase === "confirm_deposit" ? "active" : "done"
-                        }
+                        status={phase === "confirm_deposit" ? "active" : "done"}
                       />
                       <ProgressStep
                         label="Processing swap"
@@ -472,9 +674,7 @@ export function AppWalletSwapProgress({
                   <button
                     type="button"
                     className="flex w-full items-center gap-2 text-xs text-muted-foreground/60 transition-colors hover:text-muted-foreground/80"
-                    onClick={() =>
-                      setAdvancedDetailsOpen(!advancedDetailsOpen)
-                    }
+                    onClick={() => setAdvancedDetailsOpen(!advancedDetailsOpen)}
                   >
                     {advancedDetailsOpen ? (
                       <ChevronDown className="h-3 w-3" />
@@ -564,7 +764,9 @@ export function AppWalletSwapProgress({
                       ) : null}
                       <DetailRow
                         label="Settlement address"
-                        value={operation.treasuryDepositAddress}
+                        value={
+                          operation.treasuryDepositAddress ?? "Not configured"
+                        }
                       />
                     </div>
                   ) : null}

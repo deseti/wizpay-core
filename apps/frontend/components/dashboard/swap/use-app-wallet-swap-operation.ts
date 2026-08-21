@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { type Hex, formatUnits } from "viem";
 
 import { useCircleWallet } from "@/components/providers/CircleWalletProvider";
@@ -8,15 +8,23 @@ import {
   APP_WALLET_SWAP_CHAIN,
   attachAppWalletSwapDepositTxHash,
   confirmAppWalletSwapDeposit,
+  createAppWalletXylonetApprovalChallenge,
+  createAppWalletXylonetOperation,
+  createAppWalletXylonetSwapChallenge,
   createAppWalletSwapOperation,
   executeAppWalletSwapOperation as executeOperationRequest,
+  getAppWalletXylonetOperation,
+  pollAppWalletXylonetOperation,
   quoteAppWalletSwap,
+  quoteAppWalletXylonetSwap,
+  recordAppWalletXylonetChallengeResult,
   refundAppWalletSwapOperation,
   resolveAppWalletSwapDepositTxHash as resolveDepositTxHashRequest,
   submitAppWalletSwapDeposit as submitDepositRequest,
   type AppWalletSwapOperationResponse,
   type AppWalletSwapProvider,
   type AppWalletSwapQuoteResponse,
+  type AppWalletXylonetOperationResponse,
 } from "@/lib/app-wallet-swap-service";
 import { findFirstString } from "@/lib/user-swap-quote-parser";
 import {
@@ -154,6 +162,62 @@ function formatTokenUnits(value: string, token: TokenSymbol) {
   }
 }
 
+type ActiveAppWalletOperation =
+  | AppWalletSwapOperationResponse
+  | AppWalletXylonetOperationResponse;
+
+function isXylonetOperation(
+  operation: ActiveAppWalletOperation,
+): operation is AppWalletXylonetOperationResponse {
+  return operation.executionMode === "direct-user-controlled";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function readValidatedChallengeStatus(result: unknown) {
+  const status =
+    isRecord(result) && typeof result.status === "string"
+      ? result.status.toUpperCase()
+      : null;
+  if (
+    status === "COMPLETE" ||
+    status === "FAILED" ||
+    status === "CANCELLED" ||
+    status === "REJECTED" ||
+    status === "EXPIRED"
+  ) {
+    return status;
+  }
+  throw new Error(
+    "Circle challenge callback did not return a validated terminal status.",
+  );
+}
+
+function classifyChallengeError(error: unknown) {
+  const message = getFriendlyErrorMessage(error);
+  const normalized = message.toLowerCase();
+  const status = normalized.includes("cancel")
+    ? "CANCELLED"
+    : normalized.includes("reject") || normalized.includes("denied")
+      ? "REJECTED"
+      : normalized.includes("expir")
+        ? "EXPIRED"
+        : normalized.includes("timeout") || normalized.includes("timed out")
+          ? "TIMED_OUT"
+          : "FAILED";
+  return { status, reason: message } as const;
+}
+
+const XYLONET_OPERATION_STORAGE_PREFIX = "wizpay:xylonet-app-wallet-operation:";
+const XYLONET_POLL_INTERVAL_MS = 3_000;
+const XYLONET_MAX_POLL_ATTEMPTS = 61;
+
+function wait(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export function useAppWalletSwapOperation({
   appWalletSwapProvider,
   formInvalid,
@@ -176,14 +240,17 @@ export function useAppWalletSwapOperation({
     ensureSessionReady,
     executeChallenge,
     getWalletBalances,
+    userToken,
   } = useCircleWallet();
-  const [operation, setOperation] =
-    useState<AppWalletSwapOperationResponse | null>(null);
+  const [operation, setOperation] = useState<ActiveAppWalletOperation | null>(
+    null,
+  );
   const [isOperationOpen, setIsOperationOpen] = useState(false);
   const [isRefundConfirmationOpen, setIsRefundConfirmationOpen] =
     useState(false);
   const autoProgressRef = useRef(false);
   const refundRequestInFlightRef = useRef(false);
+  const directExecutionInFlightRef = useRef(false);
   const { scheduleObservation } = useAppWalletSwapPoller();
 
   const requestQuote = useCallback(async () => {
@@ -201,11 +268,28 @@ export function useAppWalletSwapOperation({
     setErrorMessage(null);
 
     try {
-      const nextQuote = await quoteAppWalletSwap({
-        ...getRequestBase(),
-        chain: APP_WALLET_SWAP_CHAIN,
-        ...(appWalletSwapProvider ? { provider: appWalletSwapProvider } : {}),
-      });
+      const requestBase = getRequestBase();
+      const nextQuote =
+        appWalletSwapProvider === "xylonet"
+          ? await quoteAppWalletXylonetSwap(
+              {
+                amountIn: requestBase.amountIn,
+                chain: APP_WALLET_SWAP_CHAIN,
+                slippageBps: 200,
+                tokenIn: requestBase.tokenIn,
+                tokenOut: requestBase.tokenOut,
+                walletAddress: requestBase.fromAddress,
+                walletId: arcWallet?.id ?? "",
+              },
+              userToken ?? "",
+            )
+          : await quoteAppWalletSwap({
+              ...requestBase,
+              chain: APP_WALLET_SWAP_CHAIN,
+              ...(appWalletSwapProvider
+                ? { provider: appWalletSwapProvider }
+                : {}),
+            });
       setQuote(nextQuote);
       setQuoteWalletMode("circle");
       const resolvedProvider = getAppWalletQuoteProvider(nextQuote);
@@ -238,6 +322,7 @@ export function useAppWalletSwapOperation({
     }
   }, [
     appWalletSwapProvider,
+    arcWallet?.id,
     formInvalid,
     getRequestBase,
     modeBlockMessage,
@@ -247,6 +332,7 @@ export function useAppWalletSwapOperation({
     setQuoteWalletMode,
     setRequestStatus,
     toast,
+    userToken,
   ]);
 
   const createDepositInstruction = useCallback(async () => {
@@ -274,19 +360,43 @@ export function useAppWalletSwapOperation({
     setRequestStatus("creating");
     setErrorMessage(null);
 
-    const nextOperation = await createAppWalletSwapOperation({
-      ...getRequestBase(),
-      chain: APP_WALLET_SWAP_CHAIN,
-      provider: operationProvider,
-    });
+    const requestBase = getRequestBase();
+    if (operationProvider === "xylonet" && (!arcWallet?.id || !userToken)) {
+      throw new Error(
+        "Circle User-Controlled App Wallet session is not ready.",
+      );
+    }
+    const nextOperation =
+      operationProvider === "xylonet"
+        ? await createAppWalletXylonetOperation(
+            {
+              amountIn: requestBase.amountIn,
+              chain: APP_WALLET_SWAP_CHAIN,
+              slippageBps: 200,
+              tokenIn: requestBase.tokenIn,
+              tokenOut: requestBase.tokenOut,
+              walletAddress: requestBase.fromAddress,
+              walletId: arcWallet!.id,
+            },
+            userToken!,
+          )
+        : await createAppWalletSwapOperation({
+            ...requestBase,
+            chain: APP_WALLET_SWAP_CHAIN,
+            provider: operationProvider,
+          });
 
     setOperation(nextOperation);
     setIsOperationOpen(true);
     toast({
       title: "Ready to swap",
-      description: `Approve the ${nextOperation.tokenIn} deposit to start your swap.`,
+      description:
+        operationProvider === "xylonet"
+          ? `Confirm ${nextOperation.tokenIn} approval, then confirm the direct XyloNet swap.`
+          : `Approve the ${nextOperation.tokenIn} deposit to start your swap.`,
     });
   }, [
+    arcWallet,
     getRequestBase,
     quote,
     quoteIsValid,
@@ -295,6 +405,7 @@ export function useAppWalletSwapOperation({
     setErrorMessage,
     setRequestStatus,
     toast,
+    userToken,
   ]);
 
   const progressOperation = useCallback(
@@ -397,8 +508,210 @@ export function useAppWalletSwapOperation({
     [arcWallet?.id, getWalletBalances, scheduleObservation, toast],
   );
 
+  const persistDirectOperation = useCallback(
+    (nextOperation: AppWalletXylonetOperationResponse) => {
+      setOperation(nextOperation);
+      if (typeof window !== "undefined" && arcWallet?.id) {
+        window.localStorage.setItem(
+          `${XYLONET_OPERATION_STORAGE_PREFIX}${arcWallet.id}`,
+          nextOperation.operationId,
+        );
+      }
+      return nextOperation;
+    },
+    [arcWallet?.id],
+  );
+
+  const runDirectLifecycle = useCallback(
+    async (initialOperation: AppWalletXylonetOperationResponse) => {
+      if (!userToken) {
+        throw new Error("Circle User-Controlled session is unavailable.");
+      }
+      if (directExecutionInFlightRef.current) return;
+      directExecutionInFlightRef.current = true;
+
+      const pollUntil = async (
+        current: AppWalletXylonetOperationResponse,
+        target: "approval_confirmed" | "completed",
+      ) => {
+        for (let attempt = 0; attempt < XYLONET_MAX_POLL_ATTEMPTS; attempt++) {
+          const next = persistDirectOperation(
+            await pollAppWalletXylonetOperation(current.operationId, userToken),
+          );
+          if (next.lifecycleStage === target || next.terminalStatus)
+            return next;
+          current = next;
+          await wait(XYLONET_POLL_INTERVAL_MS);
+        }
+        throw new Error(
+          "Transaction polling timed out before a terminal backend state was returned.",
+        );
+      };
+
+      const executeStage = async (
+        current: AppWalletXylonetOperationResponse,
+        stage: "approval" | "swap",
+      ) => {
+        const challengeId =
+          stage === "approval"
+            ? current.approvalChallengeId
+            : current.swapChallengeId;
+        if (!challengeId) throw new Error(`${stage} challenge ID is missing.`);
+        setRequestStatus("signing");
+        setIsOperationOpen(false);
+        try {
+          const result = await executeChallenge(challengeId);
+          const status = readValidatedChallengeStatus(result);
+          return persistDirectOperation(
+            await recordAppWalletXylonetChallengeResult(
+              current.operationId,
+              stage,
+              { status },
+              userToken,
+            ),
+          );
+        } catch (error) {
+          const terminal = classifyChallengeError(error);
+          const failed = await recordAppWalletXylonetChallengeResult(
+            current.operationId,
+            stage,
+            terminal,
+            userToken,
+          ).catch(() => null);
+          if (failed) persistDirectOperation(failed);
+          throw error;
+        } finally {
+          setIsOperationOpen(true);
+        }
+      };
+
+      try {
+        let current = persistDirectOperation(initialOperation);
+        if (
+          current.lifecycleStage === "created" ||
+          current.lifecycleStage === "approval_challenge_creating"
+        ) {
+          setRequestStatus("approving");
+          current = persistDirectOperation(
+            await createAppWalletXylonetApprovalChallenge(
+              current.operationId,
+              userToken,
+            ),
+          );
+        }
+        if (current.lifecycleStage === "awaiting_approval_confirmation") {
+          current = await executeStage(current, "approval");
+        }
+        if (current.lifecycleStage === "approval_submitted") {
+          setRequestStatus("confirming");
+          current = await pollUntil(current, "approval_confirmed");
+        }
+        if (current.terminalStatus) return;
+        if (
+          current.lifecycleStage === "approval_confirmed" ||
+          current.lifecycleStage === "swap_challenge_creating"
+        ) {
+          setRequestStatus("executing");
+          current = persistDirectOperation(
+            await createAppWalletXylonetSwapChallenge(
+              current.operationId,
+              userToken,
+            ),
+          );
+        }
+        if (current.lifecycleStage === "awaiting_swap_confirmation") {
+          current = await executeStage(current, "swap");
+        }
+        if (current.lifecycleStage === "swap_submitted") {
+          setRequestStatus("settling");
+          current = await pollUntil(current, "completed");
+        }
+
+        if (current.lifecycleStage === "completed") {
+          if (arcWallet?.id)
+            void getWalletBalances(arcWallet.id).catch(() => null);
+          toast({
+            title: "Swap completed",
+            description: `${current.tokenOut} output was verified in your User-Controlled App Wallet.`,
+          });
+        } else if (current.terminalStatus) {
+          setErrorMessage(
+            current.failureReason ??
+              `Swap ended with status ${current.terminalStatus}.`,
+          );
+        }
+      } finally {
+        directExecutionInFlightRef.current = false;
+        setRequestStatus("idle");
+      }
+    },
+    [
+      arcWallet?.id,
+      executeChallenge,
+      getWalletBalances,
+      persistDirectOperation,
+      setErrorMessage,
+      setRequestStatus,
+      toast,
+      userToken,
+    ],
+  );
+
+  useEffect(() => {
+    if (
+      !isCircleWalletMode ||
+      !arcWallet?.id ||
+      !userToken ||
+      typeof window === "undefined"
+    ) {
+      return;
+    }
+    const operationId = window.localStorage.getItem(
+      `${XYLONET_OPERATION_STORAGE_PREFIX}${arcWallet.id}`,
+    );
+    if (!operationId) return;
+    let cancelled = false;
+    void getAppWalletXylonetOperation(operationId, userToken)
+      .then((restored) => {
+        if (cancelled) return;
+        setOperation(restored);
+        setIsOperationOpen(true);
+        if (
+          restored.lifecycleStage === "approval_submitted" ||
+          restored.lifecycleStage === "swap_submitted"
+        ) {
+          void runDirectLifecycle(restored);
+        }
+      })
+      .catch(() => {
+        window.localStorage.removeItem(
+          `${XYLONET_OPERATION_STORAGE_PREFIX}${arcWallet.id}`,
+        );
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [arcWallet?.id, isCircleWalletMode, runDirectLifecycle, userToken]);
+
   const submitDeposit = useCallback(async () => {
     if (!operation) {
+      return;
+    }
+
+    if (isXylonetOperation(operation)) {
+      setErrorMessage(null);
+      try {
+        await ensureSessionReady();
+        await runDirectLifecycle(operation);
+      } catch (error) {
+        const message = getFriendlyErrorMessage(error);
+        setErrorMessage(message);
+        toast({
+          title: "User-Controlled swap stopped",
+          description: message,
+          variant: "destructive",
+        });
+      }
       return;
     }
 
@@ -508,6 +821,7 @@ export function useAppWalletSwapOperation({
     getWalletBalances,
     operation,
     progressOperation,
+    runDirectLifecycle,
     setErrorMessage,
     setRequestStatus,
     toast,
@@ -515,6 +829,10 @@ export function useAppWalletSwapOperation({
 
   const confirmDeposit = useCallback(async () => {
     if (!operation) return;
+    if (isXylonetOperation(operation)) {
+      await runDirectLifecycle(operation);
+      return;
+    }
     if (operation.status !== "deposit_submitted") {
       setErrorMessage("This operation is not ready for deposit confirmation.");
       return;
@@ -567,10 +885,14 @@ export function useAppWalletSwapOperation({
     } finally {
       setRequestStatus("idle");
     }
-  }, [operation, setErrorMessage, setRequestStatus, toast]);
+  }, [operation, runDirectLifecycle, setErrorMessage, setRequestStatus, toast]);
 
   const resolveDepositTxHash = useCallback(async () => {
     if (!operation) return;
+    if (isXylonetOperation(operation)) {
+      await runDirectLifecycle(operation);
+      return;
+    }
     if (operation.status !== "deposit_submitted") {
       setErrorMessage("This operation is not ready for txHash resolution.");
       return;
@@ -610,7 +932,7 @@ export function useAppWalletSwapOperation({
     } finally {
       setRequestStatus("idle");
     }
-  }, [operation, setErrorMessage, setRequestStatus, toast]);
+  }, [operation, runDirectLifecycle, setErrorMessage, setRequestStatus, toast]);
 
   const executeOperation = useCallback(
     async (targetOperation: AppWalletSwapOperationResponse) => {
@@ -650,6 +972,14 @@ export function useAppWalletSwapOperation({
 
   const executeSwap = useCallback(async () => {
     if (!operation) return;
+    if (isXylonetOperation(operation)) {
+      try {
+        await runDirectLifecycle(operation);
+      } catch (error) {
+        setErrorMessage(getFriendlyErrorMessage(error));
+      }
+      return;
+    }
     if (!canExecuteAppWalletOperation(operation)) {
       setErrorMessage("This operation is not ready for settlement execution.");
       return;
@@ -669,10 +999,24 @@ export function useAppWalletSwapOperation({
     } finally {
       setRequestStatus("idle");
     }
-  }, [executeOperation, operation, setErrorMessage, setRequestStatus, toast]);
+  }, [
+    executeOperation,
+    operation,
+    runDirectLifecycle,
+    setErrorMessage,
+    setRequestStatus,
+    toast,
+  ]);
 
   const requestRefund = useCallback(async () => {
     const currentOperation = operation;
+    if (currentOperation && isXylonetOperation(currentOperation)) {
+      setIsRefundConfirmationOpen(false);
+      setErrorMessage(
+        "Direct User-Controlled swaps never deposit funds into treasury and have no treasury refund stage.",
+      );
+      return;
+    }
     if (
       !isCircleWalletMode ||
       !currentOperation ||
@@ -748,10 +1092,15 @@ export function useAppWalletSwapOperation({
   ]);
 
   const reset = useCallback(() => {
+    if (typeof window !== "undefined" && arcWallet?.id) {
+      window.localStorage.removeItem(
+        `${XYLONET_OPERATION_STORAGE_PREFIX}${arcWallet.id}`,
+      );
+    }
     setOperation(null);
     setIsOperationOpen(false);
     setIsRefundConfirmationOpen(false);
-  }, []);
+  }, [arcWallet?.id]);
 
   return {
     confirmDeposit,

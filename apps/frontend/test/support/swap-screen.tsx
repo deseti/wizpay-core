@@ -11,6 +11,7 @@ import type {
   AppWalletSwapOperationResponse,
   AppWalletSwapProvider,
   AppWalletSwapQuoteResponse,
+  AppWalletXylonetOperationResponse,
 } from "@/lib/app-wallet-swap-service";
 
 const swapScreenMocks = vi.hoisted(() => ({
@@ -24,12 +25,20 @@ const swapScreenMocks = vi.hoisted(() => ({
     refundOperation: vi.fn(),
     resolveDepositTxHash: vi.fn(),
     submitDeposit: vi.fn(),
+    xylonetApprovalChallenge: vi.fn(),
+    xylonetApprovalResult: vi.fn(),
+    xylonetCreateOperation: vi.fn(),
+    xylonetGetOperation: vi.fn(),
+    xylonetPoll: vi.fn(),
+    xylonetQuote: vi.fn(),
+    xylonetSwapChallenge: vi.fn(),
   },
   circle: {
     createTransferChallenge: vi.fn(),
     ensureSessionReady: vi.fn(),
     executeChallenge: vi.fn(),
     getWalletBalances: vi.fn(),
+    userToken: "circle-user-token" as string | null,
   },
   circleSwapKit: {
     createAdapter: vi.fn(),
@@ -85,6 +94,7 @@ vi.mock("@/components/providers/CircleWalletProvider", () => ({
     ensureSessionReady: swapScreenMocks.circle.ensureSessionReady,
     executeChallenge: swapScreenMocks.circle.executeChallenge,
     getWalletBalances: swapScreenMocks.circle.getWalletBalances,
+    userToken: swapScreenMocks.circle.userToken,
   }),
 }));
 
@@ -260,6 +270,17 @@ vi.mock("@/lib/app-wallet-swap-service", async (importOriginal) => {
     resolveAppWalletSwapDepositTxHash:
       swapScreenMocks.appWallet.resolveDepositTxHash,
     submitAppWalletSwapDeposit: swapScreenMocks.appWallet.submitDeposit,
+    quoteAppWalletXylonetSwap: swapScreenMocks.appWallet.xylonetQuote,
+    createAppWalletXylonetOperation:
+      swapScreenMocks.appWallet.xylonetCreateOperation,
+    getAppWalletXylonetOperation: swapScreenMocks.appWallet.xylonetGetOperation,
+    createAppWalletXylonetApprovalChallenge:
+      swapScreenMocks.appWallet.xylonetApprovalChallenge,
+    createAppWalletXylonetSwapChallenge:
+      swapScreenMocks.appWallet.xylonetSwapChallenge,
+    pollAppWalletXylonetOperation: swapScreenMocks.appWallet.xylonetPoll,
+    recordAppWalletXylonetChallengeResult:
+      swapScreenMocks.appWallet.xylonetApprovalResult,
   };
 });
 
@@ -321,6 +342,39 @@ export function createAppWalletOperation(
   };
 }
 
+export function createXylonetOperation(
+  lifecycleStage: AppWalletXylonetOperationResponse["lifecycleStage"] = "created",
+  overrides: Partial<AppWalletXylonetOperationResponse> = {},
+): AppWalletXylonetOperationResponse {
+  return {
+    amountIn: "1000000",
+    applicationUserId: "circle:user:test",
+    chain: "ARC-TESTNET",
+    chainId: 5042002,
+    circleWalletId: "circle-wallet-1",
+    createdAt: BASE_TIME,
+    deadline: "1999999999",
+    executionMode: "direct-user-controlled",
+    executorAddress: "0x3333333333333333333333333333333333333333",
+    expectedOutput: "990000",
+    feeBps: 25,
+    lifecycleStage,
+    minimumOutput: "970000",
+    operationId: "22222222-2222-4222-8222-222222222222",
+    provider: "xylonet",
+    recipientAddress: "0x1111111111111111111111111111111111111111",
+    routerAddress: "0x4444444444444444444444444444444444444444",
+    slippageBps: 200,
+    tokenIn: "USDC",
+    tokenInAddress: "0x3600000000000000000000000000000000000000",
+    tokenOut: "EURC",
+    tokenOutAddress: "0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a",
+    updatedAt: BASE_TIME,
+    walletAddress: "0x1111111111111111111111111111111111111111",
+    ...overrides,
+  };
+}
+
 export function resetSwapScreenMocks() {
   for (const group of [
     swapScreenMocks.appWallet,
@@ -342,9 +396,57 @@ export function resetSwapScreenMocks() {
   swapScreenMocks.wallet.address = "0x1111111111111111111111111111111111111111";
   swapScreenMocks.wallet.mode = "circle";
   swapScreenMocks.walletClient.chain = { id: 5042002 };
+  swapScreenMocks.circle.userToken = "circle-user-token";
 
   swapScreenMocks.appWallet.quote.mockResolvedValue(
-    createAppWalletQuote("swapkit"),
+    createAppWalletQuote("stablefx", { amountIn: "10000000" }),
+  );
+  swapScreenMocks.appWallet.xylonetQuote.mockResolvedValue(
+    createAppWalletQuote("xylonet", {
+      operationMode: "direct-user-controlled",
+      treasuryDepositAddress: undefined,
+    }),
+  );
+  swapScreenMocks.appWallet.xylonetCreateOperation.mockResolvedValue(
+    createXylonetOperation(),
+  );
+  swapScreenMocks.appWallet.xylonetApprovalChallenge.mockResolvedValue(
+    createXylonetOperation("awaiting_approval_confirmation", {
+      approvalChallengeId: "approval-challenge-1",
+    }),
+  );
+  swapScreenMocks.appWallet.xylonetApprovalResult.mockImplementation(
+    async (
+      _id: string,
+      stage: "approval" | "swap",
+      result: { status: string },
+    ) =>
+      result.status === "COMPLETE"
+        ? createXylonetOperation(
+            stage === "approval" ? "approval_submitted" : "swap_submitted",
+          )
+        : createXylonetOperation(
+            result.status.toLowerCase() as AppWalletXylonetOperationResponse["lifecycleStage"],
+            {
+              terminalStatus: result.status.toLowerCase() as NonNullable<
+                AppWalletXylonetOperationResponse["terminalStatus"]
+              >,
+            },
+          ),
+  );
+  swapScreenMocks.appWallet.xylonetSwapChallenge.mockResolvedValue(
+    createXylonetOperation("awaiting_swap_confirmation", {
+      swapChallengeId: "swap-challenge-1",
+    }),
+  );
+  swapScreenMocks.appWallet.xylonetPoll.mockResolvedValue(
+    createXylonetOperation("completed", {
+      terminalStatus: "confirmed",
+      completedAt: BASE_TIME,
+    }),
+  );
+  swapScreenMocks.appWallet.xylonetGetOperation.mockResolvedValue(
+    createXylonetOperation("completed", { terminalStatus: "confirmed" }),
   );
   swapScreenMocks.appWallet.createOperation.mockResolvedValue(
     createAppWalletOperation(),
@@ -404,8 +506,7 @@ export function resetSwapScreenMocks() {
     raw: {},
   });
   swapScreenMocks.circle.executeChallenge.mockResolvedValue({
-    id: "circle-transaction-1",
-    referenceId: "circle-reference-1",
+    status: "COMPLETE",
   });
 
   swapScreenMocks.circleSwapKit.createAdapter.mockReturnValue({});

@@ -176,6 +176,7 @@ const DISABLED_CONTEXT_VALUE: CircleWalletContextValue = {
   solanaWallet: null,
   savePasskeySolanaAddress: () => {},
   userEmail: null,
+  userToken: null,
   verifyEmailOtp: () => {},
   wallets: [],
 };
@@ -372,19 +373,20 @@ function CircleWalletProviderInner({
   }, [resetPasskeyRuntimeState]);
   const PASSKEY_SOLANA_CACHE_KEY = "passkey_manual_solana_address";
 
-  const savePasskeySolanaAddress = useCallback(
-    (address: string) => {
-      const syntheticWallet: import("@/services/circle-auth.service").CircleUserWallet = {
+  const savePasskeySolanaAddress = useCallback((address: string) => {
+    const syntheticWallet: import("@/services/circle-auth.service").CircleUserWallet =
+      {
         id: "passkey-manual-solana",
         address,
         blockchain: "SOLANA-DEVNET",
         accountType: "EOA",
       };
-      setSolanaWallet(syntheticWallet);
-      writeStoredJson(PASSKEY_SOLANA_CACHE_KEY, { address, blockchain: "SOLANA-DEVNET" });
-    },
-    [],
-  );
+    setSolanaWallet(syntheticWallet);
+    writeStoredJson(PASSKEY_SOLANA_CACHE_KEY, {
+      address,
+      blockchain: "SOLANA-DEVNET",
+    });
+  }, []);
 
   const initializePasskeyWallets = useCallback(
     async ({
@@ -408,15 +410,18 @@ function CircleWalletProviderInner({
         username,
       });
 
-
-
       applyPasskeyRuntimeSet(runtimeSet);
 
       // For passkey sessions, Circle AA wallets are EVM-only (no Solana).
       // Restore Solana address from localStorage — prefer the user's manually
       // saved address; fall back to an address cached from a prior W3S login.
-      const manualSolana = readStoredJson<{ address: string }>(PASSKEY_SOLANA_CACHE_KEY);
-      const w3sCachedSolana = readStoredJson<{ address: string; blockchain: string }>("solana_wallet_cache");
+      const manualSolana = readStoredJson<{ address: string }>(
+        PASSKEY_SOLANA_CACHE_KEY,
+      );
+      const w3sCachedSolana = readStoredJson<{
+        address: string;
+        blockchain: string;
+      }>("solana_wallet_cache");
       const solanaAddress = manualSolana?.address || w3sCachedSolana?.address;
       if (solanaAddress) {
         setSolanaWallet({
@@ -594,7 +599,7 @@ function CircleWalletProviderInner({
 
       const sdk = options?.forceReinitialize
         ? await reinitializeSdk()
-        : sdkRef.current ?? (await reinitializeSdk());
+        : (sdkRef.current ?? (await reinitializeSdk()));
 
       if (!sdk) {
         throw new Error("Circle Web SDK is not ready yet.");
@@ -800,6 +805,8 @@ function CircleWalletProviderInner({
       sepoliaWallet,
       solanaWallet,
       userEmail: session?.email ?? null,
+      userToken:
+        session && !isPasskeySession(session) ? session.userToken : null,
       verifyEmailOtp,
       wallets,
     }),

@@ -1,4 +1,4 @@
-import { BadGatewayException, BadRequestException } from '@nestjs/common';
+import { BadRequestException } from '@nestjs/common';
 import { AppWalletSwapOperation } from '@prisma/client';
 import { createHash } from 'crypto';
 import { BlockchainService } from '../adapters/blockchain.service';
@@ -33,7 +33,7 @@ const USER_ADDRESS = '0x90ab859240b941eaf0cbcbf42df5086e0ad54147';
 const baseRequest = {
   tokenIn: 'USDC',
   tokenOut: 'EURC',
-  amountIn: '1000000',
+  amountIn: '17000000',
   fromAddress: USER_ADDRESS,
   chain: APP_WALLET_SWAP_CHAIN,
 };
@@ -217,12 +217,12 @@ describe('AppWalletSwapService', () => {
       fromAddress: TREASURY_ADDRESS,
       toAddress: USER_ADDRESS,
       chain: APP_WALLET_SWAP_CHAIN,
-      provider: 'swapkit',
+      provider: 'stablefx',
       quoteId: 'quote-1',
       expectedOutput: '990000',
       minimumOutput: '970000',
       expiresAt: '2026-05-16T12:00:00.000Z',
-      raw: { quoteId: 'quote-1' },
+      raw: { quoteId: 'quote-1', provider: 'stablefx' },
     });
     userSwapService.prepare.mockResolvedValue({
       tokenIn: 'USDC',
@@ -449,6 +449,8 @@ describe('AppWalletSwapService', () => {
       WIZPAY_USER_SWAP_ENABLED: 'true',
       WIZPAY_USER_SWAP_ALLOW_TESTNET: 'true',
       WIZPAY_USER_SWAP_KIT_KEY: 'configured',
+      WIZPAY_SWAP_PROVIDER: 'stablefx',
+      CIRCLE_STABLEFX_API_KEY: 'stablefx-secret',
     };
   }
 
@@ -457,6 +459,78 @@ describe('AppWalletSwapService', () => {
     process.env.WIZPAY_SWAP_PROVIDER = 'stablefx';
     process.env.CIRCLE_STABLEFX_API_KEY = 'stablefx-secret';
   }
+
+  describe('User-Controlled App Wallet SwapKit custody guard', () => {
+    it.each(['true', 'false'])(
+      'fails closed before quote or persistence when the feature flag is %s',
+      async (flagValue) => {
+        process.env.APP_WALLET_SWAPKIT_USER_CONTROLLED_ENABLED = flagValue;
+
+        await expect(
+          createService().quote({ ...baseRequest, amountIn: '1000000' }),
+        ).rejects.toMatchObject({
+          status: 503,
+          response: {
+            code: 'APP_WALLET_SWAPKIT_USER_CONTROLLED_UNAVAILABLE',
+            executionMode: 'user-controlled',
+            provider: 'swapkit',
+            treasuryFallback: false,
+          },
+        });
+
+        expect(userSwapService.quote).not.toHaveBeenCalled();
+        expect(prisma.appWalletSwapOperation.create).not.toHaveBeenCalled();
+        expect(circleService.executeContract).not.toHaveBeenCalled();
+        expect(circleService.transfer).not.toHaveBeenCalled();
+      },
+    );
+
+    it('blocks a persisted SwapKit operation before lease, prepare, or treasury execution', async () => {
+      process.env.APP_WALLET_SWAPKIT_USER_CONTROLLED_ENABLED = 'true';
+      userSwapService.quote.mockResolvedValueOnce({
+        tokenIn: 'EURC',
+        tokenOut: 'USDC',
+        amountIn: '17000000',
+        fromAddress: TREASURY_ADDRESS,
+        toAddress: USER_ADDRESS,
+        chain: APP_WALLET_SWAP_CHAIN,
+        provider: 'stablefx',
+        quoteId: 'seed-only',
+        expectedOutput: '16000000',
+        raw: { provider: 'stablefx' },
+      });
+      const service = createService();
+      const seeded = await service.createOperation({
+        ...baseRequest,
+        tokenIn: 'EURC',
+        tokenOut: 'USDC',
+        amountIn: '17000000',
+      });
+      const record = appWalletSwapOperationStore.get(seeded.operationId)!;
+      appWalletSwapOperationStore.set(seeded.operationId, {
+        ...record,
+        executionProvider: 'swapkit',
+        status: 'deposit_confirmed',
+        depositTxHash,
+        depositConfirmedAt: new Date(),
+        depositConfirmedAmount: record.amountIn,
+      });
+      jest.clearAllMocks();
+
+      await expect(service.execute(seeded.operationId)).rejects.toMatchObject({
+        status: 503,
+        response: {
+          code: 'APP_WALLET_SWAPKIT_USER_CONTROLLED_UNAVAILABLE',
+          treasuryFallback: false,
+        },
+      });
+
+      expect(prisma.appWalletSwapOperation.updateMany).not.toHaveBeenCalled();
+      expect(userSwapService.prepare).not.toHaveBeenCalled();
+      expect(circleService.executeContract).not.toHaveBeenCalled();
+      expect(circleService.transfer).not.toHaveBeenCalled();
+    });
+  });
 
   async function createConfirmedOperation(service = createService()) {
     const operation = await service.createOperation(baseRequest);
@@ -631,7 +705,7 @@ describe('AppWalletSwapService', () => {
       amountIn: baseRequest.amountIn,
       chain: APP_WALLET_SWAP_CHAIN,
       fromAddress: TREASURY_ADDRESS,
-      provider: 'swapkit',
+      provider: 'stablefx',
       toAddress: USER_ADDRESS,
       tokenIn: 'USDC',
       tokenOut: 'EURC',
@@ -639,7 +713,7 @@ describe('AppWalletSwapService', () => {
     expect(result).toMatchObject({
       operationMode: APP_WALLET_SWAP_MODE,
       sourceChain: APP_WALLET_SWAP_CHAIN,
-      provider: 'swapkit',
+      provider: 'stablefx',
       tokenIn: 'USDC',
       tokenOut: 'EURC',
       amountIn: baseRequest.amountIn,
@@ -659,220 +733,49 @@ describe('AppWalletSwapService', () => {
     expect(prisma.appWalletSwapOperation.updateMany).not.toHaveBeenCalled();
   });
 
-  it('mirrors the quote request for the EURC to USDC direction', async () => {
+  it('mirrors a supported StableFX quote request for the EURC to USDC direction', async () => {
     userSwapService.quote.mockResolvedValueOnce({
       tokenIn: 'EURC',
       tokenOut: 'USDC',
-      amountIn: '1000000',
+      amountIn: '17000000',
       fromAddress: TREASURY_ADDRESS,
       toAddress: USER_ADDRESS,
       chain: APP_WALLET_SWAP_CHAIN,
-      provider: 'swapkit',
+      provider: 'stablefx',
       expectedOutput: '34960000',
       minimumOutput: '34260000',
-      raw: { provider: 'swapkit' },
+      raw: { provider: 'stablefx' },
     });
 
     const result = await createService().quote({
       ...baseRequest,
       tokenIn: 'EURC',
       tokenOut: 'USDC',
-      amountIn: '1000000',
-      provider: 'swapkit',
+      amountIn: '17000000',
+      provider: 'stablefx',
     });
 
     expect(userSwapService.quote).toHaveBeenCalledWith({
       allowProviderFallback: false,
-      amountIn: '1000000',
+      amountIn: '17000000',
       chain: APP_WALLET_SWAP_CHAIN,
       fromAddress: TREASURY_ADDRESS,
-      provider: 'swapkit',
+      provider: 'stablefx',
       toAddress: USER_ADDRESS,
       tokenIn: 'EURC',
       tokenOut: 'USDC',
     });
     expect(result).toMatchObject({
-      provider: 'swapkit',
+      provider: 'stablefx',
       tokenIn: 'EURC',
       tokenOut: 'USDC',
-      amountIn: '1000000',
+      amountIn: '17000000',
       expectedOutput: '34960000',
       minimumOutput: '34260000',
     });
   });
 
-  describe('swapkit route unavailability', () => {
-    function circleRouteUnavailable(extra: Record<string, unknown> = {}) {
-      return new BadGatewayException({
-        code: 'CIRCLE_STABLECOIN_API_FAILED',
-        reason: 'CIRCLE_ROUTE_UNAVAILABLE',
-        message: 'Circle Stablecoin Kits route unavailable.',
-        details: { code: 331001, message: 'No route available' },
-        ...extra,
-      });
-    }
-
-    it('maps Circle 331001 onto SWAPKIT_ROUTE_UNAVAILABLE with safe diagnostics', async () => {
-      userSwapService.quote.mockRejectedValueOnce(
-        circleRouteUnavailable({
-          upstreamStatus: 404,
-          upstreamCode: 331001,
-          traceId: 'req-abc-123',
-        }),
-      );
-
-      await expect(
-        createService().quote({
-          ...baseRequest,
-          amountIn: '5000000',
-          provider: 'swapkit',
-        }),
-      ).rejects.toMatchObject({
-        status: 502,
-        response: {
-          code: 'SWAPKIT_ROUTE_UNAVAILABLE',
-          provider: 'swapkit',
-          direction: 'USDC->EURC',
-          tokenIn: 'USDC',
-          tokenOut: 'EURC',
-          amountIn: '5000000',
-          upstreamStatus: 404,
-          upstreamCode: 331001,
-          traceId: 'req-abc-123',
-        },
-      });
-    });
-
-    it('classifies on the upstream code even without the reason field', async () => {
-      userSwapService.quote.mockRejectedValueOnce(
-        new BadGatewayException({
-          code: 'CIRCLE_STABLECOIN_API_FAILED',
-          message: 'Some other wording entirely.',
-          details: { code: '331001' },
-        }),
-      );
-
-      await expect(
-        createService().quote({ ...baseRequest, provider: 'swapkit' }),
-      ).rejects.toMatchObject({
-        response: { code: 'SWAPKIT_ROUTE_UNAVAILABLE' },
-      });
-    });
-
-    it('never leaks credentials into the domain error', async () => {
-      userSwapService.quote.mockRejectedValueOnce(
-        circleRouteUnavailable({
-          upstreamStatus: 404,
-          requestHeaders: { Authorization: 'Bearer KIT_KEY:super:secret' },
-        }),
-      );
-
-      const error = await createService()
-        .quote({ ...baseRequest, provider: 'swapkit' })
-        .catch((caught: { getResponse: () => unknown }) => caught);
-      const serialized = JSON.stringify(
-        (error as { getResponse: () => unknown }).getResponse(),
-      );
-
-      expect(serialized).not.toContain('Authorization');
-      expect(serialized).not.toContain('KIT_KEY');
-      expect(serialized).not.toContain('Bearer');
-    });
-
-    it('does not classify other Circle 404 failures as route unavailable', async () => {
-      userSwapService.quote.mockRejectedValueOnce(
-        new BadGatewayException({
-          code: 'CIRCLE_STABLECOIN_API_FAILED',
-          message: 'Circle Stablecoin Kits API returned 404.',
-          details: { code: 400123, message: 'transient' },
-        }),
-      );
-
-      await expect(
-        createService().quote({ ...baseRequest, provider: 'swapkit' }),
-      ).rejects.toMatchObject({
-        response: {
-          code: 'CIRCLE_STABLECOIN_API_FAILED',
-          message: 'Circle Stablecoin Kits API returned 404.',
-        },
-      });
-    });
-
-    it('keeps the requested provider and creates no operation', async () => {
-      userSwapService.quote.mockRejectedValue(circleRouteUnavailable());
-
-      await expect(
-        createService().createOperation({
-          ...baseRequest,
-          amountIn: '5000000',
-          provider: 'swapkit',
-        }),
-      ).rejects.toMatchObject({
-        response: { code: 'SWAPKIT_ROUTE_UNAVAILABLE', provider: 'swapkit' },
-      });
-      expect(prisma.appWalletSwapOperation.create).not.toHaveBeenCalled();
-      expect(userSwapService.prepare).not.toHaveBeenCalled();
-    });
-  });
-
-  describe('swapkit minimum output safety', () => {
-    it.each([
-      ['missing', undefined],
-      ['null', null],
-      ['zero', '0'],
-      ['non-numeric', 'unavailable'],
-    ])(
-      'fails a swapkit quote closed when the minimum output is %s',
-      async (_label, minimumOutput) => {
-        userSwapService.quote.mockResolvedValueOnce({
-          tokenIn: 'USDC',
-          tokenOut: 'EURC',
-          amountIn: baseRequest.amountIn,
-          fromAddress: TREASURY_ADDRESS,
-          toAddress: USER_ADDRESS,
-          chain: APP_WALLET_SWAP_CHAIN,
-          provider: 'swapkit',
-          expectedOutput: '990000',
-          minimumOutput,
-          raw: { provider: 'swapkit' },
-        });
-
-        await expect(
-          createService().quote({ ...baseRequest, provider: 'swapkit' }),
-        ).rejects.toMatchObject({
-          response: {
-            code: 'SWAPKIT_QUOTE_MINIMUM_OUTPUT_INVALID',
-            provider: 'swapkit',
-          },
-        });
-      },
-    );
-
-    it('does not create an operation for a swapkit quote without a floor', async () => {
-      userSwapService.quote.mockResolvedValue({
-        tokenIn: 'USDC',
-        tokenOut: 'EURC',
-        amountIn: baseRequest.amountIn,
-        fromAddress: TREASURY_ADDRESS,
-        toAddress: USER_ADDRESS,
-        chain: APP_WALLET_SWAP_CHAIN,
-        provider: 'swapkit',
-        expectedOutput: '990000',
-        raw: { provider: 'swapkit' },
-      });
-
-      await expect(
-        createService().createOperation({
-          ...baseRequest,
-          provider: 'swapkit',
-        }),
-      ).rejects.toMatchObject({
-        response: { code: 'SWAPKIT_QUOTE_MINIMUM_OUTPUT_INVALID' },
-      });
-      expect(prisma.appWalletSwapOperation.create).not.toHaveBeenCalled();
-      expect(userSwapService.prepare).not.toHaveBeenCalled();
-    });
-
+  describe('supported StableFX quote safety', () => {
     it('leaves a stablefx quote without a minimum output untouched', async () => {
       userSwapService.quote.mockResolvedValueOnce({
         tokenIn: 'EURC',
@@ -901,45 +804,42 @@ describe('AppWalletSwapService', () => {
     });
   });
 
-  it.each(['stablefx', 'swapkit'] as const)(
-    'constrains an explicit %s quote without provider fallback',
-    async (provider) => {
-      const amountIn =
-        provider === 'stablefx' ? '17000000' : baseRequest.amountIn;
-      userSwapService.quote.mockResolvedValueOnce({
-        tokenIn: 'USDC',
-        tokenOut: 'EURC',
-        amountIn,
-        fromAddress: TREASURY_ADDRESS,
-        toAddress: USER_ADDRESS,
-        chain: APP_WALLET_SWAP_CHAIN,
-        provider,
-        quoteId: `${provider}-quote-1`,
-        expectedOutput: '990000',
-        minimumOutput: '970000',
-        expiresAt: '2026-05-16T12:00:00.000Z',
-        raw: { quoteId: `${provider}-quote-1`, provider },
-      });
+  it('constrains an explicit StableFX quote without provider fallback', async () => {
+    const provider = 'stablefx';
+    const amountIn = baseRequest.amountIn;
+    userSwapService.quote.mockResolvedValueOnce({
+      tokenIn: 'USDC',
+      tokenOut: 'EURC',
+      amountIn,
+      fromAddress: TREASURY_ADDRESS,
+      toAddress: USER_ADDRESS,
+      chain: APP_WALLET_SWAP_CHAIN,
+      provider,
+      quoteId: `${provider}-quote-1`,
+      expectedOutput: '990000',
+      minimumOutput: '970000',
+      expiresAt: '2026-05-16T12:00:00.000Z',
+      raw: { quoteId: `${provider}-quote-1`, provider },
+    });
 
-      const result = await createService().quote({
-        ...baseRequest,
-        amountIn,
-        provider,
-      });
+    const result = await createService().quote({
+      ...baseRequest,
+      amountIn,
+      provider,
+    });
 
-      expect(userSwapService.quote).toHaveBeenCalledWith({
-        amountIn,
-        chain: APP_WALLET_SWAP_CHAIN,
-        fromAddress: TREASURY_ADDRESS,
-        toAddress: USER_ADDRESS,
-        tokenIn: 'USDC',
-        tokenOut: 'EURC',
-        provider,
-        allowProviderFallback: false,
-      });
-      expect(result.provider).toBe(provider);
-    },
-  );
+    expect(userSwapService.quote).toHaveBeenCalledWith({
+      amountIn,
+      chain: APP_WALLET_SWAP_CHAIN,
+      fromAddress: TREASURY_ADDRESS,
+      toAddress: USER_ADDRESS,
+      tokenIn: 'USDC',
+      tokenOut: 'EURC',
+      provider,
+      allowProviderFallback: false,
+    });
+    expect(result.provider).toBe(provider);
+  });
 
   it('fails closed when an explicit provider returns a quote from another provider', async () => {
     userSwapService.quote.mockResolvedValueOnce({
@@ -949,7 +849,7 @@ describe('AppWalletSwapService', () => {
       fromAddress: TREASURY_ADDRESS,
       toAddress: USER_ADDRESS,
       chain: APP_WALLET_SWAP_CHAIN,
-      provider: 'swapkit',
+      provider: 'stablefx',
       expectedOutput: '16000000',
       raw: { provider: 'swapkit' },
     });
@@ -979,7 +879,7 @@ describe('AppWalletSwapService', () => {
       tokenIn: 'USDC',
       tokenOut: 'EURC',
       amountIn: baseRequest.amountIn,
-      provider: 'swapkit',
+      provider: 'stablefx',
       executionEnabled: false,
     });
     expect(result.operationId).toEqual(expect.any(String));
@@ -988,47 +888,44 @@ describe('AppWalletSwapService', () => {
     expect(result).not.toHaveProperty('payoutTxHash');
   });
 
-  it.each(['stablefx', 'swapkit'] as const)(
-    'creates a fresh %s quote and persists that provider for the operation',
-    async (provider) => {
-      const amountIn =
-        provider === 'stablefx' ? '17000000' : baseRequest.amountIn;
-      userSwapService.quote.mockResolvedValueOnce({
-        tokenIn: 'USDC',
-        tokenOut: 'EURC',
-        amountIn,
-        fromAddress: TREASURY_ADDRESS,
-        toAddress: USER_ADDRESS,
-        chain: APP_WALLET_SWAP_CHAIN,
-        provider,
-        quoteId: `${provider}-operation-quote`,
-        expectedOutput: '990000',
-        minimumOutput: '970000',
-        expiresAt: '2026-05-16T12:00:00.000Z',
-        raw: { quoteId: `${provider}-operation-quote`, provider },
-      });
+  it('creates a fresh StableFX quote and persists that provider for the operation', async () => {
+    const provider = 'stablefx';
+    const amountIn = baseRequest.amountIn;
+    userSwapService.quote.mockResolvedValueOnce({
+      tokenIn: 'USDC',
+      tokenOut: 'EURC',
+      amountIn,
+      fromAddress: TREASURY_ADDRESS,
+      toAddress: USER_ADDRESS,
+      chain: APP_WALLET_SWAP_CHAIN,
+      provider,
+      quoteId: `${provider}-operation-quote`,
+      expectedOutput: '990000',
+      minimumOutput: '970000',
+      expiresAt: '2026-05-16T12:00:00.000Z',
+      raw: { quoteId: `${provider}-operation-quote`, provider },
+    });
 
-      const result = await createService().createOperation({
-        ...baseRequest,
-        amountIn,
-        provider,
-      });
-      const record = appWalletSwapOperationStore.get(result.operationId)!;
+    const result = await createService().createOperation({
+      ...baseRequest,
+      amountIn,
+      provider,
+    });
+    const record = appWalletSwapOperationStore.get(result.operationId)!;
 
-      expect(userSwapService.quote).toHaveBeenCalledWith({
-        amountIn,
-        chain: APP_WALLET_SWAP_CHAIN,
-        fromAddress: TREASURY_ADDRESS,
-        toAddress: USER_ADDRESS,
-        tokenIn: 'USDC',
-        tokenOut: 'EURC',
-        provider,
-        allowProviderFallback: false,
-      });
-      expect(result.provider).toBe(provider);
-      expect(record.executionProvider).toBe(provider);
-    },
-  );
+    expect(userSwapService.quote).toHaveBeenCalledWith({
+      amountIn,
+      chain: APP_WALLET_SWAP_CHAIN,
+      fromAddress: TREASURY_ADDRESS,
+      toAddress: USER_ADDRESS,
+      tokenIn: 'USDC',
+      tokenOut: 'EURC',
+      provider,
+      allowProviderFallback: false,
+    });
+    expect(result.provider).toBe(provider);
+    expect(record.executionProvider).toBe(provider);
+  });
 
   it('re-requests the provider quote during operation creation instead of using the displayed quoteId', async () => {
     userSwapService.quote
@@ -1039,12 +936,12 @@ describe('AppWalletSwapService', () => {
         fromAddress: TREASURY_ADDRESS,
         toAddress: USER_ADDRESS,
         chain: APP_WALLET_SWAP_CHAIN,
-        provider: 'swapkit',
+        provider: 'stablefx',
         quoteId: 'displayed-quote-1',
         expectedOutput: '990000',
         minimumOutput: '970000',
         expiresAt: '2099-01-01T00:00:00.000Z',
-        raw: { quoteId: 'displayed-quote-1', provider: 'swapkit' },
+        raw: { quoteId: 'displayed-quote-1', provider: 'stablefx' },
       })
       .mockResolvedValueOnce({
         tokenIn: 'USDC',
@@ -1053,12 +950,12 @@ describe('AppWalletSwapService', () => {
         fromAddress: TREASURY_ADDRESS,
         toAddress: USER_ADDRESS,
         chain: APP_WALLET_SWAP_CHAIN,
-        provider: 'swapkit',
+        provider: 'stablefx',
         quoteId: 'operation-quote-2',
         expectedOutput: '980000',
         minimumOutput: '960000',
         expiresAt: '2099-01-01T00:01:00.000Z',
-        raw: { quoteId: 'operation-quote-2', provider: 'swapkit' },
+        raw: { quoteId: 'operation-quote-2', provider: 'stablefx' },
       });
 
     const service = createService();
@@ -1075,15 +972,13 @@ describe('AppWalletSwapService', () => {
     expect(operation.minimumOutput).toBe('960000');
   });
 
-  it('persists the actual swapkit provider returned by the quote', async () => {
-    process.env.WIZPAY_SWAP_PROVIDER = 'stablefx';
-
+  it('persists the actual supported provider returned by the quote', async () => {
     const result = await createService().createOperation(baseRequest);
     const record = appWalletSwapOperationStore.get(result.operationId)!;
 
-    expect(result.provider).toBe('swapkit');
-    expect(record.executionProvider).toBe('swapkit');
-    expect(record.rawQuote).toMatchObject({ provider: 'swapkit' });
+    expect(result.provider).toBe('stablefx');
+    expect(record.executionProvider).toBe('stablefx');
+    expect(record.rawQuote).toMatchObject({ provider: 'stablefx' });
   });
 
   it('rejects xylonet for new App Wallet operations', async () => {
@@ -1146,9 +1041,9 @@ describe('AppWalletSwapService', () => {
       fromAddress: TREASURY_ADDRESS,
       toAddress: USER_ADDRESS,
       chain: APP_WALLET_SWAP_CHAIN,
-      provider: 'swapkit',
+      provider: 'stablefx',
       expectedOutput: '990000',
-      raw: { provider: 'stablefx' },
+      raw: { provider: 'swapkit' },
     });
 
     await expect(
@@ -1188,11 +1083,11 @@ describe('AppWalletSwapService', () => {
       operationId: operation.operationId,
       status: 'awaiting_user_deposit',
       quoteId: 'quote-1',
-      provider: 'swapkit',
+      provider: 'stablefx',
     });
     expect(persisted).not.toHaveProperty('rawQuote');
     expect(internalRecord.rawQuote).toMatchObject({ quoteId: 'quote-1' });
-    expect(internalRecord.executionProvider).toBe('swapkit');
+    expect(internalRecord.executionProvider).toBe('stablefx');
   });
 
   it('keeps operations retrievable from a fresh service using the same database', async () => {
@@ -1465,7 +1360,7 @@ describe('AppWalletSwapService', () => {
         operation: 'TRANSFER',
         transactionType: 'OUTBOUND',
         contractAddress: '0x3600000000000000000000000000000000000000',
-        amounts: ['1'],
+        amounts: ['17'],
         createDate: '2099-01-01T00:00:00.000Z',
         txHash: depositTxHash,
       },
@@ -1572,7 +1467,7 @@ describe('AppWalletSwapService', () => {
           operation: 'TRANSFER',
           transactionType: 'OUTBOUND',
           contractAddress: '0x3600000000000000000000000000000000000000',
-          amounts: ['1000000'],
+          amounts: ['17000000'],
           createDate: '2099-01-01T00:00:00.000Z',
           txHash: depositTxHash,
         },
@@ -1614,7 +1509,7 @@ describe('AppWalletSwapService', () => {
           operation: 'TRANSFER',
           transactionType: 'OUTBOUND',
           contractAddress: '0x3600000000000000000000000000000000000000',
-          amounts: ['1000000'],
+          amounts: ['17000000'],
           createDate: '2099-01-01T00:00:00.000Z',
           txHash: depositTxHash,
         },
@@ -1656,7 +1551,7 @@ describe('AppWalletSwapService', () => {
           operation: 'TRANSFER',
           transactionType: 'OUTBOUND',
           contractAddress: '0x3600000000000000000000000000000000000000',
-          amounts: ['5'],
+          amounts: ['17'],
           createDate: '2099-01-01T00:00:00.000Z',
           txHash: depositTxHash,
         },
@@ -1665,7 +1560,7 @@ describe('AppWalletSwapService', () => {
     const service = createService();
     const operation = await service.createOperation({
       ...baseRequest,
-      amountIn: '5000000',
+      amountIn: '17000000',
     });
     const submitted = await service.submitDeposit(operation.operationId, {
       circleReferenceId: 'challenge-1',
@@ -1699,7 +1594,7 @@ describe('AppWalletSwapService', () => {
             operation: 'TRANSFER',
             transactionType: 'OUTBOUND',
             state: 'COMPLETE',
-            amounts: ['1'],
+            amounts: ['17'],
             createDate: '2099-01-01T00:00:00.000Z',
             txHash: depositTxHash,
           },
@@ -1741,7 +1636,7 @@ describe('AppWalletSwapService', () => {
           state: 'COMPLETE',
           operation: 'TRANSFER',
           transactionType: 'OUTBOUND',
-          amount: '1',
+          amount: '17',
           createDate: '2099-01-01T00:00:00.000Z',
           txHash: depositTxHash,
         },
@@ -1752,8 +1647,8 @@ describe('AppWalletSwapService', () => {
       ...baseRequest,
       tokenIn: 'EURC',
       tokenOut: 'USDC',
-      provider: 'swapkit',
-      amountIn: '1000000',
+      provider: 'stablefx',
+      amountIn: '17000000',
     });
     const submitted = await service.submitDeposit(operation.operationId, {
       circleWalletId: 'circle-wallet-1',
@@ -1785,7 +1680,7 @@ describe('AppWalletSwapService', () => {
           state: 'SENT',
           operation: 'TRANSFER',
           transactionType: 'OUTBOUND',
-          amount: '1',
+          amount: '17',
           createDate: '2099-01-01T00:00:00.000Z',
           txHash: depositTxHash,
         },
@@ -1796,7 +1691,7 @@ describe('AppWalletSwapService', () => {
       ...baseRequest,
       tokenIn: 'EURC',
       tokenOut: 'USDC',
-      amountIn: '1000000',
+      amountIn: '17000000',
     });
     const submitted = await service.submitDeposit(operation.operationId, {
       circleWalletId: 'circle-wallet-1',
@@ -1828,7 +1723,7 @@ describe('AppWalletSwapService', () => {
             destinationAddress: TREASURY_ADDRESS,
             transactionType: 'OUTBOUND',
             state: 'COMPLETE',
-            amounts: ['1'],
+            amounts: ['17'],
             txHash: depositTxHash,
           },
         ],
@@ -1866,7 +1761,7 @@ describe('AppWalletSwapService', () => {
           state: 'COMPLETE',
           operation: 'TRANSFER',
           transactionType: 'OUTBOUND',
-          amount: '1',
+          amount: '17',
           createDate: '2099-01-01T00:00:00.000Z',
           txHash: depositTxHash,
         },
@@ -1902,7 +1797,7 @@ describe('AppWalletSwapService', () => {
           state: 'COMPLETE',
           operation: 'TRANSFER',
           transactionType: 'OUTBOUND',
-          amount: '1',
+          amount: '17',
           createDate: '2099-01-01T00:00:00.000Z',
           txHash: depositTxHash,
         },
@@ -1933,7 +1828,7 @@ describe('AppWalletSwapService', () => {
           state: 'COMPLETE',
           operation: 'TRANSFER',
           contractAddress: '0x3600000000000000000000000000000000000000',
-          amounts: ['5'],
+          amounts: ['17'],
           txHash: depositTxHash,
         },
       ],
@@ -1941,7 +1836,7 @@ describe('AppWalletSwapService', () => {
     const service = createService();
     const operation = await service.createOperation({
       ...baseRequest,
-      amountIn: '5000000',
+      amountIn: '17000000',
     });
     const submitted = await service.submitDeposit(operation.operationId, {
       circleReferenceId: 'challenge-1',
@@ -1967,7 +1862,7 @@ describe('AppWalletSwapService', () => {
           destinationAddress: TREASURY_ADDRESS,
           state: 'COMPLETE',
           transactionType: 'OUTBOUND',
-          amounts: ['1'],
+          amounts: ['17'],
           txHash: depositTxHash,
         },
       ],
@@ -2002,7 +1897,7 @@ describe('AppWalletSwapService', () => {
           state: 'PENDING',
           operation: 'TRANSFER',
           contractAddress: '0x3600000000000000000000000000000000000000',
-          amounts: ['5'],
+          amounts: ['17'],
           txHash: depositTxHash,
         },
       ],
@@ -2010,7 +1905,7 @@ describe('AppWalletSwapService', () => {
     const service = createService();
     const operation = await service.createOperation({
       ...baseRequest,
-      amountIn: '5000000',
+      amountIn: '17000000',
     });
     const submitted = await service.submitDeposit(operation.operationId, {
       circleReferenceId: 'challenge-1',
@@ -2037,7 +1932,7 @@ describe('AppWalletSwapService', () => {
           operation: 'CONTRACT_EXECUTION',
           transactionType: 'INBOUND',
           contractAddress: '0x3600000000000000000000000000000000000000',
-          amounts: ['5'],
+          amounts: ['17'],
           txHash: depositTxHash,
         },
       ],
@@ -2045,7 +1940,7 @@ describe('AppWalletSwapService', () => {
     const service = createService();
     const operation = await service.createOperation({
       ...baseRequest,
-      amountIn: '5000000',
+      amountIn: '17000000',
     });
     const submitted = await service.submitDeposit(operation.operationId, {
       circleReferenceId: 'challenge-1',
@@ -2132,7 +2027,7 @@ describe('AppWalletSwapService', () => {
           operation: 'TRANSFER',
           transactionType: 'OUTBOUND',
           tokenSymbol: 'EURC',
-          amounts: ['1'],
+          amounts: ['17'],
           createDate: '2099-01-01T00:00:00.000Z',
           txHash: depositTxHash,
         },
@@ -2177,7 +2072,7 @@ describe('AppWalletSwapService', () => {
           operation: 'TRANSFER',
           transactionType: 'OUTBOUND',
           tokenAddress: USER_SWAP_EURC_ADDRESS,
-          amounts: ['1'],
+          amounts: ['17'],
           createDate: '2099-01-01T00:00:00.000Z',
           txHash: depositTxHash,
         },
@@ -2218,7 +2113,7 @@ describe('AppWalletSwapService', () => {
           state: 'COMPLETE',
           transactionType: 'OUTBOUND',
           tokenAddress: USER_SWAP_EURC_ADDRESS,
-          amount: '1',
+          amount: '17',
           createDate: '2026-05-17T04:55:38.005Z',
           txHash: depositTxHash,
         },
@@ -2229,7 +2124,7 @@ describe('AppWalletSwapService', () => {
       ...baseRequest,
       tokenIn: 'EURC',
       tokenOut: 'USDC',
-      amountIn: '1000000',
+      amountIn: '17000000',
     });
     const submitted = await service.submitDeposit(operation.operationId, {
       circleWalletId: 'circle-wallet-1',
@@ -2265,7 +2160,7 @@ describe('AppWalletSwapService', () => {
           transactionType: 'OUTBOUND',
           tokenId: 'runtime-eurc-token-id',
           apiKey: 'secret-api-key',
-          amounts: ['1'],
+          amounts: ['17'],
           createDate: '2099-01-01T00:00:00.000Z',
           txHash: depositTxHash,
         },
@@ -2306,7 +2201,7 @@ describe('AppWalletSwapService', () => {
           operation: 'TRANSFER',
           transactionType: 'OUTBOUND',
           tokenSymbol: 'EURC',
-          amounts: ['1'],
+          amounts: ['17'],
           createDate: '2099-01-01T00:00:00.000Z',
           txHash: depositTxHash,
         },
@@ -2659,24 +2554,6 @@ describe('AppWalletSwapService', () => {
     expect(stablefxExecutionService.getTrade).not.toHaveBeenCalled();
   });
 
-  it('keeps a persisted swapkit operation on swapkit after the environment changes', async () => {
-    enableExecutionEnv();
-    const service = createService();
-    const operation = await createConfirmedOperation(service);
-    process.env.WIZPAY_SWAP_PROVIDER = 'stablefx';
-    process.env.CIRCLE_STABLEFX_API_KEY = 'stablefx-secret';
-
-    const result = await service.execute(operation.operationId);
-
-    expect(result).toMatchObject({
-      provider: 'swapkit',
-      status: 'completed',
-    });
-    expect(userSwapService.prepare).toHaveBeenCalledTimes(1);
-    expect(stablefxExecutionService.createTradableQuote).not.toHaveBeenCalled();
-    expect(stablefxExecutionService.createTrade).not.toHaveBeenCalled();
-  });
-
   it('keeps a persisted stablefx operation on stablefx after the environment changes', async () => {
     const service = createService();
     const operation = await createConfirmedStablefxOperation(service);
@@ -2695,7 +2572,7 @@ describe('AppWalletSwapService', () => {
     expect(userSwapService.prepare).not.toHaveBeenCalled();
   });
 
-  it('execute submits treasury swap and payout once, then completes', async () => {
+  it('execute submits a StableFX swap and payout once, then completes', async () => {
     enableExecutionEnv();
     const service = createService();
     const operation = await createConfirmedOperation(service);
@@ -2703,14 +2580,14 @@ describe('AppWalletSwapService', () => {
     const result = await service.execute(operation.operationId);
     const repeated = await service.execute(operation.operationId);
 
-    expect(userSwapService.prepare).toHaveBeenCalledTimes(1);
-    expect(circleService.executeContract).toHaveBeenCalledTimes(1);
+    expect(userSwapService.prepare).not.toHaveBeenCalled();
+    expect(stablefxExecutionService.createTrade).toHaveBeenCalledTimes(1);
     expect(circleService.transfer).toHaveBeenCalledTimes(1);
     expect(result).toMatchObject({
       status: 'completed',
-      treasurySwapId: 'treasury-swap-transaction-1',
-      treasurySwapActualOutput: '990000',
-      payoutAmount: '990000',
+      treasurySwapId: 'stablefx-trade-1',
+      treasurySwapActualOutput: '16000000',
+      payoutAmount: '16000000',
       payoutTxHash:
         '0xcc019e059ddbbbd32f73c444e350838553779dc027926111366ace5195faa1d5',
     });
@@ -2719,7 +2596,7 @@ describe('AppWalletSwapService', () => {
     expect(repeated).not.toHaveProperty('settledAt');
   });
 
-  it('execute supports EURC to USDC treasury swap and USDC payout', async () => {
+  it('execute supports EURC to USDC StableFX swap and USDC payout', async () => {
     enableExecutionEnv();
     userSwapService.prepare.mockResolvedValueOnce({
       tokenIn: 'EURC',
@@ -2754,136 +2631,20 @@ describe('AppWalletSwapService', () => {
 
     const result = await service.execute(confirmed.operationId);
 
-    expect(userSwapService.prepare).toHaveBeenCalledWith({
-      amountIn: baseRequest.amountIn,
-      chain: APP_WALLET_SWAP_CHAIN,
-      fromAddress: TREASURY_ADDRESS,
-      toAddress: TREASURY_ADDRESS,
-      tokenIn: 'EURC',
-      tokenOut: 'USDC',
-      provider: 'swapkit',
-    });
-    expect(treasuryVerifier.verifyTreasurySwap).toHaveBeenCalledWith({
-      txHash:
-        '0xaa019e059ddbbbd32f73c444e350838553779dc027926111366ace5195faa1d5',
-      tokenOut: 'USDC',
-      treasuryAddress: TREASURY_ADDRESS,
-      // The quoted floor, not an implicit zero.
-      minimumOutput: '970000',
-    });
+    expect(userSwapService.prepare).not.toHaveBeenCalled();
+    expect(treasuryVerifier.verifyTreasurySwap).not.toHaveBeenCalled();
     expect(circleService.transfer).toHaveBeenCalledWith(
       expect.objectContaining({
         token: 'USDC',
         toAddress: USER_ADDRESS,
-        amount: '0.98',
+        amount: '16',
       }),
     );
     expect(result).toMatchObject({
       status: 'completed',
       tokenIn: 'EURC',
       tokenOut: 'USDC',
-      payoutAmount: '980000',
-    });
-  });
-
-  describe('swapkit execution-time minimum output', () => {
-    // Reproduces an operation persisted before the quote parser fix, where
-    // minimumOutput was stored as null.
-    function makeLegacyOperation() {
-      return async (service: AppWalletSwapService) => {
-        const operation = await service.createOperation(baseRequest);
-        const submitted = await service.submitDeposit(operation.operationId, {
-          depositTxHash,
-        });
-        const confirmed = await service.confirmDeposit(submitted.operationId);
-        const stored = appWalletSwapOperationStore.get(confirmed.operationId)!;
-
-        appWalletSwapOperationStore.set(confirmed.operationId, {
-          ...stored,
-          minimumOutput: null,
-        });
-
-        return confirmed.operationId;
-      };
-    }
-
-    it('resumes a legacy null-minimum operation using the prepared floor', async () => {
-      enableExecutionEnv();
-      treasuryVerifier.verifyTreasurySwap.mockResolvedValueOnce({
-        confirmed: true,
-        actualOutput: '980000',
-      });
-      const service = createService();
-      const operationId = await makeLegacyOperation()(service);
-
-      const result = await service.execute(operationId);
-
-      // '970000' is the prepare response's minimumOutput (stopLimit), captured
-      // at submit time and persisted on the operation's rawTreasurySwap.
-      expect(treasuryVerifier.verifyTreasurySwap).toHaveBeenCalledWith(
-        expect.objectContaining({ minimumOutput: '970000' }),
-      );
-      expect(result).toMatchObject({ status: 'completed' });
-    });
-
-    it('fails closed when neither the quote nor the prepare yields a floor', async () => {
-      enableExecutionEnv();
-      userSwapService.prepare.mockResolvedValueOnce({
-        tokenIn: 'USDC',
-        tokenOut: 'EURC',
-        amountIn: baseRequest.amountIn,
-        fromAddress: TREASURY_ADDRESS,
-        toAddress: TREASURY_ADDRESS,
-        chain: APP_WALLET_SWAP_CHAIN,
-        expectedOutput: '990000',
-        transaction: {
-          to: '0x1111111111111111111111111111111111111111',
-          data: '0x1234',
-          raw: { to: '0x1111111111111111111111111111111111111111' },
-        },
-        raw: { quoteId: 'treasury-quote-no-floor' },
-      });
-      const service = createService();
-      const operationId = await makeLegacyOperation()(service);
-
-      const result = await service.execute(operationId);
-
-      expect(treasuryVerifier.verifyTreasurySwap).not.toHaveBeenCalled();
-      expect(result.status).toBe('execution_recovery_required');
-      expect(result.executionError).toContain('minimum output');
-      // The deposit is recoverable rather than silently swept.
-      expect(result.payoutTxHash).toBeUndefined();
-    });
-
-    it('keeps the provider immutable across quote, creation and execution', async () => {
-      enableExecutionEnv();
-      treasuryVerifier.verifyTreasurySwap.mockResolvedValueOnce({
-        confirmed: true,
-        actualOutput: '980000',
-      });
-      const service = createService();
-      const quote = await service.quote({
-        ...baseRequest,
-        provider: 'swapkit',
-      });
-      const operation = await service.createOperation({
-        ...baseRequest,
-        provider: 'swapkit',
-      });
-      const submitted = await service.submitDeposit(operation.operationId, {
-        depositTxHash,
-      });
-      const confirmed = await service.confirmDeposit(submitted.operationId);
-
-      const executed = await service.execute(confirmed.operationId);
-
-      expect(quote.provider).toBe('swapkit');
-      expect(operation.provider).toBe('swapkit');
-      expect(confirmed.provider).toBe('swapkit');
-      expect(executed.provider).toBe('swapkit');
-      // StableFX is never engaged for a swapkit operation.
-      expect(stablefxExecutionService.createTradableQuote).not.toHaveBeenCalled();
-      expect(stablefxExecutionService.createTrade).not.toHaveBeenCalled();
+      payoutAmount: '16000000',
     });
   });
 
@@ -3165,58 +2926,6 @@ describe('AppWalletSwapService', () => {
     },
   );
 
-  it('persists sanitized treasury swap prepare response before non-executable response failure', async () => {
-    enableExecutionEnv();
-    userSwapService.prepare.mockResolvedValueOnce({
-      tokenIn: 'USDC',
-      tokenOut: 'EURC',
-      amountIn: baseRequest.amountIn,
-      fromAddress: TREASURY_ADDRESS,
-      toAddress: TREASURY_ADDRESS,
-      chain: APP_WALLET_SWAP_CHAIN,
-      expectedOutput: '990000',
-      minimumOutput: '970000',
-      transaction: {
-        raw: {
-          signature: '0x1234',
-        },
-      },
-      raw: {
-        amount: baseRequest.amountIn,
-        apiKey: 'secret-api-key',
-        transaction: {
-          signature: '0x1234',
-        },
-      },
-    });
-    const service = createService();
-    const operation = await createConfirmedOperation(service);
-
-    const result = await service.execute(operation.operationId);
-
-    expect(result.status).toBe('execution_recovery_required');
-    expect(result.executionError).toContain(
-      'Circle Stablecoin Kits swap response did not include an executable transaction target.',
-    );
-    expect(result.executionError).toContain(
-      'Top-level keys: amount, apiKey, transaction',
-    );
-    expect(result.executionError).toContain('Transaction keys: signature');
-    expect(
-      appWalletSwapOperationStore.get(operation.operationId)?.rawTreasurySwap,
-    ).toMatchObject({
-      prepare: {
-        amount: baseRequest.amountIn,
-        apiKey: '[REDACTED]',
-        transaction: {},
-      },
-    });
-    expect(circleService.executeContract).not.toHaveBeenCalled();
-    expect(circleService.getTransactionStatus).not.toHaveBeenCalled();
-    expect(result).not.toHaveProperty('treasurySwapTxHash');
-    expect(result).not.toHaveProperty('payoutTxHash');
-  });
-
   it('normalizes hex quantity instruction values without dropping zero-value instructions', () => {
     const executor = new AppWalletSwapCircleExecutorService(
       circleService as unknown as CircleService,
@@ -3258,47 +2967,6 @@ describe('AppWalletSwapService', () => {
     expect(result.instructions).toHaveLength(2);
     expect(result.instructions[0].value).toBe(0n);
     expect(result.instructions[1].value).toBe(0n);
-  });
-
-  it('execute does not payout before treasury swap confirmation', async () => {
-    enableExecutionEnv();
-    treasuryVerifier.verifyTreasurySwap.mockResolvedValueOnce({
-      confirmed: false,
-      error: 'Treasury swap transaction is not indexed yet.',
-    });
-    const service = createService();
-    const operation = await createConfirmedOperation(service);
-
-    const result = await service.execute(operation.operationId);
-
-    expect(result.status).toBe('treasury_swap_submitted');
-    expect(circleService.executeContract).toHaveBeenCalledTimes(1);
-    expect(circleService.transfer).not.toHaveBeenCalled();
-    expect(result).not.toHaveProperty('payoutTxHash');
-    expect(result).not.toHaveProperty('completedAt');
-  });
-
-  it('execute resumes submitted treasury swap without duplicate submission', async () => {
-    enableExecutionEnv();
-    treasuryVerifier.verifyTreasurySwap
-      .mockResolvedValueOnce({
-        confirmed: false,
-        error: 'Treasury swap transaction is not indexed yet.',
-      })
-      .mockResolvedValueOnce({
-        confirmed: true,
-        actualOutput: '990000',
-      });
-    const service = createService();
-    const operation = await createConfirmedOperation(service);
-
-    const first = await service.execute(operation.operationId);
-    const second = await service.execute(first.operationId);
-
-    expect(first.status).toBe('treasury_swap_submitted');
-    expect(second.status).toBe('completed');
-    expect(circleService.executeContract).toHaveBeenCalledTimes(1);
-    expect(circleService.transfer).toHaveBeenCalledTimes(1);
   });
 
   it('keeps payout_submitted when payout status is queued and no txHash is found', async () => {
@@ -3410,8 +3078,8 @@ describe('AppWalletSwapService', () => {
 
     expect(result).toMatchObject({
       status: 'payout_pending',
-      treasurySwapId: 'treasury-swap-transaction-1',
-      treasurySwapActualOutput: '990000',
+      treasurySwapId: 'stablefx-trade-1',
+      treasurySwapActualOutput: '16000000',
       executionError: 'Payout unavailable',
     });
     expect(result).not.toHaveProperty('completedAt');
@@ -3436,7 +3104,7 @@ describe('AppWalletSwapService', () => {
     ).toBeLessThan(circleService.transfer.mock.invocationCallOrder[0]);
     expect(circleService.transfer).toHaveBeenCalledWith(
       expect.objectContaining({
-        amount: '0.99',
+        amount: '16',
         idempotencyKey: deriveExpectedIdempotencyKey(
           operation.operationId,
           'payout',
@@ -3782,42 +3450,6 @@ describe('AppWalletSwapService', () => {
   });
 
   describe('Phase 0 recursive payload regressions', () => {
-    it('does not recursively wrap Circle treasury status polling snapshots', async () => {
-      enableExecutionEnv();
-      const service = createService();
-      const confirmed = await createConfirmedOperation(service);
-      const record = appWalletSwapOperationStore.get(confirmed.operationId)!;
-      appWalletSwapOperationStore.set(confirmed.operationId, {
-        ...record,
-        status: 'treasury_swap_submitted',
-        treasurySwapId: 'existing-treasury-transaction',
-        treasurySwapTxHash: null,
-        treasurySwapSubmittedAt: new Date(),
-        rawTreasurySwap: { submission: { id: 'synthetic-submission' } },
-      });
-      circleService.getTransactionStatus.mockResolvedValueOnce({
-        txId: 'existing-treasury-transaction',
-        status: 'COMPLETE',
-        txHash:
-          '0xfa019e059ddbbbd32f73c444e350838553779dc027926111366ace5195faa1d5',
-        blockNumber: '20',
-        errorReason: null,
-      });
-      treasuryVerifier.verifyTreasurySwap.mockResolvedValueOnce({
-        confirmed: false,
-        error: 'Synthetic receipt is pending.',
-      });
-
-      const result = await service.execute(confirmed.operationId);
-      const persisted = appWalletSwapOperationStore.get(confirmed.operationId)!;
-
-      expect(circleService.executeContract).not.toHaveBeenCalled();
-      expect(circleService.transfer).not.toHaveBeenCalled();
-      expect(collectRecursivePreviousPaths(persisted.rawTreasurySwap)).toEqual(
-        [],
-      );
-    });
-
     it('does not recursively wrap StableFX contract-ready, funding, and pending-settlement snapshots', async () => {
       const service = createService();
       const confirmed = await createConfirmedStablefxOperation(service);
@@ -4020,7 +3652,7 @@ describe('AppWalletSwapService', () => {
         executionError: 'Synthetic recovery case.',
       });
       circleService.getWalletBalance.mockResolvedValueOnce([
-        { amount: '1', tokenAddress: USER_SWAP_USDC_ADDRESS },
+        { amount: '17', tokenAddress: USER_SWAP_USDC_ADDRESS },
       ]);
       circleService.transfer.mockResolvedValueOnce({
         txId: 'refund-reference-1',

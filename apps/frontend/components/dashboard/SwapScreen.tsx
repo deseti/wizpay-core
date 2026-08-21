@@ -36,6 +36,7 @@ import { useActiveWalletAddress } from "@/hooks/useActiveWalletAddress";
 import { useDialogState } from "@/hooks/useDialogState";
 import { useToast } from "@/hooks/use-toast";
 import { useTransactionExecutor } from "@/hooks/useTransactionExecutor";
+import { useCircleWallet } from "@/components/providers/CircleWalletProvider";
 import { BackendApiError } from "@/lib/backend-api";
 import { buildXShareUrl } from "@/lib/social";
 import {
@@ -45,6 +46,7 @@ import {
 import {
   APP_WALLET_SWAP_CHAIN,
   quoteAppWalletSwap,
+  quoteAppWalletXylonetSwap,
   type AppWalletSwapProvider,
   type AppWalletSwapQuoteResponse,
 } from "@/lib/app-wallet-swap-service";
@@ -108,6 +110,7 @@ const EXTERNAL_WALLET_SWAP_PROVIDER_LABELS: Record<
 const APP_WALLET_SWAP_PROVIDER_LABELS: Record<AppWalletSwapProvider, string> = {
   stablefx: "StableFX",
   swapkit: "SwapKit",
+  xylonet: "XyloNet Direct",
 };
 const XYLONET_EXECUTION_DEADLINE_SECONDS = 20 * 60;
 const WIZPAY_SWAP_EXECUTOR_ABI = [
@@ -212,7 +215,7 @@ function resolveAutomaticAppWalletProvider(
   }
 
   return BigInt(amountInBaseUnits) < APP_WALLET_ROUTING_THRESHOLD_BASE_UNITS
-    ? "swapkit"
+    ? "xylonet"
     : "stablefx";
 }
 
@@ -674,6 +677,7 @@ async function delay(ms: number) {
 
 export function SwapScreen() {
   const { walletAddress, walletMode } = useActiveWalletAddress();
+  const { arcWallet, userToken } = useCircleWallet();
   const { data: walletClient } = useWalletClient();
   const publicClient = usePublicClient({ chainId: arcTestnet.id });
   const { signTypedData, signTypedDataWithMetadata } = useTransactionExecutor();
@@ -815,15 +819,24 @@ export function SwapScreen() {
     quoteRequestKeyRef.current === appWalletQuoteRequestKey &&
     appWalletQuote?.sourceChain === APP_WALLET_SWAP_CHAIN &&
     !isQuoteExpired(appWalletQuote?.expiresAt) &&
-    hasPositiveQuoteAmount(getUserSwapExpectedOutputValue(appWalletQuote), tokenOut) &&
+    hasPositiveQuoteAmount(
+      getUserSwapExpectedOutputValue(appWalletQuote),
+      tokenOut,
+    ) &&
     (rawQuoteProvider !== "swapkit" ||
-      hasPositiveQuoteAmount(getUserSwapMinimumOutputValue(appWalletQuote), tokenOut));
+      hasPositiveQuoteAmount(
+        getUserSwapMinimumOutputValue(appWalletQuote),
+        tokenOut,
+      ));
   const externalWalletQuoteIsValid =
     isExternalWalletMode &&
     quoteMatchesForm &&
     externalWalletQuote !== null &&
     !isQuoteExpired(externalWalletQuote.expiresAt) &&
-    hasPositiveQuoteAmount(getUserSwapExpectedOutputValue(externalWalletQuote), tokenOut);
+    hasPositiveQuoteAmount(
+      getUserSwapExpectedOutputValue(externalWalletQuote),
+      tokenOut,
+    );
   const appWalletLifecycle = useAppWalletSwapOperation({
     appWalletSwapProvider: resolvedAppWalletProvider,
     formInvalid,
@@ -965,19 +978,34 @@ export function SwapScreen() {
       });
 
       try {
-        const nextQuote = await quoteAppWalletSwap(
-          {
-            amountIn: amountInBaseUnits,
-            chain: APP_WALLET_SWAP_CHAIN,
-            fromAddress: walletAddress!,
-            tokenIn,
-            tokenOut,
-            ...(automaticAppWalletProvider
-              ? { provider: automaticAppWalletProvider }
-              : {}),
-          },
-          { signal: controller.signal },
-        );
+        const nextQuote =
+          automaticAppWalletProvider === "xylonet"
+            ? await quoteAppWalletXylonetSwap(
+                {
+                  amountIn: amountInBaseUnits,
+                  chain: APP_WALLET_SWAP_CHAIN,
+                  slippageBps: Number(PREVIEW_SLIPPAGE_BPS),
+                  tokenIn,
+                  tokenOut,
+                  walletAddress: walletAddress!,
+                  walletId: arcWallet?.id ?? "",
+                },
+                userToken ?? "",
+                { signal: controller.signal },
+              )
+            : await quoteAppWalletSwap(
+                {
+                  amountIn: amountInBaseUnits,
+                  chain: APP_WALLET_SWAP_CHAIN,
+                  fromAddress: walletAddress!,
+                  tokenIn,
+                  tokenOut,
+                  ...(automaticAppWalletProvider
+                    ? { provider: automaticAppWalletProvider }
+                    : {}),
+                },
+                { signal: controller.signal },
+              );
 
         if (
           cancelled ||
@@ -1076,6 +1104,7 @@ export function SwapScreen() {
       }
     };
   }, [
+    arcWallet?.id,
     amountInBaseUnits,
     appWalletQuoteRequestKey,
     automaticAppWalletProvider,
@@ -1090,6 +1119,7 @@ export function SwapScreen() {
     tokenIn,
     tokenOut,
     walletAddress,
+    userToken,
   ]);
 
   useEffect(() => {
@@ -1114,11 +1144,7 @@ export function SwapScreen() {
   ]);
 
   useEffect(() => {
-    if (
-      !isExternalWalletMode ||
-      !externalQuoteRequestKey ||
-      modeBlockMessage
-    ) {
+    if (!isExternalWalletMode || !externalQuoteRequestKey || modeBlockMessage) {
       return;
     }
 
@@ -2256,7 +2282,11 @@ export function SwapScreen() {
               <div className="rounded-xl border border-sky-500/25 bg-sky-500/5 px-4 py-3 text-sm text-sky-100">
                 {isStablefxQuote
                   ? "For App Wallet swaps, WizPay uses a Treasury execution wallet to complete StableFX because Circle App Wallets on Arc are smart contract accounts."
-                  : "App Wallet swap settles securely through WizPay. Approve the deposit and your swap will complete automatically."}
+                  : displayedAppWalletProvider === "xylonet"
+                    ? "User-Controlled App Wallet: two Circle confirmations execute approval and swap directly through WizPaySwapExecutorV2 and XyloNet. No treasury deposit or developer-controlled signing is used."
+                    : displayedAppWalletProvider === "swapkit"
+                      ? "SwapKit App Wallet execution is unavailable and will not fall back to treasury."
+                      : "App Wallet execution mode is selected by the active provider."}
               </div>
             ) : null}
 
@@ -2388,7 +2418,8 @@ export function SwapScreen() {
             <p>
               Only Arc Testnet USDC and EURC are enabled. External wallets sign
               directly via the connected browser wallet. App Wallet swaps are
-              settled securely by WizPay after you approve the deposit.
+              executed from your Circle User-Controlled Wallet through separate
+              approval and swap confirmations.
             </p>
           </CardContent>
         </Card>

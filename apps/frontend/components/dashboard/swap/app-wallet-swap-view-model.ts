@@ -22,7 +22,9 @@ export type AppWalletSwapPhase =
 export function getAppWalletQuoteProvider(
   quote: { provider?: unknown } | null,
 ): AppWalletSwapProvider | undefined {
-  return quote?.provider === "stablefx" || quote?.provider === "swapkit"
+  return quote?.provider === "stablefx" ||
+    quote?.provider === "swapkit" ||
+    quote?.provider === "xylonet"
     ? quote.provider
     : undefined;
 }

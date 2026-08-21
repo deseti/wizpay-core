@@ -3,7 +3,6 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import {
-  createAppWalletOperation,
   createAppWalletQuote,
   renderSwapScreen,
   resetSwapScreenMocks,
@@ -16,7 +15,7 @@ async function requestQuote() {
   });
 
   await waitFor(() =>
-    expect(swapScreenMocks.appWallet.quote).toHaveBeenCalled(),
+    expect(swapScreenMocks.appWallet.xylonetQuote).toHaveBeenCalled(),
   );
 }
 
@@ -26,7 +25,7 @@ async function createOperation() {
   await userEvent.click(screen.getByRole("button", { name: "Confirm swap" }));
 
   await waitFor(() =>
-    expect(swapScreenMocks.appWallet.createOperation).toHaveBeenCalled(),
+    expect(swapScreenMocks.appWallet.xylonetCreateOperation).toHaveBeenCalled(),
   );
 }
 
@@ -46,7 +45,7 @@ describe("SwapScreen App Wallet provider ownership", () => {
   it("does not expose a manual App Wallet provider selector", async () => {
     renderSwapScreen();
     expect(screen.getAllByRole("combobox")).toHaveLength(2);
-    expect(screen.queryByText("XyloNet")).toBeNull();
+    expect(screen.queryByText("XyloNet Direct")).toBeNull();
   });
 
   it("keeps External Wallet provider state independent", async () => {
@@ -67,35 +66,40 @@ describe("SwapScreen App Wallet provider ownership", () => {
 
     externalView.unmount();
 
-    expect(swapScreenMocks.appWallet.quote).not.toHaveBeenCalled();
+    expect(swapScreenMocks.appWallet.xylonetQuote).not.toHaveBeenCalled();
     expect(swapScreenMocks.external.quote).not.toHaveBeenCalled();
   });
 
   it("sends the automatically resolved App Wallet provider in the quote request", async () => {
     renderSwapScreen();
 
-    swapScreenMocks.appWallet.quote.mockResolvedValue(
-      createAppWalletQuote("swapkit"),
+    swapScreenMocks.appWallet.xylonetQuote.mockResolvedValue(
+      createAppWalletQuote("xylonet", {
+        operationMode: "direct-user-controlled",
+      }),
     );
 
     await requestQuote();
 
-    expect(swapScreenMocks.appWallet.quote).toHaveBeenLastCalledWith(
-      expect.objectContaining({ provider: "swapkit" }),
+    expect(swapScreenMocks.appWallet.xylonetQuote).toHaveBeenLastCalledWith(
+      expect.objectContaining({ walletId: "circle-wallet-1" }),
+      "circle-user-token",
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
   });
 
   it("adopts the provider returned by a backend-default quote", async () => {
-    swapScreenMocks.appWallet.quote.mockResolvedValue(
-      createAppWalletQuote("swapkit"),
+    swapScreenMocks.appWallet.xylonetQuote.mockResolvedValue(
+      createAppWalletQuote("xylonet", {
+        operationMode: "direct-user-controlled",
+      }),
     );
 
     renderSwapScreen();
 
     await requestQuote();
 
-    expect(screen.getAllByText("SwapKit").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("XyloNet Direct").length).toBeGreaterThan(0);
   });
 
   it("invalidates the old quote when automatic routing changes", async () => {
@@ -103,7 +107,7 @@ describe("SwapScreen App Wallet provider ownership", () => {
 
     await requestQuote();
 
-    expect(swapScreenMocks.appWallet.quote).toHaveBeenCalledTimes(1);
+    expect(swapScreenMocks.appWallet.xylonetQuote).toHaveBeenCalledTimes(1);
 
     fireEvent.change(screen.getByPlaceholderText("0.0"), {
       target: { value: "10" },
@@ -114,11 +118,11 @@ describe("SwapScreen App Wallet provider ownership", () => {
     );
 
     await waitFor(() =>
-      expect(swapScreenMocks.appWallet.quote).toHaveBeenCalledTimes(2),
+      expect(swapScreenMocks.appWallet.quote).toHaveBeenCalledTimes(1),
     );
 
     expect(swapScreenMocks.appWallet.quote).toHaveBeenNthCalledWith(
-      2,
+      1,
       expect.objectContaining({ provider: "stablefx" }),
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
@@ -132,13 +136,9 @@ describe("SwapScreen App Wallet provider ownership", () => {
   });
 
   it("creates an operation with the provider on the valid quote", async () => {
-    swapScreenMocks.appWallet.quote.mockResolvedValue(
-      createAppWalletQuote("swapkit"),
-    );
-
-    swapScreenMocks.appWallet.createOperation.mockResolvedValue(
-      createAppWalletOperation("awaiting_user_deposit", {
-        provider: "swapkit",
+    swapScreenMocks.appWallet.xylonetQuote.mockResolvedValue(
+      createAppWalletQuote("xylonet", {
+        operationMode: "direct-user-controlled",
       }),
     );
 
@@ -146,48 +146,32 @@ describe("SwapScreen App Wallet provider ownership", () => {
 
     await createOperation();
 
-    expect(swapScreenMocks.appWallet.createOperation).toHaveBeenCalledWith(
-      expect.objectContaining({ provider: "swapkit" }),
+    expect(
+      swapScreenMocks.appWallet.xylonetCreateOperation,
+    ).toHaveBeenCalledWith(
+      expect.objectContaining({ walletId: "circle-wallet-1" }),
+      "circle-user-token",
     );
   });
 
   it("uses operation.provider as authoritative and locks the selector", async () => {
-    swapScreenMocks.appWallet.quote.mockResolvedValue(
-      createAppWalletQuote("swapkit"),
-    );
-
-    swapScreenMocks.appWallet.createOperation.mockResolvedValue(
-      createAppWalletOperation("awaiting_user_deposit", {
-        provider: "swapkit",
-      }),
-    );
-
     renderSwapScreen();
 
     await createOperation();
 
-    expect(screen.getAllByText("SwapKit").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("XyloNet Direct").length).toBeGreaterThan(0);
     expect(
-      within(await screen.findByRole("dialog")).getByText("SwapKit"),
+      within(await screen.findByRole("dialog")).getByText("XyloNet"),
     ).toBeInTheDocument();
   });
 
-  it("does not let a legacy operation with missing provider inherit the current selector", async () => {
-    swapScreenMocks.appWallet.quote.mockResolvedValue(
-      createAppWalletQuote("swapkit"),
-    );
-
-    swapScreenMocks.appWallet.createOperation.mockResolvedValue(
-      createAppWalletOperation("awaiting_user_deposit", {
-        provider: undefined,
-      }),
-    );
-
+  it("displays the actual User-Controlled execution mode", async () => {
     renderSwapScreen();
-
     await createOperation();
     expect(
-      within(await screen.findByRole("dialog")).getByText("Unavailable"),
+      within(await screen.findByRole("dialog")).getByText(
+        "User-Controlled direct",
+      ),
     ).toBeInTheDocument();
   });
 });

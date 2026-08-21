@@ -6,7 +6,10 @@
 
 **Direct App Wallet Swap using `@circle-fin/adapter-circle-wallets` is NOT supported for user-controlled (App) wallets.** The adapter is designed exclusively for developer-controlled wallets and requires server-side `apiKey` + `entitySecret`. It cannot execute transactions on behalf of a user-controlled wallet without the user's PIN/passkey challenge flow.
 
-The treasury-mediated flow remains the correct production path for App Wallet swaps.
+The treasury-mediated path is not an acceptable fallback for SwapKit App Wallet
+swaps under the current custody requirement. SwapKit App Wallet execution must
+remain fail-closed until Circle documents a supported User-Controlled Wallet
+adapter or an official SwapKit-to-W3S handoff.
 
 ---
 
@@ -123,7 +126,7 @@ The current `AppWalletSwapService.executeTreasurySwapWithCircleWalletAdapter()` 
 
 ## Recommendation
 
-**Keep the treasury-mediated flow as the production path for App Wallet swaps.**
+**Fail SwapKit App Wallet execution closed. Do not route it through treasury.**
 
 The direct App Wallet Swap path is **blocked** due to:
 1. `@circle-fin/adapter-circle-wallets` is developer-controlled only
@@ -140,7 +143,10 @@ If Circle releases a user-controlled wallet adapter for App Kit in the future, t
 
 ## Feature Flag
 
-No implementation is warranted. The feature flag `APP_WALLET_DIRECT_SWAP_ENABLED=false` is documented here for future reference if the blocker is resolved.
+`APP_WALLET_SWAPKIT_USER_CONTROLLED_ENABLED` selects the intended custody
+mode, but does not override protocol support. When `true`, the backend reports
+that the official user-controlled integration is unavailable. When `false`, it
+reports that the path is disabled. Neither state invokes treasury execution.
 
 ---
 

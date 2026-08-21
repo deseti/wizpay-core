@@ -3,7 +3,10 @@
 import { useCallback, useRef } from "react";
 import type React from "react";
 import type { WebAuthnCredential } from "@circle-fin/modular-wallets-core";
-import type { PasskeyChainRuntime, PasskeyRuntimeSet } from "@/lib/circle-passkey";
+import type {
+  PasskeyChainRuntime,
+  PasskeyRuntimeSet,
+} from "@/lib/circle-passkey";
 import {
   ensureBackendWallet,
   initializeBackendWallets,
@@ -14,6 +17,7 @@ import { readStoredPasskeyCredential } from "@/lib/circle-passkey";
 import {
   SUPPORTED_WALLET_CHAINS,
   isPasskeySession,
+  isRecord,
   getErrorMessage,
   clearCircleOAuthBackups,
   writeStoredJson,
@@ -32,7 +36,9 @@ export interface WalletLoaderDeps {
     username: string | null;
   }) => Promise<PasskeyRuntimeSet>;
   resetPasskeyRuntimeState: () => void;
-  passkeyRuntimeByWalletIdRef: React.MutableRefObject<Map<string, PasskeyChainRuntime>>;
+  passkeyRuntimeByWalletIdRef: React.MutableRefObject<
+    Map<string, PasskeyChainRuntime>
+  >;
   setWallets: (v: CircleUserWallet[]) => void;
   setArcWallet: (v: CircleUserWallet | null) => void;
   setSepoliaWallet: (v: CircleUserWallet | null) => void;
@@ -226,12 +232,16 @@ export function useWalletLoader({
               raw?: unknown;
             };
 
-            if (isRecord(error) && (typeof error.code === "number" || typeof error.code === "string")) {
+            if (
+              isRecord(error) &&
+              (typeof error.code === "number" || typeof error.code === "string")
+            ) {
               nextError.code = error.code;
             } else if (
               isRecord(error) &&
               isRecord(error.error) &&
-              (typeof error.error.code === "number" || typeof error.error.code === "string")
+              (typeof error.error.code === "number" ||
+                typeof error.error.code === "string")
             ) {
               nextError.code = error.error.code;
             }
