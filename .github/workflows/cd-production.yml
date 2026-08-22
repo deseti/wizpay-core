@@ -42,8 +42,24 @@ jobs:
              git merge --ff-only origin/main
              docker compose build backend frontend
              docker compose up -d backend frontend
-             test "$(docker inspect -f "{{.State.Health.Status}}" wizpay-backend-1)" = "healthy"
-             test "$(docker inspect -f "{{.State.Health.Status}}" wizpay-frontend-1)" = "healthy"
+             containers_healthy=false
+             for attempt in $(seq 1 30); do
+               backend_health=$(docker inspect -f "{{.State.Health.Status}}" wizpay-backend-1 2>/dev/null || true)
+               frontend_health=$(docker inspect -f "{{.State.Health.Status}}" wizpay-frontend-1 2>/dev/null || true)
+               if [ "$backend_health" = "healthy" ] && [ "$frontend_health" = "healthy" ]; then
+                 containers_healthy=true
+                 break
+               fi
+               if [ "$attempt" -lt 30 ]; then
+                 sleep 5
+               fi
+             done
+             if [ "$containers_healthy" != "true" ]; then
+               docker compose ps
+               docker compose logs --tail=100 backend
+               docker compose logs --tail=100 frontend
+               exit 1
+             fi
              curl -fsS http://127.0.0.1:3000 >/dev/null
-             curl -fsS http://127.0.0.1:4000/health >/dev/null
+             curl -fsS http://127.0.0.1:4000/tasks >/dev/null
              docker compose ps'
