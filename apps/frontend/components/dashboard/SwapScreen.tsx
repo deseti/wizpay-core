@@ -50,6 +50,7 @@ import {
   type AppWalletSwapProvider,
   type AppWalletSwapQuoteResponse,
 } from "@/lib/app-wallet-swap-service";
+import { resolveAutomaticAppWalletProvider } from "@/lib/app-wallet-provider-routing";
 import {
   USER_SWAP_CHAIN,
   createStablefxFundingPresign,
@@ -205,20 +206,6 @@ function addressesMatch(first: string | undefined, second: string | undefined) {
 
 const APP_WALLET_QUOTE_DEBOUNCE_MS = 500;
 const EXTERNAL_WALLET_QUOTE_DEBOUNCE_MS = 500;
-const APP_WALLET_ROUTING_THRESHOLD_BASE_UNITS = 10_000_000n;
-
-function resolveAutomaticAppWalletProvider(
-  amountInBaseUnits: string,
-): AppWalletSwapProvider | undefined {
-  if (!/^\d+$/.test(amountInBaseUnits) || BigInt(amountInBaseUnits) <= 0n) {
-    return undefined;
-  }
-
-  return BigInt(amountInBaseUnits) < APP_WALLET_ROUTING_THRESHOLD_BASE_UNITS
-    ? "xylonet"
-    : "stablefx";
-}
-
 function buildAppWalletQuoteRequestKey(input: {
   amountIn: string;
   fromAddress: string;

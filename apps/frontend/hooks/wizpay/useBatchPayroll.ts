@@ -5,6 +5,7 @@ import { formatUnits } from "viem";
 
 import { backendFetch } from "@/lib/backend-api";
 import { PayrollFxRecoveryError } from "@/lib/payroll-fx-settlement-service";
+import { allocateVerifiedPayrollOutput } from "@/lib/payroll-output-allocation";
 import { useActiveWalletAddress } from "@/hooks/useActiveWalletAddress";
 import {
   getFriendlyErrorMessage,
@@ -33,6 +34,9 @@ export interface PreSwapResult {
   settledToken: TokenSymbol;
   /** Swap transaction hash */
   txHash: string | null;
+  provider?: "xylonet" | "stablefx";
+  outputToken?: TokenSymbol;
+  verifiedActualOutput?: string;
 }
 
 function logPayrollRouteDiagnostic(label: string, value: unknown) {
@@ -72,6 +76,10 @@ interface UseBatchPayrollOptions {
     targetToken: TokenSymbol;
     /** Aggregate source amount in the same base-unit shape used by /swap */
     amount: string;
+    /** Unbuffered aggregate amount used for exact provider routing. */
+    routingAmount: string;
+    /** Recipient payout total that the confirmed output must cover. */
+    minimumRequiredOutput: string;
   }) => Promise<PreSwapResult>;
   getPreSwapPayoutAmounts?: (
     targetToken: TokenSymbol,
@@ -500,6 +508,10 @@ export function useBatchPayroll({
         targetToken: TokenSymbol;
       }[] = [];
       let didSwap = false;
+      const confirmedPayoutAmounts = new Map<
+        TokenSymbol,
+        Map<string, string>
+      >();
 
       if (crossTargets && crossTargets.length > 0 && executePreSwap) {
         // Process each cross-currency target group
@@ -558,7 +570,7 @@ export function useBatchPayroll({
           );
 
           setStatusMessage(
-            `Swapping ${activeToken.symbol} -> ${targetToken} via official adapter...`,
+            `Swapping ${activeToken.symbol} -> ${targetToken} via selected provider...`,
           );
 
           // Track FX status for recovery UX
@@ -586,6 +598,8 @@ export function useBatchPayroll({
               sourceToken: activeToken.symbol,
               targetToken,
               amount: crossAmountWithBuffer,
+              routingAmount: crossAmount,
+              minimumRequiredOutput: quotedTargetAmount.toString(),
             });
           } catch (preSwapError) {
             // If the error is a PayrollFxRecoveryError, funding DID happen —
@@ -606,6 +620,35 @@ export function useBatchPayroll({
                 ? { ...prev, currentStep: "payout_confirmed", payoutTxHash: swapResult.txHash }
                 : prev,
             );
+          }
+
+          if (swapResult.provider === "xylonet") {
+            if (
+              swapResult.outputToken !== targetToken ||
+              !swapResult.verifiedActualOutput
+            ) {
+              throw new Error(
+                "Confirmed XyloNet Payroll output is missing or has the wrong token.",
+              );
+            }
+            const crossRecipients = allRecipients.filter(
+              (recipient) => recipient.targetToken === targetToken,
+            );
+            confirmedPayoutAmounts.set(
+              targetToken,
+              allocateVerifiedPayrollOutput(
+                swapResult.verifiedActualOutput,
+                crossRecipients.map((recipient) => ({
+                  id: recipient.id,
+                  sourceAmount: parseAmountToUnits(
+                    recipient.amount,
+                    activeToken.decimals,
+                  ).toString(),
+                })),
+              ),
+            );
+          } else {
+            confirmedPayoutAmounts.set(targetToken, payoutAmounts);
           }
 
           didSwap = true;
@@ -630,7 +673,7 @@ export function useBatchPayroll({
           }
 
           // Cross-token: use allocated payout amount from quote
-          const payoutAmounts = getPreSwapPayoutAmounts?.(
+          const payoutAmounts = confirmedPayoutAmounts.get(
             recipient.targetToken,
           );
           const payoutAmount = payoutAmounts?.get(recipient.id);
@@ -712,8 +755,8 @@ export function useBatchPayroll({
               0n,
             );
 
-          const payoutAmounts = getPreSwapPayoutAmounts?.(targetToken);
-          const quotedOutput = payoutAmounts
+          const payoutAmounts = confirmedPayoutAmounts.get(targetToken);
+          const availableOutput = payoutAmounts
             ? Array.from(payoutAmounts.values()).reduce(
                 (sum, amount) => sum + BigInt(amount),
                 0n,
@@ -725,22 +768,22 @@ export function useBatchPayroll({
             {
               targetToken,
               totalNeededForTarget: totalNeededForTarget.toString(),
-              quotedOutput: quotedOutput.toString(),
+              availableOutput: availableOutput.toString(),
               sufficient: true,
               humanNeeded: formatUnits(totalNeededForTarget, targetTokenConfig.decimals),
-              humanQuoted: formatUnits(quotedOutput, targetTokenConfig.decimals),
-              note: "Buffer applied to source amount — actual balance should exceed quoted output",
+              humanAvailable: formatUnits(availableOutput, targetTokenConfig.decimals),
+              note: "XyloNet uses receipt-verified output; other providers retain their confirmed payout allocation.",
             },
           );
 
           // This should not trigger with the buffer, but guard against
           // cases where the quote itself is wildly insufficient.
-          if (quotedOutput > 0n && totalNeededForTarget > quotedOutput * 2n) {
+          if (availableOutput > 0n && totalNeededForTarget > availableOutput) {
             const humanNeeded = formatUnits(totalNeededForTarget, targetTokenConfig.decimals);
-            const humanQuoted = formatUnits(quotedOutput, targetTokenConfig.decimals);
+            const humanAvailable = formatUnits(availableOutput, targetTokenConfig.decimals);
 
             setErrorMessage(
-              `Quote mismatch: need ${humanNeeded} ${targetToken} but quote only provides ${humanQuoted} ${targetToken}. ` +
+              `Output mismatch: need ${humanNeeded} ${targetToken} but confirmed allocation only provides ${humanAvailable} ${targetToken}. ` +
               `This may indicate a pricing issue. Swap was completed — ${targetToken} is in your wallet.`,
             );
             return;
@@ -1178,9 +1221,11 @@ export function useBatchPayroll({
         );
 
         const result = await settlePayrollFx({
+          provider: "stablefx",
           sourceToken: activeToken.symbol,
           targetToken,
           sourceAmount: crossAmountWithBuffer,
+          routingAmount: crossAmount,
           referenceId: `PAYROLL-FX-${referenceId}-${targetToken}`,
           walletAddress,
           sourceFundingTxHash: resolvedFundingTxHash,

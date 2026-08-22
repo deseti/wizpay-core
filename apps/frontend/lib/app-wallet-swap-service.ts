@@ -163,6 +163,7 @@ export interface AppWalletXylonetOperationResponse {
   amountIn: string;
   expectedOutput: string;
   minimumOutput: string;
+  verifiedActualOutput?: string;
   slippageBps: number;
   feeBps: number;
   routerAddress: string;

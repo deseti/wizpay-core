@@ -42,6 +42,8 @@ export interface AppWalletXylonetOperationResponse {
   amountIn: string;
   expectedOutput: string;
   minimumOutput: string;
+  /** Receipt-verified target-token output, exposed only after confirmation. */
+  verifiedActualOutput?: string;
   slippageBps: number;
   feeBps: number;
   routerAddress: string;

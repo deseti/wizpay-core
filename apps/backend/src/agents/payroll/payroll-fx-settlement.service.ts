@@ -23,10 +23,12 @@ import {
 // ─── Types ──────────────────────────────────────────────────────────
 
 export interface FxSettlementRequest {
+  provider: 'stablefx';
   sourceToken: string;
   targetToken: string;
   /** Human-readable aggregate amount in source token (e.g. "1500.00") */
   sourceAmount: string;
+  routingAmount: string;
   /** Wallet address of the sender (informational, not used for execution) */
   walletAddress?: string;
   /** Idempotency reference for this settlement */
@@ -102,6 +104,19 @@ export class PayrollFxSettlementService {
    *   prepare swap → execute (direct or adapter) → wait for confirmation.
    */
   async settle(request: FxSettlementRequest): Promise<FxSettlementResult> {
+    if (
+      request.provider !== 'stablefx' ||
+      !/^\d+$/.test(request.routingAmount) ||
+      BigInt(request.routingAmount) < 10_000_000n ||
+      !STABLEFX_PAYROLL_PAIRS.has(
+        `${request.sourceToken.toUpperCase()}->${request.targetToken.toUpperCase()}`,
+      )
+    ) {
+      throw new ServiceUnavailableException({
+        code: 'PAYROLL_FX_PROVIDER_MISMATCH',
+        message: 'Payroll FX settlement is restricted to StableFX for aggregate amounts at or above 10000000 base units.',
+      });
+    }
     const missingConfig = this.getMissingConfig();
 
     if (missingConfig.length > 0) {
@@ -121,104 +136,7 @@ export class PayrollFxSettlementService {
         `treasury=${treasuryAddress}`,
     );
 
-    if (this.shouldUseStablefxSettlement(request)) {
-      return this.settleWithStablefxTreasury(request, treasuryAddress);
-    }
-
-    // ── Step 1: Prepare swap via UserSwapService (App Kit / SwapKit) ──
-    this.logger.log(
-      `Payroll FX prepare request — ` +
-        `tokenIn=${request.sourceToken} tokenOut=${request.targetToken} ` +
-        `amountIn=${request.sourceAmount} chain=${USER_SWAP_ALLOWED_CHAIN} ` +
-        `fromAddress=${treasuryAddress} toAddress=${treasuryAddress} ` +
-        `ref=${request.referenceId}`,
-    );
-
-    let prepared: UserSwapPrepareResponse;
-    try {
-      prepared = await this.userSwapService.prepare({
-        amountIn: request.sourceAmount,
-        chain: USER_SWAP_ALLOWED_CHAIN,
-        fromAddress: treasuryAddress,
-        toAddress: treasuryAddress,
-        tokenIn: request.sourceToken,
-        tokenOut: request.targetToken,
-      });
-    } catch (error) {
-      this.logger.error(
-        `Payroll FX prepare FAILED — ` +
-          `sourceToken=${request.sourceToken} targetToken=${request.targetToken} ` +
-          `sourceAmount=${request.sourceAmount} ref=${request.referenceId} ` +
-          `treasury=${treasuryAddress} ` +
-          `phase=UserSwapService.prepare ` +
-          `errorType=${error?.constructor?.name ?? 'unknown'} ` +
-          `status=${this.extractHttpStatus(error)} ` +
-          `code=${this.extractErrorCode(error)} ` +
-          `message=${this.extractErrorMessage(error)} ` +
-          `details=${this.extractErrorDetails(error)}`,
-      );
-      throw error;
-    }
-
-    this.logger.log(
-      `Payroll FX prepared — expectedOutput=${String(prepared.expectedOutput ?? 'unknown')} ` +
-        `minimumOutput=${String(prepared.minimumOutput ?? 'unknown')}`,
-    );
-
-    // ── Step 2: Execute the swap ──────────────────────────────────────
-    // Try direct contract execution first (transaction.to + transaction.data).
-    // Fall back to adapter execution (executionParams + signature) if direct is unavailable.
-    const directExecution = this.tryBuildDirectContractExecution(prepared.transaction);
-
-    let txHash: string | null;
-
-    if (directExecution) {
-      this.logger.log(
-        `Payroll FX — direct execution path selected ` +
-          `contract=${directExecution.contractAddress}`,
-      );
-      txHash = await this.executeDirectContract(directExecution, request);
-    } else {
-      // Check for adapter-style payload
-      const rawTransaction = this.getRawTransaction(prepared);
-
-      if (!this.hasAdapterPayload(rawTransaction)) {
-        this.logger.error(
-          `Payroll FX — neither direct nor adapter execution possible — ` +
-            `sourceToken=${request.sourceToken} targetToken=${request.targetToken} ` +
-            `ref=${request.referenceId} ` +
-            `transactionKeys=${this.safeKeys(prepared.transaction)} ` +
-            `rawTransactionKeys=${this.safeKeys(rawTransaction)}`,
-        );
-        throw new BadGatewayException({
-          code: 'PAYROLL_FX_SETTLEMENT_EXECUTION_FAILED',
-          message:
-            'Circle Stablecoin Kits swap response did not include an executable transaction. ' +
-            'Neither direct (to+data) nor adapter (executionParams+signature) payload found.',
-        });
-      }
-
-      this.logger.log(
-        `Payroll FX — adapter execution path selected ` +
-          `(executionParams present, direct to/data unavailable)`,
-      );
-      txHash = await this.executeViaAdapter(rawTransaction, prepared, request);
-    }
-
-    this.logger.log(
-      `Payroll FX settled — txHash=${txHash} ` +
-        `sourceToken=${request.sourceToken} targetToken=${request.targetToken} ` +
-        `ref=${request.referenceId}`,
-    );
-
-    return {
-      sourceToken: request.sourceToken,
-      targetToken: request.targetToken,
-      sourceAmount: request.sourceAmount,
-      targetAmount: String(prepared.expectedOutput ?? prepared.minimumOutput ?? request.sourceAmount),
-      txHash,
-      status: 'settled',
-    };
+    return this.settleWithStablefxTreasury(request, treasuryAddress);
   }
 
   private async settleWithStablefxTreasury(
@@ -675,7 +593,6 @@ export class PayrollFxSettlementService {
 
   private getMissingConfig(): string[] {
     const missing: string[] = [];
-    const stablefxSelected = this.isStablefxProviderSelected();
 
     if (this.configService.get<string>('WIZPAY_USER_SWAP_ENABLED') !== 'true') {
       missing.push('WIZPAY_USER_SWAP_ENABLED=true');
@@ -683,13 +600,6 @@ export class PayrollFxSettlementService {
 
     if (this.configService.get<string>('WIZPAY_USER_SWAP_ALLOW_TESTNET') !== 'true') {
       missing.push('WIZPAY_USER_SWAP_ALLOW_TESTNET=true');
-    }
-
-    if (
-      !stablefxSelected &&
-      !this.configService.get<string>('WIZPAY_USER_SWAP_KIT_KEY')?.trim()
-    ) {
-      missing.push('WIZPAY_USER_SWAP_KIT_KEY');
     }
 
     if (

@@ -37,6 +37,7 @@ interface RecipientMobileCardProps {
   errors: Record<string, string>;
   quoteLoading: boolean;
   quoteRefreshing: boolean;
+  swapProviderLabel?: string | null;
   isBusy: boolean;
   recipientCount: number;
   updateRecipient: (
@@ -57,6 +58,7 @@ export function RecipientMobileCard({
   errors,
   quoteLoading,
   quoteRefreshing,
+  swapProviderLabel,
   isBusy,
   recipientCount,
   updateRecipient,
@@ -72,7 +74,7 @@ export function RecipientMobileCard({
             <CardDescription>
               {recipient.targetToken === selectedToken
                 ? "Direct payout"
-                : "Official adapter payout"}
+                : `${swapProviderLabel ?? "Cross-currency provider"} payout`}
             </CardDescription>
           </div>
           <Button
@@ -212,7 +214,7 @@ export function RecipientMobileCard({
                   ? "Refreshing quote..."
                   : recipient.targetToken === selectedToken
                     ? "Same-token payout."
-                    : "Official adapter quote.")}
+                    : `${swapProviderLabel ?? "Cross-currency provider"} quote.`)}
           </p>
         </div>
       </CardContent>

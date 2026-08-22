@@ -591,6 +591,25 @@ describe('AppWalletXylonetUserControlledExecutorService', () => {
     expect(updated.approvalChallengeId).toBe('challenge');
   });
 
+  it('exposes receipt-verified actual output for a confirmed operation', async () => {
+    const created = await service.createOperation(request, USER_TOKEN);
+    const txHash = `0x${'c'.repeat(64)}`;
+    rows.set(created.operationId, {
+      ...rows.get(created.operationId),
+      lifecycleStage: 'completed',
+      terminalStatus: 'confirmed',
+      swapTransactionHash: txHash,
+      completedAt: new Date(),
+    });
+    jest
+      .spyOn(service as any, 'verifySwapReceipt')
+      .mockResolvedValueOnce(987_654n);
+
+    const completed = await service.poll(created.operationId, USER_TOKEN);
+
+    expect(completed.verifiedActualOutput).toBe('987654');
+  });
+
   it('maps a failed Circle transaction to an explicit terminal failure', async () => {
     const created = await service.createOperation(request, USER_TOKEN);
     const row = rows.get(created.operationId);
@@ -639,7 +658,6 @@ describe('AppWalletXylonetUserControlledExecutorService', () => {
         },
       },
     });
-
     const completed = await service.getOperation(
       created.operationId,
       USER_TOKEN,

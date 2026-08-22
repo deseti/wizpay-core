@@ -60,8 +60,17 @@ import {
 } from "@/lib/payroll-fx-settlement-service";
 import {
   APP_WALLET_SWAP_CHAIN,
+  createAppWalletXylonetOperation,
   quoteAppWalletSwap,
+  quoteAppWalletXylonetSwap,
 } from "@/lib/app-wallet-swap-service";
+import { resolveAppWalletPayrollProvider } from "@/lib/app-wallet-provider-routing";
+import { runAppWalletXylonetLifecycle } from "@/lib/app-wallet-xylonet-lifecycle";
+import {
+  readVerifiedXylonetPayrollOutput,
+  validateXylonetPayrollQuote,
+  validateXylonetPayrollOperation,
+} from "@/lib/app-wallet-payroll-xylonet";
 
 const OFFICIAL_PAYROLL_QUOTE_UNAVAILABLE =
   "Official payroll route quote unavailable. Payroll cannot proceed.";
@@ -376,6 +385,7 @@ export function useWizPay(): WizPayState {
     ensureSessionReady,
     executeChallenge,
     getWalletBalances,
+    userToken,
   } = useCircleWallet();
   const publicClient = usePublicClient({ chainId: arcTestnet.id });
   const { data: walletClient } = useWalletClient();
@@ -499,6 +509,13 @@ export function useWizPay(): WizPayState {
       toAddress: quotePreviewAddress,
       chain: USER_SWAP_CHAIN,
     };
+    const payrollProvider = walletMode === "circle"
+      ? resolveAppWalletPayrollProvider({
+          sourceToken: contract.activeToken.symbol,
+          targetToken: crossCurrencyTarget,
+          aggregateAmount: crossCurrencyAmount,
+        })
+      : null;
 
     queueMicrotask(() => {
       if (cancelled) return;
@@ -514,16 +531,42 @@ export function useWizPay(): WizPayState {
       payload,
     );
 
-    quoteUserSwap(payload)
+    const quotePromise = walletMode === "circle"
+      ? payrollProvider === "xylonet" && arcWallet?.id && userToken
+        ? quoteAppWalletXylonetSwap({
+            walletId: arcWallet.id,
+            walletAddress: quotePreviewAddress,
+            chain: APP_WALLET_SWAP_CHAIN,
+            tokenIn: contract.activeToken.symbol,
+            tokenOut: crossCurrencyTarget,
+            amountIn: crossCurrencyAmount,
+            slippageBps: Number(PREVIEW_SLIPPAGE_BPS),
+          }, userToken)
+        : payrollProvider === "stablefx"
+          ? quoteAppWalletSwap({
+              tokenIn: contract.activeToken.symbol,
+              tokenOut: crossCurrencyTarget,
+              amountIn: crossCurrencyAmount,
+              fromAddress: quotePreviewAddress,
+              chain: APP_WALLET_SWAP_CHAIN,
+              provider: "stablefx",
+            })
+          : Promise.reject(new Error("App Wallet payroll provider is unavailable."))
+      : quoteUserSwap(payload);
+
+    quotePromise
       .then((result) => {
         if (cancelled) return;
         const provider = getUserSwapProvider(result);
         const normalizedProvider: UserSwapProvider | null =
-          provider === "stablefx"
-            ? "stablefx"
-            : provider === "swapkit"
-              ? "swapkit"
-              : null;
+          provider === "stablefx" || provider === "swapkit" || provider === "xylonet"
+            ? provider
+            : null;
+        if (walletMode === "circle" && normalizedProvider !== payrollProvider) {
+          throw new Error(
+            `Payroll quote provider mismatch: selected ${payrollProvider}, received ${normalizedProvider}.`,
+          );
+        }
         const expectedOutputValue = getUserSwapExpectedOutputValue(result);
         const minimumOutputValue = getUserSwapMinimumOutputValue(result);
         const expectedOutputParsed = parseUserSwapQuoteAmount(
@@ -601,6 +644,9 @@ export function useWizPay(): WizPayState {
     crossCurrencyAmount,
     quotePreviewAddress,
     contract.activeToken.symbol,
+    walletMode,
+    arcWallet?.id,
+    userToken,
   ]);
 
   // Build official quote summary override for cross-currency
@@ -683,6 +729,8 @@ export function useWizPay(): WizPayState {
       sourceToken: TokenSymbol;
       targetToken: TokenSymbol;
       amount: string;
+      routingAmount: string;
+      minimumRequiredOutput: string;
     }): Promise<PreSwapResult> => {
       if (!externalWalletAddress) {
         throw new Error("Wallet address is not available for swap.");
@@ -1093,6 +1141,8 @@ export function useWizPay(): WizPayState {
       sourceToken: TokenSymbol;
       targetToken: TokenSymbol;
       amount: string;
+      routingAmount: string;
+      minimumRequiredOutput: string;
     }): Promise<PreSwapResult> => {
       if (!walletAddress) {
         throw new Error(
@@ -1104,6 +1154,94 @@ export function useWizPay(): WizPayState {
 
       if (!arcWallet?.id) {
         throw new Error("Arc App Wallet is not ready for payroll funding.");
+      }
+
+      const provider = resolveAppWalletPayrollProvider({
+        sourceToken: params.sourceToken,
+        targetToken: params.targetToken,
+        aggregateAmount: params.routingAmount,
+      });
+      if (!provider || officialQuote.provider !== provider) {
+        throw new Error(
+          `Payroll provider mismatch: selected ${provider ?? "none"}, quoted ${officialQuote.provider ?? "none"}.`,
+        );
+      }
+
+      if (provider === "xylonet") {
+        if (!userToken) {
+          throw new Error("Circle User-Controlled session is unavailable.");
+        }
+        const request = {
+          walletId: arcWallet.id,
+          walletAddress,
+          chain: APP_WALLET_SWAP_CHAIN,
+          tokenIn: params.sourceToken,
+          tokenOut: params.targetToken,
+          amountIn: params.amount,
+          slippageBps: Number(PREVIEW_SLIPPAGE_BPS),
+        } as const;
+        const quote = await quoteAppWalletXylonetSwap(request, userToken);
+        validateXylonetPayrollQuote(quote, {
+          sourceToken: params.sourceToken,
+          targetToken: params.targetToken,
+          amountIn: params.amount,
+          walletAddress,
+        });
+
+        const operation = await createAppWalletXylonetOperation(request, userToken);
+        validateXylonetPayrollOperation(operation, {
+          sourceToken: params.sourceToken,
+          targetToken: params.targetToken,
+          amountIn: params.amount,
+          walletAddress,
+        });
+
+        let latestOperation = operation;
+        let completed;
+        try {
+          completed = await runAppWalletXylonetLifecycle({
+            initialOperation: operation,
+            userToken,
+            executeChallenge,
+            onOperation: (next) => { latestOperation = next; },
+            onRequestStatus: (status) => {
+              setStatusMessage(status === "idle" ? null : `XyloNet Payroll swap: ${status}...`);
+            },
+          });
+        } catch (error) {
+          if (
+            latestOperation.lifecycleStage === "swap_submitted" ||
+            latestOperation.lifecycleStage === "output_verified" ||
+            latestOperation.lifecycleStage === "completed"
+          ) {
+            throw new PayrollFxRecoveryError(
+              error instanceof Error ? error.message : String(error),
+              {
+                settlementTxHash: latestOperation.swapTransactionHash ?? null,
+                step: "xylonet_swap_submitted",
+              },
+            );
+          }
+          throw error;
+        }
+        if (!completed.swapTransactionHash || !isTransactionHash(completed.swapTransactionHash)) {
+          throw new Error(
+            completed.failureReason ?? "XyloNet Payroll swap did not reach confirmed completion.",
+          );
+        }
+        const verifiedActualOutput = readVerifiedXylonetPayrollOutput(completed, {
+          sourceToken: params.sourceToken,
+          targetToken: params.targetToken,
+          amountIn: params.amount,
+          walletAddress,
+        });
+        return {
+          settledToken: params.targetToken,
+          txHash: completed.swapTransactionHash as Hex,
+          provider: "xylonet",
+          outputToken: completed.tokenOut,
+          verifiedActualOutput,
+        };
       }
 
       logOfficialQuoteDiagnostic(
@@ -1123,7 +1261,14 @@ export function useWizPay(): WizPayState {
         amountIn: params.amount,
         fromAddress: walletAddress,
         chain: APP_WALLET_SWAP_CHAIN,
+        provider: "stablefx",
       });
+      if (
+        fundingQuote.provider !== "stablefx" ||
+        !fundingQuote.treasuryDepositAddress
+      ) {
+        throw new Error("StableFX Payroll funding quote validation failed.");
+      }
 
       const balances = await getWalletBalances(arcWallet.id);
       const sourceTokenConfig = SUPPORTED_TOKENS[params.sourceToken];
@@ -1337,9 +1482,11 @@ export function useWizPay(): WizPayState {
         );
 
         const result = await settlePayrollFx({
+          provider: "stablefx",
           sourceToken: params.sourceToken,
           targetToken: params.targetToken,
           sourceAmount: params.amount,
+          routingAmount: params.routingAmount,
           referenceId: `PAYROLL-FX-${referenceId}-${params.targetToken}`,
           walletAddress,
           sourceFundingTxHash,
@@ -1364,6 +1511,12 @@ export function useWizPay(): WizPayState {
           throw new Error(
             `App Wallet FX settlement failed: status=${result.status}, txHash=${result.txHash ?? "null"}`,
           );
+        }
+        if (
+          !/^\d+$/.test(result.targetAmount) ||
+          BigInt(result.targetAmount) < BigInt(params.minimumRequiredOutput)
+        ) {
+          throw new Error("StableFX output cannot cover the required Payroll payout.");
         }
 
         const payoutHash = (result.payoutTxHash ?? result.txHash) as Hex;
@@ -1421,7 +1574,7 @@ export function useWizPay(): WizPayState {
       }
     },
     [
-      arcWallet?.id,
+      arcWallet,
       createTransferChallenge,
       ensureSessionReady,
       executeChallenge,
@@ -1429,6 +1582,8 @@ export function useWizPay(): WizPayState {
       publicClient,
       referenceId,
       setStatusMessage,
+      officialQuote.provider,
+      userToken,
       walletAddress,
     ],
   );
@@ -1501,7 +1656,9 @@ export function useWizPay(): WizPayState {
   const officialQuoteProviderLabel =
     officialQuoteProvider === "stablefx"
       ? STABLEFX_PROVIDER_LABEL
-      : null;
+      : officialQuoteProvider === "xylonet"
+        ? "XyloNet Direct"
+        : null;
 
   // StableFX payroll execution is available for both wallet modes:
   // External Wallet uses the browser-wallet executePreSwap path, and App

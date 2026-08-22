@@ -8,16 +8,12 @@ import {
   APP_WALLET_SWAP_CHAIN,
   attachAppWalletSwapDepositTxHash,
   confirmAppWalletSwapDeposit,
-  createAppWalletXylonetApprovalChallenge,
   createAppWalletXylonetOperation,
-  createAppWalletXylonetSwapChallenge,
   createAppWalletSwapOperation,
   executeAppWalletSwapOperation as executeOperationRequest,
   getAppWalletXylonetOperation,
-  pollAppWalletXylonetOperation,
   quoteAppWalletSwap,
   quoteAppWalletXylonetSwap,
-  recordAppWalletXylonetChallengeResult,
   refundAppWalletSwapOperation,
   resolveAppWalletSwapDepositTxHash as resolveDepositTxHashRequest,
   submitAppWalletSwapDeposit as submitDepositRequest,
@@ -26,6 +22,7 @@ import {
   type AppWalletSwapQuoteResponse,
   type AppWalletXylonetOperationResponse,
 } from "@/lib/app-wallet-swap-service";
+import { runAppWalletXylonetLifecycle } from "@/lib/app-wallet-xylonet-lifecycle";
 import { findFirstString } from "@/lib/user-swap-quote-parser";
 import {
   SUPPORTED_TOKENS,
@@ -172,51 +169,7 @@ function isXylonetOperation(
   return operation.executionMode === "direct-user-controlled";
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
-
-function readValidatedChallengeStatus(result: unknown) {
-  const status =
-    isRecord(result) && typeof result.status === "string"
-      ? result.status.toUpperCase()
-      : null;
-  if (
-    status === "COMPLETE" ||
-    status === "FAILED" ||
-    status === "CANCELLED" ||
-    status === "REJECTED" ||
-    status === "EXPIRED"
-  ) {
-    return status;
-  }
-  throw new Error(
-    "Circle challenge callback did not return a validated terminal status.",
-  );
-}
-
-function classifyChallengeError(error: unknown) {
-  const message = getFriendlyErrorMessage(error);
-  const normalized = message.toLowerCase();
-  const status = normalized.includes("cancel")
-    ? "CANCELLED"
-    : normalized.includes("reject") || normalized.includes("denied")
-      ? "REJECTED"
-      : normalized.includes("expir")
-        ? "EXPIRED"
-        : normalized.includes("timeout") || normalized.includes("timed out")
-          ? "TIMED_OUT"
-          : "FAILED";
-  return { status, reason: message } as const;
-}
-
 const XYLONET_OPERATION_STORAGE_PREFIX = "wizpay:xylonet-app-wallet-operation:";
-const XYLONET_POLL_INTERVAL_MS = 3_000;
-const XYLONET_MAX_POLL_ATTEMPTS = 61;
-
-function wait(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 export function useAppWalletSwapOperation({
   appWalletSwapProvider,
@@ -530,102 +483,15 @@ export function useAppWalletSwapOperation({
       if (directExecutionInFlightRef.current) return;
       directExecutionInFlightRef.current = true;
 
-      const pollUntil = async (
-        current: AppWalletXylonetOperationResponse,
-        target: "approval_confirmed" | "completed",
-      ) => {
-        for (let attempt = 0; attempt < XYLONET_MAX_POLL_ATTEMPTS; attempt++) {
-          const next = persistDirectOperation(
-            await pollAppWalletXylonetOperation(current.operationId, userToken),
-          );
-          if (next.lifecycleStage === target || next.terminalStatus)
-            return next;
-          current = next;
-          await wait(XYLONET_POLL_INTERVAL_MS);
-        }
-        throw new Error(
-          "Transaction polling timed out before a terminal backend state was returned.",
-        );
-      };
-
-      const executeStage = async (
-        current: AppWalletXylonetOperationResponse,
-        stage: "approval" | "swap",
-      ) => {
-        const challengeId =
-          stage === "approval"
-            ? current.approvalChallengeId
-            : current.swapChallengeId;
-        if (!challengeId) throw new Error(`${stage} challenge ID is missing.`);
-        setRequestStatus("signing");
-        setIsOperationOpen(false);
-        try {
-          const result = await executeChallenge(challengeId);
-          const status = readValidatedChallengeStatus(result);
-          return persistDirectOperation(
-            await recordAppWalletXylonetChallengeResult(
-              current.operationId,
-              stage,
-              { status },
-              userToken,
-            ),
-          );
-        } catch (error) {
-          const terminal = classifyChallengeError(error);
-          const failed = await recordAppWalletXylonetChallengeResult(
-            current.operationId,
-            stage,
-            terminal,
-            userToken,
-          ).catch(() => null);
-          if (failed) persistDirectOperation(failed);
-          throw error;
-        } finally {
-          setIsOperationOpen(true);
-        }
-      };
-
       try {
-        let current = persistDirectOperation(initialOperation);
-        if (
-          current.lifecycleStage === "created" ||
-          current.lifecycleStage === "approval_challenge_creating"
-        ) {
-          setRequestStatus("approving");
-          current = persistDirectOperation(
-            await createAppWalletXylonetApprovalChallenge(
-              current.operationId,
-              userToken,
-            ),
-          );
-        }
-        if (current.lifecycleStage === "awaiting_approval_confirmation") {
-          current = await executeStage(current, "approval");
-        }
-        if (current.lifecycleStage === "approval_submitted") {
-          setRequestStatus("confirming");
-          current = await pollUntil(current, "approval_confirmed");
-        }
-        if (current.terminalStatus) return;
-        if (
-          current.lifecycleStage === "approval_confirmed" ||
-          current.lifecycleStage === "swap_challenge_creating"
-        ) {
-          setRequestStatus("executing");
-          current = persistDirectOperation(
-            await createAppWalletXylonetSwapChallenge(
-              current.operationId,
-              userToken,
-            ),
-          );
-        }
-        if (current.lifecycleStage === "awaiting_swap_confirmation") {
-          current = await executeStage(current, "swap");
-        }
-        if (current.lifecycleStage === "swap_submitted") {
-          setRequestStatus("settling");
-          current = await pollUntil(current, "completed");
-        }
+        const current = await runAppWalletXylonetLifecycle({
+          initialOperation,
+          userToken,
+          executeChallenge,
+          onOperation: persistDirectOperation,
+          onRequestStatus: setRequestStatus,
+          onChallengeVisibilityChange: setIsOperationOpen,
+        });
 
         if (current.lifecycleStage === "completed") {
           if (arcWallet?.id)
@@ -642,7 +508,6 @@ export function useAppWalletSwapOperation({
         }
       } finally {
         directExecutionInFlightRef.current = false;
-        setRequestStatus("idle");
       }
     },
     [

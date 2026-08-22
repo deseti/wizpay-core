@@ -542,8 +542,13 @@ export class AppWalletXylonetUserControlledExecutorService {
   ): Promise<AppWalletXylonetOperationResponse> {
     let operation = await this.getOwnedOperation(operationId, userToken);
     if (operation.terminalStatus) {
+      operation = await this.reconcileCompletedSwapTransactionHash(
+        operation,
+        userToken,
+      );
       return this.toPublic(
-        await this.reconcileCompletedSwapTransactionHash(operation, userToken),
+        operation,
+        await this.getVerifiedActualOutput(operation),
       );
     }
     if (
@@ -567,7 +572,29 @@ export class AppWalletXylonetUserControlledExecutorService {
     } else if (operation.lifecycleStage === 'swap_submitted') {
       operation = await this.pollStage(operation, 'swap', userToken);
     }
-    return this.toPublic(operation);
+    return this.toPublic(
+      operation,
+      await this.getVerifiedActualOutput(operation),
+    );
+  }
+
+  private async getVerifiedActualOutput(
+    operation: AppWalletXylonetOperation,
+  ): Promise<string | undefined> {
+    if (
+      operation.lifecycleStage !== 'completed' ||
+      operation.terminalStatus !== 'confirmed' ||
+      !operation.swapTransactionHash
+    ) {
+      return undefined;
+    }
+
+    return (
+      await this.verifySwapReceipt(
+        operation,
+        operation.swapTransactionHash as Hash,
+      )
+    ).toString();
   }
 
   private async pollStage(
@@ -1403,6 +1430,7 @@ export class AppWalletXylonetUserControlledExecutorService {
 
   private toPublic(
     operation: AppWalletXylonetOperation,
+    verifiedActualOutput?: string,
   ): AppWalletXylonetOperationResponse {
     return {
       operationId: operation.operationId,
@@ -1420,6 +1448,7 @@ export class AppWalletXylonetUserControlledExecutorService {
       amountIn: operation.amountIn,
       expectedOutput: operation.expectedOutput,
       minimumOutput: operation.minimumOutput,
+      ...(verifiedActualOutput ? { verifiedActualOutput } : {}),
       slippageBps: operation.slippageBps,
       feeBps: operation.feeBps,
       routerAddress: operation.routerAddress,

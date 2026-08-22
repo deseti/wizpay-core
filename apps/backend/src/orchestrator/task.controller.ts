@@ -137,6 +137,11 @@ export class TaskController {
       typeof body.sourceToken === 'string' && body.sourceToken.trim()
         ? body.sourceToken.trim()
         : '';
+    const provider = body.provider === 'stablefx' ? 'stablefx' : '';
+    const routingAmount =
+      typeof body.routingAmount === 'string' && /^\d+$/.test(body.routingAmount)
+        ? body.routingAmount
+        : '';
     const targetToken =
       typeof body.targetToken === 'string' && body.targetToken.trim()
         ? body.targetToken.trim()
@@ -162,6 +167,17 @@ export class TaskController {
     if (!sourceToken || !targetToken || !sourceAmount || !referenceId) {
       throw new BadRequestException(
         'Missing required fields: sourceToken, targetToken, sourceAmount, referenceId',
+      );
+    }
+
+    if (provider !== 'stablefx' || !routingAmount) {
+      throw new BadRequestException(
+        'StableFX provider and routingAmount are required for Payroll FX settlement.',
+      );
+    }
+    if (BigInt(routingAmount) < 10_000_000n) {
+      throw new BadRequestException(
+        'StableFX Payroll settlement requires an aggregate amount of at least 10000000 base units.',
       );
     }
 
@@ -241,9 +257,11 @@ export class TaskController {
 
     // Step 1: Execute the swap (treasury swaps sourceToken → targetToken)
     const settlement = await this.payrollFxSettlementService.settle({
+      provider,
       sourceToken,
       targetToken,
       sourceAmount,
+      routingAmount,
       referenceId,
       walletAddress,
     });

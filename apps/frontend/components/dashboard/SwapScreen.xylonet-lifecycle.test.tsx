@@ -159,7 +159,10 @@ describe("SwapScreen direct User-Controlled XyloNet lifecycle", () => {
       }),
     );
     swapScreenMocks.appWallet.xylonetPoll.mockResolvedValueOnce(
-      createXylonetOperation("completed", { terminalStatus: "confirmed" }),
+      createXylonetOperation("completed", {
+        terminalStatus: "confirmed",
+        verifiedActualOutput: "980000",
+      }),
     );
     renderSwapScreen();
 

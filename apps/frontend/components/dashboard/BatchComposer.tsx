@@ -184,7 +184,7 @@ export function BatchComposer({
                 variant="outline"
                 className="font-mono text-[11px] border-primary/20 text-primary/70 bg-primary/5"
               >
-                Official adapter route
+                {swapProviderLabel ?? "Direct Payroll route"}
               </Badge>
               <Badge
                 variant="outline"
@@ -313,6 +313,7 @@ export function BatchComposer({
                     errors={errors}
                     quoteLoading={quoteLoading}
                     quoteRefreshing={quoteRefreshing}
+                    swapProviderLabel={swapProviderLabel}
                     isBusy={isBusy}
                     recipientCount={recipients.length}
                     updateRecipient={updateRecipient}
@@ -338,6 +339,7 @@ export function BatchComposer({
                 errors={errors}
                 quoteLoading={quoteLoading}
                 quoteRefreshing={quoteRefreshing}
+                swapProviderLabel={swapProviderLabel}
                 isBusy={isBusy}
                 recipientCount={recipients.length}
                 updateRecipient={updateRecipient}

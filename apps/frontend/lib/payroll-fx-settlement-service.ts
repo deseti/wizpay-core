@@ -57,10 +57,13 @@ export class PayrollFxRecoveryError extends Error {
 }
 
 export interface PayrollFxSettleRequest {
+  provider: "stablefx";
   sourceToken: TokenSymbol;
   targetToken: TokenSymbol;
   /** Aggregate source amount in base units (e.g. "5000000" for 5 USDC) */
   sourceAmount: string;
+  /** Unbuffered aggregate used to enforce the approved provider boundary. */
+  routingAmount: string;
   /** Idempotency reference for this settlement */
   referenceId: string;
   /** Wallet address of the sender (informational) */

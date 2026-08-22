@@ -31,6 +31,7 @@ interface RecipientRowProps {
   errors: Record<string, string>;
   quoteLoading: boolean;
   quoteRefreshing: boolean;
+  swapProviderLabel?: string | null;
   isBusy: boolean;
   recipientCount: number;
   updateRecipient: (
@@ -51,6 +52,7 @@ export function RecipientRow({
   errors,
   quoteLoading,
   quoteRefreshing,
+  swapProviderLabel,
   isBusy,
   recipientCount,
   updateRecipient,
@@ -179,7 +181,7 @@ export function RecipientRow({
                   ? "Refreshing quote..."
                   : routeIsDirect
                     ? "Same-token payout"
-                    : "Official adapter quote"}
+                    : `${swapProviderLabel ?? "Cross-currency provider"} quote`}
             </p>
           )}
         </div>
@@ -193,7 +195,7 @@ export function RecipientRow({
               : "border-amber-500/20 text-amber-300/80 bg-amber-500/5"
           }
         >
-          {routeIsDirect ? "Direct" : "Official adapter"}
+          {routeIsDirect ? "Direct" : swapProviderLabel ?? "Cross-currency"}
         </Badge>
       </TableCell>
       <TableCell className="text-right">
