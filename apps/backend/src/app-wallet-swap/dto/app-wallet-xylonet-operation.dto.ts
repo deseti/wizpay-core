@@ -1,6 +1,17 @@
-import { IsIn, IsInt, IsNotEmpty, IsString, Max, Min } from 'class-validator';
+import {
+  IsIn,
+  IsInt,
+  IsNotEmpty,
+  IsString,
+  IsUUID,
+  Max,
+  Min,
+} from 'class-validator';
 
 export class AppWalletXylonetOperationDto {
+  @IsUUID('4')
+  idempotencyKey!: string;
+
   @IsString()
   @IsNotEmpty()
   walletId!: string;

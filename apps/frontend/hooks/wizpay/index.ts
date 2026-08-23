@@ -1,10 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { usePublicClient, useWalletClient } from "wagmi";
 import {
   formatUnits,
   getAddress,
   isAddress,
-  type Address,
   type Hex,
 } from "viem";
 import type { QuoteSummary, WizPayState } from "@/lib/types";
@@ -19,22 +18,8 @@ import { useResolvedRecipients } from "./useResolvedRecipients";
 import { isStableFxMode } from "@/lib/fx-config";
 import { arcTestnet } from "@/lib/wagmi";
 import {
-  createArcSwapAdapter,
-  executePreparedArcUserSwap,
-  type CircleSwapToken,
-} from "@/lib/circle-swap-kit";
-import {
-  createStablefxFundingPresign,
-  createStablefxTradableQuote,
-  createStablefxTrade,
-  fundStablefxTrade,
-  getStablefxTrade,
-  prepareUserSwap,
   quoteUserSwap,
   USER_SWAP_CHAIN,
-  type StablefxTradeResponse,
-  type UserSwapProvider,
-  type UserSwapQuoteRequest,
 } from "@/lib/user-swap-service";
 import {
   findFirstString,
@@ -51,7 +36,6 @@ import {
   type TokenSymbol,
 } from "@/lib/wizpay";
 import { useActiveWalletAddress } from "@/hooks/useActiveWalletAddress";
-import { useTransactionExecutor } from "@/hooks/useTransactionExecutor";
 import { BackendApiError } from "@/lib/backend-api";
 import {
   settlePayrollFx,
@@ -64,16 +48,27 @@ import {
   quoteAppWalletSwap,
   quoteAppWalletXylonetSwap,
 } from "@/lib/app-wallet-swap-service";
-import { resolveAppWalletPayrollProvider } from "@/lib/app-wallet-provider-routing";
 import { runAppWalletXylonetLifecycle } from "@/lib/app-wallet-xylonet-lifecycle";
 import {
   readVerifiedXylonetPayrollOutput,
   validateXylonetPayrollQuote,
   validateXylonetPayrollOperation,
 } from "@/lib/app-wallet-payroll-xylonet";
+import { resolvePayrollRoutePolicy } from "@/lib/payroll-route-policy";
+import {
+  beginExternalPayrollBatchSubmission,
+  clearExternalPayrollBatchSubmission,
+  getRecoveredExternalPayrollBatch,
+  recordExternalPayrollBatchConfirmation,
+  runExternalPayrollXylonetSwap,
+  type ExternalPayrollXylonetBinding,
+} from "@/lib/external-payroll-xylonet";
+import { WIZPAY_SWAP_EXECUTOR_V2_ABI } from "@/lib/external-xylonet-swap";
 
 const OFFICIAL_PAYROLL_QUOTE_UNAVAILABLE =
   "Official payroll route quote unavailable. Payroll cannot proceed.";
+
+type PayrollQuoteProvider = "stablefx" | "swapkit" | "xylonet";
 
 // Human-readable label for the StableFX quote provider.
 const STABLEFX_PROVIDER_LABEL = "StableFX";
@@ -181,178 +176,6 @@ function logOfficialQuoteDiagnostic(
   console.debug(label, value);
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
-
-function requireStablefxString(value: unknown, label: string) {
-  if (typeof value === "string" && value.trim()) {
-    return value.trim();
-  }
-
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return String(value);
-  }
-
-  throw new Error(`StableFX ${label} is missing from the response.`);
-}
-
-function requireStablefxTypedData(value: unknown, label: string) {
-  if (isRecord(value) && isRecord(value.message)) {
-    return value;
-  }
-
-  throw new Error(`StableFX ${label} typed data is missing from the response.`);
-}
-
-function requireStablefxApprovalTarget(typedData: Record<string, unknown>) {
-  const verifyingContract = isRecord(typedData.domain)
-    ? typedData.domain.verifyingContract
-    : null;
-
-  if (typeof verifyingContract === "string" && isAddress(verifyingContract)) {
-    return getAddress(verifyingContract) as Address;
-  }
-
-  throw new Error(
-    "StableFX approval target is missing from quote typedData.domain.verifyingContract.",
-  );
-}
-
-function getNestedStringValue(value: unknown, path: string[]) {
-  let current = value;
-
-  for (const key of path) {
-    if (!isRecord(current)) {
-      return null;
-    }
-
-    current = current[key];
-  }
-
-  return typeof current === "string" || typeof current === "number"
-    ? String(current)
-    : null;
-}
-
-function resolveStablefxContractTradeId(trade: StablefxTradeResponse) {
-  const candidates = [
-    trade.contractTradeId,
-    isRecord(trade.data) ? trade.data.contractTradeId : undefined,
-    isRecord(trade.trade) ? trade.trade.contractTradeId : undefined,
-    isRecord(trade.data) && isRecord(trade.data.trade)
-      ? trade.data.trade.contractTradeId
-      : undefined,
-  ];
-
-  for (const candidate of candidates) {
-    if (
-      (typeof candidate === "string" || typeof candidate === "number") &&
-      /^\d+$/.test(String(candidate).trim())
-    ) {
-      return String(candidate).trim();
-    }
-  }
-
-  return null;
-}
-
-function getStablefxExplorerTxHash(
-  trade: StablefxTradeResponse,
-  options: { includeRecordTrade?: boolean } = {},
-): Hex | null {
-  const deliveryPaths = [
-    ["settlementTransactionHash"],
-    ["data", "settlementTransactionHash"],
-    ["contractTransactions", "makerDeliver", "txHash"],
-    ["data", "contractTransactions", "makerDeliver", "txHash"],
-    ["contractTransactions", "makerDeliver", "transactionHash"],
-    ["data", "contractTransactions", "makerDeliver", "transactionHash"],
-    ["contractTransactions", "takerDeliver", "txHash"],
-    ["data", "contractTransactions", "takerDeliver", "txHash"],
-    ["contractTransactions", "takerDeliver", "transactionHash"],
-    ["data", "contractTransactions", "takerDeliver", "transactionHash"],
-  ];
-  const recordPaths = [
-    ["contractTransactions", "recordTrade", "txHash"],
-    ["data", "contractTransactions", "recordTrade", "txHash"],
-    ["contractTransactions", "recordTrade", "transactionHash"],
-    ["data", "contractTransactions", "recordTrade", "transactionHash"],
-  ];
-  const paths = options.includeRecordTrade
-    ? [...deliveryPaths, ...recordPaths]
-    : deliveryPaths;
-
-  for (const path of paths) {
-    const candidate = getNestedStringValue(trade, path);
-
-    if (candidate && isTransactionHash(candidate)) {
-      return candidate as Hex;
-    }
-  }
-
-  return null;
-}
-
-function getStablefxRecordTradeStatus(trade: StablefxTradeResponse) {
-  return (
-    getNestedStringValue(trade, [
-      "contractTransactions",
-      "recordTrade",
-      "status",
-    ]) ??
-    getNestedStringValue(trade, [
-      "data",
-      "contractTransactions",
-      "recordTrade",
-      "status",
-    ])
-  );
-}
-
-function getStablefxRecordTradeFailureDetail(trade: StablefxTradeResponse) {
-  return (
-    getNestedStringValue(trade, [
-      "contractTransactions",
-      "recordTrade",
-      "errorDetails",
-    ]) ??
-    getNestedStringValue(trade, [
-      "data",
-      "contractTransactions",
-      "recordTrade",
-      "errorDetails",
-    ]) ??
-    getNestedStringValue(trade, [
-      "contractTransactions",
-      "recordTrade",
-      "revertReason",
-    ]) ??
-    getNestedStringValue(trade, [
-      "data",
-      "contractTransactions",
-      "recordTrade",
-      "revertReason",
-    ])
-  );
-}
-
-function isStablefxFinalStatus(status: string | undefined) {
-  return ["complete", "completed", "settled"].includes(
-    status?.toLowerCase() ?? "",
-  );
-}
-
-function isStablefxFailureStatus(status: string | undefined) {
-  return ["failed", "rejected", "expired", "breached", "refunded"].includes(
-    status?.toLowerCase() ?? "",
-  );
-}
-
-async function delay(ms: number) {
-  await new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 export function useWizPay(): WizPayState {
   // 1. Initialize UI / Local State
   const state = useWizPayState();
@@ -389,15 +212,8 @@ export function useWizPay(): WizPayState {
   } = useCircleWallet();
   const publicClient = usePublicClient({ chainId: arcTestnet.id });
   const { data: walletClient } = useWalletClient();
-  const { signTypedData } = useTransactionExecutor();
 
-  const swapAdapter = useMemo(
-    () => createArcSwapAdapter(publicClient, walletClient),
-    [publicClient, walletClient],
-  );
-
-  // 2b. Official cross-currency quote for External Wallet payroll
-  // Uses the same quoteUserSwap path as the working Swap page.
+  // 2b. Determine the payroll route before scheduling any provider request.
   const crossCurrencyTarget = useMemo<TokenSymbol | null>(() => {
     const activeSymbol = contract.activeToken.symbol;
     const allRecipients = [state.recipients, ...state.pendingBatches].flat();
@@ -436,6 +252,24 @@ export function useWizPay(): WizPayState {
     state.pendingBatches,
   ]);
 
+  const payrollRoutePolicy = useMemo(
+    () =>
+      resolvePayrollRoutePolicy({
+        walletMode,
+        sourceToken: contract.activeToken.symbol,
+        targetTokens: [state.recipients, ...state.pendingBatches]
+          .flat()
+          .filter((recipient) => recipient.amount.trim())
+          .map((recipient) => recipient.targetToken),
+      }),
+    [
+      contract.activeToken.symbol,
+      state.pendingBatches,
+      state.recipients,
+      walletMode,
+    ],
+  );
+
   const externalWalletAddress = useMemo(() => {
     if (walletMode !== "external" || !walletAddress || !isAddress(walletAddress)) {
       return null;
@@ -444,8 +278,7 @@ export function useWizPay(): WizPayState {
     return getAddress(walletAddress);
   }, [walletAddress, walletMode]);
 
-  // Quote preview address: used for official quote requests regardless of wallet mode.
-  // Both App Wallet and External Wallet can request quotes for display purposes.
+  // Quote preview address is used only for App Wallet XyloNet requests.
   const quotePreviewAddress = useMemo(() => {
     if (!walletAddress || !isAddress(walletAddress)) {
       return null;
@@ -456,7 +289,7 @@ export function useWizPay(): WizPayState {
 
   const [officialQuote, setOfficialQuote] = useState<{
     targetToken: TokenSymbol | null;
-    provider: UserSwapProvider | null;
+    provider: PayrollQuoteProvider | null;
     expectedOutput: string | null;
     expectedOutputUnits: bigint | null;
     minimumOutput: string | null;
@@ -478,6 +311,7 @@ export function useWizPay(): WizPayState {
     let cancelled = false;
 
     if (
+      !payrollRoutePolicy.requiresQuote ||
       !crossCurrencyTarget ||
       contract.activeToken.symbol === crossCurrencyTarget ||
       !quotePreviewAddress ||
@@ -501,21 +335,7 @@ export function useWizPay(): WizPayState {
       };
     }
 
-    const payload: UserSwapQuoteRequest = {
-      tokenIn: contract.activeToken.symbol,
-      tokenOut: crossCurrencyTarget,
-      amountIn: crossCurrencyAmount,
-      fromAddress: quotePreviewAddress,
-      toAddress: quotePreviewAddress,
-      chain: USER_SWAP_CHAIN,
-    };
-    const payrollProvider = walletMode === "circle"
-      ? resolveAppWalletPayrollProvider({
-          sourceToken: contract.activeToken.symbol,
-          targetToken: crossCurrencyTarget,
-          aggregateAmount: crossCurrencyAmount,
-        })
-      : null;
+    const payrollProvider = "xylonet";
 
     queueMicrotask(() => {
       if (cancelled) return;
@@ -527,13 +347,19 @@ export function useWizPay(): WizPayState {
       }));
     });
     logOfficialQuoteDiagnostic(
-      "[official-payroll-route] quoteUserSwap payload",
-      payload,
+      "[official-payroll-route] XyloNet quote request",
+      {
+        tokenIn: contract.activeToken.symbol,
+        tokenOut: crossCurrencyTarget,
+        amountIn: crossCurrencyAmount,
+        walletAddress: quotePreviewAddress,
+      },
     );
 
-    const quotePromise = walletMode === "circle"
-      ? payrollProvider === "xylonet" && arcWallet?.id && userToken
+    const quotePromise = payrollRoutePolicy.kind === "app-wallet-xylonet"
+      ? arcWallet?.id && userToken
         ? quoteAppWalletXylonetSwap({
+            idempotencyKey: crypto.randomUUID(),
             walletId: arcWallet.id,
             walletAddress: quotePreviewAddress,
             chain: APP_WALLET_SWAP_CHAIN,
@@ -542,27 +368,26 @@ export function useWizPay(): WizPayState {
             amountIn: crossCurrencyAmount,
             slippageBps: Number(PREVIEW_SLIPPAGE_BPS),
           }, userToken)
-        : payrollProvider === "stablefx"
-          ? quoteAppWalletSwap({
-              tokenIn: contract.activeToken.symbol,
-              tokenOut: crossCurrencyTarget,
-              amountIn: crossCurrencyAmount,
-              fromAddress: quotePreviewAddress,
-              chain: APP_WALLET_SWAP_CHAIN,
-              provider: "stablefx",
-            })
-          : Promise.reject(new Error("App Wallet payroll provider is unavailable."))
-      : quoteUserSwap(payload);
+        : Promise.reject(new Error("App Wallet payroll provider is unavailable."))
+      : quoteUserSwap({
+          tokenIn: contract.activeToken.symbol,
+          tokenOut: crossCurrencyTarget,
+          amountIn: crossCurrencyAmount,
+          fromAddress: quotePreviewAddress,
+          toAddress: quotePreviewAddress,
+          chain: USER_SWAP_CHAIN,
+          slippageBps: Number(PREVIEW_SLIPPAGE_BPS),
+        });
 
     quotePromise
       .then((result) => {
         if (cancelled) return;
         const provider = getUserSwapProvider(result);
-        const normalizedProvider: UserSwapProvider | null =
+        const normalizedProvider: PayrollQuoteProvider | null =
           provider === "stablefx" || provider === "swapkit" || provider === "xylonet"
             ? provider
             : null;
-        if (walletMode === "circle" && normalizedProvider !== payrollProvider) {
+        if (normalizedProvider !== payrollProvider) {
           throw new Error(
             `Payroll quote provider mismatch: selected ${payrollProvider}, received ${normalizedProvider}.`,
           );
@@ -647,6 +472,8 @@ export function useWizPay(): WizPayState {
     walletMode,
     arcWallet?.id,
     userToken,
+    payrollRoutePolicy.kind,
+    payrollRoutePolicy.requiresQuote,
   ]);
 
   // Build official quote summary override for cross-currency
@@ -724,6 +551,9 @@ export function useWizPay(): WizPayState {
     state.pendingBatches,
   ]);
 
+  const externalPayrollBindingRef =
+    useRef<ExternalPayrollXylonetBinding | null>(null);
+
   const executePreSwap = useCallback(
     async (params: {
       sourceToken: TokenSymbol;
@@ -735,404 +565,123 @@ export function useWizPay(): WizPayState {
       if (!externalWalletAddress) {
         throw new Error("Wallet address is not available for swap.");
       }
-
-      if (officialQuote.provider === "stablefx") {
-        try {
-          logOfficialQuoteDiagnostic(
-            "[official-payroll-route] StableFX step",
-            {
-              provider: "stablefx",
-              step: "tradable_quote",
-              tokenIn: params.sourceToken,
-              tokenOut: params.targetToken,
-              amountIn: params.amount,
-              recipientAddress: externalWalletAddress,
-            },
-          );
-
-          const tradableQuote = await createStablefxTradableQuote({
-            tokenIn: params.sourceToken,
-            tokenOut: params.targetToken,
-            amountIn: params.amount,
-            fromAddress: externalWalletAddress,
-            recipientAddress: externalWalletAddress,
-            chain: USER_SWAP_CHAIN,
-          });
-          const quoteTypedData = requireStablefxTypedData(
-            tradableQuote.typedData,
-            "tradable quote",
-          );
-          const quoteId = requireStablefxString(
-            tradableQuote.id ?? tradableQuote.quoteId,
-            "quoteId",
-          );
-          const approvalTarget = requireStablefxApprovalTarget(quoteTypedData);
-          const tokenConfig = SUPPORTED_TOKENS[params.sourceToken];
-          const tokenAddress = tokenConfig.address;
-          const requiredAmount = BigInt(params.amount);
-
-          if (!publicClient || !walletClient) {
-            throw new Error(
-              "External wallet is not ready for StableFX approval.",
-            );
-          }
-
-          const allowanceBefore = (await publicClient.readContract({
-            address: tokenAddress,
-            abi: ERC20_ABI,
-            functionName: "allowance",
-            args: [externalWalletAddress, approvalTarget],
-          })) as bigint;
-          const allowanceEnough = allowanceBefore >= requiredAmount;
-
-          logOfficialQuoteDiagnostic(
-            "[official-payroll-route] StableFX step",
-            {
-              provider: "stablefx",
-              step: "allowance_check",
-              tokenIn: params.sourceToken,
-              approvalTarget,
-              allowanceBefore: allowanceBefore.toString(),
-              allowanceAfter: allowanceEnough ? allowanceBefore.toString() : null,
-              allowanceEnough,
-            },
-          );
-
-          if (!allowanceEnough) {
-            const approvalTxHash = await walletClient.writeContract({
-              address: tokenAddress,
-              abi: ERC20_ABI,
-              functionName: "approve",
-              args: [approvalTarget, requiredAmount],
-              account: externalWalletAddress as Address,
-              chain: arcTestnet,
-            });
-
-            logOfficialQuoteDiagnostic(
-              "[official-payroll-route] StableFX step",
-              {
-                provider: "stablefx",
-                step: "approve",
-                tokenIn: params.sourceToken,
-                approvalTarget,
-                allowanceBefore: allowanceBefore.toString(),
-                approvalTxHash,
-              },
-            );
-
-            await publicClient.waitForTransactionReceipt({
-              hash: approvalTxHash,
-              confirmations: 1,
-            });
-
-            const allowanceAfter = (await publicClient.readContract({
-              address: tokenAddress,
-              abi: ERC20_ABI,
-              functionName: "allowance",
-              args: [externalWalletAddress, approvalTarget],
-            })) as bigint;
-            const confirmedAllowanceEnough = allowanceAfter >= requiredAmount;
-
-            logOfficialQuoteDiagnostic(
-              "[official-payroll-route] StableFX step",
-              {
-                provider: "stablefx",
-                step: "allowance_check",
-                tokenIn: params.sourceToken,
-                approvalTarget,
-                allowanceBefore: allowanceBefore.toString(),
-                allowanceAfter: allowanceAfter.toString(),
-                approvalTxHash,
-                allowanceEnough: confirmedAllowanceEnough,
-              },
-            );
-
-            if (!confirmedAllowanceEnough) {
-              throw new Error(
-                `${params.sourceToken} approval confirmed but allowance is still below the StableFX input amount.`,
-              );
-            }
-          }
-
-          logOfficialQuoteDiagnostic(
-            "[official-payroll-route] StableFX step",
-            {
-              provider: "stablefx",
-              step: "sign_quote",
-              quoteId,
-            },
-          );
-          const quoteSignature = await signTypedData({
-            chainId: arcTestnet.id,
-            memo: `StableFX payroll ${params.sourceToken} to ${params.targetToken} quote`,
-            typedData: quoteTypedData,
-          });
-
-          logOfficialQuoteDiagnostic(
-            "[official-payroll-route] StableFX step",
-            {
-              provider: "stablefx",
-              step: "create_trade",
-              quoteId,
-              createTradeAddress: externalWalletAddress,
-            },
-          );
-          const createdTrade = await createStablefxTrade({
-            idempotencyKey: crypto.randomUUID(),
-            quoteId,
-            address: externalWalletAddress,
-            selectedAddress: externalWalletAddress,
-            message: quoteTypedData.message as Record<string, unknown>,
-            signature: quoteSignature,
-            tokenIn: params.sourceToken,
-            tokenOut: params.targetToken,
-            walletMode: "external",
-          });
-          const tradeId = requireStablefxString(createdTrade.id, "tradeId");
-          let latestTrade = createdTrade;
-          let contractTradeId = resolveStablefxContractTradeId(createdTrade);
-
-          for (
-            let attempt = 1;
-            !contractTradeId && attempt <= 15;
-            attempt += 1
-          ) {
-            logOfficialQuoteDiagnostic(
-              "[official-payroll-route] StableFX step",
-              {
-                provider: "stablefx",
-                step: "get_trade",
-                phase: "contract_trade_id",
-                attempt,
-                tradeId,
-              },
-            );
-            latestTrade = await getStablefxTrade(tradeId);
-            contractTradeId = resolveStablefxContractTradeId(latestTrade);
-
-            const status =
-              typeof latestTrade.status === "string"
-                ? latestTrade.status
-                : undefined;
-            const recordTradeStatus = getStablefxRecordTradeStatus(latestTrade);
-
-            if (recordTradeStatus?.toLowerCase() === "failed") {
-              const failureDetail =
-                getStablefxRecordTradeFailureDetail(latestTrade);
-              throw new Error(
-                failureDetail
-                  ? `StableFX ${params.sourceToken} -> ${params.targetToken} recordTrade failed. Trade ID ${tradeId}. Details: ${failureDetail}`
-                  : `StableFX ${params.sourceToken} -> ${params.targetToken} recordTrade failed. Trade ID ${tradeId}.`,
-              );
-            }
-
-            if (isStablefxFailureStatus(status)) {
-              throw new Error(
-                `StableFX trade ended with status ${status} before funding.`,
-              );
-            }
-
-            if (!contractTradeId) {
-              await delay(2_000);
-            }
-          }
-
-          if (!contractTradeId) {
-            throw new Error(
-              "StableFX trade was created but funding identifier was not ready yet. Please retry.",
-            );
-          }
-
-          logOfficialQuoteDiagnostic(
-            "[official-payroll-route] StableFX step",
-            {
-              provider: "stablefx",
-              step: "funding_presign",
-              tradeId,
-              contractTradeId,
-            },
-          );
-          const fundingPresign = await createStablefxFundingPresign({
-            contractTradeId,
-          });
-          const fundingTypedData = requireStablefxTypedData(
-            fundingPresign.typedData,
-            "funding presign",
-          );
-
-          logOfficialQuoteDiagnostic(
-            "[official-payroll-route] StableFX step",
-            {
-              provider: "stablefx",
-              step: "sign_funding",
-              tradeId,
-              contractTradeId,
-            },
-          );
-          const fundingSignature = await signTypedData({
-            chainId: arcTestnet.id,
-            memo: `StableFX payroll ${params.sourceToken} funding`,
-            typedData: fundingTypedData,
-          });
-
-          logOfficialQuoteDiagnostic(
-            "[official-payroll-route] StableFX step",
-            {
-              provider: "stablefx",
-              step: "fund",
-              tradeId,
-              contractTradeId,
-            },
-          );
-          const fundResult = await fundStablefxTrade({
-            permit2: fundingTypedData.message as Record<string, unknown>,
-            signature: fundingSignature,
-          });
-
-          for (let attempt = 1; attempt <= 20; attempt += 1) {
-            logOfficialQuoteDiagnostic(
-              "[official-payroll-route] StableFX step",
-              {
-                provider: "stablefx",
-                step: "get_trade",
-                phase: "settlement",
-                attempt,
-                tradeId,
-              },
-            );
-            latestTrade = await getStablefxTrade(tradeId);
-            const status =
-              typeof latestTrade.status === "string"
-                ? latestTrade.status
-                : undefined;
-            const settlementTxHash = getStablefxExplorerTxHash(latestTrade);
-
-            if (isStablefxFinalStatus(status) || settlementTxHash) {
-              logOfficialQuoteDiagnostic(
-                "[official-payroll-route] StableFX step",
-                {
-                  provider: "stablefx",
-                  step: "settled",
-                  tradeId,
-                  status: status ?? null,
-                  settlementTxHash,
-                },
-              );
-
-              return {
-                settledToken: params.targetToken,
-                txHash:
-                  settlementTxHash ?? getCircleTxHash(fundResult) ?? null,
-              };
-            }
-
-            if (isStablefxFailureStatus(status)) {
-              throw new Error(`StableFX trade ended with status ${status}.`);
-            }
-
-            await delay(3_000);
-          }
-
-          throw new Error(
-            `StableFX trade ${tradeId} did not reach settlement before polling timed out.`,
-          );
-        } catch (error) {
-          logOfficialQuoteDiagnostic(
-            "[official-payroll-route] StableFX error",
-            {
-              provider: "stablefx",
-              step: "execute_preswap",
-              tokenIn: params.sourceToken,
-              tokenOut: params.targetToken,
-            },
-            error,
-          );
-          throw error;
+      if (!publicClient || !walletClient) {
+        throw new Error("External browser wallet is not ready for payroll swap.");
+      }
+      const assertExternalWallet = () => {
+        const accountAddress = walletClient.account?.address;
+        if (walletClient.chain?.id !== arcTestnet.id) {
+          throw new Error("Switch the external wallet to Arc Testnet.");
         }
-      }
+        if (
+          !accountAddress ||
+          accountAddress.toLowerCase() !== externalWalletAddress.toLowerCase()
+        ) {
+          throw new Error(
+            "The connected external wallet does not match the payroll payer.",
+          );
+        }
+      };
+      assertExternalWallet();
 
-      if (!swapAdapter) {
-        throw new Error(
-          "Swap adapter is not ready. Connect your external wallet first.",
-        );
-      }
-
-      const preparePayload = {
+      const binding: ExternalPayrollXylonetBinding = {
+        referenceId,
+        walletAddress: externalWalletAddress,
+        chainId: arcTestnet.id,
         tokenIn: params.sourceToken,
         tokenOut: params.targetToken,
-        amountIn: params.amount,
-        fromAddress: externalWalletAddress,
-        toAddress: externalWalletAddress,
-        chain: USER_SWAP_CHAIN,
-        slippageBps: Number(PREVIEW_SLIPPAGE_BPS),
-      } as const;
+        tokenInAddress: SUPPORTED_TOKENS[params.sourceToken].address,
+        tokenOutAddress: SUPPORTED_TOKENS[params.targetToken].address,
+        amountIn: params.routingAmount,
+        minimumRequiredOutput: params.minimumRequiredOutput,
+        recipients: [state.recipients, ...state.pendingBatches]
+          .flat()
+          .filter((recipient) => recipient.amount.trim())
+          .map((recipient) => ({
+            id: recipient.id,
+            address: recipient.address,
+            targetToken: recipient.targetToken,
+            sourceAmount: parseAmountToUnits(
+              recipient.amount,
+              contract.activeToken.decimals,
+            ).toString(),
+          })),
+      };
+      externalPayrollBindingRef.current = binding;
 
-      logOfficialQuoteDiagnostic(
-        "[official-payroll-route] prepareUserSwap payload",
-        preparePayload,
-      );
-
-      let prepared;
-      try {
-        prepared = await prepareUserSwap(preparePayload);
-      } catch (error) {
-        logOfficialQuoteDiagnostic(
-          "[official-payroll-route] prepareUserSwap error",
-          error instanceof BackendApiError
-            ? {
-                status: error.status,
-                body: error.responseBody ?? {
-                  error: error.message,
-                  code: error.code,
-                  details: error.details,
-                },
-              }
-            : error,
-          error,
-        );
-        throw error;
-      }
-
-      // Step 2: Execute via the official adapter (user's wallet signs)
-      let txHash: string | null | undefined;
-      try {
-        txHash = await executePreparedArcUserSwap({
-          adapter: swapAdapter,
-          prepared,
-          tokenIn: params.sourceToken as CircleSwapToken,
-        });
-      } catch (error) {
-        logOfficialQuoteDiagnostic(
-          "[official-payroll-route] adapter execution error",
-          error,
-          error,
-        );
-        throw error;
-      }
-
-      logOfficialQuoteDiagnostic(
-        "[official-payroll-route] pre-swap txHash",
-        txHash ?? null,
-      );
-
-      if (txHash && publicClient) {
-        await publicClient.waitForTransactionReceipt({
-          hash: txHash as `0x${string}`,
-          confirmations: 1,
-        });
-      }
+      const result = await runExternalPayrollXylonetSwap({
+        binding,
+        storage: window.localStorage,
+        quote: () =>
+          quoteUserSwap({
+            tokenIn: params.sourceToken,
+            tokenOut: params.targetToken,
+            amountIn: params.routingAmount,
+            fromAddress: externalWalletAddress,
+            toAddress: externalWalletAddress,
+            chain: USER_SWAP_CHAIN,
+            slippageBps: Number(PREVIEW_SLIPPAGE_BPS),
+          }),
+        actions: {
+          assertWallet: assertExternalWallet,
+          readAllowance: async (token, owner, spender) =>
+            (await publicClient.readContract({
+              address: token,
+              abi: ERC20_ABI,
+              functionName: "allowance",
+              args: [owner, spender],
+            })) as bigint,
+          submitApproval: (token, spender, amount) =>
+            walletClient.writeContract({
+              address: token,
+              abi: ERC20_ABI,
+              functionName: "approve",
+              args: [spender, amount],
+              account: externalWalletAddress,
+              chain: arcTestnet,
+            }),
+          submitSwap: (quote) =>
+            walletClient.writeContract({
+              address: quote.executor,
+              abi: WIZPAY_SWAP_EXECUTOR_V2_ABI,
+              functionName: "executeSwap",
+              args: [
+                quote.router,
+                quote.tokenIn,
+                quote.tokenOut,
+                quote.amountIn,
+                quote.minimumAmountOut,
+                quote.recipient,
+                quote.deadline,
+              ],
+              account: externalWalletAddress,
+              chain: arcTestnet,
+            }),
+          waitForReceipt: (hash) =>
+            publicClient.waitForTransactionReceipt({
+              hash,
+              confirmations: 1,
+            }),
+        },
+      });
 
       return {
         settledToken: params.targetToken,
-        txHash: txHash ?? null,
+        txHash: result.txHash,
+        provider: "xylonet",
+        outputToken: params.targetToken,
+        verifiedActualOutput: result.verifiedActualOutput,
       };
+
     },
     [
+      contract.activeToken.decimals,
       externalWalletAddress,
-      officialQuote.provider,
       publicClient,
-      signTypedData,
-      swapAdapter,
+      referenceId,
+      state.pendingBatches,
+      state.recipients,
+      walletClient,
     ],
   );
 
@@ -1156,11 +705,7 @@ export function useWizPay(): WizPayState {
         throw new Error("Arc App Wallet is not ready for payroll funding.");
       }
 
-      const provider = resolveAppWalletPayrollProvider({
-        sourceToken: params.sourceToken,
-        targetToken: params.targetToken,
-        aggregateAmount: params.routingAmount,
-      });
+      const provider = "xylonet";
       if (!provider || officialQuote.provider !== provider) {
         throw new Error(
           `Payroll provider mismatch: selected ${provider ?? "none"}, quoted ${officialQuote.provider ?? "none"}.`,
@@ -1172,6 +717,7 @@ export function useWizPay(): WizPayState {
           throw new Error("Circle User-Controlled session is unavailable.");
         }
         const request = {
+          idempotencyKey: crypto.randomUUID(),
           walletId: arcWallet.id,
           walletAddress,
           chain: APP_WALLET_SWAP_CHAIN,
@@ -1593,7 +1139,9 @@ export function useWizPay(): WizPayState {
       if (
         !crossCurrencyTarget ||
         targetToken !== crossCurrencyTarget ||
-        !officialQuote.expectedOutputUnits
+        !officialQuote.expectedOutputUnits ||
+        (payrollRoutePolicy.kind === "external-wallet-xylonet" &&
+          !officialQuote.minimumOutputUnits)
       ) {
         return null;
       }
@@ -1607,7 +1155,9 @@ export function useWizPay(): WizPayState {
         parseAmountToUnits(recipient.amount, contract.activeToken.decimals),
       );
       const allocatedAmounts = allocateQuoteOutput(
-        officialQuote.expectedOutputUnits,
+        payrollRoutePolicy.kind === "external-wallet-xylonet"
+          ? officialQuote.minimumOutputUnits!
+          : officialQuote.expectedOutputUnits,
         sourceAmounts,
       );
       const payoutAmounts = new Map<string, string>();
@@ -1625,28 +1175,28 @@ export function useWizPay(): WizPayState {
       contract.activeToken.decimals,
       crossCurrencyTarget,
       officialQuote.expectedOutputUnits,
+      officialQuote.minimumOutputUnits,
+      payrollRoutePolicy.kind,
       state.recipients,
       state.pendingBatches,
     ],
   );
 
   // ── Cross-currency quote and execution availability ─────────────────
-  // Quote preview: available for BOTH wallet modes when cross-currency is detected.
-  // Execution: available for External Wallet (browser wallet signing) and
-  // App Wallet (treasury-mediated server-side swap via PayrollFxSettlementService).
-
-  const officialQuotePreviewEnabled = Boolean(crossCurrencyTarget);
+  // Only App Wallet cross-token payroll enters the XyloNet quote lifecycle.
+  // Same-token payroll stays direct; External cross-token payroll fails locally.
+  const officialQuotePreviewEnabled = payrollRoutePolicy.requiresQuote;
   const appWalletCrossCurrencyExecutionSupported = true;
 
-  // officialQuoteRequired gates execution readiness for both wallet modes
-  // when cross-currency is detected.
-  const officialQuoteRequired = Boolean(crossCurrencyTarget);
+  const officialQuoteRequired = payrollRoutePolicy.requiresQuote;
   // officialQuoteReady means the preview quote resolved with a usable output.
   // It drives the "They Receive" preview and proportional row allocation for
   // BOTH providers. Execution readiness is gated separately below.
   const officialQuoteReady = Boolean(
     officialQuoteRequired &&
       officialQuote.expectedOutputUnits &&
+      (payrollRoutePolicy.kind !== "external-wallet-xylonet" ||
+        officialQuote.minimumOutputUnits) &&
       !officialQuote.loading &&
       !officialQuote.error,
   );
@@ -1669,7 +1219,7 @@ export function useWizPay(): WizPayState {
   const crossCurrencyExecutionBlocked =
     isStablefxCrossCurrency && !stablefxPayrollExecutionSupported;
   const crossCurrencyExecutionBlockedReason = crossCurrencyExecutionBlocked
-    ? STABLEFX_EXECUTION_PENDING_MESSAGE
+    ? payrollRoutePolicy.blockedReason ?? STABLEFX_EXECUTION_PENDING_MESSAGE
     : null;
 
   // Determine if App Wallet cross-currency should block Send
@@ -1723,7 +1273,7 @@ export function useWizPay(): WizPayState {
       );
     }
 
-    // External Wallet cross-currency
+    // Quote and policy diagnostics for cross-currency rows.
     if (officialQuoteIssue) {
       return preparedRecipients.map((recipient) =>
         recipient.targetToken !== contract.activeToken.symbol
@@ -1740,7 +1290,7 @@ export function useWizPay(): WizPayState {
     }
     // Reserved for unsupported cross-currency execution providers while the
     // preview amounts remain populated.
-    if (officialQuoteRequired && crossCurrencyExecutionBlocked) {
+    if (crossCurrencyExecutionBlocked) {
       return preparedRecipients.map((recipient) =>
         recipient.targetToken !== contract.activeToken.symbol
           ? crossCurrencyExecutionBlockedReason
@@ -1758,6 +1308,79 @@ export function useWizPay(): WizPayState {
     return null;
   })();
 
+  const getRecoveredPayrollBatch = useCallback(
+    async (batchReferenceId: string) => {
+      const binding = externalPayrollBindingRef.current;
+      if (!binding || !publicClient) return null;
+      return getRecoveredExternalPayrollBatch({
+        binding,
+        storage: window.localStorage,
+        referenceId: batchReferenceId,
+        waitForReceipt: (hash) =>
+          publicClient.waitForTransactionReceipt({
+            hash,
+            confirmations: 1,
+          }),
+      });
+    },
+    [publicClient],
+  );
+
+  const recordPayrollBatchConfirmation = useCallback(
+    async (batchReferenceId: string, txHash: string) => {
+      const binding = externalPayrollBindingRef.current;
+      if (!binding) {
+        throw new Error("External Wallet payroll recovery binding is unavailable.");
+      }
+      if (!isTransactionHash(txHash)) {
+        throw new Error("External Wallet payroll transaction hash is invalid.");
+      }
+      if (!publicClient) {
+        throw new Error("Arc public client is unavailable for payroll confirmation.");
+      }
+      await recordExternalPayrollBatchConfirmation({
+        binding,
+        storage: window.localStorage,
+        referenceId: batchReferenceId,
+        txHash: txHash as Hex,
+        waitForReceipt: (hash) =>
+          publicClient.waitForTransactionReceipt({
+            hash,
+            confirmations: 1,
+          }),
+      });
+    },
+    [publicClient],
+  );
+
+  const beginPayrollBatchSubmission = useCallback(
+    async (batchReferenceId: string) => {
+      const binding = externalPayrollBindingRef.current;
+      if (!binding) {
+        throw new Error("External Wallet payroll recovery binding is unavailable.");
+      }
+      beginExternalPayrollBatchSubmission({
+        binding,
+        storage: window.localStorage,
+        referenceId: batchReferenceId,
+      });
+    },
+    [],
+  );
+
+  const clearPayrollBatchSubmission = useCallback(
+    async (batchReferenceId: string) => {
+      const binding = externalPayrollBindingRef.current;
+      if (!binding) return;
+      clearExternalPayrollBatchSubmission({
+        binding,
+        storage: window.localStorage,
+        referenceId: batchReferenceId,
+      });
+    },
+    [],
+  );
+
   const batchPayroll = useBatchPayroll({
     activeToken: contract.activeToken,
     approveBatchAmount: contract.requestApproval,
@@ -1770,10 +1393,10 @@ export function useWizPay(): WizPayState {
     setErrorMessage: state.setErrorMessage,
     submitCurrentBatch: contract.handleSubmit,
     executePreSwap:
-      walletMode === "external"
-        ? executePreSwap
-        : walletMode === "circle"
-          ? executeAppWalletPreSwap
+      payrollRoutePolicy.kind === "app-wallet-xylonet"
+        ? executeAppWalletPreSwap
+        : payrollRoutePolicy.kind === "external-wallet-xylonet"
+          ? executePreSwap
           : undefined,
     getPreSwapPayoutAmounts: getPreSwapPayoutAmounts,
     officialQuoteRequired,
@@ -1783,6 +1406,22 @@ export function useWizPay(): WizPayState {
       : officialQuoteIssue,
     crossCurrencyExecutionBlocked,
     crossCurrencyExecutionBlockedReason,
+    getRecoveredPayrollBatch:
+      payrollRoutePolicy.kind === "external-wallet-xylonet"
+        ? getRecoveredPayrollBatch
+        : undefined,
+    recordPayrollBatchConfirmation:
+      payrollRoutePolicy.kind === "external-wallet-xylonet"
+        ? recordPayrollBatchConfirmation
+        : undefined,
+    beginPayrollBatchSubmission:
+      payrollRoutePolicy.kind === "external-wallet-xylonet"
+        ? beginPayrollBatchSubmission
+        : undefined,
+    clearPayrollBatchSubmission:
+      payrollRoutePolicy.kind === "external-wallet-xylonet"
+        ? clearPayrollBatchSubmission
+        : undefined,
   });
 
   // 3. Initialize History
@@ -1947,21 +1586,29 @@ export function useWizPay(): WizPayState {
     preparedRecipients,
     ...contract,
     ...history,
-    // Override quote with official source when cross-currency is detected
-    // Applies to BOTH wallet modes so "They Receive" shows real quote output
-    ...(officialQuotePreviewEnabled
+    // Override quote state for the App Wallet XyloNet lifecycle and surface
+    // local policy diagnostics for unsupported External cross-token rows.
+    ...(officialQuotePreviewEnabled || crossCurrencyExecutionBlocked
       ? {
-          quoteSummary: officialQuoteSummary ?? {
-            estimatedAmountsOut: preparedRecipients.map(() => 0n),
-            totalEstimatedOut: 0n,
-            totalFees: 0n,
-          },
-          quoteLoading: officialQuote.loading,
-          quoteRefreshing: officialQuote.loading,
+          quoteSummary: officialQuotePreviewEnabled
+            ? officialQuoteSummary ?? {
+                estimatedAmountsOut: preparedRecipients.map(() => 0n),
+                totalEstimatedOut: 0n,
+                totalFees: 0n,
+              }
+            : contract.quoteSummary,
+          quoteLoading: officialQuotePreviewEnabled
+            ? officialQuote.loading
+            : contract.quoteLoading,
+          quoteRefreshing: officialQuotePreviewEnabled
+            ? officialQuote.loading
+            : contract.quoteRefreshing,
           rowDiagnostics:
             officialQuoteDiagnostics ?? preparedRecipients.map(() => null),
           hasRouteIssue: Boolean(
-            officialQuoteIssue || appWalletCrossCurrencyBlocked,
+            officialQuoteIssue ||
+              appWalletCrossCurrencyBlocked ||
+              crossCurrencyExecutionBlocked,
           ),
         }
       : {}),

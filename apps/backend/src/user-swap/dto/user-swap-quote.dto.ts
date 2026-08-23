@@ -1,12 +1,4 @@
-import {
-  IsIn,
-  IsInt,
-  IsNotEmpty,
-  IsOptional,
-  IsString,
-  Max,
-  Min,
-} from 'class-validator';
+import { IsInt, IsNotEmpty, IsString, Max, Min } from 'class-validator';
 
 export class UserSwapQuoteDto {
   @IsString()
@@ -25,22 +17,16 @@ export class UserSwapQuoteDto {
   @IsNotEmpty()
   fromAddress!: string;
 
-  @IsOptional()
   @IsString()
   @IsNotEmpty()
-  toAddress?: string;
+  toAddress!: string;
 
   @IsString()
   @IsNotEmpty()
   chain!: string;
 
-  @IsOptional()
-  @IsIn(['swapkit', 'stablefx', 'xylonet'])
-  provider?: 'swapkit' | 'stablefx' | 'xylonet';
-
-  @IsOptional()
   @IsInt()
-  @Min(0)
-  @Max(10_000)
-  slippageBps?: number;
+  @Min(1)
+  @Max(1_000)
+  slippageBps!: number;
 }

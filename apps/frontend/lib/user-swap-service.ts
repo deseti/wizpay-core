@@ -4,12 +4,10 @@ import type { TokenSymbol } from "@/lib/wizpay";
 export const USER_SWAP_CHAIN = "ARC-TESTNET" as const;
 
 /**
- * Backend swap quote provider.
- * - "swapkit": Circle Stablecoin Kits (default, supports prepare/execute).
- * - "stablefx": Circle StableFX quotes; /swap executes through StableFX lifecycle endpoints.
- * - "xylonet": XyloRouter quotes for External Wallet only; execution is not enabled yet.
+ * Standalone swap quotes are XyloNet-only. StableFX types below remain solely
+ * for the separately scheduled Phase 3 payroll migration.
  */
-export type UserSwapProvider = "swapkit" | "stablefx" | "xylonet";
+export type UserSwapProvider = "xylonet";
 
 export interface UserSwapQuoteRequest {
   tokenIn: TokenSymbol;
@@ -18,7 +16,6 @@ export interface UserSwapQuoteRequest {
   fromAddress: string;
   toAddress?: string;
   chain: typeof USER_SWAP_CHAIN;
-  provider?: UserSwapProvider;
   slippageBps?: number;
 }
 
@@ -58,6 +55,9 @@ export interface UserSwapQuoteResponse {
   minimumAmountOut?: unknown;
   minAmountOut?: unknown;
   chainId?: unknown;
+  tokenInAddress?: unknown;
+  tokenOutAddress?: unknown;
+  recipientAddress?: unknown;
   raw: unknown;
 }
 

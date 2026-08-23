@@ -9,23 +9,18 @@ import {
   UsePipes,
   ValidationPipe,
 } from '@nestjs/common';
-import { AppWalletSwapDepositDto } from './dto/app-wallet-swap-deposit.dto';
-import { AppWalletSwapDepositTxHashDto } from './dto/app-wallet-swap-deposit-txhash.dto';
-import { AppWalletSwapOperationDto } from './dto/app-wallet-swap-operation.dto';
-import { AppWalletSwapQuoteDto } from './dto/app-wallet-swap-quote.dto';
-import { AppWalletSwapService } from './app-wallet-swap.service';
-import { APP_WALLET_SWAP_ERROR_CODES } from './app-wallet-swap.types';
-import { AppWalletXylonetOperationDto } from './dto/app-wallet-xylonet-operation.dto';
 import { AppWalletXylonetChallengeResultDto } from './dto/app-wallet-xylonet-challenge-result.dto';
+import { AppWalletXylonetOperationDto } from './dto/app-wallet-xylonet-operation.dto';
 import { AppWalletXylonetUserControlledExecutorService } from './app-wallet-xylonet-user-controlled-executor.service';
+import { APP_WALLET_XYLONET_ERRORS } from './app-wallet-xylonet.types';
 
 @Controller('app-wallet-swap')
 @UsePipes(
   new ValidationPipe({
     exceptionFactory: () =>
       new BadRequestException({
-        code: APP_WALLET_SWAP_ERROR_CODES.INVALID_REQUEST,
-        message: 'App Wallet swap request validation failed.',
+        code: APP_WALLET_XYLONET_ERRORS.INVALID_REQUEST,
+        message: 'XyloNet App Wallet swap request validation failed.',
       }),
     forbidNonWhitelisted: true,
     transform: true,
@@ -34,12 +29,19 @@ import { AppWalletXylonetUserControlledExecutorService } from './app-wallet-xylo
 )
 export class AppWalletSwapController {
   constructor(
-    private readonly appWalletSwapService: AppWalletSwapService,
     private readonly xylonetExecutor: AppWalletXylonetUserControlledExecutorService,
   ) {}
 
+  @Post('xylonet/quote')
+  async quote(
+    @Headers('x-user-token') userToken: string,
+    @Body() body: AppWalletXylonetOperationDto,
+  ) {
+    return { data: await this.xylonetExecutor.quote(body, userToken) };
+  }
+
   @Post('xylonet/operations')
-  async createXylonetOperation(
+  async createOperation(
     @Headers('x-user-token') userToken: string,
     @Body() body: AppWalletXylonetOperationDto,
   ) {
@@ -48,16 +50,8 @@ export class AppWalletSwapController {
     };
   }
 
-  @Post('xylonet/quote')
-  async quoteXylonetOperation(
-    @Headers('x-user-token') userToken: string,
-    @Body() body: AppWalletXylonetOperationDto,
-  ) {
-    return { data: await this.xylonetExecutor.quote(body, userToken) };
-  }
-
   @Get('xylonet/operations/:id')
-  async getXylonetOperation(
+  async getOperation(
     @Headers('x-user-token') userToken: string,
     @Param('id') operationId: string,
   ) {
@@ -67,7 +61,7 @@ export class AppWalletSwapController {
   }
 
   @Post('xylonet/operations/:id/approval-challenge')
-  async createXylonetApprovalChallenge(
+  async createApprovalChallenge(
     @Headers('x-user-token') userToken: string,
     @Param('id') operationId: string,
   ) {
@@ -80,7 +74,7 @@ export class AppWalletSwapController {
   }
 
   @Post('xylonet/operations/:id/approval-result')
-  async recordXylonetApprovalResult(
+  async recordApprovalResult(
     @Headers('x-user-token') userToken: string,
     @Param('id') operationId: string,
     @Body() body: AppWalletXylonetChallengeResultDto,
@@ -96,7 +90,7 @@ export class AppWalletSwapController {
   }
 
   @Post('xylonet/operations/:id/swap-challenge')
-  async createXylonetSwapChallenge(
+  async createSwapChallenge(
     @Headers('x-user-token') userToken: string,
     @Param('id') operationId: string,
   ) {
@@ -109,7 +103,7 @@ export class AppWalletSwapController {
   }
 
   @Post('xylonet/operations/:id/swap-result')
-  async recordXylonetSwapResult(
+  async recordSwapResult(
     @Headers('x-user-token') userToken: string,
     @Param('id') operationId: string,
     @Body() body: AppWalletXylonetChallengeResultDto,
@@ -125,95 +119,10 @@ export class AppWalletSwapController {
   }
 
   @Post('xylonet/operations/:id/poll')
-  async pollXylonetOperation(
+  async poll(
     @Headers('x-user-token') userToken: string,
     @Param('id') operationId: string,
   ) {
     return { data: await this.xylonetExecutor.poll(operationId, userToken) };
-  }
-
-  @Post('quote')
-  async quote(@Body() body: AppWalletSwapQuoteDto) {
-    return {
-      data: await this.appWalletSwapService.quote(body),
-    };
-  }
-
-  @Post('operations')
-  async createOperation(@Body() body: AppWalletSwapOperationDto) {
-    return {
-      data: this.appWalletSwapService.toPublicOperation(
-        await this.appWalletSwapService.createOperation(body),
-      ),
-    };
-  }
-
-  @Post('operations/:id/deposit')
-  async submitDeposit(
-    @Param('id') operationId: string,
-    @Body() body: AppWalletSwapDepositDto,
-  ) {
-    return {
-      data: this.appWalletSwapService.toPublicOperation(
-        await this.appWalletSwapService.submitDeposit(operationId, body),
-      ),
-    };
-  }
-
-  @Post('operations/:id/deposit-txhash')
-  async attachDepositTxHash(
-    @Param('id') operationId: string,
-    @Body() body: AppWalletSwapDepositTxHashDto,
-  ) {
-    return {
-      data: this.appWalletSwapService.toPublicOperation(
-        await this.appWalletSwapService.attachDepositTxHash(operationId, body),
-      ),
-    };
-  }
-
-  @Post('operations/:id/resolve-deposit-txhash')
-  async resolveDepositTxHash(@Param('id') operationId: string) {
-    return {
-      data: this.appWalletSwapService.toPublicOperation(
-        await this.appWalletSwapService.resolveDepositTxHash(operationId),
-      ),
-    };
-  }
-
-  @Post('operations/:id/confirm-deposit')
-  async confirmDeposit(@Param('id') operationId: string) {
-    return {
-      data: this.appWalletSwapService.toPublicOperation(
-        await this.appWalletSwapService.confirmDeposit(operationId),
-      ),
-    };
-  }
-
-  @Post('operations/:id/execute')
-  async execute(@Param('id') operationId: string) {
-    return {
-      data: this.appWalletSwapService.toPublicOperation(
-        await this.appWalletSwapService.execute(operationId),
-      ),
-    };
-  }
-
-  @Post('operations/:id/refund')
-  async refund(@Param('id') operationId: string) {
-    return {
-      data: this.appWalletSwapService.toPublicOperation(
-        await this.appWalletSwapService.refund(operationId),
-      ),
-    };
-  }
-
-  @Get('operations/:id')
-  async getOperation(@Param('id') operationId: string) {
-    return {
-      data: this.appWalletSwapService.toPublicOperation(
-        await this.appWalletSwapService.getOperation(operationId),
-      ),
-    };
   }
 }

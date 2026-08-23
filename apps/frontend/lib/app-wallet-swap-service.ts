@@ -185,6 +185,7 @@ export interface AppWalletXylonetOperationResponse {
 }
 
 export interface AppWalletXylonetRequest {
+  idempotencyKey: string;
   walletId: string;
   walletAddress: string;
   chain: typeof APP_WALLET_SWAP_CHAIN;

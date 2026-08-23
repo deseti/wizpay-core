@@ -94,6 +94,15 @@ interface UseBatchPayrollOptions {
    */
   crossCurrencyExecutionBlocked?: boolean;
   crossCurrencyExecutionBlockedReason?: string | null;
+  getRecoveredPayrollBatch?: (
+    referenceId: string,
+  ) => Promise<string | null>;
+  recordPayrollBatchConfirmation?: (
+    referenceId: string,
+    txHash: string,
+  ) => Promise<void>;
+  beginPayrollBatchSubmission?: (referenceId: string) => Promise<void>;
+  clearPayrollBatchSubmission?: (referenceId: string) => Promise<void>;
 }
 
 interface PayrollInitRecipient {
@@ -328,7 +337,7 @@ function sumAmountsForToken(
 /**
  * useBatchPayroll — Orchestrate approval + multi-batch payroll client-side.
  *
- * For cross-currency payroll (External Wallet):
+ * For supported App Wallet cross-currency payroll:
  *   1. Detects cross-currency recipients
  *   2. Calls executePreSwap() to swap sourceToken -> targetToken via official adapter
  *   3. After swap, submits payroll as same-token (targetToken -> targetToken)
@@ -352,6 +361,10 @@ export function useBatchPayroll({
   officialQuoteError = null,
   crossCurrencyExecutionBlocked = false,
   crossCurrencyExecutionBlockedReason = null,
+  getRecoveredPayrollBatch,
+  recordPayrollBatchConfirmation,
+  beginPayrollBatchSubmission,
+  clearPayrollBatchSubmission,
 }: UseBatchPayrollOptions): BatchPayrollResult {
   const { walletAddress, walletMode } = useActiveWalletAddress();
   const batches = useMemo(
@@ -424,7 +437,10 @@ export function useBatchPayroll({
       return;
     }
 
-    if (fundedReferenceIdsRef.current.has(referenceId)) {
+    if (
+      fundedReferenceIdsRef.current.has(referenceId) &&
+      walletMode !== "external"
+    ) {
       setErrorMessage(
         "This payroll run has already been funded. Reset the form or use a new reference ID to start a new run.",
       );
@@ -476,7 +492,21 @@ export function useBatchPayroll({
         },
       );
 
-      // Validate cross-currency quote availability for each cross-token group
+      // Reject unsupported cross-token execution before quote checks, task
+      // creation, approval, or any provider request.
+      if (
+        crossTargets &&
+        crossTargets.length > 0 &&
+        crossCurrencyExecutionBlocked
+      ) {
+        setErrorMessage(
+          crossCurrencyExecutionBlockedReason ??
+            "Cross-currency payroll execution is not available yet.",
+        );
+        return;
+      }
+
+      // Validate cross-currency quote availability for each supported group.
       if (crossTargets && crossTargets.length > 0 && officialQuoteRequired) {
         if (!officialQuoteReady) {
           setErrorMessage(
@@ -486,17 +516,6 @@ export function useBatchPayroll({
           return;
         }
 
-        // Quote is available, but the cross-currency execution provider may not
-        // be implemented yet (e.g. StableFX is quote-only in this phase).
-        // Fail closed before any pre-swap / prepare call so no swapkit-only
-        // prepare endpoint is hit for a StableFX quote.
-        if (crossCurrencyExecutionBlocked) {
-          setErrorMessage(
-            crossCurrencyExecutionBlockedReason ??
-              "Cross-currency payroll execution is not available yet.",
-          );
-          return;
-        }
       }
 
       // ── Build effective recipients (mixed-token aware) ───────────
@@ -716,6 +735,143 @@ export function useBatchPayroll({
           amount: recipient.amount,
           targetToken: recipient.targetToken,
         }));
+      }
+
+      // External cross-token payroll must submit homogeneous plans after the
+      // browser-signed swap. Mixed source/target rows cannot share one
+      // batchRouteAndPay call because each plan has exactly one input token.
+      if (walletMode === "external" && didSwap) {
+        if (
+          !getRecoveredPayrollBatch ||
+          !recordPayrollBatchConfirmation ||
+          !beginPayrollBatchSubmission ||
+          !clearPayrollBatchSubmission
+        ) {
+          throw new Error(
+            "External Wallet payroll recovery storage is unavailable.",
+          );
+        }
+        const groupedRecipients = new Map<TokenSymbol, PayrollInitRecipient[]>();
+        for (const recipient of effectiveRecipients) {
+          const group = groupedRecipients.get(recipient.targetToken) ?? [];
+          group.push(recipient);
+          groupedRecipients.set(recipient.targetToken, group);
+        }
+        const orderedGroups = [...groupedRecipients.entries()].sort(
+          ([left], [right]) =>
+            left === activeToken.symbol
+              ? -1
+              : right === activeToken.symbol
+                ? 1
+                : left.localeCompare(right),
+        );
+        const failedGroups: string[] = [];
+
+        for (const [groupToken, groupRecipients] of orderedGroups) {
+          const groupReferenceId =
+            orderedGroups.length === 1
+              ? referenceId
+              : `${referenceId}-${groupToken}`;
+          const initPlan = await backendFetch<PayrollInitPlan>(
+            "/tasks/payroll/init",
+            {
+              method: "POST",
+              body: JSON.stringify({
+                sourceToken: groupToken,
+                referenceId: groupReferenceId,
+                walletAddress,
+                recipients: groupRecipients,
+              }),
+            },
+          );
+
+          setTaskId(initPlan.taskId);
+          await refreshTask(initPlan.taskId);
+
+          const groupApprovalAmount = BigInt(initPlan.approvalAmount);
+          if (
+            groupToken === activeToken.symbol &&
+            groupApprovalAmount > 0n &&
+            currentAllowance < groupApprovalAmount
+          ) {
+            const approvalResult = await approveBatchAmount(groupApprovalAmount);
+            if (!approvalResult.ok) {
+              await refreshTask(initPlan.taskId);
+              return;
+            }
+            if (approvalResult.hash) setApprovalHash(approvalResult.hash);
+            await refetchAllowance();
+          }
+
+          let nextUnit: PayrollTaskUnit | null = initPlan.units[0] ?? null;
+          while (nextUnit) {
+            const unitReferenceId =
+              typeof nextUnit.payload.referenceId === "string"
+                ? nextUnit.payload.referenceId
+                : initPlan.referenceId;
+            const recoveredHash = getRecoveredPayrollBatch
+              ? await getRecoveredPayrollBatch(unitReferenceId)
+              : null;
+            if (!recoveredHash) {
+              await beginPayrollBatchSubmission(unitReferenceId);
+            }
+            const result = recoveredHash
+              ? { ok: true as const, hash: recoveredHash }
+              : await submitCurrentBatch(
+                  toRecipientDraftBatch(nextUnit),
+                  unitReferenceId,
+                );
+
+            if (!result.ok && !recoveredHash) {
+              await clearPayrollBatchSubmission(unitReferenceId);
+            }
+
+            if (
+              result.ok &&
+              !recoveredHash &&
+              recordPayrollBatchConfirmation
+            ) {
+              if (!result.hash) {
+                throw new Error(
+                  "Confirmed External Wallet payroll batch is missing its transaction hash.",
+                );
+              }
+              await recordPayrollBatchConfirmation(
+                unitReferenceId,
+                result.hash,
+              );
+            }
+
+            const reportPayload = result.ok
+              ? { status: "SUCCESS" as const, txHash: result.hash }
+              : {
+                  status: "FAILED" as const,
+                  error:
+                    result.error ??
+                    "Wallet batch execution did not complete successfully.",
+                };
+            const reportResult: ReportTaskUnitResponse =
+              await backendFetch<ReportTaskUnitResponse>(
+                `/tasks/${initPlan.taskId}/units/${nextUnit.id}/report`,
+                {
+                  method: "POST",
+                  body: JSON.stringify(reportPayload),
+                },
+              );
+            setTask(reportResult.task);
+            if (!result.ok) failedGroups.push(unitReferenceId);
+            nextUnit = reportResult.nextUnit;
+          }
+
+          await refreshTask(initPlan.taskId);
+        }
+
+        if (failedGroups.length > 0) {
+          setErrorMessage(
+            `Swap completed and target tokens remain in your wallet. Payroll failed for ${failedGroups.join(", ")}; retry this run to resume only unconfirmed batches.`,
+          );
+        }
+        return;
       }
 
       // ── Call payroll init ──────────────────────────────────────────
@@ -970,9 +1126,12 @@ export function useBatchPayroll({
     activeToken.symbol,
     activeToken.decimals,
     approveBatchAmount,
+    beginPayrollBatchSubmission,
     batches,
+    clearPayrollBatchSubmission,
     currentAllowance,
     executePreSwap,
+    getRecoveredPayrollBatch,
     getPreSwapPayoutAmounts,
     officialQuoteError,
     officialQuoteReady,
@@ -984,6 +1143,7 @@ export function useBatchPayroll({
     referenceId,
     refetchAllowance,
     refreshTask,
+    recordPayrollBatchConfirmation,
     setErrorMessage,
     setStatusMessage,
     submitCurrentBatch,

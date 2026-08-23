@@ -24,6 +24,7 @@ const USER_TOKEN = 'header.payload.signature';
 const SAFE = '0xAA557eb00063ad487BFe0304Bd04B4d45114b721';
 
 const request = {
+  idempotencyKey: '11111111-1111-4111-8111-111111111111',
   walletId: WALLET_ID,
   walletAddress: WALLET,
   chain: 'ARC-TESTNET',
@@ -44,9 +45,8 @@ describe('AppWalletXylonetUserControlledExecutorService', () => {
   beforeEach(() => {
     process.env.APP_WALLET_XYLONET_USER_CONTROLLED_ENABLED = 'true';
     process.env.APP_XYLONET_CHAIN_ID = '5042002';
-    process.env.APP_XYLONET_EXECUTOR_ADDRESS = EXECUTOR;
+    process.env.WIZPAY_SWAP_EXECUTOR_V2_ADDRESS = EXECUTOR;
     process.env.APP_XYLONET_ROUTER_ADDRESSES = ROUTER;
-    process.env.WIZPAY_SWAP_EXECUTOR_ADDRESS = LEGACY_V1_EXECUTOR;
     process.env.APP_XYLONET_TOKEN_ADDRESSES = `USDC=${USDC},EURC=${EURC}`;
     process.env.APP_XYLONET_DEADLINE_MAX_SECONDS = '600';
     process.env.WIZPAY_FEE_SAFE = SAFE;
@@ -135,9 +135,8 @@ describe('AppWalletXylonetUserControlledExecutorService', () => {
   afterEach(() => {
     delete process.env.APP_WALLET_XYLONET_USER_CONTROLLED_ENABLED;
     delete process.env.APP_XYLONET_CHAIN_ID;
-    delete process.env.APP_XYLONET_EXECUTOR_ADDRESS;
+    delete process.env.WIZPAY_SWAP_EXECUTOR_V2_ADDRESS;
     delete process.env.APP_XYLONET_ROUTER_ADDRESSES;
-    delete process.env.WIZPAY_SWAP_EXECUTOR_ADDRESS;
     delete process.env.APP_XYLONET_TOKEN_ADDRESSES;
     delete process.env.APP_XYLONET_DEADLINE_MAX_SECONDS;
     delete process.env.WIZPAY_FEE_SAFE;
@@ -165,6 +164,30 @@ describe('AppWalletXylonetUserControlledExecutorService', () => {
     expect(operation.executorAddress).toBe(EXECUTOR);
     expect(operation.executorAddress).not.toBe(LEGACY_V1_EXECUTOR);
     expect(operation.routerAddress).toBe(ROUTER);
+  });
+
+  it('supports the reverse EURC to USDC direction', async () => {
+    const operation = await service.createOperation(
+      {
+        ...request,
+        idempotencyKey: '22222222-2222-4222-8222-222222222222',
+        tokenIn: 'EURC',
+        tokenOut: 'USDC',
+      },
+      USER_TOKEN,
+    );
+    expect(operation.tokenInAddress).toBe(EURC);
+    expect(operation.tokenOutAddress).toBe(USDC);
+  });
+
+  it('returns the existing operation for an identical idempotent request and rejects key reuse', async () => {
+    const first = await service.createOperation(request, USER_TOKEN);
+    const second = await service.createOperation(request, USER_TOKEN);
+    expect(second.operationId).toBe(first.operationId);
+    expect(prisma.appWalletXylonetOperation.create).toHaveBeenCalledTimes(1);
+    await expect(
+      service.createOperation({ ...request, amountIn: '2000000' }, USER_TOKEN),
+    ).rejects.toBeInstanceOf(ConflictException);
   });
 
   it('rejects a wallet address that is not returned for the authenticated user', async () => {
@@ -818,7 +841,7 @@ describe('AppWalletXylonetUserControlledExecutorService', () => {
       service.createOperation(request, USER_TOKEN),
     ).rejects.toBeInstanceOf(ServiceUnavailableException);
     process.env.APP_XYLONET_CHAIN_ID = '5042002';
-    process.env.APP_XYLONET_EXECUTOR_ADDRESS = '';
+    process.env.WIZPAY_SWAP_EXECUTOR_V2_ADDRESS = '';
     await expect(
       service.createOperation(request, USER_TOKEN),
     ).rejects.toBeInstanceOf(ServiceUnavailableException);

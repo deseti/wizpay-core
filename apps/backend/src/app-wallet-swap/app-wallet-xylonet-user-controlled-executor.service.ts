@@ -11,7 +11,7 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import type { AppWalletXylonetOperation, Prisma } from '@prisma/client';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import {
   createPublicClient,
   decodeEventLog,
@@ -217,12 +217,12 @@ export class AppWalletXylonetUserControlledExecutorService {
     const amountIn = this.parsePositiveAmount(request.amountIn, 'amountIn');
     const feeAmount = (amountIn * BigInt(FEE_BPS)) / 10_000n;
     const netAmountIn = amountIn - feeAmount;
-    const expectedOutput = (await this.getPublicClient().readContract({
+    const expectedOutput = await this.getPublicClient().readContract({
       address: config.router,
       abi: ROUTER_QUOTE_ABI,
       functionName: 'getAmountOut',
       args: [config.tokens[tokenIn], config.tokens[tokenOut], netAmountIn],
-    })) as bigint;
+    });
     const minimumOutput =
       (expectedOutput * BigInt(10_000 - request.slippageBps)) / 10_000n;
     if (expectedOutput <= 0n || minimumOutput <= 0n) {
@@ -278,14 +278,39 @@ export class AppWalletXylonetUserControlledExecutorService {
     const amountIn = this.parsePositiveAmount(request.amountIn, 'amountIn');
     const tokenInAddress = config.tokens[tokenIn];
     const tokenOutAddress = config.tokens[tokenOut];
+    const existing = await this.prisma.appWalletXylonetOperation.findUnique({
+      where: { operationId: request.idempotencyKey },
+    });
+    if (existing) {
+      if (
+        existing.applicationUserId !== identity.userId ||
+        existing.circleWalletId !== identity.walletId ||
+        !this.sameAddress(existing.walletAddress, identity.address) ||
+        existing.chainId !== ARC_CHAIN_ID ||
+        existing.tokenIn !== tokenIn ||
+        existing.tokenOut !== tokenOut ||
+        existing.amountIn !== amountIn.toString() ||
+        existing.slippageBps !== request.slippageBps ||
+        !this.sameAddress(existing.executorAddress, config.executor) ||
+        !this.sameAddress(existing.routerAddress, config.router) ||
+        !this.sameAddress(existing.recipientAddress, identity.address)
+      ) {
+        throw new ConflictException({
+          code: APP_WALLET_XYLONET_ERRORS.INVALID_REQUEST,
+          message:
+            'Idempotency key is already bound to a different swap request.',
+        });
+      }
+      return this.toPublic(existing);
+    }
     const feeAmount = (amountIn * BigInt(FEE_BPS)) / 10_000n;
     const netAmountIn = amountIn - feeAmount;
-    const expectedOutput = (await this.getPublicClient().readContract({
+    const expectedOutput = await this.getPublicClient().readContract({
       address: config.router,
       abi: ROUTER_QUOTE_ABI,
       functionName: 'getAmountOut',
       args: [tokenInAddress, tokenOutAddress, netAmountIn],
-    })) as bigint;
+    });
     if (expectedOutput <= 0n) {
       throw new BadGatewayException({
         code: APP_WALLET_XYLONET_ERRORS.VERIFICATION_FAILED,
@@ -296,7 +321,7 @@ export class AppWalletXylonetUserControlledExecutorService {
       (expectedOutput * BigInt(10_000 - request.slippageBps)) / 10_000n;
     if (minimumOutput <= 0n) this.invalid('minimumOutput must be positive.');
 
-    const operationId = randomUUID();
+    const operationId = request.idempotencyKey;
     const now = new Date();
     const deadline = BigInt(
       Math.floor(now.getTime() / 1_000) + config.deadlineSeconds,
@@ -334,7 +359,7 @@ export class AppWalletXylonetUserControlledExecutorService {
 
     this.logger.log(
       `[app-wallet-xylonet] mode=${APP_WALLET_XYLONET_MODE} ` +
-        `operationId=${operationId} stage=created treasuryFallback=false`,
+        `operationId=${operationId} stage=created`,
     );
     return this.toPublic(operation);
   }
@@ -374,7 +399,7 @@ export class AppWalletXylonetUserControlledExecutorService {
       this.invalidStage(operation, 'approval challenge');
     }
 
-    const allowance = (await this.getPublicClient().readContract({
+    const allowance = await this.getPublicClient().readContract({
       address: this.address(operation.tokenInAddress),
       abi: ERC20_ABI,
       functionName: 'allowance',
@@ -382,7 +407,7 @@ export class AppWalletXylonetUserControlledExecutorService {
         this.address(operation.walletAddress),
         this.address(operation.executorAddress),
       ],
-    })) as bigint;
+    });
     if (allowance >= BigInt(operation.amountIn)) {
       return this.toPublic(
         await this.prisma.appWalletXylonetOperation.update({
@@ -721,7 +746,7 @@ export class AppWalletXylonetUserControlledExecutorService {
       const amountOut = await this.verifySwapReceipt(operation, txHash as Hash);
       this.logger.log(
         `[app-wallet-xylonet] operationId=${operation.operationId} ` +
-          `stage=output_verified amountOut=${amountOut} treasuryFallback=false`,
+          `stage=output_verified amountOut=${amountOut}`,
       );
       return this.prisma.appWalletXylonetOperation.update({
         where: { operationId: operation.operationId },
@@ -1049,15 +1074,13 @@ export class AppWalletXylonetUserControlledExecutorService {
     if (process.env.APP_WALLET_XYLONET_USER_CONTROLLED_ENABLED !== 'true') {
       throw new ServiceUnavailableException({
         code: APP_WALLET_XYLONET_ERRORS.DISABLED,
-        message:
-          'Direct User-Controlled XyloNet App Wallet execution is disabled. No treasury fallback was used.',
-        treasuryFallback: false,
+        message: 'Direct User-Controlled XyloNet App Wallet execution is disabled.',
       });
     }
     const chainId = Number(process.env.APP_XYLONET_CHAIN_ID);
     if (chainId !== ARC_CHAIN_ID)
       this.configError('APP_XYLONET_CHAIN_ID must equal 5042002.');
-    const executor = this.configAddress('APP_XYLONET_EXECUTOR_ADDRESS');
+    const executor = this.configAddress('WIZPAY_SWAP_EXECUTOR_V2_ADDRESS');
     const routers = this.configAddressList('APP_XYLONET_ROUTER_ADDRESSES');
     const tokens = this.configTokens();
     const deadlineSeconds = Number(
@@ -1090,7 +1113,7 @@ export class AppWalletXylonetUserControlledExecutorService {
     const bytecode = await client.getBytecode({ address: config.executor });
     if (!bytecode || bytecode === '0x') {
       this.configError(
-        'APP_XYLONET_EXECUTOR_ADDRESS has no deployed contract code.',
+        'WIZPAY_SWAP_EXECUTOR_V2_ADDRESS has no deployed contract code.',
       );
     }
     const [
@@ -1515,7 +1538,7 @@ export class AppWalletXylonetUserControlledExecutorService {
     const token = value.trim().toUpperCase();
     if (token !== 'USDC' && token !== 'EURC')
       this.invalid('Only USDC and EURC are supported.');
-    return token as 'USDC' | 'EURC';
+    return token;
   }
 
   private parsePositiveAmount(value: string, field: string): bigint {
@@ -1590,7 +1613,6 @@ export class AppWalletXylonetUserControlledExecutorService {
     throw new ServiceUnavailableException({
       code: APP_WALLET_XYLONET_ERRORS.CONFIG_INVALID,
       message,
-      treasuryFallback: false,
     });
   }
 
