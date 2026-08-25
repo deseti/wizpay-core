@@ -6,6 +6,11 @@ import { type Hex } from "viem";
 import { usePublicClient, useReadContract, useWalletClient } from "wagmi";
 
 import { useCircleWallet } from "@/components/providers/CircleWalletProvider";
+import { ExternalBridgePanel } from "@/components/dashboard/ExternalBridgePanel";
+import {
+  SwapSuccessDialog,
+  type SwapSuccessResult,
+} from "@/components/dashboard/SwapSuccessDialog";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -116,7 +121,9 @@ export function SwapScreen() {
     useState<AppWalletXylonetOperationResponse | null>(null);
   const [status, setStatus] = useState<RequestStatus>("idle");
   const [error, setError] = useState<string | null>(null);
-  const [txHash, setTxHash] = useState<Hex | null>(null);
+  const [swapSuccess, setSwapSuccess] = useState<SwapSuccessResult | null>(null);
+  const [successOpen, setSuccessOpen] = useState(false);
+  const [screenMode, setScreenMode] = useState<"swap" | "bridge">("swap");
   const quoteSequence = useRef(0);
   const operationIdempotencyKey = useRef<string | null>(null);
 
@@ -124,8 +131,14 @@ export function SwapScreen() {
     () => parseAmountToUnits(amountIn, SUPPORTED_TOKENS[tokenIn].decimals),
     [amountIn, tokenIn],
   );
+  const isExternal = walletMode === "external";
+  const isCircle = walletMode === "circle";
+  const effectiveScreenMode = isExternal ? screenMode : "swap";
   const requestKey =
-    walletAddress && amountUnits > 0n && tokenIn !== tokenOut
+    effectiveScreenMode === "swap" &&
+    walletAddress &&
+    amountUnits > 0n &&
+    tokenIn !== tokenOut
       ? [
           walletMode,
           walletAddress.toLowerCase(),
@@ -134,9 +147,6 @@ export function SwapScreen() {
           amountUnits.toString(),
         ].join("|")
       : null;
-  const isExternal = walletMode === "external";
-  const isCircle = walletMode === "circle";
-
   const { data: externalBalance = 0n } = useReadContract({
     address: SUPPORTED_TOKENS[tokenIn].address,
     abi: ERC20_ABI,
@@ -151,7 +161,6 @@ export function SwapScreen() {
       setQuote(null);
       setQuoteKey(null);
       setOperation(null);
-      setTxHash(null);
       setError(null);
     });
     operationIdempotencyKey.current = null;
@@ -292,16 +301,24 @@ export function SwapScreen() {
                   : "executing",
         ),
     });
+    const verifiedOutput = readPositiveAmount(completed.verifiedActualOutput);
     if (
       completed.lifecycleStage !== "completed" ||
       completed.terminalStatus !== "confirmed" ||
-      !completed.swapTransactionHash
+      !completed.swapTransactionHash ||
+      !verifiedOutput
     ) {
       throw new Error(
         completed.failureReason ?? "App Wallet swap did not complete.",
       );
     }
-    setTxHash(completed.swapTransactionHash as Hex);
+    return {
+      hash: completed.swapTransactionHash as Hex,
+      inputAmount: BigInt(completed.amountIn),
+      outputAmount: verifiedOutput,
+      inputToken: completed.tokenIn,
+      outputToken: completed.tokenOut,
+    };
   }
 
   async function executeExternalWalletSwap() {
@@ -314,7 +331,7 @@ export function SwapScreen() {
     ) {
       throw new Error("A current External Wallet XyloNet quote is required.");
     }
-    await submitExternalSwap(async () => {
+    return submitExternalSwap(async () => {
       const validated = validateExternalXylonetQuote(quote, {
         walletAddress,
         chainId: walletClient.chain?.id ?? 0,
@@ -365,11 +382,17 @@ export function SwapScreen() {
       });
       setStatus("confirming");
       const receipt = await publicClient.waitForTransactionReceipt({ hash });
-      verifyExternalXylonetReceipt({
+      const outputAmount = verifyExternalXylonetReceipt({
         receipt,
         expected: { ...validated, walletAddress },
       });
-      setTxHash(hash);
+      return {
+        hash,
+        inputAmount: validated.amountIn,
+        outputAmount,
+        inputToken: tokenIn,
+        outputToken: tokenOut,
+      };
     });
   }
 
@@ -384,11 +407,29 @@ export function SwapScreen() {
       return;
     }
     try {
-      if (isCircle) await executeAppWalletSwap();
-      else await executeExternalWalletSwap();
+      const completed = isCircle
+        ? await executeAppWalletSwap()
+        : await executeExternalWalletSwap();
+      setSwapSuccess({
+        inputAmount: formatTokenAmount(
+          completed.inputAmount,
+          SUPPORTED_TOKENS[completed.inputToken].decimals,
+        ),
+        inputToken: completed.inputToken,
+        outputAmount: formatTokenAmount(
+          completed.outputAmount,
+          SUPPORTED_TOKENS[completed.outputToken].decimals,
+        ),
+        outputToken: completed.outputToken,
+        walletMode: isCircle ? "App Wallet" : "External Wallet",
+        network: arcTestnet.name,
+        transactionHash: completed.hash,
+        explorerUrl: `${arcTestnet.blockExplorers.default.url}/tx/${completed.hash}`,
+      });
+      setSuccessOpen(true);
       toast({
         title: "Swap confirmed",
-        description: `${tokenIn} to ${tokenOut} completed through XyloNet.`,
+        description: `${completed.inputToken} to ${completed.outputToken} completed through XyloNet.`,
       });
     } catch (cause) {
       const message = getFriendlyErrorMessage(cause);
@@ -403,6 +444,14 @@ export function SwapScreen() {
     }
   }
 
+  function handleStartAnotherSwap() {
+    setSuccessOpen(false);
+    setSwapSuccess(null);
+    setOperation(null);
+    setError(null);
+    setAmountIn("");
+  }
+
   const busy = status !== "idle";
   const insufficient = isExternal && amountUnits > externalBalance;
   const disabled =
@@ -413,163 +462,200 @@ export function SwapScreen() {
     !minimumOutput ||
     insufficient;
 
+  const modeSelector = isExternal ? (
+    <div
+      aria-label="Swap or Bridge mode"
+      className="mb-5 grid w-full max-w-sm grid-cols-2 rounded-xl border border-border/40 bg-background/30 p-1"
+    >
+      <Button
+        type="button"
+        variant={screenMode === "swap" ? "default" : "ghost"}
+        onClick={() => setScreenMode("swap")}
+      >
+        Swap
+      </Button>
+      <Button
+        type="button"
+        variant={screenMode === "bridge" ? "default" : "ghost"}
+        onClick={() => setScreenMode("bridge")}
+      >
+        Bridge
+      </Button>
+    </div>
+  ) : null;
+
+  if (effectiveScreenMode === "bridge" && isExternal && walletAddress) {
+    return (
+      <div>
+        {modeSelector}
+        <ExternalBridgePanel walletAddress={walletAddress} />
+      </div>
+    );
+  }
+
   return (
-    <div className="grid gap-6 lg:grid-cols-[1.4fr_0.6fr]">
-      <Card className="glass-card border-border/40">
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <ArrowRightLeft className="h-5 w-5 text-primary" />
-            Swap
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-5">
-          <div className="space-y-2">
-            <label className="text-sm text-muted-foreground">Amount</label>
-            <Input
-              aria-label="Swap amount"
-              value={amountIn}
-              onChange={(event) => setAmountIn(event.target.value)}
-              placeholder="0.00"
-              inputMode="decimal"
-            />
-          </div>
-          <div className="grid grid-cols-[1fr_auto_1fr] items-end gap-3">
-            <div>
-              <label className="mb-2 block text-sm text-muted-foreground">
-                From
-              </label>
-              <Select
-                value={tokenIn}
-                onValueChange={(value) => {
-                  const next = value as TokenSymbol;
-                  setTokenIn(next);
-                  if (next === tokenOut)
-                    setTokenOut(next === "USDC" ? "EURC" : "USDC");
+    <div>
+      {modeSelector}
+      <div className="grid gap-6 lg:grid-cols-[1.4fr_0.6fr]">
+        <Card className="glass-card border-border/40">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <ArrowRightLeft className="h-5 w-5 text-primary" />
+              Swap
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-5">
+            <div className="space-y-2">
+              <label className="text-sm text-muted-foreground">Amount</label>
+              <Input
+                aria-label="Swap amount"
+                value={amountIn}
+                onChange={(event) => setAmountIn(event.target.value)}
+                placeholder="0.00"
+                inputMode="decimal"
+              />
+            </div>
+            <div className="grid grid-cols-[1fr_auto_1fr] items-end gap-3">
+              <div>
+                <label className="mb-2 block text-sm text-muted-foreground">
+                  From
+                </label>
+                <Select
+                  value={tokenIn}
+                  onValueChange={(value) => {
+                    const next = value as TokenSymbol;
+                    setTokenIn(next);
+                    if (next === tokenOut)
+                      setTokenOut(next === "USDC" ? "EURC" : "USDC");
+                  }}
+                >
+                  <SelectTrigger aria-label="From token">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="USDC">USDC</SelectItem>
+                    <SelectItem value="EURC">EURC</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <Button
+                variant="outline"
+                size="icon"
+                aria-label="Reverse tokens"
+                onClick={() => {
+                  setTokenIn(tokenOut);
+                  setTokenOut(tokenIn);
                 }}
               >
-                <SelectTrigger aria-label="From token">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="USDC">USDC</SelectItem>
-                  <SelectItem value="EURC">EURC</SelectItem>
-                </SelectContent>
-              </Select>
+                <ArrowRightLeft className="h-4 w-4" />
+              </Button>
+              <div>
+                <label className="mb-2 block text-sm text-muted-foreground">
+                  To
+                </label>
+                <Select
+                  value={tokenOut}
+                  onValueChange={(value) => {
+                    const next = value as TokenSymbol;
+                    setTokenOut(next);
+                    if (next === tokenIn)
+                      setTokenIn(next === "USDC" ? "EURC" : "USDC");
+                  }}
+                >
+                  <SelectTrigger aria-label="To token">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="EURC">EURC</SelectItem>
+                    <SelectItem value="USDC">USDC</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
+            <div className="rounded-xl border border-border/30 bg-background/20 p-4 text-sm">
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Provider</span>
+                <span>XyloNet</span>
+              </div>
+              <div className="mt-2 flex justify-between">
+                <span className="text-muted-foreground">Executor</span>
+                <span>WizPaySwapExecutorV2</span>
+              </div>
+              <div className="mt-2 flex justify-between">
+                <span className="text-muted-foreground">Expected output</span>
+                <span>
+                  {expectedOutput
+                    ? `${formatTokenAmount(expectedOutput, SUPPORTED_TOKENS[tokenOut].decimals)} ${tokenOut}`
+                    : "—"}
+                </span>
+              </div>
+              <div className="mt-2 flex justify-between">
+                <span className="text-muted-foreground">Minimum output</span>
+                <span>
+                  {minimumOutput
+                    ? `${formatTokenAmount(minimumOutput, SUPPORTED_TOKENS[tokenOut].decimals)} ${tokenOut}`
+                    : "—"}
+                </span>
+              </div>
+            </div>
+            <div className="rounded-xl border border-sky-500/25 bg-sky-500/5 px-4 py-3 text-sm text-sky-100">
+              {isCircle
+                ? "Circle User-Controlled Wallet signs approval and swap challenges. No custodial intermediary or backend signer is used."
+                : "Your connected browser wallet signs approval and the canonical executor transaction directly."}
+            </div>
+            {blockedReason || error ? (
+              <div
+                role="alert"
+                className="rounded-xl border border-destructive/25 bg-destructive/5 px-4 py-3 text-sm text-destructive"
+              >
+                {error ?? blockedReason}
+              </div>
+            ) : null}
+            {insufficient ? (
+              <div role="alert" className="text-sm text-amber-300">
+                Insufficient {tokenIn} balance.
+              </div>
+            ) : null}
             <Button
-              variant="outline"
-              size="icon"
-              aria-label="Reverse tokens"
-              onClick={() => {
-                setTokenIn(tokenOut);
-                setTokenOut(tokenIn);
-              }}
+              className="h-12 w-full"
+              disabled={disabled}
+              onClick={() => void handleSwap()}
             >
-              <ArrowRightLeft className="h-4 w-4" />
+              <ShieldCheck className="mr-2 h-4 w-4" />
+              {busy
+                ? status
+                : isCircle
+                  ? "Confirm XyloNet swap"
+                  : "Swap with XyloNet"}
             </Button>
-            <div>
-              <label className="mb-2 block text-sm text-muted-foreground">
-                To
-              </label>
-              <Select
-                value={tokenOut}
-                onValueChange={(value) => {
-                  const next = value as TokenSymbol;
-                  setTokenOut(next);
-                  if (next === tokenIn)
-                    setTokenIn(next === "USDC" ? "EURC" : "USDC");
-                }}
-              >
-                <SelectTrigger aria-label="To token">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="EURC">EURC</SelectItem>
-                  <SelectItem value="USDC">USDC</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
-          <div className="rounded-xl border border-border/30 bg-background/20 p-4 text-sm">
-            <div className="flex justify-between">
-              <span className="text-muted-foreground">Provider</span>
-              <span>XyloNet</span>
-            </div>
-            <div className="mt-2 flex justify-between">
-              <span className="text-muted-foreground">Executor</span>
-              <span>WizPaySwapExecutorV2</span>
-            </div>
-            <div className="mt-2 flex justify-between">
-              <span className="text-muted-foreground">Expected output</span>
-              <span>
-                {expectedOutput
-                  ? `${formatTokenAmount(expectedOutput, SUPPORTED_TOKENS[tokenOut].decimals)} ${tokenOut}`
-                  : "—"}
-              </span>
-            </div>
-            <div className="mt-2 flex justify-between">
-              <span className="text-muted-foreground">Minimum output</span>
-              <span>
-                {minimumOutput
-                  ? `${formatTokenAmount(minimumOutput, SUPPORTED_TOKENS[tokenOut].decimals)} ${tokenOut}`
-                  : "—"}
-              </span>
-            </div>
-          </div>
-          <div className="rounded-xl border border-sky-500/25 bg-sky-500/5 px-4 py-3 text-sm text-sky-100">
-            {isCircle
-              ? "Circle User-Controlled Wallet signs approval and swap challenges. No custodial intermediary or backend signer is used."
-              : "Your connected browser wallet signs approval and the canonical executor transaction directly."}
-          </div>
-          {blockedReason || error ? (
-            <div
-              role="alert"
-              className="rounded-xl border border-destructive/25 bg-destructive/5 px-4 py-3 text-sm text-destructive"
-            >
-              {error ?? blockedReason}
-            </div>
-          ) : null}
-          {insufficient ? (
-            <div role="alert" className="text-sm text-amber-300">
-              Insufficient {tokenIn} balance.
-            </div>
-          ) : null}
-          <Button
-            className="h-12 w-full"
-            disabled={disabled}
-            onClick={() => void handleSwap()}
-          >
-            <ShieldCheck className="mr-2 h-4 w-4" />
-            {busy
-              ? status
-              : isCircle
-                ? "Confirm XyloNet swap"
-                : "Swap with XyloNet"}
-          </Button>
-          {operation ? (
-            <p className="text-xs text-muted-foreground">
-              App Wallet lifecycle: {operation.lifecycleStage}
+            {operation ? (
+              <p className="text-xs text-muted-foreground">
+                App Wallet lifecycle: {operation.lifecycleStage}
+              </p>
+            ) : null}
+          </CardContent>
+        </Card>
+        <Card className="glass-card border-border/40">
+          <CardHeader>
+            <CardTitle>Locked route</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3 text-sm text-muted-foreground">
+            <p>USDC and EURC swaps on Arc Testnet use XyloNet only.</p>
+            <p>
+              Provider failures stop execution. No alternate provider or signer
+              is selected.
             </p>
-          ) : null}
-          {txHash ? (
-            <p className="break-all text-xs text-emerald-400">
-              Confirmed transaction: {txHash}
-            </p>
-          ) : null}
-        </CardContent>
-      </Card>
-      <Card className="glass-card border-border/40">
-        <CardHeader>
-          <CardTitle>Locked route</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3 text-sm text-muted-foreground">
-          <p>USDC and EURC swaps on Arc Testnet use XyloNet only.</p>
-          <p>
-            Provider failures stop execution. No alternate provider or signer is
-            selected.
-          </p>
-        </CardContent>
-      </Card>
+          </CardContent>
+        </Card>
+      </div>
+      {swapSuccess ? (
+        <SwapSuccessDialog
+          open={successOpen}
+          result={swapSuccess}
+          onDone={() => setSuccessOpen(false)}
+          onStartAnother={handleStartAnotherSwap}
+        />
+      ) : null}
     </div>
   );
 }

@@ -33,6 +33,7 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
+import { resolveCanonicalAppWalletEvmAddress } from "@/lib/canonical-app-wallet";
 import { cn } from "@/lib/utils";
 
 import { useProfileAnsDomains } from "./hooks/useProfileAnsDomains";
@@ -136,7 +137,6 @@ export function ProfileHubPage() {
     logout,
     primaryWallet,
     sepoliaWallet,
-    solanaWallet,
     userEmail,
   } = useCircleWallet();
   const {
@@ -199,8 +199,6 @@ export function ProfileHubPage() {
 
   const manualIdentity = preferences.customIdentity || null;
   const socialHandle = preferences.xHandle || null;
-  const displayIdentity =
-    primaryDomain ?? manualIdentity ?? shortEmailHandle ?? activeWalletShortAddress ?? "WizPay account";
 
   const connectionType = walletMode === "circle" ? "Circle Wallet" : "External Wallet";
   const connectionDetail =
@@ -213,33 +211,37 @@ export function ProfileHubPage() {
             ? "Passkey secured"
             : "App wallet session"
       : `${externalConnectorName ?? "Wallet"} connected`;
+  const canonicalAppWallet = resolveCanonicalAppWalletEvmAddress(
+    arcWallet?.address,
+    sepoliaWallet?.address,
+    primaryWallet?.address,
+    walletMode === "circle" ? activeWalletAddress : null,
+  );
+  const presentationWalletShortAddress =
+    walletMode === "circle"
+      ? canonicalAppWallet.address
+        ? `${canonicalAppWallet.address.slice(0, 6)}…${canonicalAppWallet.address.slice(-4)}`
+        : null
+      : activeWalletShortAddress;
+  const displayIdentity =
+    primaryDomain ??
+    manualIdentity ??
+    shortEmailHandle ??
+    presentationWalletShortAddress ??
+    "WizPay account";
 
   const addressEntries = useMemo<AddressEntry[]>(() => {
     if (walletMode === "circle") {
       return [
         {
-          id: "arc",
-          label: "EVM address",
-          network: "Arc Testnet",
-          value: arcWallet?.address ?? primaryWallet?.address ?? null,
+          id: "evm",
+          label: "EVM Address",
+          network: "App Wallet",
+          value: canonicalAppWallet.address,
           description:
-            "Primary app wallet address for Arc transactions, treasury flows, and ANS ownership.",
-        },
-        {
-          id: "sepolia",
-          label: "Secondary EVM",
-          network: "Ethereum Sepolia",
-          value: sepoliaWallet?.address ?? null,
-          description:
-            "Available when your Circle account has a Sepolia wallet ready for testing or bridging flows.",
-        },
-        {
-          id: "solana",
-          label: "Solana address",
-          network: "Solana Devnet",
-          value: solanaWallet?.address ?? null,
-          description:
-            "Use this address when funds or bridge destinations need a managed Solana endpoint inside WizPay.",
+            canonicalAppWallet.mismatch
+              ? "Address display is blocked because the App Wallet EVM records do not match."
+              : "Canonical App Wallet address used across supported EVM networks.",
         },
       ];
     }
@@ -253,22 +255,12 @@ export function ProfileHubPage() {
         description:
           "The currently connected external wallet address that signs this active session.",
       },
-      {
-        id: "solana",
-        label: "Solana address",
-        network: "Unavailable",
-        value: null,
-        description:
-          "External EVM mode does not expose a managed Solana address. Switch to Circle Wallet when you need one.",
-      },
     ];
   }, [
     activeWalletAddress,
     activeWalletChainName,
-    arcWallet?.address,
-    primaryWallet?.address,
-    sepoliaWallet?.address,
-    solanaWallet?.address,
+    canonicalAppWallet.address,
+    canonicalAppWallet.mismatch,
     walletMode,
   ]);
 
@@ -281,9 +273,6 @@ export function ProfileHubPage() {
 
     if (walletMode === "circle") {
       badges.push(loginMethodLabel);
-      if (solanaWallet?.address) {
-        badges.push("Solana ready");
-      }
     } else if (externalConnectorName) {
       badges.push(externalConnectorName);
     }
@@ -300,7 +289,6 @@ export function ProfileHubPage() {
     isActiveWalletConnected,
     loginMethodLabel,
     primaryDomain,
-    solanaWallet?.address,
     walletMode,
   ]);
 
@@ -387,7 +375,7 @@ export function ProfileHubPage() {
                 </h1>
                 <p className="max-w-2xl text-sm leading-6 text-muted-foreground/78 sm:text-base">
                   {primaryDomain
-                    ? `${activeWalletShortAddress ?? connectionDetail} · ${connectionDetail}. This profile surface centralizes wallet identity, address copying, ANS, and social metadata in one place.`
+                    ? `${presentationWalletShortAddress ?? connectionDetail} · ${connectionDetail}. This profile surface centralizes wallet identity, address copying, ANS, and social metadata in one place.`
                     : `${connectionDetail}. Keep wallet identity, copyable addresses, ANS names, and social metadata organized in one native-style account center.`}
                 </p>
               </div>
@@ -423,7 +411,7 @@ export function ProfileHubPage() {
             />
             <SummaryTile
               label="Short identity"
-              value={activeWalletShortAddress ?? "Pending"}
+              value={presentationWalletShortAddress ?? "Pending"}
               hint={userEmail ?? (primaryDomain ? "ANS is active" : "Identity fallback in use")}
             />
           </div>
@@ -439,7 +427,7 @@ export function ProfileHubPage() {
             </CardTitle>
             <CardDescription className="text-sm text-muted-foreground/75">
               {walletMode === "circle"
-                ? "Circle Wallet exposes the managed Arc, secondary EVM, and Solana surfaces available in this session."
+                ? "App Wallet exposes one canonical address across supported EVM networks."
                 : "External wallet mode mirrors the currently connected EVM wallet while preserving the standard signing flow."}
             </CardDescription>
           </CardHeader>
@@ -502,7 +490,7 @@ export function ProfileHubPage() {
                   ) : null}
                   <p className="flex items-center gap-2 break-all text-muted-foreground/80">
                     <Link2 className="h-4 w-4 text-cyan-300" />
-                    {activeWalletShortAddress ?? "Wallet not connected"}
+                    {presentationWalletShortAddress ?? "Wallet not connected"}
                   </p>
                 </div>
               </div>

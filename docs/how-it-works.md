@@ -46,7 +46,7 @@ Two settlement models exist:
 
 | Model | Used By | Behavior |
 |---|---|---|
-| **Sync** | Swap, Bridge, FX, Liquidity | Agent blocks until the operation completes. Task is marked `executed` or `failed` immediately. |
+| **Sync** | Swap, FX, Liquidity | Agent blocks until the operation completes. Task is marked `executed` or `failed` immediately. |
 | **Async** | Payroll | Agent submits all transfers, enqueues poll jobs, and returns. `TransactionPollerService` confirms each tx individually. Task finalizes when all transactions reach a terminal state. |
 
 Terminal states for a `TaskTransaction`:
@@ -62,7 +62,7 @@ The orchestration layer is the coordination logic between HTTP ingestion, queue 
 
 - `OrchestratorService` — The single entry point. Exposes `handleTask()` (called by HTTP) and `executeTask()` (called by workers). No other component creates or executes tasks.
 - `ExecutionRouterService` — Checks `walletMode` (W3S vs PASSKEY) and dispatches to the correct execution engine.
-- `AgentRouterService` — Dispatches to the type-specific agent (`PayrollAgent`, `BridgeAgent`, etc.).
+- `AgentRouterService` — Dispatches to the remaining type-specific agents. Legacy bridge task execution is rejected.
 - `QueueService` — Enqueue-only. Never processes jobs.
 
 **Architectural invariant:** Workers never call agents directly. The call chain is always:

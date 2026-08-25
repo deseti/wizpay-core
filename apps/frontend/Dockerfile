@@ -2,7 +2,7 @@
 
 FROM node:22-alpine AS builder
 
-WORKDIR /app
+WORKDIR /repo
 
 ENV NEXT_TELEMETRY_DISABLED=1 \
 		npm_config_fetch_retries=5 \
@@ -11,7 +11,7 @@ ENV NEXT_TELEMETRY_DISABLED=1 \
 		npm_config_fetch_retry_maxtimeout=120000 \
 		npm_config_fetch_timeout=300000
 
-COPY package.json package-lock.json ./
+COPY . .
 RUN --mount=type=cache,target=/root/.npm \
 		attempt=1; \
 		until npm ci --legacy-peer-deps --no-audit --no-fund --prefer-offline; do \
@@ -23,8 +23,6 @@ RUN --mount=type=cache,target=/root/.npm \
 			attempt=$((attempt + 1)); \
 			npm cache verify || true; \
 		done
-
-COPY . .
 
 # ── Build-time env vars ───────────────────────────────────────────────────────
 # Each ARG receives its value from docker-compose build.args (which reads from
@@ -49,6 +47,10 @@ ARG NEXT_PUBLIC_ARC_TESTNET_RPC_URL=https://rpc.testnet.arc.io
 ARG NEXT_PUBLIC_ARC_MAINNET_EXPLORER_URL=
 ARG NEXT_PUBLIC_ETHEREUM_SEPOLIA_RPC_URL=
 ARG NEXT_PUBLIC_ETHEREUM_SEPOLIA_RPC_URLS=
+ARG NEXT_PUBLIC_BASE_SEPOLIA_RPC_URL=https://sepolia.base.org
+ARG NEXT_PUBLIC_ARBITRUM_SEPOLIA_RPC_URL=https://sepolia-rollup.arbitrum.io/rpc
+ARG NEXT_PUBLIC_OP_SEPOLIA_RPC_URL=https://sepolia.optimism.io
+ARG NEXT_PUBLIC_MONAD_TESTNET_RPC_URL=https://testnet-rpc.monad.xyz
 ARG NEXT_PUBLIC_USE_REAL_STABLEFX=false
 ARG NEXT_PUBLIC_CIRCLE_API_PROXY_ENABLED=false
 ARG NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID=
@@ -67,8 +69,6 @@ ARG NEXT_PUBLIC_ANS_WIZPAY_VAULT=
 ARG NEXT_PUBLIC_CONTRACT_ADDRESS=
 ARG NEXT_PUBLIC_WIZPAY_ADDRESS=
 ARG NEXT_PUBLIC_WIZPAY_AGENTIC_NANO_ADDRESS=
-# Feature flags
-ARG NEXT_PUBLIC_WIZPAY_BRIDGE_EXTERNAL_ENABLED=false
 
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
 ENV NEXT_PUBLIC_BACKEND_API_BASE_URL=$NEXT_PUBLIC_BACKEND_API_BASE_URL
@@ -86,6 +86,10 @@ ENV NEXT_PUBLIC_ARC_TESTNET_RPC_URL=$NEXT_PUBLIC_ARC_TESTNET_RPC_URL
 ENV NEXT_PUBLIC_ARC_MAINNET_EXPLORER_URL=$NEXT_PUBLIC_ARC_MAINNET_EXPLORER_URL
 ENV NEXT_PUBLIC_ETHEREUM_SEPOLIA_RPC_URL=$NEXT_PUBLIC_ETHEREUM_SEPOLIA_RPC_URL
 ENV NEXT_PUBLIC_ETHEREUM_SEPOLIA_RPC_URLS=$NEXT_PUBLIC_ETHEREUM_SEPOLIA_RPC_URLS
+ENV NEXT_PUBLIC_BASE_SEPOLIA_RPC_URL=$NEXT_PUBLIC_BASE_SEPOLIA_RPC_URL
+ENV NEXT_PUBLIC_ARBITRUM_SEPOLIA_RPC_URL=$NEXT_PUBLIC_ARBITRUM_SEPOLIA_RPC_URL
+ENV NEXT_PUBLIC_OP_SEPOLIA_RPC_URL=$NEXT_PUBLIC_OP_SEPOLIA_RPC_URL
+ENV NEXT_PUBLIC_MONAD_TESTNET_RPC_URL=$NEXT_PUBLIC_MONAD_TESTNET_RPC_URL
 ENV NEXT_PUBLIC_USE_REAL_STABLEFX=$NEXT_PUBLIC_USE_REAL_STABLEFX
 ENV NEXT_PUBLIC_CIRCLE_API_PROXY_ENABLED=$NEXT_PUBLIC_CIRCLE_API_PROXY_ENABLED
 ENV NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID=$NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID
@@ -104,9 +108,8 @@ ENV NEXT_PUBLIC_ANS_WIZPAY_VAULT=$NEXT_PUBLIC_ANS_WIZPAY_VAULT
 ENV NEXT_PUBLIC_CONTRACT_ADDRESS=$NEXT_PUBLIC_CONTRACT_ADDRESS
 ENV NEXT_PUBLIC_WIZPAY_ADDRESS=$NEXT_PUBLIC_WIZPAY_ADDRESS
 ENV NEXT_PUBLIC_WIZPAY_AGENTIC_NANO_ADDRESS=$NEXT_PUBLIC_WIZPAY_AGENTIC_NANO_ADDRESS
-ENV NEXT_PUBLIC_WIZPAY_BRIDGE_EXTERNAL_ENABLED=$NEXT_PUBLIC_WIZPAY_BRIDGE_EXTERNAL_ENABLED
 
-RUN npm run build
+RUN npm run build -w frontend
 
 FROM node:22-alpine AS runner
 
@@ -117,9 +120,13 @@ ENV NEXT_TELEMETRY_DISABLED=1
 ENV HOSTNAME=0.0.0.0
 ENV PORT=3000
 
-COPY --from=builder /app/.next/standalone ./
-COPY --from=builder /app/.next/static ./.next/static
-COPY --from=builder /app/public ./public
+COPY --from=builder /repo/apps/frontend/.next/standalone ./
+COPY --from=builder /repo/apps/frontend/.next/static ./.next/static
+COPY --from=builder /repo/apps/frontend/public ./public
+# React is a workspace root development dependency and is not always traced
+# into Next's standalone output when the app is built from the monorepo root.
+COPY --from=builder /repo/node_modules/react ./node_modules/react
+COPY --from=builder /repo/node_modules/react-dom ./node_modules/react-dom
 
 EXPOSE 3000
 

@@ -2,21 +2,19 @@
 
 FROM node:22-alpine AS builder
 
-WORKDIR /app
+WORKDIR /repo
 
-COPY package.json package-lock.json ./
+COPY . .
 RUN --mount=type=cache,target=/root/.npm \
     npm ci --legacy-peer-deps --no-audit --no-fund
 
-COPY . .
-
-RUN npm run prisma:generate
-RUN npm run build && test -f dist/main.js
+RUN npm run prisma:generate -w backend
+RUN npm run build -w backend && test -f apps/backend/dist/main.js
 FROM node:22-alpine AS production-deps
 
-WORKDIR /app
+WORKDIR /repo
 
-COPY package.json package-lock.json ./
+COPY . .
 RUN --mount=type=cache,target=/root/.npm \
     npm ci --legacy-peer-deps --omit=dev --no-audit --no-fund
 
@@ -30,16 +28,18 @@ RUN --mount=type=cache,target=/root/.npm \
 ENV NODE_ENV=production
 ENV PORT=4000
 
-COPY --from=builder /app/package.json /app/package-lock.json ./
-COPY --from=production-deps /app/node_modules ./node_modules
-COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
-COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/src/database ./src/database
-COPY --from=builder /app/prisma.config.ts ./prisma.config.ts
+COPY --from=builder /repo/apps/backend/package.json ./package.json
+COPY --from=builder /repo/package-lock.json ./package-lock.json
+COPY --from=production-deps /repo/node_modules ./node_modules
+COPY --from=builder /repo/node_modules/.prisma ./node_modules/.prisma
+COPY --from=builder /repo/packages/bridge-registry ./packages/bridge-registry
+COPY --from=builder /repo/apps/backend/dist ./dist
+COPY --from=builder /repo/apps/backend/src/database ./src/database
+COPY --from=builder /repo/apps/backend/prisma.config.ts ./prisma.config.ts
 
 EXPOSE 4000
 
-COPY docker-entrypoint.sh ./
+COPY apps/backend/docker-entrypoint.sh ./
 RUN chmod +x docker-entrypoint.sh
 
 ENTRYPOINT ["./docker-entrypoint.sh"]

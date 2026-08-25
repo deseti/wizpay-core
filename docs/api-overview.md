@@ -128,12 +128,9 @@ Execute an FX trade. Required: `quoteId`, `signature`, `senderAddress`.
 
 All require `userToken` in the request body.
 
-## Treasury Endpoints
+## Bridge Endpoints
 
-| Endpoint           | Method | Purpose                                   |
-| ------------------ | ------ | ----------------------------------------- |
-| `/treasury/init`   | POST   | Initialize app treasury wallet via Circle |
-| `/treasury/wallet` | GET    | Get treasury wallet for a blockchain      |
+`/bridge/intents` creates and retrieves External Wallet CCTP V2 lifecycle records. Stage endpoints bind and verify user-submitted approval and source burn evidence, recover the Circle attestation, lease one destination wallet authorization, bind its transaction hash, and strictly verify the destination mint. API retries return the existing binding; no bridge endpoint signs or submits a transaction.
 
 ## External System Interfaces
 
@@ -142,7 +139,7 @@ The backend communicates with these external systems:
 | System            | Adapter               | Protocol                   | Operations                                           |
 | ----------------- | --------------------- | -------------------------- | ---------------------------------------------------- |
 | Circle W3S        | `CircleService`       | REST                       | Wallet provisioning, transfers, FX trades, tx status |
-| Circle Bridge Kit | `CircleBridgeService` | SDK                        | CCTP burn+attest+mint                                |
+| Circle CCTP API   | `BridgeLifecycleService` | HTTPS                    | Sandbox attestation retrieval and validation        |
 | EVM RPCs          | `BlockchainService`   | JSON-RPC (viem)            | ERC-20 transfers, contract calls                     |
 | Solana RPC        | `SolanaService`       | JSON-RPC (@solana/web3.js) | SPL transfers, intent building                       |
 | DEX protocols     | `DexService`          | Varies                     | Swap preparation                                     |
@@ -153,6 +150,6 @@ The backend communicates with these external systems:
 - **No direct frontend-to-chain calls in W3S mode.** All on-chain operations route through the backend.
 - **No concurrent task execution for the same wallet.** BullMQ processes jobs sequentially per queue (except payroll at concurrency 5). No explicit wallet-level locking exists.
 - **Circle rate limits apply.** The backend does not implement its own rate limiting against Circle APIs. High-throughput payroll runs may encounter Circle-side throttling.
-- **USDC-only for bridge.** The CCTP bridge path only supports USDC. Non-USDC bridge requests are rejected at validation.
+- **USDC-only, testnet-only bridge.** Only registry-approved Arc Testnet hub-and-spoke routes are accepted. Non-USDC, mainnet, Robinhood, Solana, and spoke-to-spoke requests fail closed.
 - **Passkey AA is EVM-only.** Solana operations in PASSKEY mode return unsigned intents. The backend cannot sign Solana transactions for passkey wallets.
 - **No webhook ingestion.** Settlement confirmation relies on polling (tx_poll queue), not on-chain event subscriptions or Circle webhooks.

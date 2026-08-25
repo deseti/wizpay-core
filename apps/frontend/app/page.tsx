@@ -7,7 +7,6 @@ import {
   ArrowRightLeft,
   ArrowUpRight,
   Droplet,
-  Route,
   TrendingUp,
   Wallet,
 } from "lucide-react";
@@ -38,13 +37,6 @@ const QUICK_ACTIONS = [
     external: false,
   },
   { href: "/ans", label: "ANS", icon: AtSign, color: "cyan", external: false },
-  {
-    href: "/bridge",
-    label: "Bridge",
-    icon: Route,
-    color: "emerald",
-    external: false,
-  },
   {
     href: "https://faucet.circle.com",
     label: "Faucet",
@@ -101,7 +93,7 @@ function TotalBalance({ balances, isLoading }: BalanceSnapshotProps) {
 
 function QuickActions() {
   return (
-    <div className="grid grid-cols-4 gap-2 sm:gap-3">
+    <div className="grid grid-cols-3 gap-2 sm:gap-3">
       {QUICK_ACTIONS.map(({ href, label, icon: Icon, color, external }) => {
         const content = (
           <div

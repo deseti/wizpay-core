@@ -7,7 +7,6 @@ import {
   AtSign,
   Home,
   Repeat,
-  Route,
   User,
   Wallet,
 } from "lucide-react";
@@ -19,7 +18,6 @@ const navItems = [
   { href: "/", label: "Home", icon: Home },
   { href: "/send", label: "Send", icon: ArrowRightLeft },
   { href: "/swap", label: "Swap", icon: Repeat },
-  { href: "/bridge", label: "Bridge", icon: Route },
   { href: "/assets", label: "Assets", icon: Wallet },
   { href: "/profile", label: "Profile", icon: User },
   { href: "/ans", label: "ANS", icon: AtSign },

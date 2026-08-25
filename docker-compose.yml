@@ -1,6 +1,8 @@
 services:
   backend:
-    build: ./apps/backend
+    build:
+      context: .
+      dockerfile: apps/backend/Dockerfile
     depends_on:
       postgres:
         condition: service_healthy
@@ -20,6 +22,13 @@ services:
       ARC_RPC_URL: ${ARC_RPC_URL:-https://rpc.testnet.arc.io}
       CHAIN_ID: ${CHAIN_ID:-5042002}
       ETH_SEPOLIA_RPC_URL: ${ETH_SEPOLIA_RPC_URL:-}
+      ARC_TESTNET_RPC_URL: ${ARC_TESTNET_RPC_URL:-https://rpc.testnet.arc.io}
+      ETHEREUM_SEPOLIA_RPC_URL: ${ETHEREUM_SEPOLIA_RPC_URL:-https://ethereum-sepolia-rpc.publicnode.com}
+      BASE_SEPOLIA_RPC_URL: ${BASE_SEPOLIA_RPC_URL:-https://sepolia.base.org}
+      ARBITRUM_SEPOLIA_RPC_URL: ${ARBITRUM_SEPOLIA_RPC_URL:-https://sepolia-rollup.arbitrum.io/rpc}
+      OP_SEPOLIA_RPC_URL: ${OP_SEPOLIA_RPC_URL:-https://sepolia.optimism.io}
+      MONAD_TESTNET_RPC_URL: ${MONAD_TESTNET_RPC_URL:-https://testnet-rpc.monad.xyz}
+      CCTP_IRIS_BASE_URL: ${CCTP_IRIS_BASE_URL:-https://iris-api-sandbox.circle.com/v2}
       NEXT_PUBLIC_ARC_TESTNET_RPC_URL: ${NEXT_PUBLIC_ARC_TESTNET_RPC_URL:-https://rpc.testnet.arc.io}
       NEXT_PUBLIC_ETHEREUM_SEPOLIA_RPC_URL: ${NEXT_PUBLIC_ETHEREUM_SEPOLIA_RPC_URL:-}
       SOLANA_DEVNET_RPC_URL: ${SOLANA_DEVNET_RPC_URL:-}
@@ -43,7 +52,6 @@ services:
       CIRCLE_WALLET_ADDRESS_SEPOLIA: ${CIRCLE_WALLET_ADDRESS_SEPOLIA}
       CIRCLE_WALLET_ADDRESS_SOLANA: ${CIRCLE_WALLET_ADDRESS_SOLANA}
       # ── Feature flags ────────────────────────────────────────────────────
-      WIZPAY_BRIDGE_EXTERNAL_ENABLED: ${WIZPAY_BRIDGE_EXTERNAL_ENABLED:-false}
       WIZPAY_OFFICIAL_SWAP_ENABLED: ${WIZPAY_OFFICIAL_SWAP_ENABLED:-false}
       WIZPAY_OFFICIAL_SWAP_EXECUTOR: ${WIZPAY_OFFICIAL_SWAP_EXECUTOR:-disabled}
       WIZPAY_OFFICIAL_SWAP_ALLOW_TESTNET_CLI: ${WIZPAY_OFFICIAL_SWAP_ALLOW_TESTNET_CLI:-false}
@@ -82,7 +90,8 @@ services:
 
   frontend:
     build:
-      context: ./apps/frontend
+      context: .
+      dockerfile: apps/frontend/Dockerfile
       # ── Build-time args ───────────────────────────────────────────────────
       # docker-compose auto-loads the root .env file, so ${VAR} here resolves
       # from .env without any shell export. Values are baked into the Next.js
@@ -107,6 +116,10 @@ services:
         NEXT_PUBLIC_ARC_MAINNET_EXPLORER_URL: ${NEXT_PUBLIC_ARC_MAINNET_EXPLORER_URL:-}
         NEXT_PUBLIC_ETHEREUM_SEPOLIA_RPC_URL: ${NEXT_PUBLIC_ETHEREUM_SEPOLIA_RPC_URL:-}
         NEXT_PUBLIC_ETHEREUM_SEPOLIA_RPC_URLS: ${NEXT_PUBLIC_ETHEREUM_SEPOLIA_RPC_URLS:-}
+        NEXT_PUBLIC_BASE_SEPOLIA_RPC_URL: ${NEXT_PUBLIC_BASE_SEPOLIA_RPC_URL:-https://sepolia.base.org}
+        NEXT_PUBLIC_ARBITRUM_SEPOLIA_RPC_URL: ${NEXT_PUBLIC_ARBITRUM_SEPOLIA_RPC_URL:-https://sepolia-rollup.arbitrum.io/rpc}
+        NEXT_PUBLIC_OP_SEPOLIA_RPC_URL: ${NEXT_PUBLIC_OP_SEPOLIA_RPC_URL:-https://sepolia.optimism.io}
+        NEXT_PUBLIC_MONAD_TESTNET_RPC_URL: ${NEXT_PUBLIC_MONAD_TESTNET_RPC_URL:-https://testnet-rpc.monad.xyz}
         NEXT_PUBLIC_USE_REAL_STABLEFX: ${NEXT_PUBLIC_USE_REAL_STABLEFX:-false}
         NEXT_PUBLIC_CIRCLE_API_PROXY_ENABLED: ${NEXT_PUBLIC_CIRCLE_API_PROXY_ENABLED:-false}
         NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID: ${NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID:-}
@@ -125,8 +138,6 @@ services:
         NEXT_PUBLIC_CONTRACT_ADDRESS: ${NEXT_PUBLIC_CONTRACT_ADDRESS:-}
         NEXT_PUBLIC_WIZPAY_ADDRESS: ${NEXT_PUBLIC_WIZPAY_ADDRESS:-}
         NEXT_PUBLIC_WIZPAY_AGENTIC_NANO_ADDRESS: ${NEXT_PUBLIC_WIZPAY_AGENTIC_NANO_ADDRESS:-}
-        # ── Feature flags (baked into Next.js bundle at build time) ───────────
-        NEXT_PUBLIC_WIZPAY_BRIDGE_EXTERNAL_ENABLED: ${NEXT_PUBLIC_WIZPAY_BRIDGE_EXTERNAL_ENABLED:-false}
     depends_on:
       backend:
         condition: service_started
@@ -152,6 +163,10 @@ services:
       NEXT_PUBLIC_ARC_TESTNET_RPC_URL: ${NEXT_PUBLIC_ARC_TESTNET_RPC_URL:-https://rpc.testnet.arc.io}
       NEXT_PUBLIC_ETHEREUM_SEPOLIA_RPC_URL: ${NEXT_PUBLIC_ETHEREUM_SEPOLIA_RPC_URL:-https://ethereum-sepolia-rpc.publicnode.com}
       NEXT_PUBLIC_ETHEREUM_SEPOLIA_RPC_URLS: ${NEXT_PUBLIC_ETHEREUM_SEPOLIA_RPC_URLS:-}
+      NEXT_PUBLIC_BASE_SEPOLIA_RPC_URL: ${NEXT_PUBLIC_BASE_SEPOLIA_RPC_URL:-https://sepolia.base.org}
+      NEXT_PUBLIC_ARBITRUM_SEPOLIA_RPC_URL: ${NEXT_PUBLIC_ARBITRUM_SEPOLIA_RPC_URL:-https://sepolia-rollup.arbitrum.io/rpc}
+      NEXT_PUBLIC_OP_SEPOLIA_RPC_URL: ${NEXT_PUBLIC_OP_SEPOLIA_RPC_URL:-https://sepolia.optimism.io}
+      NEXT_PUBLIC_MONAD_TESTNET_RPC_URL: ${NEXT_PUBLIC_MONAD_TESTNET_RPC_URL:-https://testnet-rpc.monad.xyz}
       NEXT_PUBLIC_USE_REAL_STABLEFX: ${NEXT_PUBLIC_USE_REAL_STABLEFX:-false}
       NEXT_PUBLIC_CIRCLE_API_PROXY_ENABLED: ${NEXT_PUBLIC_CIRCLE_API_PROXY_ENABLED:-false}
       NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID: ${NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID:-}
@@ -170,7 +185,6 @@ services:
       NEXT_PUBLIC_CONTRACT_ADDRESS: ${NEXT_PUBLIC_CONTRACT_ADDRESS:-}
       NEXT_PUBLIC_WIZPAY_ADDRESS: ${NEXT_PUBLIC_WIZPAY_ADDRESS:-}
       NEXT_PUBLIC_WIZPAY_AGENTIC_NANO_ADDRESS: ${NEXT_PUBLIC_WIZPAY_AGENTIC_NANO_ADDRESS:-}
-      NEXT_PUBLIC_WIZPAY_BRIDGE_EXTERNAL_ENABLED: ${NEXT_PUBLIC_WIZPAY_BRIDGE_EXTERNAL_ENABLED:-false}
       # ── Server-side runtime vars (Next.js API routes, not bundled) ──────────
       # IMPORTANT: Add http://localhost:3000 to Circle Console → Allowed Origins
       CIRCLE_API_KEY: ${CIRCLE_API_KEY}
@@ -179,8 +193,6 @@ services:
       CIRCLE_WALLETS_BASE_URL: ${CIRCLE_WALLETS_BASE_URL}
       CIRCLE_TRANSFER_BLOCKCHAIN: ${CIRCLE_TRANSFER_BLOCKCHAIN}
       CIRCLE_TRANSFER_FEE_LEVEL: ${CIRCLE_TRANSFER_FEE_LEVEL}
-      CIRCLE_BRIDGE_TRANSFER_SPEED: ${CIRCLE_BRIDGE_TRANSFER_SPEED}
-      CIRCLE_BRIDGE_TRANSFER_TTL_SECONDS: ${CIRCLE_BRIDGE_TRANSFER_TTL_SECONDS:-1800}
       CIRCLE_WALLET_ID_ARC: ${CIRCLE_WALLET_ID_ARC}
       CIRCLE_WALLET_ID_SEPOLIA: ${CIRCLE_WALLET_ID_SEPOLIA}
       CIRCLE_WALLET_ID_SOLANA: ${CIRCLE_WALLET_ID_SOLANA}

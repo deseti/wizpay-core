@@ -5,7 +5,7 @@ description: "Component topology, responsibilities, and trust boundaries."
 
 # System Architecture
 
-WizPay is a monorepo containing a NestJS backend, a Next.js frontend, and shared contract artifacts. Validation, queuing, task state, and backend-signed execution live in the backend. The main exception is the external-wallet bridge path, where the browser signs and submits the bridge while the backend remains responsible for validation and audit logging.
+WizPay is a monorepo containing a NestJS backend, a Next.js frontend, and shared protocol configuration. The testnet bridge is a direct External Wallet CCTP V2 lifecycle: the browser wallet signs approval, burn, and destination `receiveMessage`, while the backend validates receipts, retrieves and validates attestations, and restores the persisted lifecycle without a generic retry workflow.
 
 ## Component Topology
 
@@ -13,7 +13,7 @@ WizPay is a monorepo containing a NestJS backend, a Next.js frontend, and shared
 ┌─────────────────────────────────────────────────────────────────────┐
 │                          Frontend (Next.js)                        │
 │  Composes payloads · Polls task status · Manages wallet sessions   │
-│  Executes external-wallet bridge flows in the browser              │
+│  Signs and submits every CCTP bridge write in the browser          │
 └────────────────────────────┬────────────────────────────────────────┘
                              │ HTTP
 ┌────────────────────────────▼────────────────────────────────────────┐
@@ -28,21 +28,19 @@ WizPay is a monorepo containing a NestJS backend, a Next.js frontend, and shared
 ├──────────────┴──────┬───────┴───────────────────────────────────────┤
 │                     │ BullMQ (Redis)                                │
 │    ┌────────────────▼─────────────────┐                            │
-│    │ Workers (payroll/swap/bridge/    │                            │
-│    │          tx_poll)                │                            │
+│    │ Workers (payroll/swap/tx_poll)   │                            │
 │    └────────────────┬─────────────────┘                            │
 │                     │                                              │
 │    ┌────────────────▼─────────────────┐                            │
 │    │ Agents                           │                            │
-│    │ PayrollAgent · BridgeAgent       │                            │
-│    │ SwapAgent · FxAgent · Liquidity  │                            │
+│    │ PayrollAgent · SwapAgent         │                            │
+│    │ FxAgent · LiquidityAgent         │                            │
 │    └────────────────┬─────────────────┘                            │
 │                     │                                              │
 │    ┌────────────────▼─────────────────┐                            │
 │    │ Adapters                         │                            │
 │    │ CircleService · BlockchainSvc    │                            │
 │    │ SolanaService · DexService       │                            │
-│    │ CircleBridgeService              │                            │
 │    └──────────────────────────────────┘                            │
 ├─────────────────────────────────────────────────────────────────────┤
 │                    PostgreSQL (Prisma ORM)                          │
@@ -59,9 +57,9 @@ WizPay is a monorepo containing a NestJS backend, a Next.js frontend, and shared
 - Polls `GET /tasks/:id` for progress and renders status
 - Manages wallet sessions (W3S userToken / passkey)
 - In PASSKEY mode: signs and broadcasts transactions client-side
-- For external-wallet bridge routes: executes the CCTP/AppKit burn, attestation, and mint flow in the browser
+- For External Wallet bridge routes: signs exact USDC approval, CCTP V2 burn, and destination `receiveMessage` transactions in the browser
 
-In W3S mode, the frontend **never** constructs raw blockchain transactions or manages task state. The external-wallet bridge path is the explicit exception: it uses public Circle bridge APIs from the browser and only sends a best-effort audit task to the backend.
+App Wallet mode does not expose Bridge. The External Wallet bridge uses the canonical testnet registry and durable `/bridge/intents` lifecycle; the backend never signs or submits bridge transactions.
 
 #### Mobile Shell
 
@@ -98,7 +96,7 @@ On mobile devices, Circle W3S SDK sessions can silently expire when the browser 
 
 - `OrchestratorService.handleTask()` — HTTP entry point. Creates task, sets status to `assigned`, enqueues to BullMQ.
 - `OrchestratorService.executeTask()` — Worker entry point. Idempotency guard → status to `in_progress` → route to agent → finalize.
-- Bridge payload normalization and validation happen here.
+- Legacy `type: bridge` task submissions fail closed before task creation.
 
 ### Task Module
 
@@ -113,7 +111,7 @@ On mobile devices, Circle W3S SDK sessions can silently expire when the browser 
 ### Execution Layer
 
 - `ExecutionRouterService` — Reads `walletMode` from task payload. Routes to `AgentRouterService` (W3S) or `PasskeyEngineService` (PASSKEY).
-- `PasskeyEngineService` — Handles bridge intents, EVM payroll via treasury key, Solana unsigned intents, swap preparation.
+- `PasskeyEngineService` — Handles its remaining non-bridge task types. Bridge is not routed through an execution engine.
 
 ### Agents
 
@@ -128,7 +126,6 @@ interface TaskAgent {
 | Agent | Operation | Settlement |
 |---|---|---|
 | `PayrollAgent` | Batch ERC-20/SPL transfers via Circle | Async (tx_poll) |
-| `BridgeAgent` | CCTP burn+mint via Circle Bridge Kit | Sync |
 | `SwapAgent` | Token swap | Sync |
 | `FxAgent` | USDC ↔ EURC trade via Circle, polls until settled | Sync |
 | `LiquidityAgent` | Add/remove liquidity | Sync |
@@ -138,7 +135,6 @@ interface TaskAgent {
 | Adapter | Target | Protocol |
 |---|---|---|
 | `CircleService` | Circle W3S API | REST (wallets, transfers, FX trades) |
-| `CircleBridgeService` | Circle CCTP Bridge Kit | SDK |
 | `BlockchainService` | EVM chains | viem (ARC-TESTNET, ETH-SEPOLIA) |
 | `SolanaService` | Solana | @solana/web3.js (SOLANA-DEVNET) |
 | `DexService` | DEX protocols | Chain-agnostic swap prep |
@@ -149,7 +145,6 @@ interface TaskAgent {
 |---|---|---|---|
 | `payroll` | `PayrollWorker` | 5 | Payroll batch execution |
 | `swap` | `SwapWorker` | 1 | Swap, FX, Liquidity |
-| `bridge` | `BridgeWorker` | 1 | CCTP bridge execution |
 | `tx_poll` | `TxPollWorker` | 1 | Transaction status polling |
 
 ## Trust Boundaries
@@ -172,7 +167,7 @@ interface TaskAgent {
 ```
 
 - All user input crosses the trust boundary at `TaskController` and is validated before reaching the orchestrator.
-- Backend signing keys (Circle entity secret, `BACKEND_PRIVATE_KEY`) never leave the backend process.
+- The bridge lifecycle cannot access Circle entity secrets, backend signing keys, or treasury wallets.
 - In PASSKEY mode, the backend has no signing authority over the user's wallet. The trust model shifts — the backend produces unsigned intents, the client signs.
 - In external-wallet bridge mode, the backend also has no signing authority. It validates the submitted bridge metadata, records the audit trail, and leaves the burn/mint execution to the connected browser wallet.
 

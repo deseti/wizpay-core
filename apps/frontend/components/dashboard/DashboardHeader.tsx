@@ -19,6 +19,7 @@ import { useHybridWallet } from "@/components/providers/HybridWalletProvider";
 import { WalletModeToggle } from "@/components/wallet/WalletModeToggle";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
+import { resolveCanonicalAppWalletEvmAddress } from "@/lib/canonical-app-wallet";
 import { arcTestnet } from "@/lib/wagmi";
 
 function truncateAddress(address: string) {
@@ -60,8 +61,8 @@ export function DashboardHeader() {
     login,
     logout,
     loginMethodLabel,
+    primaryWallet,
     sepoliaWallet,
-    solanaWallet,
     userEmail,
   } = useCircleWallet();
   const {
@@ -80,14 +81,15 @@ export function DashboardHeader() {
   const [copiedAddress, setCopiedAddress] = useState<string | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const { toast } = useToast();
-  const circleWalletEntries = [
-    { id: "arc", label: "Arc Testnet", address: arcWallet?.address },
-    { id: "sepolia", label: "Ethereum Sepolia", address: sepoliaWallet?.address },
-    { id: "solana", label: "Solana Devnet", address: solanaWallet?.address },
-  ].filter(
-    (wallet): wallet is { id: string; label: string; address: string } =>
-      typeof wallet.address === "string" && Boolean(wallet.address)
+  const canonicalAppWallet = resolveCanonicalAppWalletEvmAddress(
+    arcWallet?.address,
+    sepoliaWallet?.address,
+    primaryWallet?.address,
+    walletMode === "circle" ? activeWalletAddress : null,
   );
+  const canonicalAppWalletShortAddress = canonicalAppWallet.address
+    ? truncateAddress(canonicalAppWallet.address)
+    : null;
 
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
@@ -114,7 +116,7 @@ export function DashboardHeader() {
         description:
           description ||
           (walletMode === "circle"
-            ? "Use the address that matches the chain you want to fund or receive on."
+            ? "Use this EVM address across supported EVM networks."
             : "Use this address when you want incoming funds to land in your external wallet."),
       });
       window.setTimeout(() => setCopiedAddress(null), 2000);
@@ -182,24 +184,28 @@ export function DashboardHeader() {
             ) : (
               <>
                 <MobileProfileEntry
-                  label={userEmail?.split("@")[0] ?? activeWalletShortAddress ?? "Account"}
+                  label={
+                    userEmail?.split("@")[0] ??
+                    canonicalAppWalletShortAddress ??
+                    "Account"
+                  }
                   statusLabel="App Wallet"
                 />
                 <div className="hidden items-center gap-1.5 rounded-2xl border border-border/40 bg-card/50 p-1 backdrop-blur-md shadow-lg shadow-black/10 md:flex">
-                {activeWalletAddress ? (
+                {canonicalAppWallet.address ? (
                   <button
                     onClick={() =>
                       void copyAddress(
-                        activeWalletAddress,
-                        "active",
-                        activeWalletLabel
+                        canonicalAppWallet.address,
+                        "evm",
+                        "EVM Address",
                       )
                     }
                     className="hidden sm:flex items-center gap-1.5 rounded-xl px-2.5 py-2 font-mono text-[11px] text-foreground/75 transition-all hover:bg-primary/10 hover:text-primary active:scale-95 sm:text-xs"
                     title="Copy active wallet address"
                   >
-                    {activeWalletShortAddress}
-                    {copiedAddress === "active" ? (
+                    {canonicalAppWalletShortAddress}
+                    {copiedAddress === "evm" ? (
                       <Check className="h-3 w-3 text-emerald-400" />
                     ) : (
                       <Copy className="h-3 w-3 text-muted-foreground" />
@@ -256,28 +262,30 @@ export function DashboardHeader() {
                           ) : null}
                         </div>
 
-                        {activeWalletAddress ? (
+                        {canonicalAppWallet.address ? (
                           <div className="border-b border-border/30 px-3 py-3">
                             <button
                               onClick={() =>
                                 void copyAddress(
-                                  activeWalletAddress,
-                                  "active",
-                                  activeWalletLabel
+                                  canonicalAppWallet.address,
+                                  "evm",
+                                  "EVM Address",
                                 )
                               }
+                              aria-label="Copy EVM Address"
+                              title={canonicalAppWallet.address}
                               className="flex w-full items-center justify-between rounded-xl border border-border/30 bg-background/40 px-3 py-2.5 text-left transition-all hover:border-primary/20 hover:bg-primary/10"
                             >
-                              <div>
+                              <div className="min-w-0">
                                 <p className="text-[10px] uppercase tracking-[0.2em] text-muted-foreground/60">
-                                  Active App Wallet
+                                  EVM Address
                                 </p>
-                                <p className="mt-0.5 font-mono text-xs text-foreground/80 break-all">
-                                  {activeWalletAddress}
+                                <p className="mt-0.5 truncate font-mono text-xs text-foreground/80">
+                                  {canonicalAppWallet.address}
                                 </p>
                               </div>
                               <div className="ml-3 shrink-0">
-                                {copiedAddress === "active" ? (
+                                {copiedAddress === "evm" ? (
                                   <Check className="h-4 w-4 text-emerald-400" />
                                 ) : (
                                   <Copy className="h-4 w-4 text-muted-foreground" />
@@ -287,45 +295,14 @@ export function DashboardHeader() {
                           </div>
                         ) : null}
 
-                        {circleWalletEntries.length > 0 ? (
-                          <div className="border-b border-border/30 px-3 py-3">
-                            <p className="mb-2 px-1 text-[10px] uppercase tracking-[0.2em] text-muted-foreground/60">
-                              All Circle Addresses
-                            </p>
-                            <div className="space-y-2">
-                              {circleWalletEntries.map((wallet) => (
-                                <button
-                                  key={wallet.id}
-                                  onClick={() =>
-                                    void copyAddress(
-                                      wallet.address,
-                                      wallet.id,
-                                      wallet.label,
-                                      wallet.id === "solana"
-                                        ? "Use this Solana Devnet address for Solana faucets and Solana bridge destinations."
-                                        : `Use this ${wallet.label} address when you need funds on that chain.`
-                                    )
-                                  }
-                                  className="flex w-full items-center justify-between rounded-xl border border-border/30 bg-background/35 px-3 py-2.5 text-left transition-all hover:border-primary/20 hover:bg-primary/10"
-                                >
-                                  <div className="min-w-0 flex-1">
-                                    <p className="text-[10px] uppercase tracking-[0.2em] text-muted-foreground/60">
-                                      {wallet.label}
-                                    </p>
-                                    <p className="mt-0.5 font-mono text-xs text-foreground/80 break-all">
-                                      {wallet.address}
-                                    </p>
-                                  </div>
-                                  <div className="ml-3 shrink-0">
-                                    {copiedAddress === wallet.id ? (
-                                      <Check className="h-4 w-4 text-emerald-400" />
-                                    ) : (
-                                      <Copy className="h-4 w-4 text-muted-foreground" />
-                                    )}
-                                  </div>
-                                </button>
-                              ))}
-                            </div>
+                        {canonicalAppWallet.mismatch ? (
+                          <div
+                            role="alert"
+                            className="border-b border-destructive/25 bg-destructive/5 px-4 py-3 text-xs leading-5 text-destructive"
+                          >
+                            App Wallet EVM addresses do not match. Address
+                            display is blocked to prevent funding the wrong
+                            wallet.
                           </div>
                         ) : null}
 

@@ -172,32 +172,19 @@ A company pays 50 employees in USDC on ARC-TESTNET.
 
 ---
 
-## Failure Scenario: Bridge Timeout
+## External Wallet CCTP V2 Bridge
 
-A user bridges 100 USDC from ETH-SEPOLIA to SOLANA-DEVNET.
+**1.** The Swap page validates an Arc Testnet hub-and-spoke route and creates a durable `/bridge/intents` record.
 
-**1.** `POST /tasks` with `type: "bridge"`. Task created, assigned, enqueued to `bridge` queue.
+**2.** The connected browser wallet switches to the source testnet, approves the registered TokenMessenger V2 only when needed, and submits `depositForBurn`.
 
-**2.** `BridgeWorker` picks the job. `BridgeAgent` calls `CircleBridgeService.initiateBridge()`.
+**3.** The backend verifies the source receipt and exact `DepositForBurn` event, then polls Circle's sandbox attestation API and validates the returned CCTP message against the persisted intent.
 
-**3.** The CCTP burn transaction is submitted to Sepolia. Sepolia requires 65-block confirmation (~13 minutes).
+**4.** The same connected browser wallet switches to the destination testnet and submits `receiveMessage` to the registered MessageTransmitter V2.
 
-**4.** The Bridge Kit's internal timeout (configured at 600s) expires before confirmation completes.
+**5.** The backend verifies the successful destination receipt, exact `receiveMessage(message, attestation)` calldata, the V2 `MessageReceived` event from the configured `MessageTransmitterV2`, the consumed nonce, and the matching configured-USDC mint transfer before marking the lifecycle complete.
 
-**5.** `CircleBridgeService` throws. The error propagates:
-
-```
-BridgeAgent.execute() throws
-  → OrchestratorService catches
-    → TaskService.updateStatus(taskId, FAILED)
-    → Re-throws to BullMQ
-```
-
-**6.** BullMQ applies retry policy: attempt 2 with 5s backoff, then attempt 3 with 25s backoff.
-
-**7.** If all 3 attempts fail, the job is permanently failed. Task remains `failed`.
-
-**8.** The idempotency guard prevents double-execution: if attempt 2 somehow reaches a task already marked `in_progress`, it is skipped.
+Transaction hashes are stored immediately in browser recovery storage and then bound to the backend intent. Reload restoration continues attestation polling or verifies an already-submitted destination transaction. When a new destination wallet authorization is still required, the UI offers the precise `Complete mint on <network>` action only after the backend proves the nonce is unused. A confirmed source burn is never submitted again.
 
 ---
 
@@ -207,7 +194,7 @@ BridgeAgent.execute() throws
 
 **Payroll** involves N independent transfers. Each transfer is a separate on-chain transaction with its own confirmation timeline. Blocking the worker for all N confirmations would hold the queue slot for minutes. Instead, the agent submits all transfers rapidly and delegates confirmation to the `tx_poll` queue. This keeps worker concurrency high.
 
-**Bridge** is a single multi-step operation (burn → attest → mint). The Bridge Kit manages the step progression internally. There is no benefit to splitting it into separate poll jobs — the entire operation either succeeds or fails as a unit. Sync execution simplifies the result contract.
+**Bridge** is not a worker task. It is a browser-signed, persisted state machine (approval → burn → attestation → mint) with backend receipt validation at each transition.
 
 ### Why an idempotency guard instead of BullMQ's built-in deduplication?
 

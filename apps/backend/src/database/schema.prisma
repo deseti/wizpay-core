@@ -221,11 +221,18 @@ model AppWalletXylonetOperation {
 }
 
 model BridgeTransaction {
-  id        String   @id @default(uuid())
-  taskId    String   @unique
-  status    String
-  payload   Json
-  result    Json?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id                         String    @id @default(uuid())
+  taskId                     String    @unique
+  status                     String
+  payload                    Json
+  result                     Json?
+  messageHash                String?   @unique
+  nonce                      String?   @unique
+  destinationTransactionHash String?   @unique
+  destinationLeaseId         String?   @unique @db.Uuid
+  destinationLeaseExpiresAt  DateTime?
+  createdAt                  DateTime  @default(now())
+  updatedAt                  DateTime  @updatedAt
+
+  @@index([status])
 }

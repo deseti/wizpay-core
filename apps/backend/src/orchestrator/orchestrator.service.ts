@@ -12,7 +12,6 @@ import { TaskDetails, TaskPayload } from '../task/task.types';
 import { TASK_QUEUE_MAP } from '../queue/queue.constants';
 import { QueueService } from '../queue/queue.service';
 import { TaskService } from '../task/task.service';
-import { normalizeBridgeChain } from '../common/multichain';
 import { FxRoutingGuard } from '../fx/fx-routing-guard.service';
 import { StableFXRfqClient } from '../fx/stablefx-rfq-client.service';
 import { FxOperationPayload } from '../fx/fx.types';
@@ -20,11 +19,6 @@ import {
   assertLegacyFxEnabled,
   assertLegacyLiquidityEnabled,
 } from '../fx/stablefx-cutover.guard';
-
-type BridgeExecutionMode = 'app_treasury' | 'external_signer';
-type BridgeSourceAccountType = 'app_treasury_wallet' | 'external_wallet';
-
-const BRIDGE_EXTERNAL_ENABLED_ENV = 'WIZPAY_BRIDGE_EXTERNAL_ENABLED';
 
 @Injectable()
 export class OrchestratorService {
@@ -43,6 +37,11 @@ export class OrchestratorService {
   // ─────────────────────────────────────────────────────────────────────────────
 
   async handleTask(type: TaskType, payload: TaskPayload): Promise<TaskDetails> {
+    if (type === TaskType.BRIDGE) {
+      throw new BadRequestException(
+        'Legacy bridge tasks were removed. Use the external-wallet /bridge/intents lifecycle.',
+      );
+    }
     if (type === TaskType.SWAP) {
       assertLegacyFxEnabled();
     }
@@ -57,8 +56,7 @@ export class OrchestratorService {
       throw new BadRequestException(`Unsupported task type ${type}`);
     }
 
-    const enrichedPayload =
-      type === TaskType.BRIDGE ? this.normalizeBridgePayload(payload) : payload;
+    const enrichedPayload = payload;
 
     const task = await this.taskService.createTask(type, enrichedPayload);
 
@@ -441,233 +439,6 @@ export class OrchestratorService {
     );
 
     return this.executionRouter.execute(task);
-  }
-
-  private normalizeBridgePayload(payload: TaskPayload): TaskPayload {
-    const bridgeExecutionMode = this.readBridgeExecutionMode(payload);
-    const sourceAccountType = this.readBridgeSourceAccountType(
-      payload,
-      bridgeExecutionMode,
-    );
-    const bridgeExternalEnabled = this.isBridgeExternalEnabled();
-
-    if (bridgeExecutionMode === 'external_signer' && !bridgeExternalEnabled) {
-      throw new BadRequestException({
-        code: 'BRIDGE_EXTERNAL_DISABLED',
-        error:
-          'External wallet bridge is currently disabled by server feature flag.',
-        details: {
-          bridgeExecutionMode,
-          env: BRIDGE_EXTERNAL_ENABLED_ENV,
-        },
-      });
-    }
-
-    const sourceBlockchain = this.readChain(
-      payload,
-      'sourceBlockchain',
-      'sourceChain',
-    );
-    const destinationBlockchain = this.readChain(
-      payload,
-      'destinationBlockchain',
-      'destinationChain',
-      'blockchain',
-    );
-    const sourceChain = normalizeBridgeChain(sourceBlockchain);
-    const destinationChain = normalizeBridgeChain(destinationBlockchain);
-    const token = this.readString(payload, 'token') ?? 'USDC';
-    const amount = this.readString(payload, 'amount');
-    const walletId = this.readString(payload, 'walletId');
-    const walletAddress = this.readString(payload, 'walletAddress');
-    const destinationAddress = this.readString(payload, 'destinationAddress');
-
-    // walletId only exists for backend-controlled treasury wallets.
-    // Passkey and browser-wallet external signers do not provide one.
-    const isPasskey = this.readString(payload, 'walletMode') === 'PASSKEY';
-    const isExternalWalletSource = sourceAccountType === 'external_wallet';
-
-    const missing = [
-      !sourceBlockchain ? 'sourceChain' : null,
-      !destinationBlockchain ? 'destinationChain' : null,
-      !amount ? 'amount' : null,
-      !walletId && !isPasskey && !isExternalWalletSource ? 'walletId' : null,
-      !walletAddress ? 'walletAddress' : null,
-      !destinationAddress ? 'destinationAddress' : null,
-    ].filter((field): field is string => Boolean(field));
-
-    if (missing.length > 0) {
-      throw new BadRequestException({
-        code: 'BRIDGE_VALIDATION_FAILED',
-        error: `Missing required bridge field(s): ${missing.join(', ')}`,
-        details: { missing },
-      });
-    }
-
-    if (!sourceChain || !destinationChain) {
-      throw new BadRequestException({
-        code: 'BRIDGE_CHAIN_UNSUPPORTED',
-        error:
-          'Bridge supports ARC-TESTNET, ETH-SEPOLIA, and SOLANA-DEVNET only.',
-        details: { destinationBlockchain, sourceBlockchain },
-      });
-    }
-
-    if (sourceBlockchain === destinationBlockchain) {
-      throw new BadRequestException({
-        code: 'BRIDGE_SAME_CHAIN',
-        error: 'Bridge source and destination chains must be different.',
-      });
-    }
-
-    if (token.trim().toUpperCase() !== 'USDC') {
-      throw new BadRequestException({
-        code: 'BRIDGE_USDC_ONLY',
-        error: 'Bridge currently supports USDC only.',
-      });
-    }
-
-    if (Number(amount) <= 0 || !Number.isFinite(Number(amount))) {
-      throw new BadRequestException({
-        code: 'BRIDGE_INVALID_AMOUNT',
-        error: 'Bridge amount must be a positive string.',
-      });
-    }
-
-    const requiredSourceBlockchain = sourceBlockchain;
-    const requiredDestinationBlockchain = destinationBlockchain;
-    const requiredDestinationAddress = destinationAddress;
-    const requiredWalletAddress = walletAddress;
-
-    if (
-      !requiredSourceBlockchain ||
-      !requiredDestinationBlockchain ||
-      !requiredDestinationAddress ||
-      !requiredWalletAddress
-    ) {
-      throw new BadRequestException({
-        code: 'BRIDGE_VALIDATION_FAILED',
-        error:
-          'Bridge requires sourceChain, destinationChain, destinationAddress, and walletAddress.',
-      });
-    }
-
-    const normalizedDestinationAddress = this.normalizeBridgeAddress(
-      requiredDestinationAddress,
-      requiredDestinationBlockchain,
-    );
-    const normalizedWalletAddress = this.normalizeBridgeAddress(
-      requiredWalletAddress,
-      requiredSourceBlockchain,
-    );
-
-    this.logger.log(
-      `[bridge] mode=${bridgeExecutionMode} source_account=${sourceAccountType} external_enabled=${bridgeExternalEnabled} source=${requiredSourceBlockchain} destination=${requiredDestinationBlockchain}`,
-    );
-
-    return {
-      ...payload,
-      amount: String(amount),
-      blockchain: requiredDestinationBlockchain,
-      bridgeExecutionMode,
-      sourceAccountType,
-      destinationAddress: normalizedDestinationAddress,
-      destinationBlockchain: requiredDestinationBlockchain,
-      destinationChain,
-      sourceBlockchain: requiredSourceBlockchain,
-      sourceChain,
-      token: 'USDC',
-      walletAddress: normalizedWalletAddress,
-      walletId,
-    };
-  }
-
-  private readBridgeExecutionMode(payload: TaskPayload): BridgeExecutionMode {
-    const mode = this.readString(payload, 'bridgeExecutionMode');
-
-    if (!mode || mode === 'app_treasury') {
-      return 'app_treasury';
-    }
-
-    if (mode === 'external_signer') {
-      return 'external_signer';
-    }
-
-    throw new BadRequestException({
-      code: 'BRIDGE_EXECUTION_MODE_INVALID',
-      error:
-        'bridgeExecutionMode must be either "app_treasury" or "external_signer".',
-      details: {
-        bridgeExecutionMode: mode,
-      },
-    });
-  }
-
-  private readBridgeSourceAccountType(
-    payload: TaskPayload,
-    bridgeExecutionMode: BridgeExecutionMode,
-  ): BridgeSourceAccountType {
-    const value = this.readString(payload, 'sourceAccountType');
-
-    if (!value) {
-      return bridgeExecutionMode === 'external_signer'
-        ? 'external_wallet'
-        : 'app_treasury_wallet';
-    }
-
-    if (value === 'app_treasury_wallet' || value === 'external_wallet') {
-      return value;
-    }
-
-    throw new BadRequestException({
-      code: 'BRIDGE_SOURCE_ACCOUNT_TYPE_INVALID',
-      error:
-        'sourceAccountType must be either "app_treasury_wallet" or "external_wallet".',
-      details: {
-        sourceAccountType: value,
-      },
-    });
-  }
-
-  private isBridgeExternalEnabled() {
-    const value = process.env[BRIDGE_EXTERNAL_ENABLED_ENV];
-
-    if (!value) {
-      return false;
-    }
-
-    return ['1', 'true', 'yes', 'on'].includes(value.trim().toLowerCase());
-  }
-
-  private readChain(payload: TaskPayload, ...keys: string[]): string | null {
-    for (const key of keys) {
-      const value = this.readString(payload, key);
-
-      if (value) {
-        return value.toUpperCase().replace(/_/g, '-');
-      }
-    }
-
-    return null;
-  }
-
-  private readString(payload: TaskPayload, key: string): string | null {
-    const value = payload[key];
-
-    if (typeof value === 'number') {
-      return String(value);
-    }
-
-    if (typeof value !== 'string') {
-      return null;
-    }
-
-    const trimmed = value.trim();
-    return trimmed ? trimmed : null;
-  }
-
-  private normalizeBridgeAddress(address: string, blockchain: string): string {
-    return blockchain === 'SOLANA-DEVNET' ? address : address.toLowerCase();
   }
 
   async updateTaskState(taskId: string, state: string, result?: any) {

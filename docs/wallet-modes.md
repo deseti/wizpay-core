@@ -87,7 +87,7 @@ Circle modular Account Abstraction wallet. The **user** holds the signing key.
 | Circle session | Required (`userToken`) | Not used |
 | `walletId` | Required | Not required |
 | Chains | EVM + Solana | EVM (AA) + Solana (client-sign) |
-| Bridge execution | Backend calls Circle Bridge Kit | Frontend executes CCTP directly |
+| Bridge execution | Unsupported | External browser wallet signs direct CCTP V2 approval, burn, and destination mint |
 | Payroll execution | `CircleService.transfer()` | Treasury key (EVM) / unsigned intents (Solana) |
 | Default | Yes | Must be explicitly set |
 

@@ -18,7 +18,7 @@ import { TaskQueueJobData, TxPollJobData } from './queue.types';
  * It does NOT process jobs — that responsibility belongs to workers + processors.
  *
  * Supported queues:
- *   - payroll/swap/bridge → task execution via agents
+ *   - payroll/swap → task execution via agents
  *   - tx_poll → transaction status polling (non-blocking)
  */
 @Injectable()
@@ -46,7 +46,7 @@ export class QueueService implements OnModuleDestroy {
       attempts: 3,
       backoff: {
         type: 'exponential',
-        delay: jobData.taskType === 'bridge' ? 5000 : 1000,
+        delay: 1000,
       },
       removeOnComplete: 100,
       removeOnFail: 500,
@@ -92,18 +92,14 @@ export class QueueService implements OnModuleDestroy {
   ): Promise<void> {
     const queue = this.getOrCreateQueue(QueueName.TX_POLL);
 
-    await queue.add(
-      `tx_poll:${jobData.taskId}:${jobData.txId}`,
-      jobData,
-      {
-        delay: delayMs,
-        // No BullMQ-level retries — the poller service manages its own
-        // re-enqueue logic with attempt tracking
-        attempts: 1,
-        removeOnComplete: 200,
-        removeOnFail: 500,
-      },
-    );
+    await queue.add(`tx_poll:${jobData.taskId}:${jobData.txId}`, jobData, {
+      delay: delayMs,
+      // No BullMQ-level retries — the poller service manages its own
+      // re-enqueue logic with attempt tracking
+      attempts: 1,
+      removeOnComplete: 200,
+      removeOnFail: 500,
+    });
 
     this.logger.debug(
       `TX poll enqueued — taskId=${jobData.taskId} txId=${jobData.txId} attempt=${jobData.attempt} delay=${delayMs}ms`,

@@ -24,6 +24,7 @@
     "test:e2e": "jest --config ./test/jest-e2e.json"
   },
   "dependencies": {
+    "@wizpay/bridge-registry": "file:../../packages/bridge-registry",
     "@circle-fin/adapter-circle-wallets": "^1.2.7",
     "@circle-fin/bridge-kit": "^1.8.3",
     "@circle-fin/developer-controlled-wallets": "^10.3.0",

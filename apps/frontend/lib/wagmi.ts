@@ -10,6 +10,7 @@ import {
 import { createConfig, fallback, http } from "wagmi";
 import { defineChain, type Chain } from "viem";
 import { sepolia } from "viem/chains";
+import { BRIDGE_TESTNET_BY_CODE } from "@wizpay/bridge-registry";
 
 export const ARC_TESTNET_RPC_URL = "https://rpc.testnet.arc.io";
 
@@ -21,7 +22,7 @@ if (
   configuredArcTestnetRpcUrl !== ARC_TESTNET_RPC_URL
 ) {
   throw new Error(
-    `NEXT_PUBLIC_ARC_TESTNET_RPC_URL must be exactly ${ARC_TESTNET_RPC_URL}.`
+    `NEXT_PUBLIC_ARC_TESTNET_RPC_URL must be exactly ${ARC_TESTNET_RPC_URL}.`,
   );
 }
 
@@ -33,15 +34,14 @@ const DEFAULT_ETHEREUM_SEPOLIA_RPC_URLS = [
 function parseRpcUrls(
   explicitUrl: string | undefined,
   explicitList: string | undefined,
-  defaults: string[]
+  defaults: string[],
 ) {
-  const configured = [explicitList, explicitUrl]
-    .flatMap((value) =>
-      (value ?? "")
-        .split(/[\s,]+/)
-        .map((entry) => entry.trim())
-        .filter(Boolean)
-    );
+  const configured = [explicitList, explicitUrl].flatMap((value) =>
+    (value ?? "")
+      .split(/[\s,]+/)
+      .map((entry) => entry.trim())
+      .filter(Boolean),
+  );
 
   return Array.from(new Set(configured.length > 0 ? configured : defaults));
 }
@@ -52,22 +52,21 @@ function createFallbackTransport(urls: string[]) {
       http(url, {
         retryCount: 1,
         timeout: 10_000,
-      })
-    )
+      }),
+    ),
   );
 }
 
 export const ETHEREUM_SEPOLIA_RPC_URLS = parseRpcUrls(
   process.env.NEXT_PUBLIC_ETHEREUM_SEPOLIA_RPC_URL,
   process.env.NEXT_PUBLIC_ETHEREUM_SEPOLIA_RPC_URLS,
-  DEFAULT_ETHEREUM_SEPOLIA_RPC_URLS
+  DEFAULT_ETHEREUM_SEPOLIA_RPC_URLS,
 );
 
 export const ETHEREUM_SEPOLIA_RPC_URL = ETHEREUM_SEPOLIA_RPC_URLS[0];
 export const WALLETCONNECT_PROJECT_ID =
   process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID?.trim() ?? "";
-export const HAS_WALLETCONNECT_PROJECT_ID =
-  WALLETCONNECT_PROJECT_ID.length > 0;
+export const HAS_WALLETCONNECT_PROJECT_ID = WALLETCONNECT_PROJECT_ID.length > 0;
 
 /**
  * Arc Testnet — custom chain definition
@@ -110,23 +109,87 @@ export const ethereumSepolia = defineChain({
   },
 });
 
-export const SUPPORTED_CHAINS = [arcTestnet, ethereumSepolia] as const;
+function configuredRpcUrl(value: string | undefined, fallbackUrl: string) {
+  const normalized = value?.trim();
+  return normalized || fallbackUrl;
+}
+
+function defineBridgeTestnet(
+  code: "BASE-SEPOLIA" | "ARB-SEPOLIA" | "OP-SEPOLIA" | "MONAD-TESTNET",
+  configuredUrl: string | undefined,
+) {
+  const network = BRIDGE_TESTNET_BY_CODE[code];
+  const rpcUrl = configuredRpcUrl(configuredUrl, network.defaultRpcUrl);
+  return defineChain({
+    id: network.chainId,
+    name: network.name,
+    nativeCurrency: {
+      name: network.gasCurrency,
+      symbol: network.gasCurrency,
+      decimals: 18,
+    },
+    rpcUrls: {
+      default: { http: [rpcUrl] },
+      public: { http: [rpcUrl] },
+    },
+    blockExplorers: {
+      default: {
+        name: `${network.name} Explorer`,
+        url: network.explorerBaseUrl,
+      },
+    },
+    testnet: true,
+  });
+}
+
+export const baseSepolia = defineBridgeTestnet(
+  "BASE-SEPOLIA",
+  process.env.NEXT_PUBLIC_BASE_SEPOLIA_RPC_URL,
+);
+export const arbitrumSepolia = defineBridgeTestnet(
+  "ARB-SEPOLIA",
+  process.env.NEXT_PUBLIC_ARBITRUM_SEPOLIA_RPC_URL,
+);
+export const opSepolia = defineBridgeTestnet(
+  "OP-SEPOLIA",
+  process.env.NEXT_PUBLIC_OP_SEPOLIA_RPC_URL,
+);
+export const monadTestnet = defineBridgeTestnet(
+  "MONAD-TESTNET",
+  process.env.NEXT_PUBLIC_MONAD_TESTNET_RPC_URL,
+);
+
+export const SUPPORTED_CHAINS = [
+  arcTestnet,
+  ethereumSepolia,
+  baseSepolia,
+  arbitrumSepolia,
+  opSepolia,
+  monadTestnet,
+] as const;
 export const CHAIN_BY_ID: Record<number, Chain> = {
   [arcTestnet.id]: arcTestnet,
   [ethereumSepolia.id]: ethereumSepolia,
+  [baseSepolia.id]: baseSepolia,
+  [arbitrumSepolia.id]: arbitrumSepolia,
+  [opSepolia.id]: opSepolia,
+  [monadTestnet.id]: monadTestnet,
 };
 export const CHAIN_NAME_BY_ID: Record<number, string> = {
   [arcTestnet.id]: arcTestnet.name,
   [ethereumSepolia.id]: ethereumSepolia.name,
+  [baseSepolia.id]: baseSepolia.name,
+  [arbitrumSepolia.id]: arbitrumSepolia.name,
+  [opSepolia.id]: opSepolia.name,
+  [monadTestnet.id]: monadTestnet.name,
 };
 export const SUPPORTED_CHAIN_IDS = new Set<number>(
-  SUPPORTED_CHAINS.map((chain) => chain.id)
+  SUPPORTED_CHAINS.map((chain) => chain.id),
 );
 
-const RAINBOWKIT_PROJECT_ID =
-  HAS_WALLETCONNECT_PROJECT_ID
-    ? WALLETCONNECT_PROJECT_ID
-    : "wizpay-local-rainbowkit";
+const RAINBOWKIT_PROJECT_ID = HAS_WALLETCONNECT_PROJECT_ID
+  ? WALLETCONNECT_PROJECT_ID
+  : "wizpay-local-rainbowkit";
 
 const connectors = connectorsForWallets(
   [
@@ -145,7 +208,7 @@ const connectors = connectorsForWallets(
   {
     appName: "WizPay",
     projectId: RAINBOWKIT_PROJECT_ID,
-  }
+  },
 );
 
 /**
@@ -161,8 +224,22 @@ export const config = createConfig({
       retryCount: 1,
       timeout: 10_000,
     }),
-    [ethereumSepolia.id]: createFallbackTransport(
-      ETHEREUM_SEPOLIA_RPC_URLS
-    ),
+    [ethereumSepolia.id]: createFallbackTransport(ETHEREUM_SEPOLIA_RPC_URLS),
+    [baseSepolia.id]: http(baseSepolia.rpcUrls.default.http[0], {
+      retryCount: 1,
+      timeout: 10_000,
+    }),
+    [arbitrumSepolia.id]: http(arbitrumSepolia.rpcUrls.default.http[0], {
+      retryCount: 1,
+      timeout: 10_000,
+    }),
+    [opSepolia.id]: http(opSepolia.rpcUrls.default.http[0], {
+      retryCount: 1,
+      timeout: 10_000,
+    }),
+    [monadTestnet.id]: http(monadTestnet.rpcUrls.default.http[0], {
+      retryCount: 1,
+      timeout: 10_000,
+    }),
   },
 });

@@ -27,11 +27,6 @@ const PASSKEY_EVM_CHAINS = new Set(['ARC-TESTNET', 'ETH-SEPOLIA']);
  *
  * Responsibilities per task type:
  *
- *  BRIDGE   — Records a CCTP bridge intent (external_signer mode).
- *             The user signs and submits the burn tx client-side via their
- *             passkey-controlled AA wallet.  The backend stores the intent and
- *             the frontend calls the CCTP contract directly.
- *
  *  PAYROLL  — Submits ERC-20 transfers on the specified EVM chain using the
  *             backend treasury key (BACKEND_PRIVATE_KEY).  The assumption is
  *             that the company pre-funds the backend treasury wallet, which then
@@ -45,7 +40,7 @@ const PASSKEY_EVM_CHAINS = new Set(['ARC-TESTNET', 'ETH-SEPOLIA']);
  * Design rules:
  *  - NEVER call createTransferChallenge, userToken, or tokenId.
  *  - ALL blockchain reads/writes go through BlockchainService.
- *  - W3S logic (CircleService, CircleBridgeService) is never touched.
+ *  - W3S logic is never touched.
  */
 @Injectable()
 export class PasskeyEngineService {
@@ -69,9 +64,6 @@ export class PasskeyEngineService {
     );
 
     switch (taskType) {
-      case TaskType.BRIDGE:
-        return this.executeBridge(task);
-
       case TaskType.PAYROLL:
         return this.executePayroll(task);
 
@@ -81,94 +73,9 @@ export class PasskeyEngineService {
       default:
         throw new BadRequestException(
           `PasskeyEngine: unsupported task type "${taskType}". ` +
-            `Supported: bridge, payroll, swap.`,
+            `Supported: payroll, swap.`,
         );
     }
-  }
-
-  // ─────────────────────────────────────────────────────────────────────────
-  // Bridge (passkey)
-  // ─────────────────────────────────────────────────────────────────────────
-
-  /**
-   * Record a CCTP bridge intent for an external (passkey) signer.
-   *
-   * The user's AA wallet holds the source USDC.  The backend cannot sign
-   * on their behalf.  We record the intent and return all parameters the
-   * frontend needs to execute the CCTP burn+mint cycle itself.
-   *
-   * This follows the existing `external_signer` bridge path already
-   * understood by BridgeAgent — we produce an identical result shape so
-   * the frontend polling logic requires no changes.
-   */
-  private async executeBridge(task: TaskDetails): Promise<AgentExecutionResult> {
-    const p = task.payload;
-
-    const amount = this.readRequired(p, 'amount');
-    const sourceBlockchain =
-      this.readString(p, 'sourceBlockchain') ??
-      this.readRequired(p, 'sourceChain');
-    const destinationBlockchain =
-      this.readString(p, 'destinationBlockchain') ??
-      this.readRequired(p, 'destinationChain');
-    const destinationAddress = this.readRequired(p, 'destinationAddress');
-    const walletAddress = this.readString(p, 'walletAddress') ?? '';
-    const walletId = this.readString(p, 'walletId') ?? null;
-    const referenceId =
-      this.readString(p, 'referenceId') ?? `PASSKEY-BRIDGE-${task.id}`;
-    const token = (this.readString(p, 'token') ?? 'USDC').toUpperCase();
-
-    if (token !== 'USDC') {
-      throw new BadRequestException(
-        'PasskeyEngine bridge: only USDC is supported.',
-      );
-    }
-
-    await this.taskService.logStep(
-      task.id,
-      'passkey.bridge.intent_recorded',
-      TaskStatus.IN_PROGRESS,
-      `Passkey bridge intent: ${amount} ${token} — ${sourceBlockchain} → ${destinationBlockchain}`,
-      {
-        context: {
-          walletMode: 'PASSKEY',
-          bridgeExecutionMode: 'external_signer',
-          sourceBlockchain,
-          destinationBlockchain,
-          destinationAddress,
-          walletAddress,
-          walletId,
-          referenceId,
-        },
-      },
-    );
-
-    this.logger.log(
-      `[passkey-engine] bridge intent recorded — taskId=${task.id} ` +
-        `source=${sourceBlockchain} dest=${destinationBlockchain}`,
-    );
-
-    return {
-      agent: 'bridge',
-      execution: {
-        adapter: 'passkey-external-cctp-v2',
-        operation: 'cctp_bridge_passkey',
-        bridgeExecutionMode: 'external_signer',
-        sourceAccountType: 'external_wallet',
-        walletMode: 'PASSKEY',
-        payload: {
-          amount,
-          token,
-          sourceBlockchain,
-          destinationBlockchain,
-          destinationAddress,
-          walletAddress,
-          walletId,
-          referenceId,
-        },
-        taskId: task.id,
-      },
-    };
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -197,7 +104,9 @@ export class PasskeyEngineService {
    *   recipients: [{ address: string; amount: string; currency?: string }]
    * }
    */
-  private async executePayroll(task: TaskDetails): Promise<AgentExecutionResult> {
+  private async executePayroll(
+    task: TaskDetails,
+  ): Promise<AgentExecutionResult> {
     const p = task.payload;
 
     const network = (
@@ -230,7 +139,13 @@ export class PasskeyEngineService {
 
     // ── Solana path ──────────────────────────────────────────────────────
     if (network === 'SOLANA-DEVNET') {
-      return this.executePayrollSolana(task.id, network, fromAddress, tokenAddress, recipientsRaw);
+      return this.executePayrollSolana(
+        task.id,
+        network,
+        fromAddress,
+        tokenAddress,
+        recipientsRaw,
+      );
     }
 
     // ── EVM path ─────────────────────────────────────────────────────────
@@ -300,8 +215,7 @@ export class PasskeyEngineService {
             `recipient=${recipient.address} amount=${recipient.amount} txHash=${tx.txHash}`,
         );
       } catch (err) {
-        const errorMsg =
-          err instanceof Error ? err.message : 'Unknown error';
+        const errorMsg = err instanceof Error ? err.message : 'Unknown error';
 
         this.logger.error(
           `[passkey-engine] payroll transfer failed — ` +
@@ -434,10 +348,7 @@ export class PasskeyEngineService {
     return typeof v === 'string' && v.length > 0 ? v : undefined;
   }
 
-  private readRequired(
-    payload: Record<string, unknown>,
-    key: string,
-  ): string {
+  private readRequired(payload: Record<string, unknown>, key: string): string {
     const v = this.readString(payload, key);
     if (!v) {
       throw new BadRequestException(

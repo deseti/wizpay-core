@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { AgentRouterService } from '../agents/agent-router.service';
 import { AgentExecutionResult } from '../agents/agent.interface';
 import { TaskType } from '../task/task-type.enum';
@@ -53,11 +53,16 @@ export class ExecutionRouterService {
    *          always matches the shape expected by OrchestratorService.
    */
   async execute(task: TaskDetails): Promise<AgentExecutionResult> {
-    if (task.type === TaskType.SWAP) {
+    if (String(task.type) === 'bridge') {
+      throw new BadRequestException(
+        'Legacy bridge task execution was removed. Use the external-wallet /bridge/intents lifecycle.',
+      );
+    }
+    if (String(task.type) === 'swap') {
       assertLegacyFxEnabled();
     }
 
-    if (task.type === TaskType.LIQUIDITY) {
+    if (String(task.type) === 'liquidity') {
       assertLegacyLiquidityEnabled();
     }
 
