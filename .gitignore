@@ -9,3 +9,5 @@ AGENTS.md
 agents/
 internal/
 .kiro/.vscode/
+
+*:Zone.Identifier
