@@ -20,11 +20,13 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Skeleton } from "@/components/ui/skeleton";
+import { TokenIcon } from "@/components/ui/token-icon";
 import { TOKEN_BY_ADDRESS } from "@/constants/erc20";
 import type { UnifiedHistoryItem, HistoryActionType } from "@/lib/types";
 import {
   formatTokenAmount,
   getExplorerTxUrl,
+  ARC_TESTNET_CHAIN_ID,
 } from "@/lib/wizpay";
 import { useActivityHistory, type ActivityFilter } from "@/hooks/useActivityHistory";
 
@@ -326,9 +328,9 @@ export function TransactionHistory({
                           </div>
                         </TableCell>
                         <TableCell className="font-mono text-sm whitespace-nowrap">
-                          {usesTokenAmount(item.type)
+                          <span className="flex items-center gap-2">{(usesTokenAmount(item.type) ? item.tokenIn : item.lpToken) ? <TokenIcon chainId={ARC_TESTNET_CHAIN_ID} address={(usesTokenAmount(item.type) ? item.tokenIn : item.lpToken) ?? ""} symbol={TOKEN_BY_ADDRESS.get(((usesTokenAmount(item.type) ? item.tokenIn : item.lpToken) ?? "").toLowerCase())?.symbol ?? "Token"} size={20} /> : null}{usesTokenAmount(item.type)
                             ? `${formatTokenAmount(item.totalAmountIn ?? 0n, 6)} ${TOKEN_BY_ADDRESS.get(item.tokenIn?.toLowerCase() ?? "")?.symbol ?? ""}`
-                            : `${formatTokenAmount(item.lpAmount ?? 0n, 6)} ${TOKEN_BY_ADDRESS.get(item.lpToken?.toLowerCase() ?? "")?.symbol ?? ""}`}
+                            : `${formatTokenAmount(item.lpAmount ?? 0n, 6)} ${TOKEN_BY_ADDRESS.get(item.lpToken?.toLowerCase() ?? "")?.symbol ?? ""}`}</span>
                         </TableCell>
                         <TableCell>
                           <div className="flex items-center gap-2">
@@ -391,8 +393,8 @@ export function TransactionHistory({
                         <p className="text-xs uppercase tracking-[0.16em] text-muted-foreground/60 font-semibold">
                           {usesTokenAmount(item.type) ? "Total Amount" : "LP Amount"}
                         </p>
-                        <p className="mt-1 font-mono text-sm font-medium">
-                          {getDetailText(item)}
+                        <p className="mt-1 flex items-center gap-2 font-mono text-sm font-medium">
+                          {item.tokenIn ? <TokenIcon chainId={ARC_TESTNET_CHAIN_ID} address={item.tokenIn} symbol={TOKEN_BY_ADDRESS.get(item.tokenIn.toLowerCase())?.symbol ?? "Token"} size={20} /> : null}{getDetailText(item)}
                         </p>
                       </div>
                       {txUrl ? (

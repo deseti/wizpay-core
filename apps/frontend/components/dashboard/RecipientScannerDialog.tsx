@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { ImageUp, Loader2, ScanLine } from "lucide-react";
-import { getAddress, isAddress } from "viem";
+import { parseEvmPaymentPayload, type EvmPaymentPrefill } from "@/lib/evm-payment-uri";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -16,7 +16,7 @@ import {
 interface RecipientScannerDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onDetected: (address: string) => void;
+  onDetected: (prefill: EvmPaymentPrefill) => void;
 }
 
 interface Html5QrcodeLike {
@@ -31,21 +31,6 @@ interface Html5QrcodeLike {
   scanFile: (file: File, showImage?: boolean) => Promise<string>;
 }
 
-function normalizeScannedAddress(rawValue: string): string | null {
-  const trimmed = rawValue.trim();
-  const withoutScheme = trimmed.toLowerCase().startsWith("ethereum:")
-    ? trimmed.slice("ethereum:".length)
-    : trimmed;
-  const withoutQuery = withoutScheme.split("?")[0];
-  const match = withoutQuery.match(/0x[a-fA-F0-9]{40}/);
-
-  if (!match || !isAddress(match[0])) {
-    return null;
-  }
-
-  return getAddress(match[0]);
-}
-
 export function RecipientScannerDialog({
   open,
   onOpenChange,
@@ -53,8 +38,10 @@ export function RecipientScannerDialog({
 }: RecipientScannerDialogProps) {
   const scannerElementId = useId().replace(/:/g, "-");
   const scannerRef = useRef<Html5QrcodeLike | null>(null);
+  const handledRef = useRef(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isStartingScanner, setIsStartingScanner] = useState(false);
+  const [cameraStarted, setCameraStarted] = useState(false);
   const [isScanningImage, setIsScanningImage] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
@@ -82,21 +69,25 @@ export function RecipientScannerDialog({
 
   const handleDetectedValue = useCallback(
     async (decodedText: string) => {
-      const normalized = normalizeScannedAddress(decodedText);
-
-      if (!normalized) {
-        setErrorMessage("This QR code does not contain a wallet address.");
+      if (handledRef.current) return;
+      let prefill: EvmPaymentPrefill;
+      try {
+        prefill = parseEvmPaymentPayload(decodedText);
+      } catch (error) {
+        setErrorMessage(error instanceof Error ? error.message : "Unsupported QR payload.");
         return;
       }
-
+      handledRef.current = true;
       await stopScanner();
-      onDetected(normalized);
+      setCameraStarted(false);
+      onDetected(prefill);
       onOpenChange(false);
     },
     [onDetected, onOpenChange, stopScanner]
   );
 
   const startScanner = useCallback(async () => {
+    handledRef.current = false;
     setErrorMessage(null);
     setIsStartingScanner(true);
 
@@ -115,28 +106,28 @@ export function RecipientScannerDialog({
           void handleDetectedValue(decodedText);
         }
       );
+      setCameraStarted(true);
     } catch {
+      await stopScanner();
+      setCameraStarted(false);
       setErrorMessage(
         "Camera scan is not available right now. Try uploading a QR image instead."
       );
     } finally {
       setIsStartingScanner(false);
     }
-  }, [handleDetectedValue, scannerElementId]);
+  }, [handleDetectedValue, scannerElementId, stopScanner]);
 
-  useEffect(() => {
-    if (!open) {
+  useEffect(() => () => { void stopScanner(); }, [stopScanner]);
+
+  const handleOpenChange = useCallback((nextOpen: boolean) => {
+    if (!nextOpen) {
       void stopScanner();
+      setCameraStarted(false);
       setErrorMessage(null);
-      return;
     }
-
-    void startScanner();
-
-    return () => {
-      void stopScanner();
-    };
-  }, [open, startScanner, stopScanner]);
+    onOpenChange(nextOpen);
+  }, [onOpenChange, stopScanner]);
 
   const handleImageUpload = useCallback(
     async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -172,7 +163,7 @@ export function RecipientScannerDialog({
   );
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent className="glass-card max-w-lg border-border/40 bg-background/95">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
@@ -189,6 +180,13 @@ export function RecipientScannerDialog({
           <div className="overflow-hidden rounded-2xl border border-border/40 bg-background/40">
             <div id={scannerElementId} className="min-h-[260px] w-full" />
           </div>
+
+          {!cameraStarted && !isStartingScanner ? (
+            <Button type="button" className="w-full gap-2" onClick={() => void startScanner()}>
+              <ScanLine className="h-4 w-4" />
+              Start camera
+            </Button>
+          ) : null}
 
           {isStartingScanner ? (
             <p className="flex items-center gap-2 text-sm text-muted-foreground/70">
@@ -219,8 +217,8 @@ export function RecipientScannerDialog({
               {isScanningImage ? "Reading image..." : "Upload QR image"}
             </Button>
             <p className="text-xs text-muted-foreground/60">
-              Supports plain wallet QR or the standard
-              <span className="font-mono"> ethereum:0x...</span> format.
+              Supports plain EVM addresses and validated EIP-681
+              <span className="font-mono"> ethereum:</span> payment URIs.
             </p>
           </div>
 

@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import {
   ArrowRightLeft,
   AtSign,
+  BriefcaseBusiness,
   Home,
   Repeat,
   User,
@@ -17,6 +18,7 @@ import { FaucetButton } from "./FaucetButton";
 const navItems = [
   { href: "/", label: "Home", icon: Home },
   { href: "/send", label: "Send", icon: ArrowRightLeft },
+  { href: "/payroll", label: "Payroll", icon: BriefcaseBusiness },
   { href: "/swap", label: "Swap", icon: Repeat },
   { href: "/assets", label: "Assets", icon: Wallet },
   { href: "/profile", label: "Profile", icon: User },

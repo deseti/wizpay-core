@@ -513,7 +513,7 @@ export function BatchComposer({
         onOpenChange={(open) => {
           if (!open) setScannerRecipientId(null);
         }}
-        onDetected={handleScannedAddress}
+        onDetected={(prefill) => handleScannedAddress(prefill.recipient)}
       />
     </>
   );

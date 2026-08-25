@@ -183,6 +183,15 @@ describe("SwapScreen verified success modal", () => {
     vi.unstubAllEnvs();
   });
 
+  it("renders canonical PNG artwork in the Swap token selectors", async () => {
+    render(<SwapScreen />);
+    fireEvent.click(screen.getByRole("combobox", { name: "From token" }));
+    await waitFor(() => {
+      expect(document.querySelector('img[src$="/tokens/usdc.png"]')).toBeInTheDocument();
+      expect(document.querySelector('img[src$="/tokens/eurc.png"]')).toBeInTheDocument();
+    });
+  });
+
   it("opens only after External Wallet receipt verification", async () => {
     render(<SwapScreen />);
     await enterAmountAndExecute(/Swap with XyloNet/);

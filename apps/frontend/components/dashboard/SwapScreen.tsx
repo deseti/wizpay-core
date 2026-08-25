@@ -14,6 +14,9 @@ import {
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { Skeleton } from "@/components/ui/skeleton";
+import { TokenIcon } from "@/components/ui/token-icon";
+import { useDelayedLoading } from "@/hooks/useDelayedLoading";
 import {
   Select,
   SelectContent,
@@ -124,6 +127,7 @@ export function SwapScreen() {
   const [swapSuccess, setSwapSuccess] = useState<SwapSuccessResult | null>(null);
   const [successOpen, setSuccessOpen] = useState(false);
   const [screenMode, setScreenMode] = useState<"swap" | "bridge">("swap");
+  const showQuoteSkeleton = useDelayedLoading(status === "quoting");
   const quoteSequence = useRef(0);
   const operationIdempotencyKey = useRef<string | null>(null);
 
@@ -533,8 +537,8 @@ export function SwapScreen() {
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="USDC">USDC</SelectItem>
-                    <SelectItem value="EURC">EURC</SelectItem>
+                    <SelectItem value="USDC"><span className="flex items-center gap-2"><TokenIcon chainId={arcTestnet.id} address={SUPPORTED_TOKENS.USDC.address} symbol="USDC" size={28} />USDC</span></SelectItem>
+                    <SelectItem value="EURC"><span className="flex items-center gap-2"><TokenIcon chainId={arcTestnet.id} address={SUPPORTED_TOKENS.EURC.address} symbol="EURC" size={28} />EURC</span></SelectItem>
                   </SelectContent>
                 </Select>
               </div>
@@ -566,8 +570,8 @@ export function SwapScreen() {
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="EURC">EURC</SelectItem>
-                    <SelectItem value="USDC">USDC</SelectItem>
+                    <SelectItem value="EURC"><span className="flex items-center gap-2"><TokenIcon chainId={arcTestnet.id} address={SUPPORTED_TOKENS.EURC.address} symbol="EURC" size={28} />EURC</span></SelectItem>
+                    <SelectItem value="USDC"><span className="flex items-center gap-2"><TokenIcon chainId={arcTestnet.id} address={SUPPORTED_TOKENS.USDC.address} symbol="USDC" size={28} />USDC</span></SelectItem>
                   </SelectContent>
                 </Select>
               </div>
@@ -583,19 +587,19 @@ export function SwapScreen() {
               </div>
               <div className="mt-2 flex justify-between">
                 <span className="text-muted-foreground">Expected output</span>
-                <span>
+                {showQuoteSkeleton ? <Skeleton className="h-4 w-24" /> : <span>
                   {expectedOutput
                     ? `${formatTokenAmount(expectedOutput, SUPPORTED_TOKENS[tokenOut].decimals)} ${tokenOut}`
                     : "—"}
-                </span>
+                </span>}
               </div>
               <div className="mt-2 flex justify-between">
                 <span className="text-muted-foreground">Minimum output</span>
-                <span>
+                {showQuoteSkeleton ? <Skeleton className="h-4 w-24" /> : <span>
                   {minimumOutput
                     ? `${formatTokenAmount(minimumOutput, SUPPORTED_TOKENS[tokenOut].decimals)} ${tokenOut}`
                     : "—"}
-                </span>
+                </span>}
               </div>
             </div>
             <div className="rounded-xl border border-sky-500/25 bg-sky-500/5 px-4 py-3 text-sm text-sky-100">

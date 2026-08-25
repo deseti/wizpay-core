@@ -4,6 +4,7 @@ import { AlertTriangle, Globe2, SearchCheck, ShieldCheck } from "lucide-react"
 
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Skeleton } from "@/components/ui/skeleton"
 import { EmptyStateView } from "@/components/ui/empty-state"
 
 import type { AnsDomainLookup, ParsedAnsSearchInput } from "../types/ans"
@@ -61,11 +62,11 @@ export function AnsLookupDetailsCard({
     return (
       <Card className="glass-card border-border/40">
         <CardHeader>
-          <div className="h-6 w-48 animate-pulse rounded bg-muted/25" />
+          <Skeleton className="h-6 w-48" />
         </CardHeader>
         <CardContent className="space-y-3">
           {[1, 2, 3].map((item) => (
-            <div key={item} className="h-16 animate-pulse rounded-2xl border border-border/30 bg-background/25" />
+            <Skeleton key={item} className="h-16 rounded-2xl" />
           ))}
         </CardContent>
       </Card>

@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-unsafe-assignment */
 import { ConfigService } from '@nestjs/config';
 import { W3sAuthService } from './w3s-auth.service';
 
@@ -59,6 +60,63 @@ describe('W3sAuthService User-Controlled transaction lookup', () => {
           'X-User-Token': 'sanitized-user-token',
         }),
       }),
+    );
+  });
+
+  it('resolves a completed challenge correlation without treating its challenge ID as a transaction ID', async () => {
+    global.fetch = jest.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          data: {
+            challenge: {
+              id: 'challenge-id',
+              status: 'COMPLETE',
+              correlationIds: ['transaction-id'],
+            },
+          },
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+    await expect(
+      service.dispatch('getUserChallenge', {
+        challengeId: 'challenge-id',
+        userToken: 'sanitized-user-token',
+      }),
+    ).resolves.toEqual({
+      challenge: {
+        id: 'challenge-id',
+        status: 'COMPLETE',
+        correlationIds: ['transaction-id'],
+      },
+    });
+    expect(global.fetch).toHaveBeenCalledWith(
+      'https://api.circle.test/v1/w3s/user/challenges/challenge-id',
+      expect.objectContaining({
+        method: 'GET',
+        headers: expect.objectContaining({
+          'X-User-Token': 'sanitized-user-token',
+        }),
+      }),
+    );
+  });
+
+  it('lists user-scoped wallet transactions for read-only recovery', async () => {
+    global.fetch = jest.fn().mockResolvedValue(
+      new Response(JSON.stringify({ data: { transactions: [] } }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+    await expect(
+      service.dispatch('listUserTransactions', {
+        walletId: 'wallet-id',
+        userToken: 'sanitized-user-token',
+      }),
+    ).resolves.toEqual({ transactions: [] });
+    expect(global.fetch).toHaveBeenCalledWith(
+      'https://api.circle.test/v1/w3s/transactions?pageSize=50&walletIds=wallet-id',
+      expect.objectContaining({ method: 'GET' }),
     );
   });
 });

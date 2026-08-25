@@ -38,6 +38,8 @@ export type ExecuteTransactionParams = {
 };
 
 export type ExecuteTransactionResult = {
+  circleChallenge?: unknown;
+  circleResult?: unknown;
   hash: string;
   referenceId: string;
   startBlock: bigint;
@@ -271,6 +273,8 @@ export function useTransactionExecutor() {
       challenge.challengeId;
 
     return {
+      circleChallenge: challenge.raw,
+      circleResult: challengeResult,
       hash: txHash ?? referenceId,
       referenceId,
       startBlock,

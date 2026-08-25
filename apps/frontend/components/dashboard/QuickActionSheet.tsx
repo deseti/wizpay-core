@@ -2,10 +2,11 @@
 
 import { useCallback, useState } from "react";
 import { useRouter } from "next/navigation";
-import { QrCode, ScanLine } from "lucide-react";
+import { BriefcaseBusiness, QrCode, ScanLine, Send } from "lucide-react";
 import { BottomSheet } from "@/components/ui/bottom-sheet";
 import { ReceiveQrModal } from "@/components/dashboard/ReceiveQrModal";
 import { RecipientScannerDialog } from "@/components/dashboard/RecipientScannerDialog";
+import { serializeSendPrefill, type EvmPaymentPrefill } from "@/lib/evm-payment-uri";
 
 interface QuickActionSheetProps {
   open: boolean;
@@ -24,8 +25,8 @@ export function QuickActionSheet({ open, onClose }: QuickActionSheetProps) {
   }
 
   const handleScanDetected = useCallback(
-    (address: string) => {
-      router.push(`/send?recipient=${encodeURIComponent(address)}`);
+    (prefill: EvmPaymentPrefill) => {
+      router.push(`/send?${serializeSendPrefill(prefill)}`);
     },
     [router]
   );
@@ -34,6 +35,22 @@ export function QuickActionSheet({ open, onClose }: QuickActionSheetProps) {
     <>
       <BottomSheet open={open} onClose={onClose}>
         <div className="grid grid-cols-2 gap-3">
+          <button
+            onClick={() => { onClose(); router.push("/send"); }}
+            className="flex flex-col items-center gap-3 rounded-2xl border border-border/40 bg-background/40 p-5 transition-all active:scale-95 hover:border-primary/30 hover:bg-primary/8"
+          >
+            <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary/15 text-primary"><Send className="h-6 w-6" /></div>
+            <span className="text-sm font-semibold">Send</span>
+            <span className="text-[11px] text-muted-foreground/70">One recipient</span>
+          </button>
+          <button
+            onClick={() => { onClose(); router.push("/payroll"); }}
+            className="flex flex-col items-center gap-3 rounded-2xl border border-border/40 bg-background/40 p-5 transition-all active:scale-95 hover:border-primary/30 hover:bg-primary/8"
+          >
+            <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary/15 text-primary"><BriefcaseBusiness className="h-6 w-6" /></div>
+            <span className="text-sm font-semibold">Payroll</span>
+            <span className="text-[11px] text-muted-foreground/70">Batch payments</span>
+          </button>
           <button
             onClick={() => handleAction(() => setReceiveOpen(true))}
             className="flex flex-col items-center gap-3 rounded-2xl border border-border/40 bg-background/40 p-5 transition-all active:scale-95 hover:border-primary/30 hover:bg-primary/8"

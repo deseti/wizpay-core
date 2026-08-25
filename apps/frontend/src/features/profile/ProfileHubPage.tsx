@@ -32,6 +32,8 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { SkeletonText } from "@/components/ui/skeleton-loaders";
+import { useDelayedLoading } from "@/hooks/useDelayedLoading";
 import { useToast } from "@/hooks/use-toast";
 import { resolveCanonicalAppWalletEvmAddress } from "@/lib/canonical-app-wallet";
 import { cn } from "@/lib/utils";
@@ -185,8 +187,9 @@ export function ProfileHubPage() {
     );
   }, [activeWalletAddress, arcWallet?.address, primaryWallet?.address, sepoliaWallet?.address, walletMode]);
 
-  const { candidateDomains, errorMessage, isLoading: isAnsLoading, ownedDomains, primaryDomain } =
+  const { errorMessage, isLoading: isAnsLoading, ownedDomains, primaryDomain } =
     useProfileAnsDomains(ownerAddresses);
+  const showAnsSkeleton = useDelayedLoading(isAnsLoading);
 
   const shortEmailHandle = useMemo(() => {
     if (!userEmail) {
@@ -522,12 +525,10 @@ export function ProfileHubPage() {
           </CardHeader>
 
           <CardContent className="space-y-4 px-5 py-5">
-            {isAnsLoading && candidateDomains.length > 0 ? (
+            {showAnsSkeleton ? (
               <div className="rounded-[1.4rem] border border-border/35 bg-background/35 px-4 py-4">
-                <p className="text-sm font-semibold text-foreground">Checking ANS ownership</p>
-                <p className="mt-2 text-sm leading-6 text-muted-foreground/75">
-                  Re-validating locally tracked ANS names against the latest contract state.
-                </p>
+                <span className="sr-only">Loading ANS identity</span>
+                <SkeletonText lines={3} />
               </div>
             ) : null}
 

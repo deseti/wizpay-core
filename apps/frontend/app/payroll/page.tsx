@@ -1,0 +1,221 @@
+"use client";
+
+import { QrCode } from "lucide-react";
+
+import { BatchComposer } from "@/components/dashboard/BatchComposer";
+import { PreflightPanel } from "@/components/dashboard/PreflightPanel";
+import { StatsCards } from "@/components/dashboard/StatsCards";
+import { StatusBanners } from "@/components/dashboard/StatusBanners";
+import { SuccessModal } from "@/components/dashboard/SuccessModal";
+import { DashboardAppFrame } from "@/components/dashboard/DashboardAppFrame";
+import { ReceiveModal } from "@/components/dashboard/ReceiveModal";
+import { Button } from "@/components/ui/button";
+import { useActiveWalletAddress } from "@/hooks/useActiveWalletAddress";
+import { useWizPay } from "@/hooks/wizpay";
+import { useDelayedLoading } from "@/hooks/useDelayedLoading";
+import { SUPPORTED_TOKENS, type TokenSymbol } from "@/lib/wizpay";
+import { useState } from "react";
+
+function getTaskMetadataString(
+  metadata: Record<string, unknown> | null | undefined,
+  key: string,
+) {
+  const value = metadata?.[key];
+  return typeof value === "string" ? value : null;
+}
+
+function getTaskMetadataNumber(
+  metadata: Record<string, unknown> | null | undefined,
+  key: string,
+) {
+  const value = metadata?.[key];
+  return typeof value === "number" ? value : null;
+}
+
+function getTaskMetadataToken(
+  metadata: Record<string, unknown> | null | undefined,
+  key: string,
+): TokenSymbol | null {
+  const value = getTaskMetadataString(metadata, key);
+  return value === "USDC" || value === "EURC" ? value : null;
+}
+
+function PayrollWorkspace() {
+  const wp = useWizPay();
+  const { walletAddress } = useActiveWalletAddress();
+  const [showReceive, setShowReceive] = useState(false);
+  const showBalanceLoading = useDelayedLoading(wp.balanceLoading && !wp.isBusy);
+  const showAllowanceLoading = useDelayedLoading(wp.allowanceLoading && !wp.isBusy);
+  const showFeeLoading = useDelayedLoading(wp.feeLoading && !wp.isBusy);
+  const showSuccessModal = wp.payrollTask?.status === "executed";
+  const taskMetadata = wp.payrollTask?.metadata;
+  const taskTotalAmount = getTaskMetadataString(taskMetadata, "totalAmount");
+  const taskSourceToken = getTaskMetadataToken(taskMetadata, "sourceToken");
+  const taskReferenceId = getTaskMetadataString(taskMetadata, "referenceId");
+  const taskRecipientCount = getTaskMetadataNumber(
+    taskMetadata,
+    "totalRecipients",
+  );
+  const taskSubmissionHashes = wp.smartBatchSubmissionHashes;
+  const taskLastHash =
+    taskSubmissionHashes[taskSubmissionHashes.length - 1] ?? null;
+  const successTotalAmount = taskTotalAmount
+    ? BigInt(taskTotalAmount)
+    : wp.sessionTotalAmount > 0n
+      ? wp.sessionTotalAmount
+      : wp.batchAmount;
+  const successTokenSymbol = taskSourceToken ?? wp.activeToken.symbol;
+  const successTokenDecimals = SUPPORTED_TOKENS[successTokenSymbol].decimals;
+  const successRecipientCount =
+    taskRecipientCount ??
+    (wp.sessionTotalRecipients > 0
+      ? wp.sessionTotalRecipients
+      : wp.validRecipientCount);
+
+  return (
+    <>
+      <div className="animate-fade-up space-y-6 stagger-children">
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">
+              Payroll
+            </h1>
+            <p className="text-sm text-muted-foreground/70">
+              Run payroll and batch token payments. Upload CSV for multiple
+              recipients.
+            </p>
+          </div>
+          <div className="flex gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setShowReceive(true)}
+              className="gap-1.5 border-border/40"
+            >
+              <QrCode className="h-3.5 w-3.5" />
+              Receive
+            </Button>
+          </div>
+        </div>
+
+        <StatsCards
+          selectedToken={wp.selectedToken}
+          onTokenChange={wp.setSelectedToken}
+          isBusy={wp.isBusy}
+          currentBalance={wp.currentBalance}
+          balanceLoading={showBalanceLoading}
+          activeToken={wp.activeToken}
+          walletAddress={walletAddress}
+          totalRouted={wp.totalRouted}
+          historyCount={wp.history.length}
+          onClearMessages={() => {
+            wp.setStatusMessage(null);
+            wp.setErrorMessage(null);
+          }}
+        />
+
+        <section className="grid gap-6 xl:grid-cols-[minmax(0,2fr)_minmax(320px,1fr)]">
+          <BatchComposer
+            selectedToken={wp.selectedToken}
+            activeToken={wp.activeToken}
+            recipients={wp.recipients}
+            preparedRecipients={wp.preparedRecipients}
+            referenceId={wp.referenceId}
+            onReferenceIdChange={wp.setReferenceId}
+            errors={wp.errors}
+            clearFieldError={wp.clearFieldError}
+            batchAmount={wp.batchAmount}
+            validRecipientCount={wp.validRecipientCount}
+            quoteSummary={wp.quoteSummary}
+            quoteLoading={wp.quoteLoading}
+            quoteRefreshing={wp.quoteRefreshing}
+            rowDiagnostics={wp.rowDiagnostics}
+            isBusy={wp.isBusy}
+            insufficientBalance={wp.insufficientBalance}
+            updateRecipient={wp.updateRecipient}
+            addRecipient={wp.addRecipient}
+            removeRecipient={wp.removeRecipient}
+            resetComposer={wp.resetComposer}
+            setErrorMessage={wp.setErrorMessage}
+            importRecipients={wp.importRecipients}
+            totalBatches={wp.totalBatches}
+            currentBatchNumber={wp.currentBatchNumber}
+            smartBatchAvailable={wp.smartBatchAvailable}
+            smartBatchRunning={wp.smartBatchRunning}
+            smartBatchReason={wp.smartBatchReason}
+            smartBatchButtonText={wp.smartBatchButtonText}
+            smartBatchHelperText={wp.smartBatchHelperText}
+            swapProviderLabel={wp.swapProviderLabel}
+            handleSmartBatchSubmit={wp.handleSmartBatchSubmit}
+          />
+
+          <PreflightPanel
+            currentAllowance={wp.currentAllowance}
+            approvalAmount={wp.approvalAmount}
+            activeToken={wp.activeToken}
+            feeBps={wp.feeBps}
+            allowanceLoading={showAllowanceLoading}
+            feeLoading={showFeeLoading}
+            rowDiagnostics={wp.rowDiagnostics}
+            insufficientBalance={wp.insufficientBalance}
+            selectedToken={wp.selectedToken}
+          />
+        </section>
+
+        <StatusBanners
+          task={wp.payrollTask}
+          copiedHash={wp.copiedHash}
+          copyHash={wp.copyHash}
+        />
+
+        {wp.statusMessage && !wp.errorMessage && (
+          <div className="rounded-xl border border-cyan-500/20 bg-cyan-500/5 px-4 py-3 text-sm text-cyan-100/90">
+            {wp.statusMessage}
+          </div>
+        )}
+
+        {wp.errorMessage && (
+          <div className="flex items-start justify-between gap-3 rounded-xl border border-destructive/25 bg-destructive/5 px-4 py-3 text-sm text-destructive">
+            <span className="whitespace-pre-wrap break-all">{wp.errorMessage}</span>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                wp.setErrorMessage(null);
+                wp.setStatusMessage(null);
+              }}
+              className="shrink-0 text-destructive hover:text-destructive/80"
+            >
+              Dismiss
+            </Button>
+          </div>
+        )}
+      </div>
+
+      <SuccessModal
+        isOpen={showSuccessModal}
+        onClose={wp.dismissSuccessModal}
+        txHash={taskLastHash}
+        approvalTxHash={wp.approveTxHash}
+        txHashes={taskSubmissionHashes}
+        totalAmount={successTotalAmount}
+        tokenSymbol={successTokenSymbol}
+        decimals={successTokenDecimals}
+        recipientCount={successRecipientCount}
+        isMultiBatch={(wp.payrollTask?.totalUnits ?? wp.totalBatches) > 1}
+        referenceId={taskReferenceId ?? wp.referenceId}
+        sessionTotalDistributed={wp.sessionTotalDistributed}
+      />
+
+      <ReceiveModal open={showReceive} onClose={() => setShowReceive(false)} />
+    </>
+  );
+}
+
+export default function PayrollPage() {
+  return (
+    <DashboardAppFrame>
+      <PayrollWorkspace />
+    </DashboardAppFrame>
+  );
+}

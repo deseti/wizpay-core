@@ -29,6 +29,12 @@ describe("SwapSuccessDialog", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("1 USDC")).toBeInTheDocument();
     expect(screen.getByText("0.95 EURC")).toBeInTheDocument();
+    const usdcIcon = document.querySelector('[data-token-icon="USDC"]');
+    const eurcIcon = document.querySelector('[data-token-icon="EURC"]');
+    expect(usdcIcon).toHaveStyle({ width: "24px", height: "24px" });
+    expect(eurcIcon).toHaveStyle({ width: "24px", height: "24px" });
+    expect(new URL(usdcIcon?.querySelector("img")?.getAttribute("src") ?? "", window.location.href).pathname).toBe("/tokens/usdc.png");
+    expect(new URL(eurcIcon?.querySelector("img")?.getAttribute("src") ?? "", window.location.href).pathname).toBe("/tokens/eurc.png");
     expect(screen.getByText("External Wallet")).toBeInTheDocument();
     expect(screen.getByText("Arc Testnet")).toBeInTheDocument();
     expect(screen.getByText(result.transactionHash)).toBeInTheDocument();

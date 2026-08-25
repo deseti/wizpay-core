@@ -15,7 +15,9 @@ import {
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { TokenIcon } from "@/components/ui/token-icon";
 import { cn } from "@/lib/utils";
+import { ARC_TESTNET_CHAIN_ID, SUPPORTED_TOKENS } from "@/lib/wizpay";
 
 export type BridgeProgressStage =
   | "confirming_source_burn"
@@ -205,7 +207,8 @@ export function ExternalBridgeProgress({
           </div>
           <div>
             <p className="text-xs text-muted-foreground">Immutable amount</p>
-            <p className="mt-1 font-medium">
+            <p className="mt-1 flex items-center gap-2 font-medium">
+              <TokenIcon chainId={ARC_TESTNET_CHAIN_ID} address={SUPPORTED_TOKENS.USDC.address} symbol={token} size={24} />
               {amount ? `${amount} ${token}` : `${token} amount recovering`}
             </p>
           </div>

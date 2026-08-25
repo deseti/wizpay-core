@@ -5,6 +5,7 @@ import type { Address } from "viem"
 
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Skeleton } from "@/components/ui/skeleton"
 
 import type { AnsNamespaceSnapshot } from "../types/ans"
 import { formatPromoWindow, formatUsdcAmount } from "../utils/format"
@@ -24,15 +25,15 @@ export function AnsNamespaceCard({
     return (
       <Card className="glass-card border-border/40">
         <CardHeader className="space-y-3">
-          <div className="h-5 w-32 animate-pulse rounded bg-muted/30" />
-          <div className="h-4 w-24 animate-pulse rounded bg-muted/20" />
+          <Skeleton className="h-5 w-32" />
+          <Skeleton className="h-4 w-24" />
         </CardHeader>
         <CardContent className="space-y-3">
           <div className="grid gap-3 sm:grid-cols-3">
             {[1, 2, 3].map((item) => (
               <div key={item} className="rounded-2xl border border-border/30 bg-background/25 p-3">
-                <div className="h-3 w-20 animate-pulse rounded bg-muted/20" />
-                <div className="mt-2 h-5 w-24 animate-pulse rounded bg-muted/25" />
+                <Skeleton className="h-3 w-20" />
+                <Skeleton className="mt-2 h-5 w-24" />
               </div>
             ))}
           </div>

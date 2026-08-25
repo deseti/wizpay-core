@@ -17,6 +17,8 @@ import {
 import { useAccount, useSwitchChain, useWalletClient } from "wagmi";
 
 import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
+import { useDelayedLoading } from "@/hooks/useDelayedLoading";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import {
@@ -820,6 +822,9 @@ export function ExternalBridgePanel({
     transfer &&
     nonceUsed === ZERO_NONCE &&
     !recovery?.destinationTransactionHash;
+  const showFeeSkeleton = useDelayedLoading(
+    feeStatus !== "ready" && feeStatus !== "error" && stage === "idle",
+  );
 
   return (
     <>
@@ -976,13 +981,13 @@ export function ExternalBridgePanel({
               </div>
               <div className="mt-2 flex justify-between gap-4">
                 <span className="text-muted-foreground">Protocol fee cap</span>
-                <span>
+                {showFeeSkeleton ? <Skeleton className="h-4 w-24" /> : <span>
                   {maxFee === null
                     ? feeStatus === "error"
                       ? "Unavailable"
                       : "Verifying…"
                     : `${formatUnits(maxFee, source?.usdcDecimals ?? 6)} USDC`}
-                </span>
+                </span>}
               </div>
               {transfer ? (
                 <>

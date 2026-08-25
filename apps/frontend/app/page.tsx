@@ -15,15 +15,19 @@ import { DashboardAppFrame } from "@/components/dashboard/DashboardAppFrame";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { SkeletonBalance } from "@/components/ui/skeleton-loaders";
+import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyStateView } from "@/components/ui/empty-state";
+import { TokenIcon } from "@/components/ui/token-icon";
 import { useActiveWalletAddress } from "@/hooks/useActiveWalletAddress";
 import { useBackendTaskHistory } from "@/hooks/useBackendTaskHistory";
 import { useTokenBalances } from "@/hooks/useTokenBalances";
+import { useDelayedLoading } from "@/hooks/useDelayedLoading";
 import {
   formatTokenAmount,
   getExplorerTxUrl,
   TOKEN_OPTIONS,
   type TokenSymbol,
+  ARC_TESTNET_CHAIN_ID,
 } from "@/lib/wizpay";
 import { TOKEN_BY_ADDRESS } from "@/constants/erc20";
 import type { UnifiedHistoryItem } from "@/lib/types";
@@ -128,12 +132,12 @@ function TokenList({ balances, isLoading }: BalanceSnapshotProps) {
       <div className="space-y-3">
         {[1, 2].map((i) => (
           <div key={i} className="flex items-center gap-3 py-3">
-            <div className="h-10 w-10 rounded-full bg-muted/25 animate-pulse" />
+            <Skeleton className="h-10 w-10 rounded-full" />
             <div className="flex-1 space-y-1.5">
-              <div className="h-4 w-16 rounded bg-muted/20 animate-pulse" />
-              <div className="h-3 w-24 rounded bg-muted/15 animate-pulse" />
+              <Skeleton className="h-4 w-16" />
+              <Skeleton className="h-3 w-24" />
             </div>
-            <div className="h-4 w-20 rounded bg-muted/20 animate-pulse" />
+            <Skeleton className="h-4 w-20" />
           </div>
         ))}
       </div>
@@ -150,9 +154,7 @@ function TokenList({ balances, isLoading }: BalanceSnapshotProps) {
         return (
           <Link key={token.symbol} href="/assets">
             <div className="flex items-center gap-3 rounded-xl px-3 py-3.5 transition-all hover:bg-muted/20 active:scale-[0.98] cursor-pointer min-h-[52px]">
-              <div className="flex h-10 w-10 items-center justify-center rounded-full bg-primary/10 text-primary font-bold text-sm ring-1 ring-primary/20">
-                {token.symbol.charAt(0)}
-              </div>
+              <TokenIcon chainId={ARC_TESTNET_CHAIN_ID} address={token.address} symbol={token.symbol} size={32} decorative={false} />
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-semibold">{token.symbol}</p>
                 <p className="text-xs text-muted-foreground/60">{token.name}</p>
@@ -191,12 +193,12 @@ function RecentActivity({
             key={index}
             className="flex min-h-[52px] items-center gap-3 rounded-xl px-3 py-3.5"
           >
-            <div className="h-9 w-9 rounded-lg bg-muted/30 animate-pulse" />
+            <Skeleton className="h-9 w-9 rounded-lg" />
             <div className="flex-1 space-y-1.5">
-              <div className="h-4 w-24 rounded bg-muted/20 animate-pulse" />
-              <div className="h-3 w-32 rounded bg-muted/15 animate-pulse" />
+              <Skeleton className="h-4 w-24" />
+              <Skeleton className="h-3 w-32" />
             </div>
-            <div className="h-4 w-20 rounded bg-muted/20 animate-pulse" />
+            <Skeleton className="h-4 w-20" />
           </div>
         ))}
       </div>
@@ -245,9 +247,7 @@ function RecentActivity({
             key={item.txHash}
             className="flex items-center gap-3 rounded-xl px-3 py-3.5 transition-all hover:bg-muted/20 active:scale-[0.98] min-h-[52px]"
           >
-            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-muted/30">
-              <ArrowUpRight className={`h-4 w-4 ${config.color}`} />
-            </div>
+            {item.tokenIn ? <TokenIcon chainId={ARC_TESTNET_CHAIN_ID} address={item.tokenIn} symbol={tokenLabel} size={24} /> : <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-muted/30"><ArrowUpRight className={`h-4 w-4 ${config.color}`} /></div>}
             <div className="flex-1 min-w-0">
               <p className="text-sm font-medium">{config.label}</p>
               <p className="text-xs text-muted-foreground/60 truncate">
@@ -293,6 +293,8 @@ function HomeContent() {
     limit: 25,
     refetchInterval: 60_000,
   });
+  const showBalancesLoading = useDelayedLoading(isBalancesLoading);
+  const showHistoryLoading = useDelayedLoading(isHistoryLoading);
   const unifiedHistory = useMemo(() => {
     const seen = new Set<string>();
 
@@ -319,7 +321,7 @@ function HomeContent() {
       <Card className="glass-card border-primary/20 overflow-hidden">
         <div className="absolute inset-0 bg-gradient-to-br from-primary/5 to-transparent pointer-events-none" />
         <CardContent className="relative pt-6 pb-5 space-y-5">
-          <TotalBalance balances={balances} isLoading={isBalancesLoading} />
+          <TotalBalance balances={balances} isLoading={showBalancesLoading} />
           <QuickActions />
         </CardContent>
       </Card>
@@ -344,7 +346,7 @@ function HomeContent() {
           </div>
         </CardHeader>
         <CardContent className="pt-0">
-          <TokenList balances={balances} isLoading={isBalancesLoading} />
+          <TokenList balances={balances} isLoading={showBalancesLoading} />
         </CardContent>
       </Card>
 
@@ -357,7 +359,7 @@ function HomeContent() {
           </CardTitle>
         </CardHeader>
         <CardContent className="pt-0">
-          <RecentActivity items={unifiedHistory} isLoading={isHistoryLoading} />
+          <RecentActivity items={unifiedHistory} isLoading={showHistoryLoading} />
         </CardContent>
       </Card>
     </div>

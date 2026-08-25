@@ -129,6 +129,24 @@ export class W3sAuthService {
         return this.getTransaction(
           typeof params.transactionId === 'string' ? params.transactionId : '',
         );
+      case 'getUserChallenge':
+        return this.getUserChallenge(
+          typeof params.challengeId === 'string' ? params.challengeId : '',
+          typeof params.userToken === 'string' ? params.userToken : '',
+        );
+      case 'getUserTransaction':
+        return this.getUserTransaction(
+          typeof params.transactionId === 'string' ? params.transactionId : '',
+          typeof params.userToken === 'string' ? params.userToken : '',
+        );
+      case 'listUserTransactions':
+        return this.listUserTransactions(
+          {
+            walletId:
+              typeof params.walletId === 'string' ? params.walletId : '',
+          },
+          typeof params.userToken === 'string' ? params.userToken : '',
+        );
       case 'getWalletBalances':
         return this.getWalletBalances(params);
       case 'listTransactions':
@@ -174,14 +192,18 @@ export class W3sAuthService {
     userToken: string,
   ): Promise<W3sActionResult> {
     const normalizedTransactionId = transactionId.trim();
+    const normalizedUserToken = userToken.trim();
     if (!normalizedTransactionId) {
       throw new Error('Missing required field: transactionId');
+    }
+    if (!normalizedUserToken) {
+      throw new Error('Missing required field: userToken');
     }
 
     return this.circleUserRequest({
       method: 'GET',
       path: `/v1/w3s/transactions/${encodeURIComponent(normalizedTransactionId)}`,
-      userToken,
+      userToken: normalizedUserToken,
     });
   }
 
@@ -190,14 +212,22 @@ export class W3sAuthService {
     input: { walletId: string },
     userToken: string,
   ): Promise<W3sActionResult> {
+    const walletId = input.walletId.trim();
+    const normalizedUserToken = userToken.trim();
+    if (!walletId) {
+      throw new Error('Missing required field: walletId');
+    }
+    if (!normalizedUserToken) {
+      throw new Error('Missing required field: userToken');
+    }
     const query = new URLSearchParams({
       pageSize: '50',
-      walletIds: input.walletId,
+      walletIds: walletId,
     });
     return this.circleUserRequest({
       method: 'GET',
       path: `/v1/w3s/transactions?${query.toString()}`,
-      userToken,
+      userToken: normalizedUserToken,
     });
   }
 
@@ -206,13 +236,17 @@ export class W3sAuthService {
     userToken: string,
   ): Promise<W3sActionResult> {
     const normalizedChallengeId = challengeId.trim();
+    const normalizedUserToken = userToken.trim();
     if (!normalizedChallengeId) {
       throw new Error('Missing required field: challengeId');
+    }
+    if (!normalizedUserToken) {
+      throw new Error('Missing required field: userToken');
     }
     return this.circleUserRequest({
       method: 'GET',
       path: `/v1/w3s/user/challenges/${encodeURIComponent(normalizedChallengeId)}`,
-      userToken,
+      userToken: normalizedUserToken,
     });
   }
   /**
@@ -280,7 +314,8 @@ export class W3sAuthService {
 
     let json: { data?: { deviceToken?: string; deviceEncryptionKey?: string } };
     try {
-      json = JSON.parse(raw);
+      const parsed = JSON.parse(raw) as unknown;
+      json = this.isRecord(parsed) ? parsed : {};
     } catch {
       this.logger.error('Circle response is not valid JSON.');
       throw new Error('Circle returned invalid JSON');
@@ -657,12 +692,13 @@ export class W3sAuthService {
     };
 
     try {
-      payload = JSON.parse(rawText);
+      const parsed = JSON.parse(rawText) as unknown;
+      payload = this.isRecord(parsed) ? parsed : {};
     } catch {
       this.logger.error(
         `Circle response is not valid JSON: ${rawText.slice(0, 500)}`,
       );
-      payload = {} as typeof payload;
+      payload = {};
     }
 
     if (!response.ok) {
@@ -789,7 +825,8 @@ export class W3sAuthService {
     path: string,
     params: Record<string, unknown>,
   ) {
-    const { payload, userToken: _removed, ...rest } = params;
+    const { payload, ...rest } = params;
+    delete rest.userToken;
     const payloadParams =
       payload && typeof payload === 'object' && !Array.isArray(payload)
         ? (payload as Record<string, unknown>)
@@ -972,7 +1009,10 @@ export class W3sAuthService {
       amount:
         typeof normalized.amount === 'string'
           ? normalized.amount
-          : String(normalized.amount ?? ''),
+          : typeof normalized.amount === 'number' ||
+              typeof normalized.amount === 'bigint'
+            ? String(normalized.amount)
+            : '',
       destinationAddress:
         typeof normalized.destinationAddress === 'string'
           ? normalized.destinationAddress

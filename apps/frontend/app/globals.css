@@ -140,6 +140,32 @@
 }
 
 @layer utilities {
+  .wiz-skeleton {
+    position: relative;
+    overflow: hidden;
+    background: oklch(0.25 0.025 270 / 0.52);
+  }
+
+  .wiz-skeleton::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    transform: translateX(-110%);
+    background: linear-gradient(90deg, transparent, oklch(0.7 0.08 275 / 0.12), transparent);
+    animation: wiz-skeleton-shimmer 1.65s ease-in-out infinite;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .wiz-skeleton::after {
+      animation: none;
+      display: none;
+    }
+  }
+
+  @keyframes wiz-skeleton-shimmer {
+    100% { transform: translateX(110%); }
+  }
+
   /* ── Premium glassmorphism card ── */
   .glass-card {
     background: linear-gradient(

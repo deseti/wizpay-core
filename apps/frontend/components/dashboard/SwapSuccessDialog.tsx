@@ -1,6 +1,13 @@
 "use client";
 
 import { TransactionSuccessDialog } from "./TransactionSuccessDialog";
+import { TokenIcon } from "@/components/ui/token-icon";
+import { ARC_TESTNET_CHAIN_ID, SUPPORTED_TOKENS, type TokenSymbol } from "@/lib/wizpay";
+
+function amountWithIcon(amount: string, symbol: string) {
+  const token = SUPPORTED_TOKENS[symbol as TokenSymbol];
+  return token ? <span className="flex items-center gap-2"><TokenIcon chainId={ARC_TESTNET_CHAIN_ID} address={token.address} symbol={symbol} size={24} />{amount} {symbol}</span> : `${amount} ${symbol}`;
+}
 
 export interface SwapSuccessResult {
   inputAmount: string;
@@ -32,11 +39,11 @@ export function SwapSuccessDialog({
       rows={[
         {
           label: "Input",
-          value: `${result.inputAmount} ${result.inputToken}`,
+          value: amountWithIcon(result.inputAmount, result.inputToken),
         },
         {
           label: "Output",
-          value: `${result.outputAmount} ${result.outputToken}`,
+          value: amountWithIcon(result.outputAmount, result.outputToken),
         },
         { label: "Wallet mode", value: result.walletMode },
         { label: "Network", value: result.network },

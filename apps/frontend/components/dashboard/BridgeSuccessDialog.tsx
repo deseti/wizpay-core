@@ -1,6 +1,8 @@
 "use client";
 
 import { TransactionSuccessDialog } from "./TransactionSuccessDialog";
+import { TokenIcon } from "@/components/ui/token-icon";
+import { ARC_TESTNET_CHAIN_ID, SUPPORTED_TOKENS } from "@/lib/wizpay";
 
 export interface BridgeSuccessDialogProps {
   open: boolean;
@@ -37,7 +39,7 @@ export function BridgeSuccessDialog({
           label: "Route",
           value: `${sourceNetwork} → ${destinationNetwork}`,
         },
-        { label: "Amount", value: `${amount} ${token}` },
+        { label: "Amount", value: <span className="flex items-center gap-2"><TokenIcon chainId={ARC_TESTNET_CHAIN_ID} address={SUPPORTED_TOKENS.USDC.address} symbol={token} size={24} />{amount} {token}</span> },
         {
           label: "Recipient wallet",
           value: <span className="break-all font-mono text-xs">{recipient}</span>,

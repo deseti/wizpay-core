@@ -12,11 +12,13 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { EmptyStateView } from "@/components/ui/empty-state";
+import { TokenIcon } from "@/components/ui/token-icon";
 import { useTokenBalances } from "@/hooks/useTokenBalances";
 import { useWizPay } from "@/hooks/wizpay";
-import { formatTokenAmount, getExplorerTxUrl, TOKEN_OPTIONS, EXPLORER_BASE_URL } from "@/lib/wizpay";
+import { ARC_TESTNET_CHAIN_ID, formatTokenAmount, getExplorerTxUrl, TOKEN_OPTIONS, EXPLORER_BASE_URL } from "@/lib/wizpay";
 import { useActiveWalletAddress } from "@/hooks/useActiveWalletAddress";
-import { TOKEN_BY_ADDRESS } from "@/constants/erc20";
+import { useDelayedLoading } from "@/hooks/useDelayedLoading";
+import { PageSkeleton, SkeletonCard } from "@/components/ui/skeleton-loaders";
 import type { UnifiedHistoryItem } from "@/lib/types";
 
 function TokenDetailCard({
@@ -50,9 +52,7 @@ function TokenDetailCard({
       <CardHeader className="pb-3">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="flex h-12 w-12 items-center justify-center rounded-full bg-primary/10 text-primary font-bold text-lg ring-1 ring-primary/20">
-              {symbol.charAt(0)}
-            </div>
+            <TokenIcon chainId={ARC_TESTNET_CHAIN_ID} address={address} symbol={symbol} size={40} decorative={false} />
             <div>
               <CardTitle className="text-lg">{symbol}</CardTitle>
               <p className="text-xs text-muted-foreground/60">{name}</p>
@@ -131,7 +131,7 @@ function TokenDetailCard({
                       })}
                     </p>
                   </div>
-                  <p className="text-xs font-mono">{amount} {symbol}</p>
+                  <p className="flex items-center gap-1.5 text-xs font-mono"><TokenIcon chainId={ARC_TESTNET_CHAIN_ID} address={address} symbol={symbol} size={20} />{amount} {symbol}</p>
                   {txUrl ? (
                     <a
                       href={txUrl}
@@ -156,6 +156,7 @@ function TokenDetailCard({
 
 function AssetsContent() {
   const { balances, isLoading } = useTokenBalances();
+  const showLoading = useDelayedLoading(isLoading);
   const { walletAddress } = useActiveWalletAddress();
   const wp = useWizPay();
   const totalUsdValue =
@@ -164,27 +165,14 @@ function AssetsContent() {
     (token) => balances[token.symbol] > 0n,
   ).length;
 
-  if (isLoading) {
+  if (showLoading) {
     return (
-      <div className="animate-fade-up space-y-5">
-        <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">Assets</h1>
+      <PageSkeleton cards={0}>
         <div className="grid gap-4 sm:grid-cols-2">
-          {[1, 2].map((i) => (
-            <Card key={i} className="glass-card border-border/40">
-              <CardContent className="py-8">
-                <div className="flex items-center gap-3">
-                  <div className="h-12 w-12 rounded-full bg-muted/25 animate-pulse" />
-                  <div className="flex-1 space-y-2">
-                    <div className="h-5 w-20 rounded bg-muted/20 animate-pulse" />
-                    <div className="h-3 w-32 rounded bg-muted/15 animate-pulse" />
-                  </div>
-                  <div className="h-6 w-24 rounded bg-muted/20 animate-pulse" />
-                </div>
-              </CardContent>
-            </Card>
-          ))}
+          <SkeletonCard className="min-h-44" lines={2} />
+          <SkeletonCard className="min-h-44" lines={2} />
         </div>
-      </div>
+      </PageSkeleton>
     );
   }
 
