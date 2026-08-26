@@ -68,7 +68,7 @@ jobs:
              docker compose $compose_args run --rm --no-deps nginx nginx -t
 
              legacy_name=wizpay-nginx
-             legacy_id=$(docker ps -aq --filter "name=^${legacy_name}$" | head -n 1)
+             legacy_id=$(docker inspect -f "{{.Id}}" "$legacy_name" 2>/dev/null || true)
              managed_id=$(docker compose $compose_args ps -aq nginx 2>/dev/null || true)
              managed=false
              if [ -n "$legacy_id" ] && [ -n "$managed_id" ] && [ "$legacy_id" = "$managed_id" ]; then

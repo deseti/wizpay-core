@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { formatUnits } from "viem";
 
 import { backendFetch } from "@/lib/backend-api";
-import { PayrollFxRecoveryError } from "@/lib/payroll-fx-settlement-service";
+import { PayrollFxRecoveryError } from "@/lib/payroll-fx-recovery";
 import { allocateVerifiedPayrollOutput } from "@/lib/payroll-output-allocation";
 import { useActiveWalletAddress } from "@/hooks/useActiveWalletAddress";
 import {
@@ -103,6 +103,13 @@ interface UseBatchPayrollOptions {
   ) => Promise<void>;
   beginPayrollBatchSubmission?: (referenceId: string) => Promise<void>;
   clearPayrollBatchSubmission?: (referenceId: string) => Promise<void>;
+  resumeAppWalletXylonetSwap?: (params: {
+    operationId: string;
+    sourceToken: TokenSymbol;
+    targetToken: TokenSymbol;
+    amount: string;
+    minimumRequiredOutput: string;
+  }) => Promise<PreSwapResult>;
 }
 
 interface PayrollInitRecipient {
@@ -194,6 +201,7 @@ export interface PayrollFxRecoverableStatus {
   payoutTxHash: string | null;
   finalPayrollTxHash: string | null;
   recoverableError: string | null;
+  xylonetOperationId: string | null;
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────
@@ -365,6 +373,7 @@ export function useBatchPayroll({
   recordPayrollBatchConfirmation,
   beginPayrollBatchSubmission,
   clearPayrollBatchSubmission,
+  resumeAppWalletXylonetSwap,
 }: UseBatchPayrollOptions): BatchPayrollResult {
   const { walletAddress, walletMode } = useActiveWalletAddress();
   const batches = useMemo(
@@ -603,6 +612,7 @@ export function useBatchPayroll({
             payoutTxHash: null,
             finalPayrollTxHash: null,
             recoverableError: null,
+            xylonetOperationId: null,
           });
 
           // Mark this referenceId as funded BEFORE calling executePreSwap.
@@ -1099,6 +1109,7 @@ export function useBatchPayroll({
           payoutTxHash: error.payoutTxHash,
           finalPayrollTxHash: null,
           recoverableError: recoverableMessage,
+          xylonetOperationId: error.xylonetOperationId,
         });
         setErrorMessage(recoverableMessage);
 
@@ -1154,7 +1165,7 @@ export function useBatchPayroll({
    * This handles payroll init, approval, and batch execution.
    */
   const continuePayrollAfterSwap = useCallback(
-    async (crossTargets: TokenSymbol[]) => {
+    async () => {
       const allRecipients = batches.flat();
       const getPreSwapPayoutAmountsLocal = getPreSwapPayoutAmounts;
 
@@ -1264,177 +1275,78 @@ export function useBatchPayroll({
     ],
   );
 
-  /**
-   * Recovery continuation: reuse the saved funding context to continue
-   * settlement without creating a new funding transaction.
-   *
-   * This is called when the user clicks the button in "Recovery Required" state.
-   * It does NOT call executePreSwap again — it directly calls settlePayrollFx
-   * with the already-confirmed funding txHash.
-   */
+  /** Resume the persisted user-controlled XyloNet operation without re-funding. */
   const recoverFxSettlement = useCallback(async () => {
     if (!fxStatus) {
       setErrorMessage("No recovery context available. Start a new payroll run.");
       return;
     }
+    const operationId = fxStatus.xylonetOperationId;
+    const crossTargets = detectCrossCurrencyTargets(activeToken.symbol, batches);
+    if (!operationId || !resumeAppWalletXylonetSwap || !crossTargets || crossTargets.length !== 1) {
+      setErrorMessage(
+        "Recovery requires the persisted XyloNet operation and a single cross-token payroll group. No new funds were submitted.",
+      );
+      return;
+    }
 
-    const { fundingTxHash, fundingCircleTxId, fundingChallengeId } = fxStatus;
+    const targetToken = crossTargets[0];
+    const payoutAmounts = getPreSwapPayoutAmounts?.(targetToken);
+    if (!payoutAmounts) {
+      setErrorMessage("Recovery failed: the original XyloNet payout quote is unavailable.");
+      return;
+    }
 
-    logPayrollRouteDiagnostic(
-      "[official-payroll-route] RECOVERY — attempting to continue from saved funding context",
-      { fundingTxHash, fundingCircleTxId, fundingChallengeId, referenceId },
+    const crossAmount = sumAmountsForToken(batches, targetToken, activeToken.decimals);
+    const quotedTargetAmount = Array.from(payoutAmounts.values()).reduce(
+      (sum, amount) => sum + BigInt(amount),
+      0n,
     );
+    const amount = walletMode === "circle"
+      ? (BigInt(crossAmount) * 10200n / 10000n).toString()
+      : crossAmount;
 
-    // Clear the error state but keep the lock — we're retrying, not starting fresh
     setErrorMessage(null);
+    setStatusMessage("Recovering the existing XyloNet payroll swap...");
     setFxStatus((prev) =>
-      prev ? { ...prev, currentStep: "settling_fx", recoverableError: null } : prev,
+      prev
+        ? { ...prev, currentStep: "settling_fx", recoverableError: null }
+        : prev,
     );
-    setStatusMessage("Recovering: continuing FX settlement...");
 
     try {
-      // If we don't have a funding txHash yet, try to resolve it from the saved Circle tx ID
-      let resolvedFundingTxHash = fundingTxHash;
-
-      if (!resolvedFundingTxHash && (fundingCircleTxId || fundingChallengeId)) {
-        setStatusMessage("Recovering: resolving funding transaction...");
-
-        const { resolveCircleFundingTxHash } = await import(
-          "@/lib/payroll-fx-settlement-service"
-        );
-
-        resolvedFundingTxHash = await resolveCircleFundingTxHash({
-          circleTransactionId: fundingCircleTxId,
-          challengeId: fundingChallengeId,
-          walletId: null, // We don't re-list; rely on the saved IDs
-          destinationAddress: null,
-          timeoutMs: 60000,
-          onAttempt: (attempt, strategy) => {
-            logPayrollRouteDiagnostic(
-              "[official-payroll-route] RECOVERY — polling for funding txHash",
-              { attempt, strategy, fundingCircleTxId, fundingChallengeId },
-            );
-          },
-        });
-
-        setFxStatus((prev) =>
-          prev ? { ...prev, fundingTxHash: resolvedFundingTxHash } : prev,
-        );
+      const result = await resumeAppWalletXylonetSwap({
+        operationId,
+        sourceToken: activeToken.symbol,
+        targetToken,
+        amount,
+        minimumRequiredOutput: quotedTargetAmount.toString(),
+      });
+      if (
+        result.provider !== "xylonet" ||
+        result.outputToken !== targetToken ||
+        !result.verifiedActualOutput
+      ) {
+        throw new Error("Recovered XyloNet output could not be verified.");
       }
-
-      if (!resolvedFundingTxHash) {
-        throw new Error(
-          "Recovery failed: could not resolve the original funding transaction hash. " +
-          "The Circle transaction ID or challenge ID did not produce a txHash.",
-        );
-      }
-
-      // Detect cross-currency targets to determine which settlement to call
-      const crossTargets = detectCrossCurrencyTargets(
-        activeToken.symbol,
-        batches,
+      setApprovalHash(result.txHash);
+      setFxStatus((prev) =>
+        prev
+          ? {
+              ...prev,
+              currentStep: "payout_confirmed",
+              settlementTxHash: result.txHash,
+              payoutTxHash: result.txHash,
+              recoverableError: null,
+            }
+          : prev,
       );
-
-      if (!crossTargets || crossTargets.length === 0) {
-        throw new Error(
-          "Recovery failed: no cross-currency targets detected in current recipients.",
-        );
-      }
-
-      if (!walletAddress) {
-        throw new Error("Recovery failed: wallet address is not available.");
-      }
-
-      const { settlePayrollFx } = await import(
-        "@/lib/payroll-fx-settlement-service"
-      );
-
-      // Re-call settlePayrollFx with the existing funding txHash
-      for (const targetToken of crossTargets) {
-        const crossAmount = sumAmountsForToken(
-          batches,
-          targetToken,
-          activeToken.decimals,
-        );
-
-        // Apply the same 2% buffer as the original execution
-        const APP_WALLET_FX_BUFFER_BPS = 200n;
-        const isAppWalletMode = walletMode === "circle";
-        const crossAmountWithBuffer = isAppWalletMode
-          ? (BigInt(crossAmount) * (10000n + APP_WALLET_FX_BUFFER_BPS) / 10000n).toString()
-          : crossAmount;
-
-        setStatusMessage(
-          `Recovering: settling ${activeToken.symbol} → ${targetToken}...`,
-        );
-
-        logPayrollRouteDiagnostic(
-          "[official-payroll-route] RECOVERY — calling settlePayrollFx",
-          {
-            sourceFundingTxHash: resolvedFundingTxHash,
-            sourceToken: activeToken.symbol,
-            targetToken,
-            sourceAmount: crossAmountWithBuffer,
-            referenceId: `PAYROLL-FX-${referenceId}-${targetToken}`,
-            walletAddress,
-          },
-        );
-
-        const result = await settlePayrollFx({
-          provider: "stablefx",
-          sourceToken: activeToken.symbol,
-          targetToken,
-          sourceAmount: crossAmountWithBuffer,
-          routingAmount: crossAmount,
-          referenceId: `PAYROLL-FX-${referenceId}-${targetToken}`,
-          walletAddress,
-          sourceFundingTxHash: resolvedFundingTxHash,
-        });
-
-        if (result.status !== "settled" || !result.txHash) {
-          throw new Error(
-            `Recovery FX settlement failed: status=${result.status}, txHash=${result.txHash ?? "null"}`,
-          );
-        }
-
-        setFxStatus((prev) =>
-          prev
-            ? {
-                ...prev,
-                currentStep: "payout_confirmed",
-                settlementTxHash: result.txHash,
-                payoutTxHash: result.payoutTxHash ?? result.txHash,
-                recoverableError: null,
-              }
-            : prev,
-        );
-
-        setApprovalHash(result.payoutTxHash ?? result.txHash);
-      }
-
-      // Settlement recovered — now continue with the normal payroll flow
-      setStatusMessage("Recovery complete. Submitting payroll...");
-
-      // Release the lock and re-run execute to continue from the payroll init step
       executionLockRef.current = false;
       setFxStatus(null);
       setIsRunning(false);
-
-      // Trigger the normal execute flow — the fundedReferenceIdsRef still has
-      // this referenceId, but execute() checks it BEFORE the pre-swap step.
-      // We need to temporarily allow it through for the post-swap continuation.
-      // Instead of calling execute() again (which would try to re-fund),
-      // we proceed directly with payroll init here.
-      await continuePayrollAfterSwap(crossTargets);
+      await continuePayrollAfterSwap();
     } catch (error) {
-      const message =
-        error instanceof Error ? error.message : String(error);
-
-      logPayrollRouteDiagnostic(
-        "[official-payroll-route] RECOVERY FAILED",
-        { error: message, fxStatus },
-      );
-
+      const message = error instanceof Error ? error.message : String(error);
       setFxStatus((prev) =>
         prev
           ? { ...prev, currentStep: "error", recoverableError: `Recovery failed: ${message}` }
@@ -1443,15 +1355,15 @@ export function useBatchPayroll({
       setErrorMessage(`Recovery failed: ${message}`);
     }
   }, [
-    activeToken.symbol,
     activeToken.decimals,
+    activeToken.symbol,
     batches,
     continuePayrollAfterSwap,
     fxStatus,
-    referenceId,
+    getPreSwapPayoutAmounts,
+    resumeAppWalletXylonetSwap,
     setErrorMessage,
     setStatusMessage,
-    walletAddress,
     walletMode,
   ]);
 

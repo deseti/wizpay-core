@@ -1,13 +1,9 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { TaskController } from './orchestrator/task.controller';
-import { OrchestratorService } from './orchestrator/orchestrator.service';
 import { TaskService } from './task/task.service';
 import { TaskEmployeeBreakdownService } from './task/task-employee-breakdown.service';
 import { TaskPayrollHistoryService } from './task/task-payroll-history.service';
 import { PayrollInitService } from './orchestrator/payroll-init.service';
-import { CircleService } from './adapters/circle.service';
-import { PayrollFxSettlementService } from './agents/payroll/payroll-fx-settlement.service';
-import { AppWalletSwapDepositVerifierService } from './app-wallet-swap/app-wallet-swap-deposit-verifier.service';
 import { TaskStatus } from './task/task-status.enum';
 import { TaskType } from './task/task-type.enum';
 import { TaskDetails } from './task/task.types';
@@ -27,12 +23,9 @@ describe('TaskController', () => {
     transactions: [],
   };
 
-  const orchestratorService = {
-    handleTask: jest.fn().mockResolvedValue(taskFixture),
-  };
-
   const taskService = {
     getTaskById: jest.fn().mockResolvedValue(taskFixture),
+    createLiquidityTask: jest.fn(),
   };
 
   const taskEmployeeBreakdownService = {
@@ -47,22 +40,10 @@ describe('TaskController', () => {
     prepare: jest.fn().mockResolvedValue({}),
   };
 
-  const circleService = {
-    getQuote: jest.fn().mockResolvedValue({}),
-  };
-
-  const payrollFxSettlementService = {};
-
-  const appWalletDepositVerifier = {};
-
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
       controllers: [TaskController],
       providers: [
-        {
-          provide: OrchestratorService,
-          useValue: orchestratorService,
-        },
         {
           provide: TaskService,
           useValue: taskService,
@@ -79,18 +60,6 @@ describe('TaskController', () => {
           provide: PayrollInitService,
           useValue: payrollInitService,
         },
-        {
-          provide: CircleService,
-          useValue: circleService,
-        },
-        {
-          provide: PayrollFxSettlementService,
-          useValue: payrollFxSettlementService,
-        },
-        {
-          provide: AppWalletSwapDepositVerifierService,
-          useValue: appWalletDepositVerifier,
-        },
       ],
     }).compile();
 
@@ -98,20 +67,13 @@ describe('TaskController', () => {
     jest.clearAllMocks();
   });
 
-  it('creates tasks via the orchestrator', async () => {
+  it('keeps current payroll planning on the dedicated init route', async () => {
     const payload = { batchId: 'payroll-1' };
 
-    await expect(
-      controller.createTask({
-        type: TaskType.PAYROLL,
-        payload,
-      }),
-    ).resolves.toEqual({ data: taskFixture });
-
-    expect(orchestratorService.handleTask).toHaveBeenCalledWith(
-      TaskType.PAYROLL,
-      payload,
-    );
+    await expect(controller.initPayroll(payload)).resolves.toEqual({
+      data: {},
+    });
+    expect(payrollInitService.prepare).toHaveBeenCalledWith(payload);
   });
 
   it('fetches tasks through the task service', async () => {

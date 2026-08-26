@@ -1,6 +1,6 @@
-import { resolveBackendBaseUrl, buildBackendUrl, backendFetch } from "@/lib/backend-api";
+import { resolveBackendBaseUrl, buildBackendUrl } from "@/lib/backend-api";
 import { findFirstString } from "@/lib/user-swap-quote-parser";
-import { isTransactionHash, type TokenSymbol } from "@/lib/wizpay";
+import { isTransactionHash } from "@/lib/wizpay";
 
 const CIRCLE_TX_RUN_START_GRACE_MS = 120_000;
 const CIRCLE_IN_FLIGHT_TRANSACTION_STATES = new Set([
@@ -16,97 +16,15 @@ const CIRCLE_IN_FLIGHT_TRANSACTION_STATES = new Set([
 const PAYROLL_FX_DEBUG =
   process.env.NEXT_PUBLIC_PAYROLL_FX_DEBUG === "true";
 
-function debugPayrollFx(...args: unknown[]) {
-  if (!PAYROLL_FX_DEBUG) return;
-  console.debug(...args);
-}
-
-/**
- * Custom error thrown during App Wallet FX settlement that carries
- * recovery context (tx IDs, hashes, step) so the UI can display
- * a recoverable error instead of a generic failure.
- */
-export class PayrollFxRecoveryError extends Error {
-  fundingCircleTxId: string | null;
-  fundingChallengeId: string | null;
-  fundingTxHash: string | null;
-  settlementTxHash: string | null;
-  payoutTxHash: string | null;
-  step: string;
-
-  constructor(
-    message: string,
-    context: {
-      fundingCircleTxId?: string | null;
-      fundingChallengeId?: string | null;
-      fundingTxHash?: string | null;
-      settlementTxHash?: string | null;
-      payoutTxHash?: string | null;
-      step: string;
-    },
-  ) {
-    super(message);
-    this.name = "PayrollFxRecoveryError";
-    this.fundingCircleTxId = context.fundingCircleTxId ?? null;
-    this.fundingChallengeId = context.fundingChallengeId ?? null;
-    this.fundingTxHash = context.fundingTxHash ?? null;
-    this.settlementTxHash = context.settlementTxHash ?? null;
-    this.payoutTxHash = context.payoutTxHash ?? null;
-    this.step = context.step;
-  }
-}
-
-export interface PayrollFxSettleRequest {
-  provider: "stablefx";
-  sourceToken: TokenSymbol;
-  targetToken: TokenSymbol;
-  /** Aggregate source amount in base units (e.g. "5000000" for 5 USDC) */
-  sourceAmount: string;
-  /** Unbuffered aggregate used to enforce the approved provider boundary. */
-  routingAmount: string;
-  /** Idempotency reference for this settlement */
-  referenceId: string;
-  /** Wallet address of the sender (informational) */
-  walletAddress?: string;
-  /** Confirmed App Wallet source-token transfer to the treasury. */
-  sourceFundingTxHash: string;
-}
-
-export interface PayrollFxSettleResponse {
-  sourceToken: string;
-  targetToken: string;
-  sourceAmount: string;
-  targetAmount: string;
-  txHash: string | null;
-  status: "settled" | "failed";
-  payoutTxHash?: string | null;
-  payoutAmount?: string;
-  sourceFundingTxHash?: string;
-  sourceFundingAmount?: string;
-  walletAddress?: string;
-}
-
 export interface WaitForCircleTransactionHashOptions {
   intervalMs?: number;
   onAttempt?: (attempt: number) => void;
   timeoutMs?: number;
 }
 
-/**
- * Execute treasury-mediated FX settlement for App Wallet cross-currency payroll.
- *
- * The backend treasury wallet executes the swap server-side using Circle
- * Stablecoin Kits (same path as standalone /swap App Wallet treasury swap).
- *
- * Returns the swap txHash which is ArcScan-visible.
- */
-export async function settlePayrollFx(
-  params: PayrollFxSettleRequest,
-): Promise<PayrollFxSettleResponse> {
-  return backendFetch<PayrollFxSettleResponse>("/tasks/payroll/fx-settle", {
-    method: "POST",
-    body: JSON.stringify(params),
-  });
+function debugPayrollFx(...args: unknown[]) {
+  if (!PAYROLL_FX_DEBUG) return;
+  console.debug(...args);
 }
 
 function getCircleTxHash(...values: unknown[]): string | null {

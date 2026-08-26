@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { OTPModal } from "./OTPModal";
 import { ErrorState } from "./ErrorState";
+import { cn } from "@/lib/utils";
 
 export function LoginModal({
   authError,
@@ -13,6 +14,7 @@ export function LoginModal({
   hasPendingEmailOtp,
   isSdkReady,
   isAuthenticating,
+  isCircleVerificationActive,
   isOpen,
   onClose,
   onRequestEmailOtp,
@@ -29,6 +31,7 @@ export function LoginModal({
   hasPendingEmailOtp: boolean;
   isSdkReady: boolean;
   isAuthenticating: boolean;
+  isCircleVerificationActive: boolean;
   isOpen: boolean;
   onClose: () => void;
   onRequestEmailOtp: (email: string) => Promise<void>;
@@ -42,6 +45,7 @@ export function LoginModal({
 
   return (
     <Dialog
+      modal={!isCircleVerificationActive}
       open={isOpen}
       onOpenChange={(open) => {
         if (!open) {
@@ -50,7 +54,13 @@ export function LoginModal({
         }
       }}
     >
-      <DialogContent className="max-h-[calc(100dvh-1rem)] overflow-y-auto border-border/40 bg-background/95 pb-[max(1rem,env(safe-area-inset-bottom))] sm:max-w-lg">
+      <DialogContent
+        aria-hidden={isCircleVerificationActive || undefined}
+        className={cn(
+          "max-h-[calc(100dvh-1rem)] overflow-y-auto border-border/40 bg-background/95 pb-[max(1rem,env(safe-area-inset-bottom))] sm:max-w-lg",
+          isCircleVerificationActive && "pointer-events-none",
+        )}
+      >
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 text-xl">
             <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary/15 text-primary ring-1 ring-primary/25">

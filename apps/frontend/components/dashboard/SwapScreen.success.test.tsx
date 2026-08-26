@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { SwapScreen } from "./SwapScreen";
@@ -132,6 +132,7 @@ async function enterAmountAndExecute(buttonName: RegExp) {
 
 describe("SwapScreen verified success modal", () => {
   beforeEach(() => {
+    vi.clearAllMocks();
     state.walletMode = "external";
     state.writeContract.mockResolvedValue(state.hash);
     state.readContract.mockResolvedValue(10_000_000n);
@@ -206,6 +207,52 @@ describe("SwapScreen verified success modal", () => {
       "href",
       `https://testnet.arcscan.app/tx/${state.hash}`,
     );
+  });
+
+  it("shows non-modal progress immediately and keeps one External Wallet submission active", async () => {
+    let resolveHash!: (hash: `0x${string}`) => void;
+    state.writeContract.mockReturnValueOnce(
+      new Promise<`0x${string}`>((resolve) => {
+        resolveHash = resolve;
+      }),
+    );
+    render(<SwapScreen />);
+    await enterAmountAndExecute(/Swap with XyloNet/);
+
+    expect(screen.getByRole("region", { name: "Swap progress" })).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Swap amount" })).toBeDisabled();
+    expect(screen.queryByText("Approving token")).not.toBeInTheDocument();
+
+    const submit = await screen.findByRole("button", { name: /signing/i });
+    fireEvent.click(submit);
+    expect(state.writeContract).toHaveBeenCalledTimes(1);
+
+    await act(async () => resolveHash(state.hash));
+    expect(
+      await screen.findByRole("heading", { name: "Swap completed" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("region", { name: "Swap progress" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("keeps a failed swap visible without retrying automatically", async () => {
+    state.writeContract.mockRejectedValueOnce(new Error("User rejected request"));
+    render(<SwapScreen />);
+    await enterAmountAndExecute(/Swap with XyloNet/);
+
+    expect(await screen.findByText("Swap stopped")).toBeInTheDocument();
+    expect(screen.getAllByText(/rejected/i).length).toBeGreaterThan(0);
+    expect(state.writeContract).toHaveBeenCalledTimes(1);
+    expect(
+      screen.queryByRole("heading", { name: "Swap completed" }),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Review swap" }));
+    expect(
+      screen.queryByRole("region", { name: "Swap progress" }),
+    ).not.toBeInTheDocument();
+    expect(state.writeContract).toHaveBeenCalledTimes(1);
   });
 
   it("opens after App Wallet reports confirmed completion and verified output", async () => {

@@ -11,6 +11,10 @@ import {
   SwapSuccessDialog,
   type SwapSuccessResult,
 } from "@/components/dashboard/SwapSuccessDialog";
+import {
+  SwapProgress,
+  type SwapProgressRequestStatus,
+} from "@/components/dashboard/SwapProgress";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -59,6 +63,7 @@ type QuoteState = AppWalletSwapQuoteResponse | UserSwapQuoteResponse;
 type RequestStatus =
   | "idle"
   | "quoting"
+  | "preparing"
   | "approving"
   | "signing"
   | "executing"
@@ -126,10 +131,21 @@ export function SwapScreen() {
   const [error, setError] = useState<string | null>(null);
   const [swapSuccess, setSwapSuccess] = useState<SwapSuccessResult | null>(null);
   const [successOpen, setSuccessOpen] = useState(false);
+  const [progressOpen, setProgressOpen] = useState(false);
+  const [progressStatus, setProgressStatus] =
+    useState<SwapProgressRequestStatus>("preparing");
+  const [progressFailure, setProgressFailure] = useState<string | null>(null);
+  const [approvalRequired, setApprovalRequired] = useState<boolean | null>(null);
   const [screenMode, setScreenMode] = useState<"swap" | "bridge">("swap");
   const showQuoteSkeleton = useDelayedLoading(status === "quoting");
   const quoteSequence = useRef(0);
   const operationIdempotencyKey = useRef<string | null>(null);
+  const transactionActive = useRef(false);
+
+  function setTransactionStatus(next: SwapProgressRequestStatus) {
+    setProgressStatus(next);
+    setStatus(next);
+  }
 
   const amountUnits = useMemo(
     () => parseAmountToUnits(amountIn, SUPPORTED_TOKENS[tokenIn].decimals),
@@ -272,7 +288,6 @@ export function SwapScreen() {
     const idempotencyKey =
       operationIdempotencyKey.current ?? crypto.randomUUID();
     operationIdempotencyKey.current = idempotencyKey;
-    setStatus("signing");
     const created = await createAppWalletXylonetOperation(
       {
         idempotencyKey,
@@ -292,18 +307,18 @@ export function SwapScreen() {
       userToken,
       executeChallenge,
       onOperation: setOperation,
-      onRequestStatus: (next) =>
-        setStatus(
-          next === "idle"
-            ? "idle"
-            : next === "approving"
-              ? "approving"
-              : next === "confirming"
-                ? "confirming"
-                : next === "signing"
-                  ? "signing"
-                  : "executing",
-        ),
+      onRequestStatus: (next) => {
+        if (next === "idle") return;
+        setTransactionStatus(
+          next === "approving"
+            ? "approving"
+            : next === "confirming" || next === "settling"
+              ? "confirming"
+              : next === "signing"
+                ? "signing"
+                : "executing",
+        );
+      },
     });
     const verifiedOutput = readPositiveAmount(completed.verifiedActualOutput);
     if (
@@ -352,7 +367,8 @@ export function SwapScreen() {
         args: [walletAddress, validated.executor],
       });
       if (allowance < validated.amountIn) {
-        setStatus("approving");
+        setApprovalRequired(true);
+        setTransactionStatus("approving");
         const approvalHash = await walletClient.writeContract({
           address: validated.tokenIn,
           abi: ERC20_ABI,
@@ -366,8 +382,10 @@ export function SwapScreen() {
         });
         if (approvalReceipt.status !== "success")
           throw new Error("Executor approval transaction reverted.");
+      } else {
+        setApprovalRequired(false);
       }
-      setStatus("executing");
+      setTransactionStatus("signing");
       const hash = await walletClient.writeContract({
         address: validated.executor,
         abi: WIZPAY_SWAP_EXECUTOR_V2_ABI,
@@ -384,7 +402,8 @@ export function SwapScreen() {
         account: walletAddress,
         chain: arcTestnet,
       });
-      setStatus("confirming");
+      setTransactionStatus("executing");
+      setTransactionStatus("confirming");
       const receipt = await publicClient.waitForTransactionReceipt({ hash });
       const outputAmount = verifyExternalXylonetReceipt({
         receipt,
@@ -410,6 +429,12 @@ export function SwapScreen() {
       setError("Wait for a current XyloNet quote.");
       return;
     }
+    if (transactionActive.current) return;
+    transactionActive.current = true;
+    setProgressFailure(null);
+    setApprovalRequired(isCircle ? true : null);
+    setProgressOpen(true);
+    setTransactionStatus("preparing");
     try {
       const completed = isCircle
         ? await executeAppWalletSwap()
@@ -430,6 +455,7 @@ export function SwapScreen() {
         transactionHash: completed.hash,
         explorerUrl: `${arcTestnet.blockExplorers.default.url}/tx/${completed.hash}`,
       });
+      setProgressOpen(false);
       setSuccessOpen(true);
       toast({
         title: "Swap confirmed",
@@ -438,6 +464,7 @@ export function SwapScreen() {
     } catch (cause) {
       const message = getFriendlyErrorMessage(cause);
       setError(message);
+      setProgressFailure(message);
       toast({
         title: "Swap failed closed",
         description: message,
@@ -445,7 +472,13 @@ export function SwapScreen() {
       });
     } finally {
       setStatus("idle");
+      transactionActive.current = false;
     }
+  }
+
+  function handleDismissProgressFailure() {
+    setProgressOpen(false);
+    setProgressFailure(null);
   }
 
   function handleStartAnotherSwap() {
@@ -453,6 +486,9 @@ export function SwapScreen() {
     setSwapSuccess(null);
     setOperation(null);
     setError(null);
+    setProgressOpen(false);
+    setProgressFailure(null);
+    setApprovalRequired(null);
     setAmountIn("");
   }
 
@@ -517,6 +553,7 @@ export function SwapScreen() {
                 onChange={(event) => setAmountIn(event.target.value)}
                 placeholder="0.00"
                 inputMode="decimal"
+                disabled={progressOpen}
               />
             </div>
             <div className="grid grid-cols-[1fr_auto_1fr] items-end gap-3">
@@ -525,6 +562,7 @@ export function SwapScreen() {
                   From
                 </label>
                 <Select
+                  disabled={progressOpen}
                   value={tokenIn}
                   onValueChange={(value) => {
                     const next = value as TokenSymbol;
@@ -546,6 +584,7 @@ export function SwapScreen() {
                 variant="outline"
                 size="icon"
                 aria-label="Reverse tokens"
+                disabled={progressOpen}
                 onClick={() => {
                   setTokenIn(tokenOut);
                   setTokenOut(tokenIn);
@@ -558,6 +597,7 @@ export function SwapScreen() {
                   To
                 </label>
                 <Select
+                  disabled={progressOpen}
                   value={tokenOut}
                   onValueChange={(value) => {
                     const next = value as TokenSymbol;
@@ -607,6 +647,19 @@ export function SwapScreen() {
                 ? "Circle User-Controlled Wallet signs approval and swap challenges. No custodial intermediary or backend signer is used."
                 : "Your connected browser wallet signs approval and the canonical executor transaction directly."}
             </div>
+            {progressOpen ? (
+              <SwapProgress
+                walletMode={isCircle ? "circle" : "external"}
+                tokenIn={tokenIn}
+                tokenOut={tokenOut}
+                amount={amountIn}
+                requestStatus={progressStatus}
+                lifecycleStage={operation?.lifecycleStage}
+                approvalRequired={approvalRequired}
+                failure={progressFailure}
+                onDismissFailure={handleDismissProgressFailure}
+              />
+            ) : null}
             {blockedReason || error ? (
               <div
                 role="alert"

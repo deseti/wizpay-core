@@ -1,11 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { usePublicClient, useWalletClient } from "wagmi";
-import {
-  formatUnits,
-  getAddress,
-  isAddress,
-  type Hex,
-} from "viem";
+import { getAddress, isAddress, type Hex } from "viem";
 import type { QuoteSummary, WizPayState } from "@/lib/types";
 
 import { ERC20_ABI } from "@/constants/erc20";
@@ -21,7 +16,6 @@ import {
   USER_SWAP_CHAIN,
 } from "@/lib/user-swap-service";
 import {
-  findFirstString,
   getUserSwapExpectedOutputValue,
   getUserSwapMinimumOutputValue,
   getUserSwapProvider,
@@ -36,15 +30,11 @@ import {
 } from "@/lib/wizpay";
 import { useActiveWalletAddress } from "@/hooks/useActiveWalletAddress";
 import { BackendApiError } from "@/lib/backend-api";
-import {
-  settlePayrollFx,
-  resolveCircleFundingTxHash,
-  PayrollFxRecoveryError,
-} from "@/lib/payroll-fx-settlement-service";
+import { PayrollFxRecoveryError } from "@/lib/payroll-fx-recovery";
 import {
   APP_WALLET_SWAP_CHAIN,
   createAppWalletXylonetOperation,
-  quoteAppWalletSwap,
+  getAppWalletXylonetOperation,
   quoteAppWalletXylonetSwap,
 } from "@/lib/app-wallet-swap-service";
 import { runAppWalletXylonetLifecycle } from "@/lib/app-wallet-xylonet-lifecycle";
@@ -82,59 +72,6 @@ const PAYROLL_FX_DEBUG =
 
 function isPositiveDecimal(value: string) {
   return parseFloat(value) > 0 && Number.isFinite(Number(value));
-}
-
-function getCircleTxHash(...values: unknown[]): Hex | null {
-  for (const value of values) {
-    const candidate =
-      findFirstString(value, [
-        "data.txHash",
-        "data.transactionHash",
-        "data.hash",
-        "data.transaction.txHash",
-        "data.transaction.transactionHash",
-        "data.transaction.hash",
-        "data.transactions.0.txHash",
-        "data.transactions.0.transactionHash",
-        "data.transactions.0.hash",
-        "transaction.txHash",
-        "transaction.transactionHash",
-        "transaction.hash",
-        "transactions.0.txHash",
-        "transactions.0.transactionHash",
-        "transactions.0.hash",
-        "txHash",
-        "transactionHash",
-        "hash",
-      ]) ?? null;
-
-    if (candidate && isTransactionHash(candidate)) {
-      return candidate as Hex;
-    }
-  }
-
-  return null;
-}
-
-function getCircleTransactionId(...values: unknown[]) {
-  for (const value of values) {
-    const candidate = findFirstString(value, [
-      "data.transactionId",
-      "data.transaction.id",
-      "data.transactions.0.id",
-      "data.id",
-      "transaction.id",
-      "transactions.0.id",
-      "transactionId",
-      "id",
-    ]);
-
-    if (candidate && !isTransactionHash(candidate)) {
-      return candidate;
-    }
-  }
-
-  return null;
 }
 
 function allocateQuoteOutput(
@@ -203,10 +140,8 @@ export function useWizPay(): WizPayState {
   const { walletAddress, walletMode } = useActiveWalletAddress();
   const {
     arcWallet,
-    createTransferChallenge,
     ensureSessionReady,
     executeChallenge,
-    getWalletBalances,
     userToken,
   } = useCircleWallet();
   const publicClient = usePublicClient({ chainId: arcTestnet.id });
@@ -693,444 +628,149 @@ export function useWizPay(): WizPayState {
       minimumRequiredOutput: string;
     }): Promise<PreSwapResult> => {
       if (!walletAddress) {
-        throw new Error(
-          "App Wallet address is not available for FX settlement.",
-        );
+        throw new Error("App Wallet address is not available for XyloNet payroll swap.");
       }
-
-      await ensureSessionReady();
-
       if (!arcWallet?.id) {
-        throw new Error("Arc App Wallet is not ready for payroll funding.");
+        throw new Error("Arc App Wallet is not ready for payroll swap.");
+      }
+      await ensureSessionReady();
+      if (!userToken) {
+        throw new Error("Circle User-Controlled session is unavailable.");
       }
 
-      const provider = "xylonet";
-      if (!provider || officialQuote.provider !== provider) {
+      const provider = "xylonet" as const;
+      if (officialQuote.provider !== provider) {
         throw new Error(
-          `Payroll provider mismatch: selected ${provider ?? "none"}, quoted ${officialQuote.provider ?? "none"}.`,
+          `Payroll provider mismatch: selected ${provider}, quoted ${officialQuote.provider ?? "none"}.`,
         );
       }
-
-      if (provider === "xylonet") {
-        if (!userToken) {
-          throw new Error("Circle User-Controlled session is unavailable.");
-        }
-        const request = {
-          idempotencyKey: crypto.randomUUID(),
-          walletId: arcWallet.id,
-          walletAddress,
-          chain: APP_WALLET_SWAP_CHAIN,
-          tokenIn: params.sourceToken,
-          tokenOut: params.targetToken,
-          amountIn: params.amount,
-          slippageBps: Number(PREVIEW_SLIPPAGE_BPS),
-        } as const;
-        const quote = await quoteAppWalletXylonetSwap(request, userToken);
-        validateXylonetPayrollQuote(quote, {
-          sourceToken: params.sourceToken,
-          targetToken: params.targetToken,
-          amountIn: params.amount,
-          walletAddress,
-        });
-
-        const operation = await createAppWalletXylonetOperation(request, userToken);
-        validateXylonetPayrollOperation(operation, {
-          sourceToken: params.sourceToken,
-          targetToken: params.targetToken,
-          amountIn: params.amount,
-          walletAddress,
-        });
-
-        let latestOperation = operation;
-        let completed;
-        try {
-          completed = await runAppWalletXylonetLifecycle({
-            initialOperation: operation,
-            userToken,
-            executeChallenge,
-            onOperation: (next) => { latestOperation = next; },
-            onRequestStatus: (status) => {
-              setStatusMessage(status === "idle" ? null : `XyloNet Payroll swap: ${status}...`);
-            },
-          });
-        } catch (error) {
-          if (
-            latestOperation.lifecycleStage === "swap_submitted" ||
-            latestOperation.lifecycleStage === "output_verified" ||
-            latestOperation.lifecycleStage === "completed"
-          ) {
-            throw new PayrollFxRecoveryError(
-              error instanceof Error ? error.message : String(error),
-              {
-                settlementTxHash: latestOperation.swapTransactionHash ?? null,
-                step: "xylonet_swap_submitted",
-              },
-            );
-          }
-          throw error;
-        }
-        if (!completed.swapTransactionHash || !isTransactionHash(completed.swapTransactionHash)) {
-          throw new Error(
-            completed.failureReason ?? "XyloNet Payroll swap did not reach confirmed completion.",
-          );
-        }
-        const verifiedActualOutput = readVerifiedXylonetPayrollOutput(completed, {
-          sourceToken: params.sourceToken,
-          targetToken: params.targetToken,
-          amountIn: params.amount,
-          walletAddress,
-        });
-        return {
-          settledToken: params.targetToken,
-          txHash: completed.swapTransactionHash as Hex,
-          provider: "xylonet",
-          outputToken: completed.tokenOut,
-          verifiedActualOutput,
-        };
-      }
-
-      logOfficialQuoteDiagnostic(
-        "[official-payroll-route] App Wallet payroll funding quote request",
-        {
-          sourceToken: params.sourceToken,
-          targetToken: params.targetToken,
-          amount: params.amount,
-          walletAddress,
-          referenceId,
-        },
-      );
-
-      const fundingQuote = await quoteAppWalletSwap({
+      const request = {
+        idempotencyKey: crypto.randomUUID(),
+        walletId: arcWallet.id,
+        walletAddress,
+        chain: APP_WALLET_SWAP_CHAIN,
         tokenIn: params.sourceToken,
         tokenOut: params.targetToken,
         amountIn: params.amount,
-        fromAddress: walletAddress,
-        chain: APP_WALLET_SWAP_CHAIN,
-        provider: "stablefx",
+        slippageBps: Number(PREVIEW_SLIPPAGE_BPS),
+      } as const;
+      const quote = await quoteAppWalletXylonetSwap(request, userToken);
+      validateXylonetPayrollQuote(quote, {
+        sourceToken: params.sourceToken,
+        targetToken: params.targetToken,
+        amountIn: params.amount,
+        walletAddress,
       });
-      if (
-        fundingQuote.provider !== "stablefx" ||
-        !fundingQuote.treasuryDepositAddress
-      ) {
-        throw new Error("StableFX Payroll funding quote validation failed.");
-      }
-
-      const balances = await getWalletBalances(arcWallet.id);
-      const sourceTokenConfig = SUPPORTED_TOKENS[params.sourceToken];
-      const tokenBalance = balances.find((balance) => {
-        const symbolMatches = balance.symbol === params.sourceToken;
-        const addressMatches =
-          balance.tokenAddress?.toLowerCase() ===
-          sourceTokenConfig.address.toLowerCase();
-
-        return symbolMatches || addressMatches;
+      const operation = await createAppWalletXylonetOperation(request, userToken);
+      validateXylonetPayrollOperation(operation, {
+        sourceToken: params.sourceToken,
+        targetToken: params.targetToken,
+        amountIn: params.amount,
+        walletAddress,
       });
 
-      if (!tokenBalance?.tokenId) {
-        throw new Error(
-          `${params.sourceToken} token metadata is missing for App Wallet payroll funding.`,
-        );
-      }
-
-      const fundingAmount = formatUnits(
-        BigInt(params.amount),
-        sourceTokenConfig.decimals,
-      );
-      const fundingReferenceId = `PAYROLL-FX-FUND-${referenceId}-${params.sourceToken}`;
-      const runStartTime = new Date().toISOString();
-
-      setStatusMessage(
-        `Funding treasury with ${fundingAmount} ${params.sourceToken} from App Wallet...`,
-      );
-
-      const fundingChallenge = await createTransferChallenge({
-        walletId: arcWallet.id,
-        destinationAddress: fundingQuote.treasuryDepositAddress,
-        tokenId: tokenBalance.tokenId,
-        amounts: [fundingAmount],
-        feeLevel: "HIGH",
-        refId: fundingReferenceId,
-      });
-      const fundingChallengeResult = await executeChallenge(
-        fundingChallenge.challengeId,
-      );
-      let sourceFundingTxHash = getCircleTxHash(
-        fundingChallengeResult,
-        fundingChallenge.raw,
-      );
-      const circleTransactionId = getCircleTransactionId(
-        fundingChallengeResult,
-        fundingChallenge.raw,
-      );
-
-      logOfficialQuoteDiagnostic(
-        "[official-payroll-route] App Wallet funding challenge result",
-        {
-          hasTxHash: Boolean(sourceFundingTxHash),
-          sourceFundingTxHash: sourceFundingTxHash ?? null,
-          hasTransactionId: Boolean(circleTransactionId),
-          circleTransactionId: circleTransactionId ?? null,
-          challengeId: fundingChallenge.challengeId,
-          walletId: arcWallet.id,
-          destinationAddress: fundingQuote.treasuryDepositAddress,
-          challengeResultType: typeof fundingChallengeResult,
-          challengeResultKeys:
-            fundingChallengeResult && typeof fundingChallengeResult === "object"
-              ? Object.keys(fundingChallengeResult as object)
-              : [],
-          challengeResultRaw: fundingChallengeResult,
-          challengeRawKeys:
-            fundingChallenge.raw && typeof fundingChallenge.raw === "object"
-              ? Object.keys(fundingChallenge.raw as object)
-              : [],
-          challengeRaw: fundingChallenge.raw,
-        },
-      );
-
-      // ── Post-funding continuation (wrapped for recovery context) ──
-      // After this point, source funds have been debited. Any failure
-      // must surface a recoverable error with tx context.
-      const recoveryContext = {
-        fundingCircleTxId: circleTransactionId ?? null,
-        fundingChallengeId: fundingChallenge.challengeId,
-        fundingTxHash: sourceFundingTxHash as string | null,
-        settlementTxHash: null as string | null,
-        payoutTxHash: null as string | null,
-      };
-
+      let latestOperation = operation;
+      let completed;
       try {
-        if (!sourceFundingTxHash) {
-          logOfficialQuoteDiagnostic(
-            "[official-payroll-route] App Wallet StableFX funding resolver inputs",
-            {
-              provider: "stablefx",
-              step: "app_wallet_funding_resolve",
-              sourceToken: params.sourceToken,
-              targetToken: params.targetToken,
-              fundingReferenceId,
-              destinationAddress: fundingQuote.treasuryDepositAddress,
-              expectedAmount: fundingAmount,
-              expectedTokenId: tokenBalance.tokenId,
-              circleTransactionId: circleTransactionId ? "present" : "missing",
-              challengeId: fundingChallenge.challengeId,
-            },
-          );
-
-          logOfficialQuoteDiagnostic(
-            "[official-payroll-route] No direct txHash — starting resolveCircleFundingTxHash",
-            {
-              provider: "stablefx",
-              step: "app_wallet_funding_resolve",
-              sourceToken: params.sourceToken,
-              targetToken: params.targetToken,
-              fundingReferenceId,
-              circleTransactionId: circleTransactionId ?? null,
-              challengeId: fundingChallenge.challengeId,
-              walletId: arcWallet.id,
-              destinationAddress: fundingQuote.treasuryDepositAddress,
-              expectedAmount: fundingAmount,
-              expectedTokenId: tokenBalance.tokenId,
-            },
-          );
-
-          setStatusMessage(
-            "Funding confirmed. Resolving transaction...",
-          );
-
-          sourceFundingTxHash = (await resolveCircleFundingTxHash({
-            circleTransactionId,
-            challengeId: fundingChallenge.challengeId,
-            walletId: arcWallet.id,
-            destinationAddress: fundingQuote.treasuryDepositAddress,
-            expectedAmount: fundingAmount,
-            expectedTokenId: tokenBalance.tokenId,
-            refId: fundingReferenceId,
-            runStartTime,
-            onAttempt: (attempt, strategy) => {
-              setStatusMessage(
-                `Resolving funding transaction... (attempt ${attempt}, ${strategy})`,
-              );
-              logOfficialQuoteDiagnostic(
-                "[official-payroll-route] polling App Wallet payroll funding transaction",
-                {
-                  attempt,
-                  strategy,
-                  circleTransactionId,
-                  challengeId: fundingChallenge.challengeId,
-                  fundingReferenceId,
-                  walletId: arcWallet!.id,
-                  destinationAddress: fundingQuote.treasuryDepositAddress,
-                  expectedAmount: fundingAmount,
-                  expectedTokenId: tokenBalance.tokenId,
-                  runStartTime,
-                  sourceToken: params.sourceToken,
-                },
-              );
-            },
-          })) as Hex;
-
-          recoveryContext.fundingTxHash = sourceFundingTxHash;
-
-          logOfficialQuoteDiagnostic(
-            "[official-payroll-route] resolveCircleFundingTxHash SUCCESS",
-            { sourceFundingTxHash },
-          );
-        }
-
-        if (publicClient) {
-          logOfficialQuoteDiagnostic(
-            "[official-payroll-route] waiting for funding tx on-chain confirmation",
-            { sourceFundingTxHash },
-          );
-
-          setStatusMessage(
-            `Waiting for ${params.sourceToken} funding confirmation on Arc...`,
-          );
-
-          await publicClient.waitForTransactionReceipt({
-            hash: sourceFundingTxHash,
-            confirmations: 1,
-          });
-
-          logOfficialQuoteDiagnostic(
-            "[official-payroll-route] funding tx confirmed on-chain",
-            { sourceFundingTxHash },
-          );
-        }
-
-        setStatusMessage(
-          "Funding confirmed. Executing FX settlement...",
-        );
-
-        // Guard: only call settlePayrollFx with a valid EVM txHash
-        if (!isTransactionHash(sourceFundingTxHash)) {
-          throw new Error(
-            `Cannot call FX settlement: sourceFundingTxHash is not a valid EVM hash. ` +
-            `Got: ${sourceFundingTxHash}`,
-          );
-        }
-
-        logOfficialQuoteDiagnostic(
-          "[official-payroll-route] calling settlePayrollFx",
-          {
-            sourceFundingTxHash,
-            fundingReferenceId,
-            treasuryDepositAddress: fundingQuote.treasuryDepositAddress,
-            settleParams: {
-              sourceToken: params.sourceToken,
-              targetToken: params.targetToken,
-              sourceAmount: params.amount,
-              referenceId: `PAYROLL-FX-${referenceId}-${params.targetToken}`,
-              walletAddress,
-            },
+        completed = await runAppWalletXylonetLifecycle({
+          initialOperation: operation,
+          userToken,
+          executeChallenge,
+          onOperation: (next) => { latestOperation = next; },
+          onRequestStatus: (status) => {
+            setStatusMessage(status === "idle" ? null : `XyloNet Payroll swap: ${status}...`);
           },
-        );
-
-        const result = await settlePayrollFx({
-          provider: "stablefx",
-          sourceToken: params.sourceToken,
-          targetToken: params.targetToken,
-          sourceAmount: params.amount,
-          routingAmount: params.routingAmount,
-          referenceId: `PAYROLL-FX-${referenceId}-${params.targetToken}`,
-          walletAddress,
-          sourceFundingTxHash,
         });
-
-        logOfficialQuoteDiagnostic(
-          "[official-payroll-route] settlePayrollFx response",
-          {
-            status: result.status,
-            txHash: result.txHash,
-            payoutTxHash: result.payoutTxHash ?? null,
-            targetAmount: result.targetAmount,
-            sourceAmount: result.sourceAmount,
-            sourceToken: result.sourceToken,
-            targetToken: result.targetToken,
-          },
-        );
-
-        recoveryContext.settlementTxHash = result.txHash;
-
-        if (result.status !== "settled" || !result.txHash) {
-          throw new Error(
-            `App Wallet FX settlement failed: status=${result.status}, txHash=${result.txHash ?? "null"}`,
-          );
-        }
+      } catch (error) {
         if (
-          !/^\d+$/.test(result.targetAmount) ||
-          BigInt(result.targetAmount) < BigInt(params.minimumRequiredOutput)
+          latestOperation.lifecycleStage === "swap_submitted" ||
+          latestOperation.lifecycleStage === "output_verified" ||
+          latestOperation.lifecycleStage === "completed"
         ) {
-          throw new Error("StableFX output cannot cover the required Payroll payout.");
-        }
-
-        const payoutHash = (result.payoutTxHash ?? result.txHash) as Hex;
-        recoveryContext.payoutTxHash = payoutHash;
-
-        if (publicClient && payoutHash && isTransactionHash(payoutHash)) {
-          setStatusMessage(
-            "FX settlement complete. Waiting for target token payout...",
-          );
-
-          logOfficialQuoteDiagnostic(
-            "[official-payroll-route] waiting for payout tx on-chain confirmation",
-            { payoutHash },
-          );
-
-          await publicClient.waitForTransactionReceipt({
-            hash: payoutHash,
-            confirmations: 1,
-          });
-
-          logOfficialQuoteDiagnostic(
-            "[official-payroll-route] payout tx confirmed on-chain",
-            { payoutHash },
+          throw new PayrollFxRecoveryError(
+            error instanceof Error ? error.message : String(error),
+            {
+              settlementTxHash: latestOperation.swapTransactionHash ?? null,
+              xylonetOperationId: latestOperation.operationId,
+              step: "xylonet_swap_submitted",
+            },
           );
         }
-
-        setStatusMessage(
-          "Target token received. Submitting payroll...",
-        );
-
-        return {
-          settledToken: params.targetToken,
-          txHash: payoutHash,
-        };
-      } catch (postFundingError) {
-        // Wrap any post-funding error with recovery context
-        const originalMessage =
-          postFundingError instanceof Error
-            ? postFundingError.message
-            : String(postFundingError);
-
-        logOfficialQuoteDiagnostic(
-          "[official-payroll-route] POST-FUNDING ERROR — wrapping with recovery context",
-          { originalMessage, recoveryContext },
-        );
-
-        throw new PayrollFxRecoveryError(originalMessage, {
-          ...recoveryContext,
-          step: recoveryContext.settlementTxHash
-            ? "waiting_payout"
-            : recoveryContext.fundingTxHash
-              ? "settling_fx"
-              : "resolving_tx_hash",
-        });
+        throw error;
       }
+      if (!completed.swapTransactionHash || !isTransactionHash(completed.swapTransactionHash)) {
+        throw new Error(
+          completed.failureReason ?? "XyloNet Payroll swap did not reach confirmed completion.",
+        );
+      }
+      const verifiedActualOutput = readVerifiedXylonetPayrollOutput(completed, {
+        sourceToken: params.sourceToken,
+        targetToken: params.targetToken,
+        amountIn: params.amount,
+        walletAddress,
+      });
+      return {
+        settledToken: params.targetToken,
+        txHash: completed.swapTransactionHash as Hex,
+        provider,
+        outputToken: completed.tokenOut,
+        verifiedActualOutput,
+      };
     },
     [
       arcWallet,
-      createTransferChallenge,
       ensureSessionReady,
       executeChallenge,
-      getWalletBalances,
-      publicClient,
-      referenceId,
-      setStatusMessage,
       officialQuote.provider,
+      setStatusMessage,
       userToken,
       walletAddress,
     ],
+  );
+
+  const resumeAppWalletXylonetSwap = useCallback(
+    async (params: {
+      operationId: string;
+      sourceToken: TokenSymbol;
+      targetToken: TokenSymbol;
+      amount: string;
+      minimumRequiredOutput: string;
+    }): Promise<PreSwapResult> => {
+      if (!userToken || !walletAddress) {
+        throw new Error("Circle User-Controlled session is unavailable.");
+      }
+      const operation = await getAppWalletXylonetOperation(
+        params.operationId,
+        userToken,
+      );
+      const completed = await runAppWalletXylonetLifecycle({
+        initialOperation: operation,
+        userToken,
+        executeChallenge,
+        onRequestStatus: (status) => {
+          setStatusMessage(status === "idle" ? null : `XyloNet Payroll swap: ${status}...`);
+        },
+      });
+      if (!completed.swapTransactionHash || !isTransactionHash(completed.swapTransactionHash)) {
+        throw new Error(
+          completed.failureReason ?? "XyloNet Payroll swap did not reach confirmed completion.",
+        );
+      }
+      const verifiedActualOutput = readVerifiedXylonetPayrollOutput(completed, {
+        sourceToken: params.sourceToken,
+        targetToken: params.targetToken,
+        amountIn: params.amount,
+        walletAddress,
+      });
+      return {
+        settledToken: params.targetToken,
+        txHash: completed.swapTransactionHash as Hex,
+        provider: "xylonet",
+        outputToken: completed.tokenOut,
+        verifiedActualOutput,
+      };
+    },
+    [executeChallenge, setStatusMessage, userToken, walletAddress],
   );
 
   const getPreSwapPayoutAmounts = useCallback(
@@ -1397,6 +1037,10 @@ export function useWizPay(): WizPayState {
         : payrollRoutePolicy.kind === "external-wallet-xylonet"
           ? executePreSwap
           : undefined,
+    resumeAppWalletXylonetSwap:
+      payrollRoutePolicy.kind === "app-wallet-xylonet"
+        ? resumeAppWalletXylonetSwap
+        : undefined,
     getPreSwapPayoutAmounts: getPreSwapPayoutAmounts,
     officialQuoteRequired,
     officialQuoteReady,

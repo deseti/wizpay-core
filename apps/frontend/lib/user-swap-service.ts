@@ -3,10 +3,7 @@ import type { TokenSymbol } from "@/lib/wizpay";
 
 export const USER_SWAP_CHAIN = "ARC-TESTNET" as const;
 
-/**
- * Standalone swap quotes are XyloNet-only. StableFX types below remain solely
- * for the separately scheduled Phase 3 payroll migration.
- */
+/** Standalone swap quotes and execution are XyloNet-only. */
 export type UserSwapProvider = "xylonet";
 
 export interface UserSwapQuoteRequest {
@@ -66,62 +63,6 @@ export interface UserSwapPrepareResponse extends UserSwapQuoteResponse {
   transaction: UserSwapTransactionPayload;
 }
 
-export interface StablefxTradableQuoteRequest {
-  tokenIn: TokenSymbol;
-  tokenOut: TokenSymbol;
-  amountIn: string;
-  fromAddress: string;
-  recipientAddress?: string;
-  chain: typeof USER_SWAP_CHAIN;
-}
-
-export interface StablefxTradableQuoteResponse {
-  id?: string;
-  quoteId?: string;
-  status?: string;
-  rate?: unknown;
-  from?: { currency?: string; amount?: string };
-  to?: { currency?: string; amount?: string };
-  typedData?: Record<string, unknown>;
-  expiresAt?: string;
-  expiration?: string;
-  raw?: unknown;
-  [key: string]: unknown;
-}
-
-export interface StablefxCreateTradeRequest {
-  idempotencyKey: string;
-  quoteId: string;
-  address: string;
-  selectedAddress?: string;
-  message: Record<string, unknown>;
-  signature: string;
-  tokenIn: TokenSymbol;
-  tokenOut: TokenSymbol;
-  walletMode: "circle" | "external";
-}
-
-export interface StablefxTradeResponse {
-  id?: string;
-  contractTradeId?: string;
-  data?: Record<string, unknown>;
-  trade?: Record<string, unknown>;
-  status?: string;
-  rate?: unknown;
-  from?: { currency?: string; amount?: string };
-  to?: { currency?: string; amount?: string };
-  quoteId?: string;
-  settlementTransactionHash?: string | null;
-  [key: string]: unknown;
-}
-
-export interface StablefxFundingPresignResponse {
-  deliverables?: unknown;
-  receivables?: unknown;
-  typedData?: Record<string, unknown>;
-  [key: string]: unknown;
-}
-
 export async function quoteUserSwap(
   params: UserSwapQuoteRequest,
   init?: Pick<RequestInit, "signal">,
@@ -140,55 +81,4 @@ export async function prepareUserSwap(
     method: "POST",
     body: JSON.stringify(params),
   });
-}
-
-export async function createStablefxTradableQuote(
-  params: StablefxTradableQuoteRequest,
-): Promise<StablefxTradableQuoteResponse> {
-  return backendFetch<StablefxTradableQuoteResponse>(
-    "/user-swap/stablefx/quote",
-    {
-      method: "POST",
-      body: JSON.stringify(params),
-    },
-  );
-}
-
-export async function createStablefxTrade(
-  params: StablefxCreateTradeRequest,
-): Promise<StablefxTradeResponse> {
-  return backendFetch<StablefxTradeResponse>("/user-swap/stablefx/trades", {
-    method: "POST",
-    body: JSON.stringify(params),
-  });
-}
-
-export async function createStablefxFundingPresign(params: {
-  contractTradeId: string;
-}): Promise<StablefxFundingPresignResponse> {
-  return backendFetch<StablefxFundingPresignResponse>(
-    "/user-swap/stablefx/funding-presign",
-    {
-      method: "POST",
-      body: JSON.stringify(params),
-    },
-  );
-}
-
-export async function fundStablefxTrade(params: {
-  permit2: Record<string, unknown>;
-  signature: string;
-}): Promise<Record<string, unknown>> {
-  return backendFetch<Record<string, unknown>>("/user-swap/stablefx/fund", {
-    method: "POST",
-    body: JSON.stringify(params),
-  });
-}
-
-export async function getStablefxTrade(
-  tradeId: string,
-): Promise<StablefxTradeResponse> {
-  return backendFetch<StablefxTradeResponse>(
-    `/user-swap/stablefx/trades/${encodeURIComponent(tradeId)}`,
-  );
 }

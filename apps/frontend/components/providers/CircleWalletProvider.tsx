@@ -204,6 +204,8 @@ function CircleWalletProviderInner({
   const [deviceId, setDeviceId] = useState<string>("");
   const [hasPendingEmailOtp, setHasPendingEmailOtp] = useState(false);
   const [isAuthenticating, setIsAuthenticating] = useState(false);
+  const [isCircleVerificationActive, setIsCircleVerificationActive] =
+    useState(false);
   const [isLoginOpen, setIsLoginOpen] = useState(false);
   const [passkeyUnavailableReason, setPasskeyUnavailableReason] = useState<
     string | null
@@ -728,6 +730,7 @@ function CircleWalletProviderInner({
     setAuthError,
     setAuthStatus,
     setIsAuthenticating,
+    setIsCircleVerificationActive,
     hasPendingEmailOtp,
     handleAuthFailure,
     ensureDeviceId,
@@ -850,6 +853,7 @@ function CircleWalletProviderInner({
         hasPendingEmailOtp={hasPendingEmailOtp}
         isSdkReady={isLoginRuntimeReady}
         isAuthenticating={isAuthenticating}
+        isCircleVerificationActive={isCircleVerificationActive}
         isOpen={isLoginOpen}
         onClose={() => setIsLoginOpen(false)}
         onRequestEmailOtp={requestEmailOtp}

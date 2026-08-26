@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import {
   CIRCLE_APP_ID,
   type W3SSdkInstance,
@@ -13,6 +13,7 @@ export interface EmailAuthDeps {
   setAuthError: (msg: string | null) => void;
   setAuthStatus: (msg: string | null) => void;
   setIsAuthenticating: (v: boolean) => void;
+  setIsCircleVerificationActive: (v: boolean) => void;
   hasPendingEmailOtp: boolean;
   handleAuthFailure: (error: unknown) => void;
   ensureDeviceId: () => Promise<string>;
@@ -29,12 +30,20 @@ export function useEmailAuth({
   setAuthError,
   setAuthStatus,
   setIsAuthenticating,
+  setIsCircleVerificationActive,
   hasPendingEmailOtp,
   handleAuthFailure,
   ensureDeviceId,
   postW3sAction,
   storeLoginConfig,
 }: EmailAuthDeps) {
+  const verificationObserverRef = useRef<MutationObserver | null>(null);
+
+  useEffect(
+    () => () => verificationObserverRef.current?.disconnect(),
+    [],
+  );
+
   const requestEmailOtp = useCallback(
     async (email: string) => {
       if (!CIRCLE_APP_ID) {
@@ -138,8 +147,49 @@ export function useEmailAuth({
     setAuthError(null);
     setAuthStatus("Opening Circle email verification window...");
     setIsAuthenticating(true);
-    sdk.verifyOtp();
-  }, [hasPendingEmailOtp, sdkRef, setAuthError, setAuthStatus, setIsAuthenticating]);
+    setIsCircleVerificationActive(true);
+
+    verificationObserverRef.current?.disconnect();
+    let sawCircleSurface = false;
+    const observer = new MutationObserver((records) => {
+      for (const record of records) {
+        for (const node of record.addedNodes) {
+          if (node instanceof HTMLElement && node.id === "sdkIframe") {
+            sawCircleSurface = true;
+          }
+        }
+      }
+
+      if (document.getElementById("sdkIframe")) {
+        sawCircleSurface = true;
+      } else if (sawCircleSurface) {
+        observer.disconnect();
+        verificationObserverRef.current = null;
+        setIsCircleVerificationActive(false);
+        setIsAuthenticating(false);
+      }
+    });
+    verificationObserverRef.current = observer;
+    observer.observe(document.body, { childList: true });
+
+    try {
+      sdk.verifyOtp();
+    } catch (error) {
+      observer.disconnect();
+      verificationObserverRef.current = null;
+      setIsCircleVerificationActive(false);
+      setIsAuthenticating(false);
+      handleAuthFailure(error);
+    }
+  }, [
+    handleAuthFailure,
+    hasPendingEmailOtp,
+    sdkRef,
+    setAuthError,
+    setAuthStatus,
+    setIsAuthenticating,
+    setIsCircleVerificationActive,
+  ]);
 
   return { requestEmailOtp, verifyEmailOtp };
 }
