@@ -103,7 +103,6 @@ function TokenDetailCard({
             {tokenHistory.map((item) => {
               const actionLabel =
                 item.type === "payroll" ? "Send" :
-                item.type === "ans" ? "ANS" :
                 item.type === "add_lp" ? "Add LP" :
                 item.type === "remove_lp" ? "Remove LP" : item.type;
               const amount = item.totalAmountIn

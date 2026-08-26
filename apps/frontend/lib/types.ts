@@ -10,17 +10,11 @@ export type StepState =
   | "wallet"
   | "confirmed";
 
-export type RecipientInputType = "address" | "ans" | "invalid";
-export type RecipientResolutionState = "idle" | "loading" | "resolved" | "error";
-
 /* ── Recipient row enriched with parsed amounts ── */
 export interface PreparedRecipient extends RecipientDraft {
   validAddress: boolean;
   amountUnits: bigint;
   normalizedAddress: Address | null;
-  ansDomain: string | null;
-  recipientInputType: RecipientInputType;
-  resolutionState: RecipientResolutionState;
   resolutionError: string | null;
 }
 
@@ -47,7 +41,7 @@ export interface HistoryItem {
 }
 
 /* ── Unified history covering all dashboard event types ── */
-export type HistoryActionType = "payroll" | "add_lp" | "remove_lp" | "swap" | "bridge" | "fx" | "ans";
+export type HistoryActionType = "payroll" | "add_lp" | "remove_lp" | "swap" | "bridge" | "fx";
 
 /** One atomic step of a cross-chain bridge transfer. */
 export interface NormalizedBridgeStep {
@@ -90,9 +84,6 @@ export interface UnifiedHistoryItem {
   lpShares?: bigint;
   /* Bridge-specific */
   bridgeTransfer?: NormalizedBridgeTransfer;
-  /* ANS-specific */
-  ansDomain?: string;
-  ansDurationYears?: number;
 }
 
 export interface TransactionActionResult {

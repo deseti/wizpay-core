@@ -4,7 +4,6 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   ArrowRightLeft,
-  AtSign,
   BriefcaseBusiness,
   Home,
   Repeat,
@@ -24,7 +23,6 @@ const navItems = [
   { href: "/swap", label: "Swap", icon: Repeat },
   { href: "/assets", label: "Assets", icon: Wallet },
   { href: "/profile", label: "Profile", icon: User },
-  { href: "/ans", label: "ANS", icon: AtSign },
 ];
 
 function isActivePath(pathname: string, href: string) {

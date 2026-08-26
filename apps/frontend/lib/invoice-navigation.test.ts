@@ -1,8 +1,8 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
-describe("invoice navigation regression", () => {
-  it("adds Invoices to desktop and mobile actions without removing established destinations", () => {
+describe("payment navigation regression", () => {
+  it("keeps navigation destinations and the intended mobile actions", () => {
     const sidebar = readFileSync(
       `${process.cwd()}/components/dashboard/DashboardSidebar.tsx`,
       "utf8",
@@ -17,7 +17,6 @@ describe("invoice navigation regression", () => {
       "Swap",
       "Assets",
       "Profile",
-      "ANS",
       "Invoices",
     ])
       expect(sidebar).toContain(`label: "${label}"`);
@@ -25,13 +24,12 @@ describe("invoice navigation regression", () => {
       "Send",
       "Payroll",
       "Invoices",
-      "Receive QR",
       "Scan QR",
     ])
       expect(actions).toContain(label);
   });
 
-  it("replaces the smartphone home Faucet slot with one Invoices card while preserving the three-card layout", () => {
+  it("keeps the three primary payment actions on the homepage", () => {
     const home = readFileSync(`${process.cwd()}/app/page.tsx`, "utf8");
     const quickActions = home.slice(
       home.indexOf("const QUICK_ACTIONS"),
@@ -39,12 +37,24 @@ describe("invoice navigation regression", () => {
     );
 
     expect(quickActions).toContain('href: "/send"');
-    expect(quickActions).toContain('label: "ANS"');
-    expect(quickActions).toContain('href: "/invoices"');
-    expect(quickActions).toContain('label: "Invoices"');
+    expect(quickActions).toContain('href: "/invoices/new"');
+    expect(quickActions).toContain('label: "Create Invoice"');
+    expect(quickActions).toContain('label: "Receive QR"');
     expect(quickActions.match(/label:/g)).toHaveLength(3);
-    expect(quickActions.match(/label: "Invoices"/g)).toHaveLength(1);
+    expect(quickActions.match(/label: "Create Invoice"/g)).toHaveLength(1);
     expect(home).toContain("grid grid-cols-3 gap-2 sm:gap-3");
+    expect(home).toContain("<ReceiveQrModal");
+  });
+
+  it("does not duplicate Receive QR in the mobile Actions sheet", () => {
+    const actions = readFileSync(
+      `${process.cwd()}/components/dashboard/QuickActionSheet.tsx`,
+      "utf8",
+    );
+    expect(actions).toContain("Payroll");
+    expect(actions).toContain("Invoices");
+    expect(actions).toContain("Scan QR");
+    expect(actions).not.toContain("Receive QR");
   });
 
   it("contains no user-facing Faucet action or external Circle Faucet URL", () => {

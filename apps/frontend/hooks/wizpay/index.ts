@@ -14,7 +14,6 @@ import { useWizPayState } from "./useWizPayState";
 import { useWizPayContract } from "./useWizPayContract";
 import { useWizPayHistory } from "./useWizPayHistory";
 import { useBatchPayroll, type PreSwapResult } from "./useBatchPayroll";
-import { useResolvedRecipients } from "./useResolvedRecipients";
 import { isStableFxMode } from "@/lib/fx-config";
 import { arcTestnet } from "@/lib/wagmi";
 import {
@@ -180,7 +179,7 @@ export function useWizPay(): WizPayState {
   // 1. Initialize UI / Local State
   const state = useWizPayState();
   const { referenceId, setStatusMessage } = state;
-  const preparedRecipients = useResolvedRecipients(state.recipients);
+  const preparedRecipients = state.preparedRecipients;
 
   // 1a. Derived Batch values
   const batchAmount = useMemo(
@@ -1427,11 +1426,6 @@ export function useWizPay(): WizPayState {
   // 3. Initialize History
   const history = useWizPayHistory({
     activeToken: contract.activeToken,
-    refetchCb: () => {
-      contract.refetchAllowance();
-      contract.refetchBalance();
-      contract.refetchEngineBalances();
-    },
   });
 
   const isBusy =

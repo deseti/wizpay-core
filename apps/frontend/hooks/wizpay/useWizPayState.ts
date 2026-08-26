@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useState } from "react";
-import { type Hex } from "viem";
+import { getAddress, type Hex } from "viem";
 import {
   createRecipient,
   MAX_REFERENCE_ID_LENGTH,
@@ -103,6 +103,8 @@ export function useWizPayState() {
         address: r.address.trim(),
         validAddress: isAddressClean,
         amountUnits: units,
+        normalizedAddress: isAddressClean ? getAddress(r.address.trim()) : null,
+        resolutionError: isAddressClean ? null : r.address.trim() ? "Invalid wallet address" : null,
       };
     });
   }, [recipients]);
@@ -120,9 +122,7 @@ export function useWizPayState() {
 
     recipientsToValidate.forEach((r) => {
       if (!r.address.trim()) {
-        nextErrors[`${r.id}-address`] = "Wallet address or ANS name is required";
-      } else if (r.recipientInputType === "ans" && r.resolutionState === "loading") {
-        nextErrors[`${r.id}-address`] = "Wait for ANS resolution to finish.";
+        nextErrors[`${r.id}-address`] = "Wallet address is required";
       } else if (r.resolutionError) {
         nextErrors[`${r.id}-address`] = r.resolutionError;
       } else if (!r.validAddress) {

@@ -67,7 +67,7 @@ The frontend adapts to mobile viewports through a dedicated shell layer:
 
 - **Bottom Navigation** — 4-tab fixed bar (Home, Swap, Liquidity, Profile). Visible on mobile; hidden at the `md` breakpoint and above. Desktop navigation is rendered separately in the sidebar.
 - **Mobile Faucet Card** — A compact card on the home screen (mobile-only) that displays the user's wallet address with a one-tap copy action and a direct link to the testnet faucet. Hidden on desktop.
-- **Profile / Account Center** — A dedicated `/profile` route (`ProfileHubPage`) containing: ANS identity management (claim `.arc` and `.wizpay` names, set custom identity, link X handle), wallet address display, and the PWA install prompt on eligible devices.
+- **Profile / Account Center** — A dedicated `/profile` route (`ProfileHubPage`) containing wallet identity, wallet address display, linked social metadata, and the PWA install prompt on eligible devices.
 
 #### Progressive Web App (PWA)
 

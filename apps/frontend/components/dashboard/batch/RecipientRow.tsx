@@ -15,7 +15,6 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { TokenIcon } from "@/components/ui/token-icon";
 import { TableCell, TableRow } from "@/components/ui/table";
 import {
-  formatCompactAddress,
   formatTokenAmount,
   SUPPORTED_TOKENS,
   TOKEN_OPTIONS,
@@ -72,7 +71,7 @@ export function RecipientRow({
         <div className="space-y-1">
           <div className="flex items-start gap-2">
             <Input
-              placeholder="0x... or alice.arc"
+              placeholder="0x..."
               value={recipient.address}
               onChange={(e) =>
                 updateRecipient(recipient.id, "address", e.target.value)
@@ -97,20 +96,6 @@ export function RecipientRow({
             <p className="text-xs text-destructive">
               {errors[`${recipient.id}-address`]}
             </p>
-          ) : recipient.recipientInputType === "ans" ? (
-            recipient.resolutionState === "loading" ? (
-              <p className="text-xs text-muted-foreground/70">
-                Resolving {recipient.ansDomain ?? recipient.address}...
-              </p>
-            ) : recipient.normalizedAddress ? (
-              <p className="text-xs text-emerald-300/80">
-                Resolves to {formatCompactAddress(recipient.normalizedAddress)}
-              </p>
-            ) : recipient.resolutionError ? (
-              <p className="text-xs text-destructive">
-                {recipient.resolutionError}
-              </p>
-            ) : null
           ) : null}
         </div>
       </TableCell>

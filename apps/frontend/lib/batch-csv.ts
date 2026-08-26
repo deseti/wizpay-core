@@ -124,15 +124,10 @@ export function buildCsvPreview(
       errors.push("Token must be USDC or EURC.");
     }
 
-    const dedupeKey =
-      classification.normalizedAddress?.toLowerCase() ??
-      classification.normalizedDomain?.toLowerCase();
+    const dedupeKey = classification.normalizedAddress?.toLowerCase();
 
     if (dedupeKey) {
-      const duplicateMessage =
-        classification.kind === "ans"
-          ? "Duplicate ANS name found in this file."
-          : "Duplicate address found in this file.";
+      const duplicateMessage = "Duplicate address found in this file.";
 
       if (seenRecipients.has(dedupeKey)) {
         errors.push(duplicateMessage);
@@ -149,8 +144,7 @@ export function buildCsvPreview(
       errors,
     });
 
-    const importedRecipientValue =
-      classification.normalizedAddress ?? classification.normalizedDomain;
+    const importedRecipientValue = classification.normalizedAddress;
 
     if (errors.length === 0 && importedRecipientValue) {
       validRows.push({

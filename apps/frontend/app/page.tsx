@@ -1,9 +1,9 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import Link from "next/link";
 import {
-  AtSign,
+  QrCode,
   ArrowRightLeft,
   ArrowUpRight,
   ReceiptText,
@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 
 import { DashboardAppFrame } from "@/components/dashboard/DashboardAppFrame";
+import { ReceiveQrModal } from "@/components/dashboard/ReceiveQrModal";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { SkeletonBalance } from "@/components/ui/skeleton-loaders";
@@ -39,12 +40,17 @@ const QUICK_ACTIONS = [
     icon: ArrowRightLeft,
     color: "violet",
   },
-  { href: "/ans", label: "ANS", icon: AtSign, color: "cyan" },
   {
-    href: "/invoices",
-    label: "Invoices",
+    href: "/invoices/new",
+    label: "Create Invoice",
     icon: ReceiptText,
     color: "emerald",
+  },
+  {
+    href: undefined,
+    label: "Receive QR",
+    icon: QrCode,
+    color: "cyan",
   },
 ] as const;
 
@@ -94,9 +100,12 @@ function TotalBalance({ balances, isLoading }: BalanceSnapshotProps) {
 }
 
 function QuickActions() {
+  const [receiveOpen, setReceiveOpen] = useState(false);
+
   return (
-    <div className="grid grid-cols-3 gap-2 sm:gap-3">
-      {QUICK_ACTIONS.map(({ href, label, icon: Icon, color }) => {
+    <>
+      <div className="grid grid-cols-3 gap-2 sm:gap-3">
+        {QUICK_ACTIONS.map(({ href, label, icon: Icon, color }) => {
         const content = (
           <div
             className={`flex min-h-[88px] flex-col items-center justify-center gap-2 rounded-2xl p-3 transition-all duration-200 active:scale-95 cursor-pointer sm:min-h-[104px] sm:p-4 ${COLOR_MAP[color]}`}
@@ -110,9 +119,31 @@ function QuickActions() {
           </div>
         );
 
-        return <Link key={href} href={href}>{content}</Link>;
-      })}
-    </div>
+          if (label === "Receive QR") {
+            return (
+              <button
+                key={label}
+                type="button"
+                onClick={() => setReceiveOpen(true)}
+                aria-label="Receive QR"
+              >
+                {content}
+              </button>
+            );
+          }
+
+          return (
+            <Link key={href} href={href ?? "#"}>
+              {content}
+            </Link>
+          );
+        })}
+      </div>
+      <ReceiveQrModal
+        open={receiveOpen}
+        onClose={() => setReceiveOpen(false)}
+      />
+    </>
   );
 }
 

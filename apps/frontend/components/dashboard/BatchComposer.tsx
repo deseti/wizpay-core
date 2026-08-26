@@ -161,7 +161,7 @@ export function BatchComposer({
                 recipient lists can contain 50, 100, or 1000 recipients in one
                 run; the app just splits them into Arc batches of up to 50
                 recipients, and each batch is confirmed from the user wallet.
-                Exact .arc and .wizpay names are resolved before validation and
+                Every recipient must be a wallet address before validation and
                 execution.
               </CardDescription>
             </div>

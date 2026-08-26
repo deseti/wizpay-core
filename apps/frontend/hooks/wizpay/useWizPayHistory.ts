@@ -5,7 +5,6 @@ import { useActiveWalletAddress } from "@/hooks/useActiveWalletAddress";
 import { sameAddress } from "@/lib/wizpay";
 import type { HistoryItem, UnifiedHistoryItem } from "@/lib/types";
 import { useBackendTaskHistory } from "@/hooks/useBackendTaskHistory";
-import { useAnsActivityHistory } from "@/src/features/ans/hooks/useAnsActivityHistory";
 
 function isValidTxHash(value: string): value is Hex {
   return /^0x[a-fA-F0-9]{64}$/.test(value);
@@ -13,12 +12,10 @@ function isValidTxHash(value: string): value is Hex {
 
 export function useWizPayHistory({
   activeToken,
-  refetchCb: _refetchCb,
 }: {
   activeToken: { address: Address };
-  refetchCb: () => void;
 }) {
-  const { isConnected, walletAddress } = useActiveWalletAddress();
+  const { isConnected } = useActiveWalletAddress();
   // Backend task history only (no on-chain log scans).
   const { items: backendItems, isLoading: backendLoading } = useBackendTaskHistory({
     // Keep history complete while older tasks may not carry initiator wallet metadata.
@@ -27,11 +24,9 @@ export function useWizPayHistory({
     limit: 50,
     enabled: isConnected,
   });
-  const ansItems = useAnsActivityHistory(walletAddress);
-
   const unifiedHistory = useMemo<UnifiedHistoryItem[]>(() => {
     const seen = new Set<string>();
-    const deduped = [...ansItems, ...backendItems].filter((item) => {
+    const deduped = [...backendItems].filter((item) => {
       const key =
         item.txHash && item.txHash !== "0x"
           ? `tx:${item.txHash.toLowerCase()}`
@@ -43,7 +38,7 @@ export function useWizPayHistory({
     });
 
     return deduped.sort((a, b) => b.timestampMs - a.timestampMs);
-  }, [ansItems, backendItems]);
+  }, [backendItems]);
 
   const history = useMemo<HistoryItem[]>(() => {
     return unifiedHistory

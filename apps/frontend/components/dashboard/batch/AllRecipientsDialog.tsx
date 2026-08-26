@@ -11,7 +11,6 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { RECIPIENT_PREVIEW_LIMIT } from "@/lib/batch-csv";
 import {
-  formatCompactAddress,
   formatTokenAmount,
   SUPPORTED_TOKENS,
 } from "@/lib/wizpay";
@@ -113,21 +112,6 @@ export function AllRecipientsDialog({
                       <p className="font-mono text-xs break-all text-foreground/80">
                         {recipient.address || "Address not set"}
                       </p>
-                      {recipient.recipientInputType === "ans" ? (
-                        recipient.normalizedAddress ? (
-                          <p className="text-xs text-emerald-300/80">
-                            Resolves to {formatCompactAddress(recipient.normalizedAddress)}
-                          </p>
-                        ) : recipient.resolutionState === "loading" ? (
-                          <p className="text-xs text-muted-foreground/65">
-                            Resolving {recipient.ansDomain ?? recipient.address}...
-                          </p>
-                        ) : recipient.resolutionError ? (
-                          <p className="text-xs text-destructive">
-                            {recipient.resolutionError}
-                          </p>
-                        ) : null
-                      ) : null}
                     </div>
                     <Badge
                       variant="outline"

@@ -64,12 +64,9 @@ jobs:
              # currently serving container. Keep the certificate tree read
              # only because nginx -t validates the configured certificate
              # paths as well as nginx.conf.
-             docker run --rm \
-               -v "$PWD/nginx.conf:/etc/nginx/nginx.conf:ro" \
-               -v /etc/letsencrypt:/etc/letsencrypt:ro \
-               nginx:alpine nginx -t
-
              compose_args="-f docker-compose.yml -f docker-compose.prod.yml"
+             docker compose $compose_args run --rm --no-deps nginx nginx -t
+
              legacy_name=wizpay-nginx
              legacy_id=$(docker ps -aq --filter "name=^${legacy_name}$" | head -n 1)
              managed_id=$(docker compose $compose_args ps -aq nginx 2>/dev/null || true)

@@ -1,15 +1,11 @@
 "use client";
 
-import Link from "next/link";
 import { type FormEvent, useMemo, useState } from "react";
 import { useDisconnect } from "wagmi";
-import { type Address } from "viem";
 import {
-  AtSign,
   BadgeCheck,
   Check,
   Copy,
-  ExternalLink,
   Globe2,
   Link2,
   LogOut,
@@ -32,13 +28,10 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { SkeletonText } from "@/components/ui/skeleton-loaders";
-import { useDelayedLoading } from "@/hooks/useDelayedLoading";
 import { useToast } from "@/hooks/use-toast";
 import { resolveCanonicalAppWalletEvmAddress } from "@/lib/canonical-app-wallet";
 import { cn } from "@/lib/utils";
 
-import { useProfileAnsDomains } from "./hooks/useProfileAnsDomains";
 import { useProfilePreferences } from "./hooks/useProfilePreferences";
 
 type AddressEntry = {
@@ -172,25 +165,6 @@ export function ProfileHubPage() {
 
   const { preferences, savePreferences } = useProfilePreferences(profileScopeId);
 
-  const ownerAddresses = useMemo(() => {
-    const evmAddresses =
-      walletMode === "circle"
-        ? [arcWallet?.address, sepoliaWallet?.address, primaryWallet?.address]
-        : [activeWalletAddress];
-
-    return Array.from(
-      new Set(
-        evmAddresses
-          .filter((address): address is string => typeof address === "string")
-          .map((address) => address.toLowerCase() as Address),
-      ),
-    );
-  }, [activeWalletAddress, arcWallet?.address, primaryWallet?.address, sepoliaWallet?.address, walletMode]);
-
-  const { errorMessage, isLoading: isAnsLoading, ownedDomains, primaryDomain } =
-    useProfileAnsDomains(ownerAddresses);
-  const showAnsSkeleton = useDelayedLoading(isAnsLoading);
-
   const shortEmailHandle = useMemo(() => {
     if (!userEmail) {
       return null;
@@ -227,7 +201,6 @@ export function ProfileHubPage() {
         : null
       : activeWalletShortAddress;
   const displayIdentity =
-    primaryDomain ??
     manualIdentity ??
     shortEmailHandle ??
     presentationWalletShortAddress ??
@@ -280,10 +253,6 @@ export function ProfileHubPage() {
       badges.push(externalConnectorName);
     }
 
-    if (primaryDomain) {
-      badges.push("ANS primary");
-    }
-
     return Array.from(new Set(badges.filter(Boolean)));
   }, [
     activeWalletChainName,
@@ -291,7 +260,6 @@ export function ProfileHubPage() {
     externalConnectorName,
     isActiveWalletConnected,
     loginMethodLabel,
-    primaryDomain,
     walletMode,
   ]);
 
@@ -377,9 +345,7 @@ export function ProfileHubPage() {
                   {displayIdentity}
                 </h1>
                 <p className="max-w-2xl text-sm leading-6 text-muted-foreground/78 sm:text-base">
-                  {primaryDomain
-                    ? `${presentationWalletShortAddress ?? connectionDetail} · ${connectionDetail}. This profile surface centralizes wallet identity, address copying, ANS, and social metadata in one place.`
-                    : `${connectionDetail}. Keep wallet identity, copyable addresses, ANS names, and social metadata organized in one native-style account center.`}
+                  {`${connectionDetail}. Keep wallet identity, copyable addresses, and social metadata organized in one native-style account center.`}
                 </p>
               </div>
             </div>
@@ -415,7 +381,7 @@ export function ProfileHubPage() {
             <SummaryTile
               label="Short identity"
               value={presentationWalletShortAddress ?? "Pending"}
-              hint={userEmail ?? (primaryDomain ? "ANS is active" : "Identity fallback in use")}
+              hint={userEmail ?? "Identity fallback in use"}
             />
           </div>
         </div>
@@ -513,98 +479,6 @@ export function ProfileHubPage() {
           </CardContent>
         </Card>
 
-        <Card className="glass-card border-border/40 rounded-[1.8rem] bg-card/70 py-0">
-          <CardHeader className="border-b border-border/30 px-5 py-5">
-            <CardTitle className="flex items-center gap-2 text-lg">
-              <AtSign className="h-5 w-5 text-primary" />
-              ANS identity
-            </CardTitle>
-            <CardDescription className="text-sm text-muted-foreground/75">
-              WizPay checks the exact ANS names tracked or registered in this browser and verifies live ownership against the registrar.
-            </CardDescription>
-          </CardHeader>
-
-          <CardContent className="space-y-4 px-5 py-5">
-            {showAnsSkeleton ? (
-              <div className="rounded-[1.4rem] border border-border/35 bg-background/35 px-4 py-4">
-                <span className="sr-only">Loading ANS identity</span>
-                <SkeletonText lines={3} />
-              </div>
-            ) : null}
-
-            {primaryDomain ? (
-              <>
-                <div className="rounded-[1.5rem] border border-primary/20 bg-gradient-to-br from-primary/12 to-cyan-400/8 px-4 py-4 shadow-lg shadow-primary/5">
-                  <p className="text-[11px] font-medium uppercase tracking-[0.22em] text-primary/85">
-                    Primary ANS identity
-                  </p>
-                  <div className="mt-2 flex items-center gap-2">
-                    <BadgeCheck className="h-5 w-5 text-emerald-400" />
-                    <p className="text-xl font-semibold tracking-tight text-foreground">
-                      {primaryDomain}
-                    </p>
-                  </div>
-                  <p className="mt-2 text-sm leading-6 text-muted-foreground/78">
-                    This domain is the strongest on-device identity signal available for the current wallet scope.
-                  </p>
-                </div>
-
-                <div className="space-y-2">
-                  <p className="text-[11px] font-medium uppercase tracking-[0.22em] text-muted-foreground/65">
-                    Verified domains
-                  </p>
-                  <div className="flex flex-wrap gap-2">
-                    {ownedDomains.map((lookup) => (
-                      <Badge
-                        key={lookup.target.domain}
-                        variant="outline"
-                        className="rounded-full border-border/40 bg-background/40 px-3 py-1 text-[11px] text-foreground/85"
-                      >
-                        {lookup.target.domain}
-                      </Badge>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="flex flex-col gap-2 sm:flex-row">
-                  <Button asChild className="glow-btn h-11 flex-1 rounded-2xl bg-gradient-to-r from-primary to-violet-500 text-primary-foreground">
-                    <Link href="/ans/my-domains">
-                      <span className="flex items-center gap-2">
-                        Manage domains
-                        <ExternalLink className="h-4 w-4" />
-                      </span>
-                    </Link>
-                  </Button>
-                  <Button asChild variant="outline" className="h-11 flex-1 rounded-2xl border-border/40 bg-background/45">
-                    <Link href="/ans/register">Register ANS</Link>
-                  </Button>
-                </div>
-              </>
-            ) : (
-              <div className="space-y-4 rounded-[1.5rem] border border-border/35 bg-background/35 px-4 py-4">
-                <div>
-                  <p className="text-base font-semibold text-foreground">No ANS identity detected</p>
-                  <p className="mt-2 text-sm leading-6 text-muted-foreground/75">
-                    Until indexing exists, WizPay can only auto-detect exact ANS names that were tracked or registered from this device for the current wallet scope.
-                  </p>
-                </div>
-
-                <div className="flex flex-col gap-2 sm:flex-row">
-                  <Button asChild className="glow-btn h-11 flex-1 rounded-2xl bg-gradient-to-r from-primary to-violet-500 text-primary-foreground">
-                    <Link href="/ans/register">Register ANS</Link>
-                  </Button>
-                  <Button asChild variant="outline" className="h-11 flex-1 rounded-2xl border-border/40 bg-background/45">
-                    <Link href="#manual-identity">Add custom identity manually</Link>
-                  </Button>
-                </div>
-
-                {errorMessage ? (
-                  <p className="text-xs leading-5 text-amber-300/85">{errorMessage}</p>
-                ) : null}
-              </div>
-            )}
-          </CardContent>
-        </Card>
       </div>
 
       <div className="grid gap-4 xl:grid-cols-2">
@@ -618,7 +492,7 @@ export function ProfileHubPage() {
               Custom identity
             </CardTitle>
             <CardDescription className="text-sm text-muted-foreground/75">
-              Use a manual identity label until you have a primary ANS name. This stays scoped to the current wallet context on this device.
+              Use a manual identity label scoped to the current wallet context on this device.
             </CardDescription>
           </CardHeader>
 
