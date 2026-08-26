@@ -19,6 +19,20 @@ describe("invoice API boundary", () => {
     );
   });
 
+  it("uses the configured invoice API namespace without changing the local default", async () => {
+    vi.stubEnv("NEXT_PUBLIC_INVOICE_API_PREFIX", "");
+    await getPublicInvoice("abcdefghijklmnopqrstuv");
+    expect(String(vi.mocked(fetch).mock.calls[0][0])).toContain(
+      "http://localhost:4000/public/invoices/",
+    );
+
+    vi.stubEnv("NEXT_PUBLIC_INVOICE_API_PREFIX", "/api/");
+    await getPublicInvoice("abcdefghijklmnopqrstuv");
+    expect(String(vi.mocked(fetch).mock.calls[1][0])).toContain(
+      "http://localhost:4000/api/public/invoices/",
+    );
+  });
+
   it("uses Circle bearer authorization only for merchant endpoints and never sends merchant identity", async () => {
     await createInvoice(
       { token: "USDC", amount: "0.1", title: "Invoice" },

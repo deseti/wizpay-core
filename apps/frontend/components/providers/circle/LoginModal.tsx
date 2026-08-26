@@ -50,7 +50,7 @@ export function LoginModal({
         }
       }}
     >
-      <DialogContent className="border-border/40 bg-background/95 sm:max-w-lg">
+      <DialogContent className="max-h-[calc(100dvh-1rem)] overflow-y-auto border-border/40 bg-background/95 pb-[max(1rem,env(safe-area-inset-bottom))] sm:max-w-lg">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 text-xl">
             <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary/15 text-primary ring-1 ring-primary/25">

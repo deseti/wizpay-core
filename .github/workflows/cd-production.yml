@@ -40,8 +40,8 @@ jobs:
              test -z "$(git status --short)"
              git fetch origin main
              git merge --ff-only origin/main
-             docker compose build backend frontend
-             docker compose up -d backend frontend
+             docker compose -f docker-compose.yml -f docker-compose.prod.yml build backend frontend
+             docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d backend frontend
              containers_healthy=false
              for attempt in $(seq 1 30); do
                backend_health=$(docker inspect -f "{{.State.Health.Status}}" wizpay-backend-1 2>/dev/null || true)
@@ -55,11 +55,92 @@ jobs:
                fi
              done
              if [ "$containers_healthy" != "true" ]; then
-               docker compose ps
-               docker compose logs --tail=100 backend
-               docker compose logs --tail=100 frontend
+               docker compose -f docker-compose.yml -f docker-compose.prod.yml ps
+               docker compose -f docker-compose.yml -f docker-compose.prod.yml logs --tail=100 backend
+               docker compose -f docker-compose.yml -f docker-compose.prod.yml logs --tail=100 frontend
                exit 1
+             fi
+             # Validate the repository-managed proxy before touching the
+             # currently serving container. Keep the certificate tree read
+             # only because nginx -t validates the configured certificate
+             # paths as well as nginx.conf.
+             docker run --rm \
+               -v "$PWD/nginx.conf:/etc/nginx/nginx.conf:ro" \
+               -v /etc/letsencrypt:/etc/letsencrypt:ro \
+               nginx:alpine nginx -t
+
+             compose_args="-f docker-compose.yml -f docker-compose.prod.yml"
+             legacy_name=wizpay-nginx
+             legacy_id=$(docker ps -aq --filter "name=^${legacy_name}$" | head -n 1)
+             managed_id=$(docker compose $compose_args ps -aq nginx 2>/dev/null || true)
+             managed=false
+             if [ -n "$legacy_id" ] && [ -n "$managed_id" ] && [ "$legacy_id" = "$managed_id" ]; then
+               compose_project=$(docker inspect -f "{{ index .Config.Labels \"com.docker.compose.project\" }}" "$legacy_id" 2>/dev/null || true)
+               compose_service=$(docker inspect -f "{{ index .Config.Labels \"com.docker.compose.service\" }}" "$legacy_id" 2>/dev/null || true)
+               if [ -n "$compose_project" ] && [ "$compose_service" = "nginx" ]; then
+                 managed=true
+               fi
+             fi
+
+             if [ "$managed" = "true" ]; then
+               docker compose $compose_args up -d nginx
+             else
+               legacy_renamed=false
+               if [ -n "$legacy_id" ]; then
+                 legacy_project=$(docker inspect -f "{{ index .Config.Labels \"com.docker.compose.project\" }}" "$legacy_id" 2>/dev/null || true)
+                 legacy_service=$(docker inspect -f "{{ index .Config.Labels \"com.docker.compose.service\" }}" "$legacy_id" 2>/dev/null || true)
+                 if [ -n "$legacy_project" ] || [ -n "$legacy_service" ]; then
+                   echo "wizpay-nginx exists but is not the current Compose nginx service (project=$legacy_project service=$legacy_service)"
+                   echo "Refusing to replace a container with unknown Compose ownership"
+                   exit 1
+                 else
+                   echo "wizpay-nginx is an unmanaged legacy container; preparing reversible cutover"
+                 fi
+                 docker stop "$legacy_name" >/dev/null 2>&1 || true
+                 docker rename "$legacy_name" "${legacy_name}-legacy"
+                 legacy_renamed=true
+               fi
+
+               if ! docker compose $compose_args up -d nginx; then
+                 if [ "$legacy_renamed" = "true" ]; then
+                   docker rm -f "$legacy_name" >/dev/null 2>&1 || true
+                   docker rename "${legacy_name}-legacy" "$legacy_name"
+                   docker start "$legacy_name" >/dev/null 2>&1 || true
+                 fi
+                 exit 1
+               fi
+
+               if ! curl -kfsS --resolve app.wizpay.xyz:443:127.0.0.1 https://app.wizpay.xyz/ >/dev/null; then
+                 docker compose $compose_args logs --tail=100 nginx || true
+                 docker rm -f "$legacy_name" >/dev/null 2>&1 || true
+                 if [ "$legacy_renamed" = "true" ]; then
+                   docker rename "${legacy_name}-legacy" "$legacy_name"
+                   docker start "$legacy_name" >/dev/null 2>&1 || true
+                 fi
+                 exit 1
+               fi
+
+               if [ "$legacy_renamed" = "true" ]; then
+                 docker rm "${legacy_name}-legacy"
+               fi
              fi
              curl -fsS http://127.0.0.1:3000 >/dev/null
              curl -fsS http://127.0.0.1:4000/tasks >/dev/null
-             docker compose ps'
+             invoice_headers=$(mktemp)
+             invoice_body=$(mktemp)
+             invoice_status=$(curl -ksS \
+               --resolve app.wizpay.xyz:443:127.0.0.1 \
+               -D "$invoice_headers" \
+               -o "$invoice_body" \
+               -w "%{http_code}" \
+               https://app.wizpay.xyz/api/invoices)
+             if [ "$invoice_status" != "401" ] || \
+                ! grep -qi "^content-type:.*application/json" "$invoice_headers" || \
+                grep -Eqi "<!doctype|<html" "$invoice_body" || \
+                ! grep -Eq "\"code\"[[:space:]]*:[[:space:]]*\"INVOICE_AUTH_REQUIRED\"" "$invoice_body"; then
+               echo "Invoice API proxy health check failed (status=$invoice_status)"
+               rm -f "$invoice_headers" "$invoice_body"
+               exit 1
+             fi
+             rm -f "$invoice_headers" "$invoice_body"
+             docker compose -f docker-compose.yml -f docker-compose.prod.yml ps'

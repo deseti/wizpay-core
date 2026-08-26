@@ -1,5 +1,12 @@
 import { backendFetch } from "@/lib/backend-api";
 
+function invoiceApiPath(path: string) {
+  const prefix =
+    process.env.NEXT_PUBLIC_INVOICE_API_PREFIX?.trim().replace(/\/$/, "") ||
+    "";
+  return `${prefix}${path}`;
+}
+
 export type InvoiceStatus =
   | "OPEN"
   | "VERIFYING"
@@ -61,7 +68,7 @@ function authHeaders(userToken: string) {
 }
 
 export function createInvoice(input: CreateInvoiceInput, userToken: string) {
-  return backendFetch<MerchantInvoice>("/invoices", {
+  return backendFetch<MerchantInvoice>(invoiceApiPath("/invoices"), {
     method: "POST",
     headers: authHeaders(userToken),
     body: JSON.stringify(input),
@@ -81,25 +88,25 @@ export function listInvoices(
     total: number;
     limit: number;
     offset: number;
-  }>(`/invoices?${query}`, { headers: authHeaders(userToken) });
+  }>(invoiceApiPath(`/invoices?${query}`), { headers: authHeaders(userToken) });
 }
 
 export function getMerchantInvoice(id: string, userToken: string) {
-  return backendFetch<MerchantInvoice>(`/invoices/${encodeURIComponent(id)}`, {
+  return backendFetch<MerchantInvoice>(invoiceApiPath(`/invoices/${encodeURIComponent(id)}`), {
     headers: authHeaders(userToken),
   });
 }
 
 export function cancelInvoice(id: string, userToken: string) {
   return backendFetch<MerchantInvoice>(
-    `/invoices/${encodeURIComponent(id)}/cancel`,
+    invoiceApiPath(`/invoices/${encodeURIComponent(id)}/cancel`),
     { method: "POST", headers: authHeaders(userToken) },
   );
 }
 
 export function getPublicInvoice(publicId: string, signal?: AbortSignal) {
   return backendFetch<PublicInvoice>(
-    `/public/invoices/${encodeURIComponent(publicId)}`,
+    invoiceApiPath(`/public/invoices/${encodeURIComponent(publicId)}`),
     { signal },
   );
 }
@@ -110,7 +117,7 @@ export function verifyPublicInvoicePayment(
   signal?: AbortSignal,
 ) {
   return backendFetch<PublicInvoice>(
-    `/public/invoices/${encodeURIComponent(publicId)}/payments/verify`,
+    invoiceApiPath(`/public/invoices/${encodeURIComponent(publicId)}/payments/verify`),
     {
       method: "POST",
       body: JSON.stringify({ transactionHash }),

@@ -27,6 +27,10 @@ services:
       - wizpay-network
 
   frontend:
+    build:
+      args:
+        NEXT_PUBLIC_WIZPAY_PUBLIC_APP_URL: ${NEXT_PUBLIC_WIZPAY_PUBLIC_APP_URL:-https://app.wizpay.xyz}
+        NEXT_PUBLIC_INVOICE_API_PREFIX: ${NEXT_PUBLIC_INVOICE_API_PREFIX:-/api}
     ports:
       - "127.0.0.1:3000:3000"
 
