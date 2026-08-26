@@ -6,7 +6,7 @@ import {
   AtSign,
   ArrowRightLeft,
   ArrowUpRight,
-  Droplet,
+  ReceiptText,
   TrendingUp,
   Wallet,
 } from "lucide-react";
@@ -38,15 +38,13 @@ const QUICK_ACTIONS = [
     label: "Send",
     icon: ArrowRightLeft,
     color: "violet",
-    external: false,
   },
-  { href: "/ans", label: "ANS", icon: AtSign, color: "cyan", external: false },
+  { href: "/ans", label: "ANS", icon: AtSign, color: "cyan" },
   {
-    href: "https://faucet.circle.com",
-    label: "Faucet",
-    icon: Droplet,
-    color: "amber",
-    external: true,
+    href: "/invoices",
+    label: "Invoices",
+    icon: ReceiptText,
+    color: "emerald",
   },
 ] as const;
 
@@ -98,7 +96,7 @@ function TotalBalance({ balances, isLoading }: BalanceSnapshotProps) {
 function QuickActions() {
   return (
     <div className="grid grid-cols-3 gap-2 sm:gap-3">
-      {QUICK_ACTIONS.map(({ href, label, icon: Icon, color, external }) => {
+      {QUICK_ACTIONS.map(({ href, label, icon: Icon, color }) => {
         const content = (
           <div
             className={`flex min-h-[88px] flex-col items-center justify-center gap-2 rounded-2xl p-3 transition-all duration-200 active:scale-95 cursor-pointer sm:min-h-[104px] sm:p-4 ${COLOR_MAP[color]}`}
@@ -112,15 +110,7 @@ function QuickActions() {
           </div>
         );
 
-        return external ? (
-          <a key={href} href={href} target="_blank" rel="noopener noreferrer">
-            {content}
-          </a>
-        ) : (
-          <Link key={href} href={href}>
-            {content}
-          </Link>
-        );
+        return <Link key={href} href={href}>{content}</Link>;
       })}
     </div>
   );

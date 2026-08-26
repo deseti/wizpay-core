@@ -104,6 +104,60 @@ model UserWallet {
   @@index([userId, chain])
 }
 
+enum InvoiceStatus {
+  OPEN
+  VERIFYING
+  PAID
+  EXPIRED
+  CANCELLED
+}
+
+enum InvoicePaymentStatus {
+  SUBMITTED
+  VERIFYING
+  VERIFIED
+  REJECTED
+}
+
+model Invoice {
+  id                    String          @id @default(uuid()) @db.Uuid
+  publicId              String          @unique
+  merchantUserId        String
+  merchantWalletAddress String
+  chainId               Int
+  tokenAddress          String
+  tokenSymbol           String
+  tokenDecimals         Int
+  amountUnits           String
+  title                 String
+  description           String?
+  invoiceNumber         String?
+  status                InvoiceStatus   @default(OPEN)
+  expiresAt             DateTime?
+  paidAt                DateTime?
+  cancelledAt           DateTime?
+  createdAt             DateTime        @default(now())
+  updatedAt             DateTime        @updatedAt
+  payment               InvoicePayment?
+
+  @@index([merchantUserId, createdAt])
+  @@index([merchantUserId, status])
+}
+
+model InvoicePayment {
+  id              String               @id @default(uuid()) @db.Uuid
+  invoiceId       String               @unique @db.Uuid
+  invoice         Invoice              @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  transactionHash String               @unique
+  payerAddress    String?
+  status          InvoicePaymentStatus @default(SUBMITTED)
+  submittedAt     DateTime             @default(now())
+  verifiedAt      DateTime?
+  rejectionCode   String?
+  createdAt       DateTime             @default(now())
+  updatedAt       DateTime             @updatedAt
+}
+
 model AppWalletSwapOperation {
   operationId                String    @id @db.Uuid
   operationMode              String

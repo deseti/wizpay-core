@@ -8,17 +8,19 @@ import {
   BriefcaseBusiness,
   Home,
   Repeat,
+  ReceiptText,
   User,
   Wallet,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
-import { FaucetButton } from "./FaucetButton";
+import { SidebarWalletSummary } from "./SidebarWalletSummary";
 
 const navItems = [
   { href: "/", label: "Home", icon: Home },
   { href: "/send", label: "Send", icon: ArrowRightLeft },
   { href: "/payroll", label: "Payroll", icon: BriefcaseBusiness },
+  { href: "/invoices", label: "Invoices", icon: ReceiptText },
   { href: "/swap", label: "Swap", icon: Repeat },
   { href: "/assets", label: "Assets", icon: Wallet },
   { href: "/profile", label: "Profile", icon: User },
@@ -110,7 +112,7 @@ export function DashboardSidebar() {
 
       {/* Footer Area */}
       <div className="mt-auto p-4 border-t border-border/30 bg-card/15 space-y-4">
-        <FaucetButton />
+        <SidebarWalletSummary />
         <p className="text-[10px] text-center text-muted-foreground/40 font-mono">
           v1.0.0 · Arc Testnet
         </p>

@@ -301,7 +301,7 @@ export function ProfileHubPage() {
       setCopiedKey(key);
       toast({
         title: `${label} copied`,
-        description: "The address is ready to paste into another wallet, faucet, or bridge flow.",
+        description: "The address is ready to paste into another wallet or supported flow.",
       });
       window.setTimeout(() => setCopiedKey(null), 1800);
     } catch (error) {

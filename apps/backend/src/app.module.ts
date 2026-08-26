@@ -8,6 +8,7 @@ import { AppConfigModule } from './config/app-config.module';
 import { DatabaseModule } from './database/database.module';
 import { FxModule } from './fx/fx.module';
 import { IntegrationsModule } from './integrations/integrations.module';
+import { InvoiceModule } from './invoice/invoice.module';
 import { WalletModule } from './modules/wallet/wallet.module';
 import { OfficialSwapModule } from './official-swap/official-swap.module';
 import { OrchestratorModule } from './orchestrator/orchestrator.module';
@@ -23,6 +24,7 @@ import { UserSwapModule } from './user-swap/user-swap.module';
     AgentsModule,
     FxModule,
     IntegrationsModule,
+    InvoiceModule,
     TaskModule,
     QueueModule,
     OrchestratorModule,

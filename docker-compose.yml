@@ -101,6 +101,7 @@ services:
       #   docker compose down && docker compose up --build
       args:
         NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL}
+        NEXT_PUBLIC_WIZPAY_PUBLIC_APP_URL: ${NEXT_PUBLIC_WIZPAY_PUBLIC_APP_URL:-http://localhost:3000}
         NEXT_PUBLIC_BACKEND_API_BASE_URL: ${NEXT_PUBLIC_BACKEND_API_BASE_URL}
         NEXT_PUBLIC_BACKEND_URL: ${NEXT_PUBLIC_BACKEND_URL:-}
         NEXT_PUBLIC_GOOGLE_CLIENT_ID: ${NEXT_PUBLIC_GOOGLE_CLIENT_ID}
@@ -149,6 +150,7 @@ services:
       # Keep these sourced from the root .env so docker-compose.dev does not
       # depend on apps/frontend/.env.local.
       NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:4000}
+      NEXT_PUBLIC_WIZPAY_PUBLIC_APP_URL: ${NEXT_PUBLIC_WIZPAY_PUBLIC_APP_URL:-http://localhost:3000}
       NEXT_PUBLIC_BACKEND_API_BASE_URL: ${NEXT_PUBLIC_BACKEND_API_BASE_URL:-http://localhost:4000}
       NEXT_PUBLIC_BACKEND_URL: ${NEXT_PUBLIC_BACKEND_URL:-}
       NEXT_PUBLIC_GOOGLE_CLIENT_ID: ${NEXT_PUBLIC_GOOGLE_CLIENT_ID:-}

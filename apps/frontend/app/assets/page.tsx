@@ -238,17 +238,7 @@ function AssetsContent() {
         <EmptyStateView
           icon={<Wallet className="h-7 w-7 text-primary/60" />}
           title="No Assets Yet"
-          description="Fund your wallet with testnet tokens to get started. Use the faucet to get USDC and EURC."
-          action={
-            <a href="https://faucet.circle.com" target="_blank" rel="noopener noreferrer">
-              <Button
-                size="sm"
-                className="glow-btn bg-gradient-to-r from-primary to-violet-500 text-primary-foreground"
-              >
-                Get Testnet Tokens
-              </Button>
-            </a>
-          }
+          description="Fund your wallet with supported Arc Testnet tokens to get started."
         />
       ) : (
         <div className="grid gap-4">
