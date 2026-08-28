@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowRightLeft, ShieldCheck } from "lucide-react";
-import { type Hex } from "viem";
+import { formatUnits, type Hex } from "viem";
 import { usePublicClient, useReadContract, useWalletClient } from "wagmi";
 
 import { useCircleWallet } from "@/components/providers/CircleWalletProvider";
@@ -21,6 +21,7 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { TokenIcon } from "@/components/ui/token-icon";
 import { useDelayedLoading } from "@/hooks/useDelayedLoading";
+import { useTokenBalances } from "@/hooks/useTokenBalances";
 import {
   Select,
   SelectContent,
@@ -34,10 +35,14 @@ import { useToast } from "@/hooks/use-toast";
 import {
   APP_WALLET_SWAP_CHAIN,
   createAppWalletXylonetOperation,
+  getAppWalletXylonetOperation,
+  pollAppWalletXylonetOperation,
   quoteAppWalletXylonetSwap,
   type AppWalletSwapQuoteResponse,
   type AppWalletXylonetOperationResponse,
 } from "@/lib/app-wallet-swap-service";
+import { ARC_GAS_FALLBACK_UNITS, calculateArcMaxAmount, gasReserveFromFeeWei, hasArcGasForAmount, sumGasReserves } from "@/lib/arc-gas-reserve";
+import { appWalletSwapExecutionState, clearAppWalletSwapRecovery, readAppWalletSwapRecovery, writeAppWalletSwapRecovery } from "@/lib/app-wallet-swap-recovery";
 import {
   WIZPAY_SWAP_EXECUTOR_V2_ABI,
   createSwapSubmissionLock,
@@ -118,6 +123,7 @@ export function SwapScreen() {
   const { arcWallet, executeChallenge, userToken } = useCircleWallet();
   const { data: walletClient } = useWalletClient();
   const publicClient = usePublicClient({ chainId: arcTestnet.id });
+  const { balances, isLoading: balancesLoading } = useTokenBalances();
   const { toast } = useToast();
 
   const [tokenIn, setTokenIn] = useState<TokenSymbol>("USDC");
@@ -136,11 +142,52 @@ export function SwapScreen() {
     useState<SwapProgressRequestStatus>("preparing");
   const [progressFailure, setProgressFailure] = useState<string | null>(null);
   const [approvalRequired, setApprovalRequired] = useState<boolean | null>(null);
+  const [gasReserveUnits, setGasReserveUnits] = useState(ARC_GAS_FALLBACK_UNITS);
+  const [gasReserveSource, setGasReserveSource] = useState<"estimate" | "fallback">("fallback");
+  const [estimatingMax, setEstimatingMax] = useState(false);
   const [screenMode, setScreenMode] = useState<"swap" | "bridge">("swap");
   const showQuoteSkeleton = useDelayedLoading(status === "quoting");
   const quoteSequence = useRef(0);
   const operationIdempotencyKey = useRef<string | null>(null);
   const transactionActive = useRef(false);
+  const isExternal = walletMode === "external";
+  const isCircle = walletMode === "circle";
+  const arcWalletId = arcWallet?.id;
+
+  const recoveryScope = useMemo(() =>
+    isCircle && arcWalletId && walletAddress
+      ? { circleWalletId: arcWalletId, walletAddress }
+      : null,
+  [arcWalletId, isCircle, walletAddress]);
+
+  function persistOperation(next: AppWalletXylonetOperationResponse) {
+    setOperation(next);
+    writeAppWalletSwapRecovery(typeof window === "undefined" ? undefined : window.localStorage, next);
+  }
+
+  useEffect(() => {
+    if (!recoveryScope || !userToken) {
+      queueMicrotask(() => setOperation(null));
+      return;
+    }
+    const pointer = readAppWalletSwapRecovery(window.localStorage, recoveryScope);
+    if (!pointer) return;
+    const controller = new AbortController();
+    void getAppWalletXylonetOperation(pointer.operationId, userToken)
+      .then((restored) => {
+        if (controller.signal.aborted) return;
+        if (restored.circleWalletId !== recoveryScope.circleWalletId || !sameAddress(restored.walletAddress, recoveryScope.walletAddress)) {
+          clearAppWalletSwapRecovery(window.localStorage, recoveryScope);
+          setError("The saved swap recovery record did not match the active wallet and was rejected.");
+          return;
+        }
+        setAmountIn(formatUnits(BigInt(restored.amountIn), SUPPORTED_TOKENS[restored.tokenIn].decimals));
+        setTokenIn(restored.tokenIn); setTokenOut(restored.tokenOut);
+        persistOperation(restored);
+      })
+      .catch(() => setError("Swap status is temporarily unavailable. No new swap can be created until the existing attempt is reconciled."));
+    return () => controller.abort();
+  }, [recoveryScope, userToken]);
 
   function setTransactionStatus(next: SwapProgressRequestStatus) {
     setProgressStatus(next);
@@ -151,8 +198,6 @@ export function SwapScreen() {
     () => parseAmountToUnits(amountIn, SUPPORTED_TOKENS[tokenIn].decimals),
     [amountIn, tokenIn],
   );
-  const isExternal = walletMode === "external";
-  const isCircle = walletMode === "circle";
   const effectiveScreenMode = isExternal ? screenMode : "swap";
   const requestKey =
     effectiveScreenMode === "swap" &&
@@ -180,7 +225,6 @@ export function SwapScreen() {
     queueMicrotask(() => {
       setQuote(null);
       setQuoteKey(null);
-      setOperation(null);
       setError(null);
     });
     operationIdempotencyKey.current = null;
@@ -246,6 +290,9 @@ export function SwapScreen() {
   ]);
 
   const quoteCurrent = Boolean(quote && requestKey && quoteKey === requestKey);
+  const quotedGasReserveUnits = quoteCurrent && quote && "sourceChain" in quote && typeof quote.gasReserveUnits === "string" && /^\d+$/.test(quote.gasReserveUnits) ? BigInt(quote.gasReserveUnits) : null;
+  const effectiveGasReserveUnits = quotedGasReserveUnits ?? gasReserveUnits;
+  const effectiveGasReserveSource = quotedGasReserveUnits !== null && quote && "sourceChain" in quote && quote.gasReserveSource === "estimate" ? "estimate" : gasReserveSource;
   const expectedOutput = quoteCurrent
     ? readPositiveAmount(quote?.expectedOutput)
     : null;
@@ -301,12 +348,12 @@ export function SwapScreen() {
       },
       userToken,
     );
-    setOperation(created);
+    persistOperation(created);
     const completed = await runAppWalletXylonetLifecycle({
       initialOperation: created,
       userToken,
       executeChallenge,
-      onOperation: setOperation,
+      onOperation: persistOperation,
       onRequestStatus: (next) => {
         if (next === "idle") return;
         setTransactionStatus(
@@ -320,6 +367,7 @@ export function SwapScreen() {
         );
       },
     });
+    persistOperation(completed);
     const verifiedOutput = readPositiveAmount(completed.verifiedActualOutput);
     if (
       completed.lifecycleStage !== "completed" ||
@@ -430,6 +478,13 @@ export function SwapScreen() {
       return;
     }
     if (transactionActive.current) return;
+    const currentInputBalance = balances[tokenIn];
+    let currentReserve = effectiveGasReserveUnits;
+    if (isCircle && "sourceChain" in quote && typeof quote.gasReserveUnits === "string" && /^\d+$/.test(quote.gasReserveUnits)) currentReserve = BigInt(quote.gasReserveUnits);
+    if (!hasArcGasForAmount({ amountUnits, inputBalance: currentInputBalance, nativeUsdcBalance: balances.USDC, reserveUnits: currentReserve, tokenIsUsdc: tokenIn === "USDC" })) {
+      setError("Leave enough USDC available for network fees.");
+      return;
+    }
     transactionActive.current = true;
     setProgressFailure(null);
     setApprovalRequired(isCircle ? true : null);
@@ -464,16 +519,75 @@ export function SwapScreen() {
     } catch (cause) {
       const message = getFriendlyErrorMessage(cause);
       setError(message);
-      setProgressFailure(message);
+      if (isCircle) {
+        setProgressOpen(false);
+        setProgressFailure(null);
+      } else {
+        setProgressFailure(message);
+      }
+      const statusUnavailable = /failed to fetch|network|temporarily unavailable|timeout|timed out/i.test(message);
       toast({
-        title: "Swap failed closed",
+        title: statusUnavailable ? "Swap status unavailable" : "Swap stopped",
         description: message,
-        variant: "destructive",
+        variant: statusUnavailable ? "default" : "destructive",
       });
     } finally {
       setStatus("idle");
       transactionActive.current = false;
     }
+  }
+
+  async function handleMax() {
+    const inputBalance = balances[tokenIn];
+    if (!walletAddress || inputBalance <= 0n || progressOpen) return;
+    setEstimatingMax(true); setError(null);
+    let reserve: { reserveUnits: bigint; source: "estimate" | "fallback" } = { reserveUnits: ARC_GAS_FALLBACK_UNITS, source: "fallback" };
+    try {
+      if (isCircle && arcWallet?.id && userToken) {
+        const maxQuote = await quoteAppWalletXylonetSwap({
+          idempotencyKey: crypto.randomUUID(), walletId: arcWallet.id, walletAddress,
+          chain: APP_WALLET_SWAP_CHAIN, tokenIn, tokenOut, amountIn: inputBalance.toString(),
+          slippageBps: Number(PREVIEW_SLIPPAGE_BPS),
+        }, userToken);
+        reserve = {
+          reserveUnits: typeof maxQuote.gasReserveUnits === "string" && /^\d+$/.test(maxQuote.gasReserveUnits) ? BigInt(maxQuote.gasReserveUnits) : ARC_GAS_FALLBACK_UNITS,
+          source: maxQuote.gasReserveSource === "estimate" ? "estimate" : "fallback",
+        };
+      } else if (publicClient) {
+        const maxQuote = await quoteUserSwap({ tokenIn, tokenOut, amountIn: inputBalance.toString(), fromAddress: walletAddress, toAddress: walletAddress, chain: "ARC-TESTNET", slippageBps: Number(PREVIEW_SLIPPAGE_BPS) });
+        const validated = validateExternalXylonetQuote(maxQuote, { walletAddress, chainId: arcTestnet.id, tokenIn, tokenOut, tokenInAddress: SUPPORTED_TOKENS[tokenIn].address, tokenOutAddress: SUPPORTED_TOKENS[tokenOut].address, amountIn: inputBalance });
+        const allowance = await publicClient.readContract({ address: validated.tokenIn, abi: ERC20_ABI, functionName: "allowance", args: [walletAddress, validated.executor] });
+        const gasPrice = await publicClient.getGasPrice();
+        const fees: Array<bigint | null> = [];
+        if (allowance < validated.amountIn) fees.push((await publicClient.estimateContractGas({ account: walletAddress, address: validated.tokenIn, abi: ERC20_ABI, functionName: "approve", args: [validated.executor, validated.amountIn] })) * gasPrice);
+        fees.push((await publicClient.estimateContractGas({ account: walletAddress, address: validated.executor, abi: WIZPAY_SWAP_EXECUTOR_V2_ABI, functionName: "executeSwap", args: [validated.router, validated.tokenIn, validated.tokenOut, validated.amountIn, validated.minimumAmountOut, validated.recipient, validated.deadline] })) * gasPrice);
+        reserve = sumGasReserves(fees);
+      }
+    } catch {
+      reserve = gasReserveFromFeeWei(null);
+    }
+    setGasReserveUnits(reserve.reserveUnits); setGasReserveSource(reserve.source);
+    const max = calculateArcMaxAmount({ inputBalance, nativeUsdcBalance: balances.USDC, reserveUnits: reserve.reserveUnits, tokenIsUsdc: tokenIn === "USDC" });
+    if (max <= 0n) setError("Leave enough USDC available for network fees.");
+    else setAmountIn(formatUnits(max, SUPPORTED_TOKENS[tokenIn].decimals));
+    setEstimatingMax(false);
+  }
+
+  async function checkRecoveredSwap() {
+    if (!operation || !userToken) return;
+    try {
+      const next = await pollAppWalletXylonetOperation(operation.operationId, userToken);
+      persistOperation(next); setError(null);
+    } catch {
+      setError("Swap status is temporarily unavailable. No new swap can be created until the existing attempt is reconciled.");
+    }
+  }
+
+  function startOverRecoveredSwap() {
+    if (!recoveryScope || !["failed", "success"].includes(appWalletSwapExecutionState(operation))) return;
+    clearAppWalletSwapRecovery(window.localStorage, recoveryScope);
+    operationIdempotencyKey.current = null;
+    setOperation(null); setError(null); setAmountIn("");
   }
 
   function handleDismissProgressFailure() {
@@ -482,6 +596,8 @@ export function SwapScreen() {
   }
 
   function handleStartAnotherSwap() {
+    if (recoveryScope) clearAppWalletSwapRecovery(window.localStorage, recoveryScope);
+    operationIdempotencyKey.current = null;
     setSuccessOpen(false);
     setSwapSuccess(null);
     setOperation(null);
@@ -493,14 +609,18 @@ export function SwapScreen() {
   }
 
   const busy = status !== "idle";
-  const insufficient = isExternal && amountUnits > externalBalance;
+  const inputBalance = isExternal ? externalBalance : balances[tokenIn];
+  const recoveryState = appWalletSwapExecutionState(operation);
+  const recoveryLocked = isCircle && recoveryState !== "idle";
+  const insufficient = amountUnits > inputBalance || (amountUnits > 0n && !hasArcGasForAmount({ amountUnits, inputBalance, nativeUsdcBalance: balances.USDC, reserveUnits: effectiveGasReserveUnits, tokenIsUsdc: tokenIn === "USDC" }));
   const disabled =
     busy ||
+    recoveryLocked ||
     Boolean(blockedReason) ||
     !quoteCurrent ||
     !expectedOutput ||
     !minimumOutput ||
-    insufficient;
+    insufficient || balancesLoading;
 
   const modeSelector = isExternal ? (
     <div
@@ -546,7 +666,7 @@ export function SwapScreen() {
           </CardHeader>
           <CardContent className="space-y-5">
             <div className="space-y-2">
-              <label className="text-sm text-muted-foreground">Amount</label>
+              <div className="flex items-center justify-between"><label className="text-sm text-muted-foreground">Amount</label><Button type="button" variant="ghost" size="sm" disabled={progressOpen || balancesLoading || balances[tokenIn] === 0n || estimatingMax} onClick={() => void handleMax()}>{estimatingMax ? "Estimating…" : "Max"}</Button></div>
               <Input
                 aria-label="Swap amount"
                 value={amountIn}
@@ -555,6 +675,7 @@ export function SwapScreen() {
                 inputMode="decimal"
                 disabled={progressOpen}
               />
+              <p className="text-xs text-muted-foreground">Max leaves at least {formatUnits(effectiveGasReserveUnits, 6)} USDC available for network fees{effectiveGasReserveSource === "fallback" ? " when a live estimate is unavailable" : ""}.</p>
             </div>
             <div className="grid grid-cols-[1fr_auto_1fr] items-end gap-3">
               <div>
@@ -647,7 +768,14 @@ export function SwapScreen() {
                 ? "Circle User-Controlled Wallet signs approval and swap challenges. No custodial intermediary or backend signer is used."
                 : "Your connected browser wallet signs approval and the canonical executor transaction directly."}
             </div>
-            {progressOpen ? (
+            {isCircle && operation && !progressOpen && !successOpen ? (
+              <section role="status" className={`rounded-xl border p-4 ${recoveryState === "failed" ? "border-destructive/30 bg-destructive/10" : recoveryState === "timeout" || error ? "border-amber-500/30 bg-amber-500/10" : "border-primary/25 bg-primary/10"}`}>
+                <h3 className="font-medium">{recoveryState === "failed" ? "Swap failed" : recoveryState === "success" ? "Swap completed" : recoveryState === "timeout" || error ? "Swap status unavailable" : "Swap in progress"}</h3>
+                <p className="mt-1 text-sm text-muted-foreground">{recoveryState === "failed" ? "The transaction was confirmed as failed and no funds were transferred by this operation." : recoveryState === "success" ? "The confirmed transaction and output were verified." : recoveryState === "timeout" || error ? "We could not confirm the current status yet. No new swap can be created until the existing attempt is reconciled." : "The transaction is still being confirmed. Status checks are read-only."}</p>
+                <div className="mt-3 flex gap-2">{recoveryState === "failed" ? <Button size="sm" variant="outline" onClick={startOverRecoveredSwap}>Start over</Button> : recoveryState === "success" ? <Button size="sm" variant="outline" onClick={startOverRecoveredSwap}>Start another</Button> : <Button size="sm" variant="outline" onClick={() => void checkRecoveredSwap()}>Check status</Button>}</div>
+              </section>
+            ) : null}
+            {progressOpen && recoveryState !== "failed" && recoveryState !== "timeout" ? (
               <SwapProgress
                 walletMode={isCircle ? "circle" : "external"}
                 tokenIn={tokenIn}
@@ -660,7 +788,7 @@ export function SwapScreen() {
                 onDismissFailure={handleDismissProgressFailure}
               />
             ) : null}
-            {blockedReason || error ? (
+            {blockedReason || (error && !operation) ? (
               <div
                 role="alert"
                 className="rounded-xl border border-destructive/25 bg-destructive/5 px-4 py-3 text-sm text-destructive"
@@ -670,7 +798,7 @@ export function SwapScreen() {
             ) : null}
             {insufficient ? (
               <div role="alert" className="text-sm text-amber-300">
-                Insufficient {tokenIn} balance.
+                {amountUnits > inputBalance ? `Insufficient ${tokenIn} balance.` : "Leave enough USDC available for network fees."}
               </div>
             ) : null}
             <Button

@@ -43,6 +43,8 @@ export interface AppWalletSwapQuoteResponse {
   executorAddress?: string;
   routerAddress?: string;
   recipientAddress?: string;
+  gasReserveUnits?: string;
+  gasReserveSource?: "estimate" | "fallback";
 }
 
 export interface AppWalletSwapOperationResponse extends Omit<

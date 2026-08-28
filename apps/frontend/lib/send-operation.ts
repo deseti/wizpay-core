@@ -3,8 +3,11 @@ import { getAddress, isAddress, type Address, type Hex } from "viem";
 import { buildBackendUrl, resolveBackendBaseUrl } from "@/lib/backend-api";
 import type { TokenSymbol } from "@/lib/wizpay";
 
-export const SEND_OPERATION_STORAGE_KEY = "wizpay.send.operation.v2";
-export const LEGACY_SEND_OPERATION_STORAGE_KEYS = ["wizpay.send.operation", "wizpay.send.pending"] as const;
+export const SEND_OPERATION_STORAGE_PREFIX = "wizpay.send.operation.v3";
+export const SEND_OPERATION_HISTORY_PREFIX = "wizpay.send.history.v1";
+export const LEGACY_SEND_OPERATION_STORAGE_KEYS = ["wizpay.send.operation.v2", "wizpay.send.operation", "wizpay.send.pending"] as const;
+
+export type SendOperationScope = { walletId: string; sender: Address };
 
 export type AppWalletSendStage =
   | "preparing"
@@ -16,6 +19,9 @@ export type AppWalletSendStage =
   | "confirming_onchain"
   | "verifying_transfer"
   | "completed"
+  | "status_unknown"
+  | "provider_unavailable"
+  | "timed_out"
   | "recoverable_error"
   | "terminal_error";
 
@@ -124,26 +130,48 @@ function validOperation(value: unknown): AppWalletSendOperation | null {
   };
 }
 
-export function readSendOperation(storage: Storage | undefined) {
-  if (!storage) return null;
-  for (const key of [SEND_OPERATION_STORAGE_KEY, ...LEGACY_SEND_OPERATION_STORAGE_KEYS]) {
+export function sendOperationStorageKey(scope: SendOperationScope) {
+  return `${SEND_OPERATION_STORAGE_PREFIX}:${scope.walletId}:${scope.sender.toLowerCase()}`;
+}
+
+function operationMatchesScope(operation: AppWalletSendOperation, scope: SendOperationScope) {
+  return operation.walletId === scope.walletId && operation.sender === getAddress(scope.sender);
+}
+
+export function readSendOperation(storage: Storage | undefined, scope: SendOperationScope | null) {
+  if (!storage || !scope) return null;
+  const scopedKey = sendOperationStorageKey(scope);
+  for (const key of [scopedKey, ...LEGACY_SEND_OPERATION_STORAGE_KEYS]) {
     try {
       const raw = storage.getItem(key);
       if (!raw) continue;
       const parsed = validOperation(JSON.parse(raw));
-      if (parsed) return parsed;
+      if (!parsed || !operationMatchesScope(parsed, scope)) continue;
+      if (key !== scopedKey) {
+        storage.setItem(scopedKey, JSON.stringify(parsed));
+        storage.removeItem(key);
+      }
+      return parsed;
     } catch { /* fail closed on malformed legacy data */ }
   }
   return null;
 }
 
 export function writeSendOperation(storage: Storage | undefined, operation: AppWalletSendOperation) {
-  storage?.setItem(SEND_OPERATION_STORAGE_KEY, JSON.stringify(operation));
+  storage?.setItem(sendOperationStorageKey({ walletId: operation.walletId, sender: operation.sender }), JSON.stringify(operation));
 }
 
-export function clearSendOperation(storage: Storage | undefined) {
-  storage?.removeItem(SEND_OPERATION_STORAGE_KEY);
-  for (const key of LEGACY_SEND_OPERATION_STORAGE_KEYS) storage?.removeItem(key);
+export function archiveAndClearSendOperation(storage: Storage | undefined, operation: AppWalletSendOperation) {
+  if (!storage) return;
+  const scope = { walletId: operation.walletId, sender: operation.sender };
+  const historyKey = `${SEND_OPERATION_HISTORY_PREFIX}:${scope.walletId}:${scope.sender.toLowerCase()}`;
+  let history: unknown[] = [];
+  try {
+    const parsed = JSON.parse(storage.getItem(historyKey) ?? "[]");
+    if (Array.isArray(parsed)) history = parsed;
+  } catch { /* replace malformed history with a valid audit list */ }
+  storage.setItem(historyKey, JSON.stringify([...history, operation].slice(-20)));
+  storage.removeItem(sendOperationStorageKey(scope));
 }
 
 async function readAction(action: string, userToken: string, params: Record<string, unknown>, signal?: AbortSignal) {
@@ -162,11 +190,41 @@ export const getUserTransactionStatus = (transactionId: string, userToken: strin
   readAction("getUserTransaction", userToken, { transactionId }, signal).then(parseCircleTransaction);
 export const listUserTransactionStatus = (walletId: string, userToken: string, signal?: AbortSignal) =>
   readAction("listUserTransactions", userToken, { walletId }, signal).then(parseCircleTransactions);
+export const estimateUserTransferFee = (input: {
+  amounts: string[];
+  destinationAddress: Address;
+  tokenId: string;
+  walletId: string;
+}, userToken: string, signal?: AbortSignal) =>
+  readAction("estimateTransferFee", userToken, { ...input, wizpayChain: "ARC-TESTNET" }, signal);
 
 export function isCircleTerminalFailure(state: string | undefined) {
-  return ["FAILED", "CANCELLED", "DENIED"].includes(state?.toUpperCase() ?? "");
+  return ["FAILED", "CANCELLED", "CANCELED", "DENIED", "REJECTED", "EXPIRED"].includes(state?.toUpperCase() ?? "");
 }
 
 export function isCircleComplete(state: string | undefined) {
   return ["COMPLETE", "CONFIRMED"].includes(state?.toUpperCase() ?? "");
+}
+
+export function classifySendStatusError(error: unknown): Extract<AppWalletSendStage, "provider_unavailable" | "timed_out" | "status_unknown"> {
+  const message = error instanceof Error ? error.message.toLowerCase() : "";
+  if (/timeout|timed out/.test(message)) return "timed_out";
+  if (/failed to fetch|network|temporarily unavailable|service unavailable/.test(message)) return "provider_unavailable";
+  return "status_unknown";
+}
+
+export function isSendOperationLocked(stage: AppWalletSendStage) {
+  return stage !== "completed" && stage !== "terminal_error";
+}
+
+export function sendExecutionState(stage: AppWalletSendStage) {
+  if (stage === "completed") return "success" as const;
+  if (stage === "terminal_error") return "failed" as const;
+  if (stage === "timed_out") return "timeout" as const;
+  if (["provider_unavailable", "status_unknown", "recoverable_error"].includes(stage)) return "unknown" as const;
+  return "pending" as const;
+}
+
+export function shouldPollSendOperation(stage: AppWalletSendStage) {
+  return !["completed", "terminal_error", "awaiting_user_authorization"].includes(stage);
 }

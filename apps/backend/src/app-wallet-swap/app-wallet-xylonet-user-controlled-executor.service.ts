@@ -45,6 +45,7 @@ const DEFAULT_DEADLINE_SECONDS = 600;
 const MAX_DEADLINE_SECONDS = 1_200;
 const MAX_POLL_ATTEMPTS = 60;
 const MAX_OPERATION_AGE_MS = 20 * 60 * 1_000;
+const ARC_FALLBACK_GAS_WEI = 100_000_000_000_000_000n;
 
 const ERC20_ABI = [
   {
@@ -231,6 +232,22 @@ export class AppWalletXylonetUserControlledExecutorService {
         message: 'XyloNet returned no slippage-protected executable output.',
       });
     }
+    const deadline = BigInt(
+      Math.floor(Date.now() / 1_000) + config.deadlineSeconds,
+    );
+    const gas = await this.estimateSwapGas({
+      amountIn,
+      deadline,
+      executorAddress: config.executor,
+      minimumOutput,
+      recipientAddress: identity.address,
+      routerAddress: config.router,
+      tokenInAddress: config.tokens[tokenIn],
+      tokenOutAddress: config.tokens[tokenOut],
+      userToken,
+      walletAddress: identity.address,
+      walletId: identity.walletId,
+    });
     return {
       operationMode: APP_WALLET_XYLONET_MODE,
       executionMode: APP_WALLET_XYLONET_MODE,
@@ -252,6 +269,8 @@ export class AppWalletXylonetUserControlledExecutorService {
         Date.now() + config.deadlineSeconds * 1_000,
       ).toISOString(),
       status: 'quoted' as const,
+      gasReserveUnits: this.nativeWeiToUsdcUnits(gas.feeWei).toString(),
+      gasReserveSource: gas.source,
     };
   }
 
@@ -326,6 +345,30 @@ export class AppWalletXylonetUserControlledExecutorService {
     const deadline = BigInt(
       Math.floor(now.getTime() / 1_000) + config.deadlineSeconds,
     );
+    const gas = await this.estimateSwapGas({
+      amountIn,
+      deadline,
+      executorAddress: config.executor,
+      minimumOutput,
+      recipientAddress: identity.address,
+      routerAddress: config.router,
+      tokenInAddress,
+      tokenOutAddress,
+      userToken,
+      walletAddress: identity.address,
+      walletId: identity.walletId,
+    });
+    const nativeBalance = await this.getPublicClient().getBalance({
+      address: this.address(identity.address),
+    });
+    const requiredNativeWei =
+      gas.feeWei + (tokenIn === 'USDC' ? amountIn * 10n ** 12n : 0n);
+    if (nativeBalance < requiredNativeWei) {
+      throw new BadRequestException({
+        code: APP_WALLET_XYLONET_ERRORS.INVALID_REQUEST,
+        message: 'Leave enough USDC available for network fees.',
+      });
+    }
     const operation = await this.prisma.appWalletXylonetOperation.create({
       data: {
         operationId,
@@ -576,20 +619,20 @@ export class AppWalletXylonetUserControlledExecutorService {
         await this.getVerifiedActualOutput(operation),
       );
     }
-    if (
+    const reconciliationTimedOut =
       operation.pollAttempts >= MAX_POLL_ATTEMPTS ||
-      Date.now() - operation.createdAt.getTime() > MAX_OPERATION_AGE_MS
-    ) {
-      operation = await this.failOperation(
-        operation,
-        'timed_out',
-        'Circle transaction confirmation timed out.',
-      );
-      return this.toPublic(operation);
-    }
+      Date.now() - operation.createdAt.getTime() > MAX_OPERATION_AGE_MS;
     operation = await this.prisma.appWalletXylonetOperation.update({
       where: { operationId },
-      data: { pollAttempts: { increment: 1 } },
+      data: {
+        pollAttempts: { increment: 1 },
+        ...(reconciliationTimedOut
+          ? {
+              failureReason:
+                'Circle transaction confirmation timed out without proving success or failure.',
+            }
+          : {}),
+      },
     });
 
     if (operation.lifecycleStage === 'approval_submitted') {
@@ -1020,6 +1063,106 @@ export class AppWalletXylonetUserControlledExecutorService {
     });
   }
 
+  private async estimateSwapGas(input: {
+    amountIn: bigint;
+    deadline: bigint;
+    executorAddress: string;
+    minimumOutput: bigint;
+    recipientAddress: string;
+    routerAddress: string;
+    tokenInAddress: string;
+    tokenOutAddress: string;
+    userToken: string;
+    walletAddress: string;
+    walletId: string;
+  }): Promise<{ feeWei: bigint; source: 'estimate' | 'fallback' }> {
+    const allowance = await this.getPublicClient().readContract({
+      address: this.address(input.tokenInAddress),
+      abi: ERC20_ABI,
+      functionName: 'allowance',
+      args: [
+        this.address(input.walletAddress),
+        this.address(input.executorAddress),
+      ],
+    });
+    const calls: Array<{ contractAddress: string; callData: Hash }> = [];
+    if (allowance < input.amountIn) {
+      calls.push({
+        contractAddress: input.tokenInAddress,
+        callData: encodeFunctionData({
+          abi: ERC20_ABI,
+          functionName: 'approve',
+          args: [this.address(input.executorAddress), input.amountIn],
+        }),
+      });
+    }
+    calls.push({
+      contractAddress: input.executorAddress,
+      callData: encodeFunctionData({
+        abi: EXECUTOR_ABI,
+        functionName: 'executeSwap',
+        args: [
+          this.address(input.routerAddress),
+          this.address(input.tokenInAddress),
+          this.address(input.tokenOutAddress),
+          input.amountIn,
+          input.minimumOutput,
+          this.address(input.recipientAddress),
+          input.deadline,
+        ],
+      }),
+    });
+    try {
+      let total = 0n;
+      for (const call of calls) {
+        const estimate =
+          await this.w3sAuthService.estimateUserContractExecutionFee({
+            ...call,
+            userToken: this.requireUserToken(input.userToken),
+            walletId: input.walletId,
+          });
+        const fee = this.readCircleFeeWei(estimate);
+        if (fee === null)
+          throw new Error('Circle fee estimate was incomplete.');
+        total += fee;
+      }
+      return { feeWei: this.withGasSafetyMargin(total), source: 'estimate' };
+    } catch {
+      return { feeWei: ARC_FALLBACK_GAS_WEI, source: 'fallback' };
+    }
+  }
+
+  private readCircleFeeWei(estimate: Record<string, unknown>): bigint | null {
+    const level = [estimate.medium, estimate.high, estimate.low].find(
+      (value) => value && typeof value === 'object' && !Array.isArray(value),
+    ) as Record<string, unknown> | undefined;
+    const gasLimit =
+      typeof level?.gasLimit === 'string' && /^\d+$/.test(level.gasLimit)
+        ? BigInt(level.gasLimit)
+        : null;
+    const feeGwei = this.decimalToUnits(level?.maxFee ?? level?.gasPrice, 9);
+    return gasLimit && feeGwei !== null ? gasLimit * feeGwei : null;
+  }
+
+  private decimalToUnits(value: unknown, decimals: number): bigint | null {
+    if (typeof value !== 'string' || !/^\d+(?:\.\d+)?$/.test(value))
+      return null;
+    const [whole, fraction = ''] = value.split('.');
+    if (fraction.length > decimals) return null;
+    return (
+      BigInt(whole) * 10n ** BigInt(decimals) +
+      BigInt((fraction + '0'.repeat(decimals)).slice(0, decimals))
+    );
+  }
+
+  private withGasSafetyMargin(feeWei: bigint) {
+    return feeWei + (feeWei * 2_000n + 9_999n) / 10_000n + 5_000n * 10n ** 12n;
+  }
+
+  private nativeWeiToUsdcUnits(feeWei: bigint) {
+    return (feeWei + 10n ** 12n - 1n) / 10n ** 12n;
+  }
+
   private async getOwnedOperation(
     operationId: string,
     userToken: string,
@@ -1074,7 +1217,8 @@ export class AppWalletXylonetUserControlledExecutorService {
     if (process.env.APP_WALLET_XYLONET_USER_CONTROLLED_ENABLED !== 'true') {
       throw new ServiceUnavailableException({
         code: APP_WALLET_XYLONET_ERRORS.DISABLED,
-        message: 'Direct User-Controlled XyloNet App Wallet execution is disabled.',
+        message:
+          'Direct User-Controlled XyloNet App Wallet execution is disabled.',
       });
     }
     const chainId = Number(process.env.APP_XYLONET_CHAIN_ID);

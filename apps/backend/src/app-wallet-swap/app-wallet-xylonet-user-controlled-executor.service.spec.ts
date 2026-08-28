@@ -1,5 +1,6 @@
 import {
   BadGatewayException,
+  BadRequestException,
   ConflictException,
   ForbiddenException,
   ServiceUnavailableException,
@@ -102,6 +103,9 @@ describe('AppWalletXylonetUserControlledExecutorService', () => {
       })),
       getUserTransaction: jest.fn(),
       listUserTransactions: jest.fn(async () => ({ transactions: [] })),
+      estimateUserContractExecutionFee: jest.fn(async () => ({
+        medium: { gasLimit: '100000', maxFee: '0.02' },
+      })),
     };
     publicClient = {
       readContract: jest.fn(async (input: any) => {
@@ -123,6 +127,7 @@ describe('AppWalletXylonetUserControlledExecutorService', () => {
       getBytecode: jest.fn(async () => '0x6000'),
       getTransactionReceipt: jest.fn(),
       getTransaction: jest.fn(),
+      getBalance: jest.fn(async () => 100n * 10n ** 18n),
     };
     service = new AppWalletXylonetUserControlledExecutorService(
       prisma,
@@ -164,6 +169,41 @@ describe('AppWalletXylonetUserControlledExecutorService', () => {
     expect(operation.executorAddress).toBe(EXECUTOR);
     expect(operation.executorAddress).not.toBe(LEGACY_V1_EXECUTOR);
     expect(operation.routerAddress).toBe(ROUTER);
+  });
+
+  it('returns an execution-specific bigint gas reserve for App Wallet Swap', async () => {
+    const quote = await service.quote(request, USER_TOKEN);
+    expect(quote.gasReserveSource).toBe('estimate');
+    expect(BigInt(quote.gasReserveUnits)).toBeGreaterThan(0n);
+    expect(w3s.estimateUserContractExecutionFee).toHaveBeenCalledTimes(2);
+  });
+
+  it('fails before persistence when USDC input would leave no native gas', async () => {
+    publicClient.getBalance.mockResolvedValueOnce(1_000_000n * 10n ** 12n);
+    await expect(
+      service.createOperation(request, USER_TOKEN),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(prisma.appWalletXylonetOperation.create).not.toHaveBeenCalled();
+  });
+
+  it('keeps polling timeout unresolved and duplicate-locked', async () => {
+    const created = await service.createOperation(request, USER_TOKEN);
+    rows.set(created.operationId, {
+      ...rows.get(created.operationId),
+      lifecycleStage: 'approval_submitted',
+      approvalChallengeId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      createdAt: new Date(Date.now() - 21 * 60 * 1_000),
+    });
+    const timedOut = await service.poll(created.operationId, USER_TOKEN);
+    expect(timedOut.lifecycleStage).toBe('approval_submitted');
+    expect(timedOut.terminalStatus).toBeUndefined();
+    expect(timedOut.failureReason).toMatch(/timed out without proving/i);
+    const duplicate = await service.createApprovalChallenge(
+      created.operationId,
+      USER_TOKEN,
+    );
+    expect(duplicate.operationId).toBe(created.operationId);
+    expect(w3s.createUserContractExecutionChallenge).not.toHaveBeenCalled();
   });
 
   it('supports the reverse EURC to USDC direction', async () => {

@@ -22,7 +22,8 @@ import { useTransactionExecutor } from "@/hooks/useTransactionExecutor";
 import { ERC20_ABI } from "@/constants/erc20";
 import { parseEvmPaymentPayload } from "@/lib/evm-payment-uri";
 import { extractCircleTransactionHash, verifyCircleAppWalletTransfer, verifyErc20Transfer } from "@/lib/send-transaction";
-import { assertCircleTransactionMatches, clearSendOperation, extractSingleCorrelationId, findMatchingCircleTransaction, getUserChallengeStatus, getUserTransactionStatus, isCircleComplete, isCircleTerminalFailure, listUserTransactionStatus, readSendOperation, writeSendOperation, type AppWalletSendOperation, type AppWalletSendStage } from "@/lib/send-operation";
+import { ARC_GAS_FALLBACK_UNITS, calculateArcMaxAmount, gasReserveFromFeeWei, hasArcGasForAmount, readCircleFeeEstimateWei } from "@/lib/arc-gas-reserve";
+import { archiveAndClearSendOperation, assertCircleTransactionMatches, classifySendStatusError, estimateUserTransferFee, extractSingleCorrelationId, findMatchingCircleTransaction, getUserChallengeStatus, getUserTransactionStatus, isCircleComplete, isCircleTerminalFailure, isSendOperationLocked, listUserTransactionStatus, readSendOperation, sendExecutionState, shouldPollSendOperation, writeSendOperation, type AppWalletSendOperation, type AppWalletSendStage, type SendOperationScope } from "@/lib/send-operation";
 import { arcTestnet } from "@/lib/wagmi";
 import { formatCompactAddress, formatTokenAmount, getExplorerTxUrl, SUPPORTED_TOKENS, TOKEN_OPTIONS, type TokenSymbol } from "@/lib/wizpay";
 
@@ -44,8 +45,11 @@ const STAGE_COPY: Record<Exclude<SendStage, "idle" | "completed">, string> = {
   transaction_pending: "Circle accepted the transfer and is processing it",
   confirming_onchain: "Waiting for on-chain confirmation",
   verifying_transfer: "Verifying the exact transfer evidence",
-  recoverable_error: "Status is temporarily unavailable. The existing transfer remains recoverable.",
-  terminal_error: "Circle or on-chain evidence proved that this transfer failed.",
+  status_unknown: "We could not confirm the current status yet. No new transfer can be created until this attempt is reconciled.",
+  provider_unavailable: "Circle status is temporarily unavailable. No new transfer can be created until this attempt is reconciled.",
+  timed_out: "Status checking timed out without proving success or failure. The existing transfer remains protected.",
+  recoverable_error: "We could not confirm the current status yet. The existing transfer remains recoverable.",
+  terminal_error: "The transaction was confirmed as failed and no funds were transferred.",
 };
 
 function exactAmount(value: string, decimals: number) {
@@ -86,34 +90,57 @@ function SendWorkspace() {
   const { executeTransaction } = useTransactionExecutor();
   const publicClient = usePublicClient({ chainId: arcTestnet.id });
   const { switchChainAsync } = useSwitchChain();
-  const [initialOperation] = useState(() => readSendOperation(typeof window === "undefined" ? undefined : window.localStorage));
-  const [recipient, setRecipient] = useState(initialOperation?.recipient ?? initialPrefill.recipient);
-  const [tokenSymbol, setTokenSymbol] = useState<TokenSymbol>(initialOperation?.token ?? initialPrefill.token);
-  const [amount, setAmount] = useState(initialOperation?.amountDisplay ?? initialPrefill.amount);
+  const [recipient, setRecipient] = useState(initialPrefill.recipient);
+  const [tokenSymbol, setTokenSymbol] = useState<TokenSymbol>(initialPrefill.token);
+  const [amount, setAmount] = useState(initialPrefill.amount);
   const [scanned, setScanned] = useState(initialPrefill.scanned);
-  const [stage, setStage] = useState<SendStage>(initialOperation?.stage ?? "idle");
+  const [stage, setStage] = useState<SendStage>("idle");
   const [error, setError] = useState<string | null>(initialPrefill.error);
-  const [verifiedHash, setVerifiedHash] = useState<Hex | null>(initialOperation?.txHash ?? null);
-  const [completed, setCompleted] = useState<{ amount: string; recipient: Address; token: TokenSymbol; mode: "circle" | "external" } | null>(() => initialOperation?.stage === "completed" && initialOperation.txHash ? { amount: initialOperation.amountDisplay, recipient: initialOperation.recipient, token: initialOperation.token, mode: "circle" } : null);
+  const [verifiedHash, setVerifiedHash] = useState<Hex | null>(null);
+  const [completed, setCompleted] = useState<{ amount: string; recipient: Address; token: TokenSymbol; mode: "circle" | "external" } | null>(null);
   const submittingRef = useRef(false);
   const submittedRef = useRef(false);
-  const [submissionLocked, setSubmissionLocked] = useState(Boolean(initialOperation && initialOperation.stage !== "completed" && initialOperation.stage !== "terminal_error"));
-  const [operation, setOperation] = useState<AppWalletSendOperation | null>(initialOperation);
+  const [submissionLocked, setSubmissionLocked] = useState(false);
+  const [operation, setOperation] = useState<AppWalletSendOperation | null>(null);
+  const [gasReserveUnits, setGasReserveUnits] = useState(ARC_GAS_FALLBACK_UNITS);
+  const [gasReserveSource, setGasReserveSource] = useState<"estimate" | "fallback">("fallback");
+  const [estimatingGas, setEstimatingGas] = useState(false);
   const [lastStatusCheck, setLastStatusCheck] = useState(0);
   const [checkingStatus, setCheckingStatus] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const statusInFlightRef = useRef(false);
   const formVersion = useRef(0);
   const token = SUPPORTED_TOKENS[tokenSymbol];
-  const busy = stage !== "idle" && stage !== "completed";
+  const busy = stage !== "idle" && stage !== "completed" && stage !== "terminal_error";
   const formLocked = busy || submissionLocked;
+
+  const circleWalletId = circle.arcWallet?.id;
+  const sendScope = useMemo<SendOperationScope | null>(() => {
+    if (wallet.walletMode !== "circle" || !circleWalletId || !wallet.activeWalletAddress || !isAddress(wallet.activeWalletAddress)) return null;
+    return { walletId: circleWalletId, sender: getAddress(wallet.activeWalletAddress) };
+  }, [circleWalletId, wallet.activeWalletAddress, wallet.walletMode]);
+
+  useEffect(() => {
+    const restored = readSendOperation(typeof window === "undefined" ? undefined : window.localStorage, sendScope);
+    queueMicrotask(() => {
+      setOperation(restored);
+      setSubmissionLocked(Boolean(restored && isSendOperationLocked(restored.stage)));
+      if (!restored) { setStage("idle"); return; }
+      setRecipient(restored.recipient);
+      setTokenSymbol(restored.token);
+      setAmount(restored.amountDisplay);
+      setVerifiedHash(restored.txHash ?? null);
+      setStage(restored.stage);
+      if (restored.stage === "completed" && restored.txHash) setCompleted({ amount: restored.amountDisplay, recipient: restored.recipient, token: restored.token, mode: "circle" });
+    });
+  }, [sendScope]);
 
   useEffect(() => () => abortRef.current?.abort(), []);
 
   function persistOperation(next: AppWalletSendOperation) {
     setOperation(next);
     writeSendOperation(typeof window === "undefined" ? undefined : window.localStorage, next);
-    setSubmissionLocked(next.stage !== "completed" && next.stage !== "terminal_error");
+    setSubmissionLocked(isSendOperationLocked(next.stage));
     setStage(next.stage);
   }
 
@@ -184,9 +211,17 @@ function SendWorkspace() {
     } catch (cause) {
       if (!(cause instanceof DOMException && cause.name === "AbortError")) {
         const message = cause instanceof Error ? cause.message : "Circle status is temporarily unavailable.";
-        const mismatch = /mismatch|multiple|missing the exact|reverted/i.test(message);
-        persistOperation({ ...candidate, stage: mismatch ? "terminal_error" : "recoverable_error", lastError: message });
-        setError(message);
+        if (/mismatch|multiple|missing the exact/i.test(message)) {
+          archiveAndClearSendOperation(window.localStorage, { ...candidate, stage: "terminal_error", lastError: message });
+          setOperation(null); setSubmissionLocked(false); setStage("idle");
+          setError("The saved recovery record does not belong to this wallet or exact transfer and was rejected.");
+        } else if (/reverted/i.test(message)) {
+          persistOperation({ ...candidate, stage: "terminal_error", lastError: message });
+          setError(null);
+        } else {
+          persistOperation({ ...candidate, stage: classifySendStatusError(cause), lastError: message });
+          setError(null);
+        }
       }
     } finally {
       statusInFlightRef.current = false;
@@ -196,7 +231,7 @@ function SendWorkspace() {
   }
 
   useEffect(() => {
-    if (!operation || !circle.userToken || operation.stage === "completed" || operation.stage === "terminal_error" || operation.stage === "awaiting_user_authorization") return;
+    if (!operation || !circle.userToken || !shouldPollSendOperation(operation.stage)) return;
     const initial = window.setTimeout(() => void checkOperationStatus(operation), 0);
     const timer = window.setInterval(() => void checkOperationStatus(operation), 5_000);
     return () => { window.clearTimeout(initial); window.clearInterval(timer); };
@@ -205,6 +240,7 @@ function SendWorkspace() {
   }, [operation?.operationId, operation?.stage, operation?.transactionId, operation?.txHash, circle.userToken]);
 
   const balance = balances[tokenSymbol];
+  const nativeUsdcBalance = balances.USDC;
   const available = useMemo(() => formatTokenAmount(balance, token.decimals), [balance, token.decimals]);
 
   function mutate(action: () => void) {
@@ -212,6 +248,37 @@ function SendWorkspace() {
     formVersion.current += 1;
     setError(null);
     action();
+  }
+
+  async function estimateSendGas(units: bigint, checkedRecipient: Address) {
+    try {
+      if (!publicClient || !wallet.activeWalletAddress) throw new Error("Arc network client is unavailable.");
+      if (wallet.walletMode === "circle" && circle.authMethod !== "passkey") {
+        if (!circle.arcWallet?.id || !circle.userToken) throw new Error("Circle session is unavailable.");
+        const circleBalances = await circle.getWalletBalances(circle.arcWallet.id);
+        const metadata = circleBalances.find((entry) => entry.symbol === token.symbol || entry.tokenAddress?.toLowerCase() === token.address.toLowerCase());
+        if (!metadata?.tokenId) throw new Error("Circle token metadata is unavailable.");
+        const estimate = await estimateUserTransferFee({ amounts: [formatUnits(units, token.decimals)], destinationAddress: checkedRecipient, tokenId: metadata.tokenId, walletId: circle.arcWallet.id }, circle.userToken);
+        return gasReserveFromFeeWei(readCircleFeeEstimateWei(estimate));
+      }
+      const gas = await publicClient.estimateContractGas({ account: getAddress(wallet.activeWalletAddress), address: token.address, abi: ERC20_ABI, functionName: "transfer", args: [checkedRecipient, units] });
+      const gasPrice = await publicClient.getGasPrice();
+      return gasReserveFromFeeWei(gas * gasPrice);
+    } catch {
+      return gasReserveFromFeeWei(null);
+    }
+  }
+
+  async function selectMax() {
+    if (!wallet.activeWalletAddress || balance === 0n || formLocked) return;
+    setEstimatingGas(true); setError(null);
+    const estimateRecipient = isAddress(recipient) ? getAddress(recipient) : getAddress(wallet.activeWalletAddress);
+    const reserve = await estimateSendGas(balance, estimateRecipient);
+    setGasReserveUnits(reserve.reserveUnits); setGasReserveSource(reserve.source);
+    const max = calculateArcMaxAmount({ inputBalance: balance, nativeUsdcBalance, reserveUnits: reserve.reserveUnits, tokenIsUsdc: token.symbol === "USDC" });
+    if (max <= 0n) setError("Leave enough USDC available for network fees.");
+    else setAmount(formatUnits(max, token.decimals));
+    setEstimatingGas(false);
   }
 
   async function submit() {
@@ -233,6 +300,9 @@ function SendWorkspace() {
       if (/^0x0{40}$/i.test(checkedRecipient)) throw new Error("The zero address cannot receive a payment.");
       const units = exactAmount(amount, token.decimals);
       if (units > balance) throw new Error(`Insufficient ${token.symbol} balance.`);
+      const reserve = await estimateSendGas(units, checkedRecipient);
+      setGasReserveUnits(reserve.reserveUnits); setGasReserveSource(reserve.source);
+      if (!hasArcGasForAmount({ amountUnits: units, inputBalance: balance, nativeUsdcBalance, reserveUnits: reserve.reserveUnits, tokenIsUsdc: token.symbol === "USDC" })) throw new Error("Leave enough USDC available for network fees.");
       if (wallet.walletMode === "external" && wallet.activeWalletChainId !== arcTestnet.id) {
         setStage("awaiting_network_switch");
         await switchChainAsync({ chainId: arcTestnet.id });
@@ -264,6 +334,7 @@ function SendWorkspace() {
           refId,
           tokenId: balanceMetadata.tokenId,
           walletId: circle.arcWallet.id,
+          wizpayChain: "ARC-TESTNET",
         });
         pending = { ...pending, challengeId: challenge.challengeId, stage: "challenge_created" };
         persistOperation(pending);
@@ -297,10 +368,10 @@ function SendWorkspace() {
     } catch (cause) {
       if (!(cause instanceof DOMException && cause.name === "AbortError")) {
         const message = cause instanceof Error ? cause.message : "Transfer could not be completed.";
-        const recoverable = operation || readSendOperation(typeof window === "undefined" ? undefined : window.localStorage);
+        const recoverable = operation || readSendOperation(typeof window === "undefined" ? undefined : window.localStorage, sendScope);
         setError(recoverable ? `${message} The existing transfer remains saved; use Check status now.` : message);
       }
-      if (!readSendOperation(typeof window === "undefined" ? undefined : window.localStorage)) setStage("idle");
+      if (!readSendOperation(typeof window === "undefined" ? undefined : window.localStorage, sendScope)) setStage("idle");
     } finally {
       submittingRef.current = false;
       abortRef.current = null;
@@ -353,11 +424,17 @@ function SendWorkspace() {
 
   function reset() {
     if (operation && operation.stage !== "completed" && operation.stage !== "terminal_error") return;
-    clearSendOperation(typeof window === "undefined" ? undefined : window.localStorage);
+    if (operation) archiveAndClearSendOperation(typeof window === "undefined" ? undefined : window.localStorage, operation);
     setOperation(null); setRecipient(""); setAmount(""); setScanned(false); setError(null); setVerifiedHash(null); setCompleted(null); setSubmissionLocked(false); submittedRef.current = false; setStage("idle"); formVersion.current += 1;
   }
 
   if (showInitialSkeleton) return <SendPageSkeleton />;
+
+  const statusStage = operation?.stage ?? (busy ? stage : null);
+  const executionState = statusStage && operation ? sendExecutionState(statusStage) : null;
+  const terminalFailed = executionState === "failed";
+  const unavailable = executionState === "unknown" || executionState === "timeout";
+  const statusTitle = terminalFailed ? "Transfer failed" : unavailable ? "Transfer status unavailable" : "Transfer in progress";
 
   return (
     <>
@@ -366,12 +443,12 @@ function SendWorkspace() {
         <div className="grid gap-6 xl:grid-cols-[minmax(0,2fr)_minmax(300px,1fr)]">
           <Card className="glass-card border-border/40"><CardHeader><CardTitle className="flex items-center gap-2"><Send className="h-5 w-5 text-primary" />Transfer details</CardTitle></CardHeader><CardContent className="space-y-5">
             <div className="space-y-2"><Label htmlFor="send-recipient">Recipient EVM address</Label><Input id="send-recipient" value={recipient} disabled={formLocked} onChange={(event) => mutate(() => { setRecipient(event.target.value); setScanned(false); })} placeholder="0x..." className="font-mono" />{scanned ? <p className="flex items-center gap-1.5 text-xs text-primary"><QrCode className="h-3.5 w-3.5" />Verified QR prefill — review before sending</p> : null}</div>
-            <div className="grid gap-4 sm:grid-cols-2"><div className="space-y-2"><Label htmlFor="send-token">Token</Label><div className="relative"><TokenIcon chainId={arcTestnet.id} address={token.address} symbol={token.symbol} size={28} className="pointer-events-none absolute left-2 top-1.5 z-10" /><select id="send-token" value={tokenSymbol} disabled={formLocked} onChange={(event) => mutate(() => setTokenSymbol(event.target.value as TokenSymbol))} className="h-10 w-full rounded-md border border-input bg-background pl-11 pr-3 text-sm">{TOKEN_OPTIONS.map((option) => <option key={option.symbol} value={option.symbol}>{option.symbol} — {option.name}</option>)}</select></div></div><div className="space-y-2"><div className="flex items-center justify-between"><Label htmlFor="send-amount">Amount</Label><Button type="button" variant="ghost" size="sm" disabled={formLocked || balance === 0n} onClick={() => mutate(() => setAmount(formatUnits(balance, token.decimals)))}>Max</Button></div><Input id="send-amount" inputMode="decimal" value={amount} disabled={formLocked} onChange={(event) => mutate(() => setAmount(event.target.value))} placeholder="0.00" /></div></div>
+            <div className="grid gap-4 sm:grid-cols-2"><div className="space-y-2"><Label htmlFor="send-token">Token</Label><div className="relative"><TokenIcon chainId={arcTestnet.id} address={token.address} symbol={token.symbol} size={28} className="pointer-events-none absolute left-2 top-1.5 z-10" /><select id="send-token" value={tokenSymbol} disabled={formLocked} onChange={(event) => mutate(() => setTokenSymbol(event.target.value as TokenSymbol))} className="h-10 w-full rounded-md border border-input bg-background pl-11 pr-3 text-sm">{TOKEN_OPTIONS.map((option) => <option key={option.symbol} value={option.symbol}>{option.symbol} — {option.name}</option>)}</select></div></div><div className="space-y-2"><div className="flex items-center justify-between"><Label htmlFor="send-amount">Amount</Label><Button type="button" variant="ghost" size="sm" disabled={formLocked || balance === 0n || estimatingGas} onClick={() => void selectMax()}>{estimatingGas ? "Estimating…" : "Max"}</Button></div><Input id="send-amount" inputMode="decimal" value={amount} disabled={formLocked} onChange={(event) => mutate(() => setAmount(event.target.value))} placeholder="0.00" /><p className="text-xs text-muted-foreground">Max leaves at least {formatUnits(gasReserveUnits, 6)} USDC available for network fees{gasReserveSource === "fallback" ? " when a live estimate is unavailable" : ""}.</p></div></div>
             <div className="flex items-center justify-between rounded-xl border border-border/40 bg-background/30 px-4 py-3 text-sm"><span className="text-muted-foreground">Available balance</span><span className="flex items-center gap-2 font-mono"><TokenIcon chainId={arcTestnet.id} address={token.address} symbol={token.symbol} size={20} />{available} {token.symbol}</span></div>
             {balanceError ? <div className="rounded-xl border border-amber-500/25 bg-amber-500/10 p-3 text-sm text-amber-100">Balance could not be loaded. Sending is disabled until it is refreshed.</div> : null}
-            {error ? <div role="alert" className="flex gap-2 rounded-xl border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive"><AlertTriangle className="h-4 w-4 shrink-0" />{error}</div> : null}
-            {busy ? <div role="status" className={`rounded-xl border p-4 ${stage === "terminal_error" ? "border-destructive/30 bg-destructive/10" : stage === "recoverable_error" ? "border-amber-500/30 bg-amber-500/10" : "border-primary/25 bg-primary/10"}`}><p className={`flex items-center gap-2 font-medium ${stage === "terminal_error" ? "text-destructive" : stage === "recoverable_error" ? "text-amber-200" : "text-primary"}`}>{stage !== "terminal_error" ? <Loader2 className="h-4 w-4 animate-spin" /> : <AlertTriangle className="h-4 w-4" />}{operation ? "App Wallet Send in progress" : "Transfer in progress"}</p><p className="mt-1 text-sm text-muted-foreground">{STAGE_COPY[stage as Exclude<SendStage, "idle" | "completed">]}</p>{operation ? <p className="mt-2 text-xs text-muted-foreground">This recovery record prevents another challenge or transfer from being created. Status checks are read-only.</p> : null}<div className="mt-3 flex flex-wrap gap-2">{operation?.stage === "awaiting_user_authorization" ? <Button size="sm" onClick={() => void continueAuthorization()}>Authorize existing transfer</Button> : null}{operation ? <Button size="sm" variant="outline" disabled={checkingStatus} onClick={() => void checkOperationStatus(operation, true)}><RefreshCw className="mr-1.5 h-3.5 w-3.5" />{checkingStatus ? "Checking…" : "Check status now"}</Button> : null}{operation?.stage === "terminal_error" ? <Button size="sm" variant="outline" onClick={reset}>Start over</Button> : null}</div></div> : null}
-            <Button className="w-full" disabled={formLocked || balancesLoading || balanceError || !wallet.isReady || !wallet.isActiveWalletConnected} onClick={() => void submit()}>{busy ? "Transfer recovery active" : submissionLocked ? "Existing transfer is being recovered" : "Review and send"}</Button>
+            {error && !operation ? <div role="alert" className="flex gap-2 rounded-xl border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive"><AlertTriangle className="h-4 w-4 shrink-0" />{error}</div> : null}
+            {statusStage && statusStage !== "completed" ? <div role="status" className={`rounded-xl border p-4 ${terminalFailed ? "border-destructive/30 bg-destructive/10" : unavailable ? "border-amber-500/30 bg-amber-500/10" : "border-primary/25 bg-primary/10"}`}><p className={`flex items-center gap-2 font-medium ${terminalFailed ? "text-destructive" : unavailable ? "text-amber-200" : "text-primary"}`}>{terminalFailed ? <AlertTriangle className="h-4 w-4" /> : <Loader2 className="h-4 w-4 animate-spin" />}{statusTitle}</p><p className="mt-1 text-sm text-muted-foreground">{STAGE_COPY[statusStage as Exclude<SendStage, "idle" | "completed">]}</p>{operation && !terminalFailed ? <p className="mt-2 text-xs text-muted-foreground">The existing recovery record blocks duplicate creation. Status checks are read-only.</p> : null}<div className="mt-3 flex flex-wrap gap-2">{operation?.stage === "awaiting_user_authorization" ? <Button size="sm" onClick={() => void continueAuthorization()}>Authorize existing transfer</Button> : null}{operation && !terminalFailed ? <Button size="sm" variant="outline" disabled={checkingStatus} onClick={() => void checkOperationStatus(operation, true)}><RefreshCw className="mr-1.5 h-3.5 w-3.5" />{checkingStatus ? "Checking…" : "Check status"}</Button> : null}{terminalFailed ? <Button size="sm" variant="outline" onClick={reset}>Start over</Button> : null}</div></div> : null}
+            <Button className="w-full" disabled={formLocked || terminalFailed || balancesLoading || balanceError || !wallet.isReady || !wallet.isActiveWalletConnected} onClick={() => void submit()}>{submissionLocked ? "Existing transfer is being recovered" : "Review and send"}</Button>
             {!operation && wallet.walletMode === "circle" && circle.authMethod !== "passkey" ? <Button className="w-full" variant="ghost" disabled={checkingStatus || !recipient || !amount || !circle.userToken} onClick={() => void recoverExistingTransfer()}><RefreshCw className="mr-2 h-4 w-4" />Recover an existing transfer</Button> : null}
           </CardContent></Card>
           <Card className="glass-card h-fit border-border/40"><CardHeader><CardTitle className="text-base">Transfer summary</CardTitle></CardHeader><CardContent className="space-y-3 text-sm"><div className="flex justify-between gap-3"><span className="text-muted-foreground">Token</span><span className="flex items-center gap-2"><TokenIcon chainId={arcTestnet.id} address={token.address} symbol={token.symbol} size={24} />{token.symbol}</span></div><div className="flex justify-between gap-3"><span className="text-muted-foreground">Wallet mode</span><span>{wallet.walletMode === "circle" ? "App Wallet" : "External Wallet"}</span></div><div className="flex justify-between gap-3"><span className="text-muted-foreground">Network</span><span>Arc Testnet</span></div><div className="flex justify-between gap-3"><span className="text-muted-foreground">Sender</span><span className="font-mono">{wallet.activeWalletAddress ? formatCompactAddress(wallet.activeWalletAddress) : "Not connected"}</span></div><div className="flex justify-between gap-3"><span className="text-muted-foreground">Fee / gas</span><span className="text-right">Shown by wallet when available</span></div><p className="border-t border-border/30 pt-3 text-xs text-muted-foreground">WizPay submits one ordinary transfer. No Payroll, batch, Bridge, or Swap route is used.</p></CardContent></Card>

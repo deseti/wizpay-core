@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { SUPPORTED_TOKENS } from "@/lib/wizpay";
-import { assertCircleTransactionMatches, extractSingleCorrelationId, findMatchingCircleTransaction, readSendOperation, writeSendOperation, type AppWalletSendOperation } from "./send-operation";
+import { archiveAndClearSendOperation, assertCircleTransactionMatches, classifySendStatusError, extractSingleCorrelationId, findMatchingCircleTransaction, isSendOperationLocked, readSendOperation, sendExecutionState, sendOperationStorageKey, shouldPollSendOperation, writeSendOperation, type AppWalletSendOperation } from "./send-operation";
 
 const operation: AppWalletSendOperation = {
   version: 2, operationId: "SEND-1", idempotencyKey: "idem", walletMode: "circle", authMethod: "google",
@@ -23,7 +23,40 @@ describe("App Wallet Send recovery", () => {
     const serialized = (storage.setItem as ReturnType<typeof vi.fn>).mock.calls[0][1];
     expect(serialized).not.toContain("userToken");
     (storage.getItem as ReturnType<typeof vi.fn>).mockReturnValue(serialized);
-    expect(readSendOperation(storage)).toMatchObject({ challengeId: "challenge-1", stage: "authorization_completed" });
+    expect(readSendOperation(storage, { walletId: operation.walletId, sender: operation.sender })).toMatchObject({ challengeId: "challenge-1", stage: "authorization_completed" });
+  });
+  it("isolates recovery by Circle wallet and sender", () => {
+    const values = new Map<string, string>();
+    const storage = { getItem: vi.fn((key: string) => values.get(key) ?? null), setItem: vi.fn((key: string, value: string) => values.set(key, value)), removeItem: vi.fn((key: string) => values.delete(key)) } as unknown as Storage;
+    writeSendOperation(storage, operation);
+    expect(readSendOperation(storage, { walletId: "wallet-2", sender: operation.sender })).toBeNull();
+    expect(readSendOperation(storage, { walletId: operation.walletId, sender: "0x1111111111111111111111111111111111111111" })).toBeNull();
+    expect(values.has(sendOperationStorageKey({ walletId: operation.walletId, sender: operation.sender }))).toBe(true);
+  });
+  it("archives a terminal failure before clearing only its scoped active lock", () => {
+    const values = new Map<string, string>();
+    const storage = { getItem: vi.fn((key: string) => values.get(key) ?? null), setItem: vi.fn((key: string, value: string) => values.set(key, value)), removeItem: vi.fn((key: string) => values.delete(key)) } as unknown as Storage;
+    const failed = { ...operation, stage: "terminal_error" as const };
+    writeSendOperation(storage, failed);
+    archiveAndClearSendOperation(storage, failed);
+    expect(readSendOperation(storage, { walletId: operation.walletId, sender: operation.sender })).toBeNull();
+    expect([...values.values()].some((value) => value.includes("terminal_error"))).toBe(true);
+  });
+  it("keeps provider failures unresolved and closes only terminal states", () => {
+    expect(classifySendStatusError(new TypeError("Failed to fetch"))).toBe("provider_unavailable");
+    expect(classifySendStatusError(new Error("request timed out"))).toBe("timed_out");
+    expect(isSendOperationLocked("provider_unavailable")).toBe(true);
+    expect(isSendOperationLocked("terminal_error")).toBe(false);
+    expect(isSendOperationLocked("completed")).toBe(false);
+  });
+  it("renders terminal, pending, unknown, and success as mutually exclusive states", () => {
+    expect(sendExecutionState("terminal_error")).toBe("failed");
+    expect(sendExecutionState("transaction_pending")).toBe("pending");
+    expect(sendExecutionState("provider_unavailable")).toBe("unknown");
+    expect(sendExecutionState("completed")).toBe("success");
+    expect(shouldPollSendOperation("terminal_error")).toBe(false);
+    expect(shouldPollSendOperation("completed")).toBe(false);
+    expect(shouldPollSendOperation("transaction_pending")).toBe(true);
   });
   it("finds exactly one strictly matching Circle transaction", () => {
     expect(findMatchingCircleTransaction(operation, [{ ...transaction, destinationAddress: `0x${"1".repeat(40)}` }, transaction])?.id).toBe("transaction-1");

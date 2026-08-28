@@ -40,6 +40,12 @@ vi.mock("@/components/providers/CircleWalletProvider", () => ({
 vi.mock("@/hooks/use-toast", () => ({
   useToast: () => ({ toast: state.toast }),
 }));
+vi.mock("@/hooks/useTokenBalances", () => ({
+  useTokenBalances: () => ({
+    balances: { USDC: 10_000_000n, EURC: 10_000_000n },
+    isLoading: false,
+  }),
+}));
 vi.mock("wagmi", async (importOriginal) => ({
   ...(await importOriginal<typeof import("wagmi")>()),
   useAccount: () => ({ address: state.walletAddress }),
@@ -118,6 +124,8 @@ function appQuote() {
     walletAddress: state.walletAddress,
     recipientAddress: state.walletAddress,
     executorAddress: executor,
+    gasReserveUnits: "50000",
+    gasReserveSource: "estimate" as const,
   };
 }
 
@@ -133,6 +141,7 @@ async function enterAmountAndExecute(buttonName: RegExp) {
 describe("SwapScreen verified success modal", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    window.localStorage.clear();
     state.walletMode = "external";
     state.writeContract.mockResolvedValue(state.hash);
     state.readContract.mockResolvedValue(10_000_000n);
@@ -191,6 +200,17 @@ describe("SwapScreen verified success modal", () => {
       expect(document.querySelector('img[src$="/tokens/usdc.png"]')).toBeInTheDocument();
       expect(document.querySelector('img[src$="/tokens/eurc.png"]')).toBeInTheDocument();
     });
+  });
+
+  it("uses the App Wallet Swap execution estimate for Max instead of the full USDC balance", async () => {
+    state.walletMode = "circle";
+    render(<SwapScreen />);
+    fireEvent.click(screen.getByRole("button", { name: "Max" }));
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "Swap amount" })).toHaveValue("9.95"));
+    expect(quoteAppWalletXylonetSwap).toHaveBeenCalledWith(
+      expect.objectContaining({ amountIn: "10000000", tokenIn: "USDC" }),
+      "user-token",
+    );
   });
 
   it("opens only after External Wallet receipt verification", async () => {
@@ -302,6 +322,11 @@ describe("SwapScreen verified success modal", () => {
     expect(
       screen.queryByRole("heading", { name: "Swap completed" }),
     ).not.toBeInTheDocument();
+    if (_label === "failed") {
+      expect(screen.getByRole("heading", { name: "Swap failed" })).toBeInTheDocument();
+      expect(screen.queryByText("Swap in progress")).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Start over" })).toBeInTheDocument();
+    }
   });
 
   it("Start another swap resets only the swap presentation and amount", async () => {

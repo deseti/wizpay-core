@@ -62,6 +62,8 @@ export interface AppWalletXylonetOperationResponse {
   createdAt: string;
   updatedAt: string;
   completedAt?: string;
+  gasReserveUnits?: string;
+  gasReserveSource?: 'estimate' | 'fallback';
 }
 
 export const APP_WALLET_XYLONET_ERRORS = {

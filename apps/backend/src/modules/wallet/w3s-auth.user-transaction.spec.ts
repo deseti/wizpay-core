@@ -119,4 +119,79 @@ describe('W3sAuthService User-Controlled transaction lookup', () => {
       expect.objectContaining({ method: 'GET' }),
     );
   });
+
+  it('proxies the documented user-scoped transfer fee estimate', async () => {
+    global.fetch = jest.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          data: { medium: { gasLimit: '100000', maxFee: '0.02' } },
+        }),
+        {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        },
+      ),
+    );
+    await expect(
+      service.dispatch('estimateTransferFee', {
+        amounts: ['1'],
+        destinationAddress: '0x1111111111111111111111111111111111111111',
+        tokenId: 'token-usdc',
+        walletId: 'wallet-id',
+        userToken: 'sanitized-user-token',
+        wizpayChain: 'ARC-TESTNET',
+      }),
+    ).resolves.toEqual({ medium: { gasLimit: '100000', maxFee: '0.02' } });
+    expect(global.fetch).toHaveBeenCalledWith(
+      'https://api.circle.test/v1/w3s/transactions/transfer/estimateFee',
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({
+          'X-User-Token': 'sanitized-user-token',
+        }),
+      }),
+    );
+  });
+
+  it('rejects a full-balance Arc USDC transfer before creating a challenge', async () => {
+    global.fetch = jest
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            data: { medium: { gasLimit: '100000', maxFee: '0.02' } },
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            data: {
+              tokenBalances: [
+                {
+                  amount: '5.9891',
+                  token: { id: 'token-usdc', symbol: 'USDC' },
+                },
+              ],
+            },
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      );
+    await expect(
+      service.dispatch('createTransferChallenge', {
+        amounts: ['5.989093'],
+        destinationAddress: '0x1111111111111111111111111111111111111111',
+        feeLevel: 'MEDIUM',
+        idempotencyKey: '11111111-1111-4111-8111-111111111111',
+        refId: 'SEND-1',
+        tokenId: 'token-usdc',
+        walletId: 'wallet-id',
+        userToken: 'sanitized-user-token',
+        wizpayChain: 'ARC-TESTNET',
+      }),
+    ).rejects.toThrow('Leave enough USDC');
+    expect(global.fetch).toHaveBeenCalledTimes(2);
+  });
 });

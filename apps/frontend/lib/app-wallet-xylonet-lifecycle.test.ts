@@ -154,4 +154,22 @@ describe("shared XyloNet User-Controlled lifecycle", () => {
     expect(api.createSwapChallenge).not.toHaveBeenCalled();
     expect(api.poll).not.toHaveBeenCalled();
   });
+
+  it("does not report Failed to fetch as a terminal Circle callback", async () => {
+    const api = {
+      createApprovalChallenge: vi.fn().mockResolvedValue(operation("awaiting_approval_confirmation", { approvalChallengeId: "approval" })),
+      createSwapChallenge: vi.fn(),
+      poll: vi.fn(),
+      recordChallengeResult: vi.fn(),
+    };
+    await expect(runAppWalletXylonetLifecycle({
+      initialOperation: operation("created"),
+      userToken: "token",
+      executeChallenge: vi.fn().mockRejectedValue(new TypeError("Failed to fetch")),
+      pollIntervalMs: 0,
+      api,
+    })).rejects.toThrow("Failed to fetch");
+    expect(api.recordChallengeResult).not.toHaveBeenCalled();
+    expect(api.createSwapChallenge).not.toHaveBeenCalled();
+  });
 });

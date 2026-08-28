@@ -75,6 +75,11 @@ function classifyChallengeError(error: unknown) {
   return { status, reason: message } as const;
 }
 
+function isProviderOrUnknownChallengeError(error: unknown) {
+  const message = getFriendlyErrorMessage(error).toLowerCase();
+  return /failed to fetch|network|temporarily unavailable|service unavailable|timeout|timed out/.test(message);
+}
+
 export interface RunAppWalletXylonetLifecycleOptions {
   initialOperation: AppWalletXylonetOperationResponse;
   userToken: string;
@@ -150,6 +155,9 @@ export async function runAppWalletXylonetLifecycle({
         ),
       );
     } catch (error) {
+      if (isProviderOrUnknownChallengeError(error)) {
+        throw error;
+      }
       const failed = await api
         .recordChallengeResult(
           current.operationId,

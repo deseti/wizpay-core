@@ -112,11 +112,9 @@ export class W3sAuthService {
           params,
         );
       case 'createTransferChallenge':
-        return this.proxyUserAction(
-          'POST',
-          '/v1/w3s/user/transactions/transfer',
-          params,
-        );
+        return this.createArcTransferChallenge(params);
+      case 'estimateTransferFee':
+        return this.estimateUserTransferFee(params);
       case 'createTypedDataChallenge':
         return this.proxyUserAction(
           'POST',
@@ -183,6 +181,90 @@ export class W3sAuthService {
       method: 'POST',
       path: '/v1/w3s/user/transactions/contractExecution',
       userToken: input.userToken,
+    });
+  }
+
+  async estimateUserContractExecutionFee(input: {
+    callData: string;
+    contractAddress: string;
+    userToken: string;
+    walletId: string;
+  }): Promise<W3sActionResult> {
+    return this.circleUserRequest({
+      body: {
+        callData: input.callData,
+        contractAddress: input.contractAddress,
+        walletId: input.walletId,
+      },
+      method: 'POST',
+      path: '/v1/w3s/transactions/contractExecution/estimateFee',
+      userToken: input.userToken,
+    });
+  }
+
+  private async estimateUserTransferFee(
+    params: Record<string, unknown>,
+  ): Promise<W3sActionResult> {
+    const userToken =
+      typeof params.userToken === 'string' ? params.userToken.trim() : '';
+    const normalized = this.normalizeUserActionParams(
+      '/v1/w3s/transactions/transfer/estimateFee',
+      params,
+    );
+    this.validateTransferFields(normalized);
+    if (!userToken) {
+      this.throwValidationError([
+        { field: 'userToken', message: 'userToken is required' },
+      ]);
+    }
+    return this.circleUserRequest({
+      body: {
+        amounts: normalized.amounts,
+        destinationAddress: normalized.destinationAddress,
+        tokenId: normalized.tokenId,
+        walletId: normalized.walletId,
+      },
+      method: 'POST',
+      path: '/v1/w3s/transactions/transfer/estimateFee',
+      userToken,
+    });
+  }
+
+  private async createArcTransferChallenge(
+    params: Record<string, unknown>,
+  ): Promise<W3sActionResult> {
+    if (params.wizpayChain !== 'ARC-TESTNET') {
+      this.throwValidationError([
+        {
+          field: 'wizpayChain',
+          message: 'ARC-TESTNET execution context is required',
+        },
+      ]);
+    }
+    const userToken =
+      typeof params.userToken === 'string' ? params.userToken.trim() : '';
+    const normalized = this.normalizeUserActionParams(
+      '/v1/w3s/user/transactions/transfer',
+      params,
+    );
+    this.validateTransferFields(normalized);
+    const estimate = await this.estimateUserTransferFee({
+      ...normalized,
+      userToken,
+    }).catch(() => ({}));
+    const reserveUnits = this.arcGasReserveUnits(estimate);
+    const balances = await this.getWalletBalances({
+      userToken,
+      walletId: normalized.walletId,
+    });
+    this.assertArcTransferBalance(
+      normalized,
+      balances.tokenBalances,
+      reserveUnits,
+    );
+    return this.proxyUserAction('POST', '/v1/w3s/user/transactions/transfer', {
+      ...normalized,
+      userToken,
     });
   }
 
@@ -835,6 +917,7 @@ export class W3sAuthService {
       ...payloadParams,
       ...rest,
     };
+    delete normalized.wizpayChain;
 
     if (typeof normalized.walletId === 'string') {
       normalized.walletId = normalized.walletId.trim();
@@ -960,6 +1043,95 @@ export class W3sAuthService {
 
     if (issues.length > 0) {
       this.throwValidationError(issues);
+    }
+  }
+
+  private validateTransferFields(body: Record<string, unknown>) {
+    const issues: W3sValidationIssue[] = [];
+    if (!this.isNonEmptyString(body.walletId))
+      issues.push({ field: 'walletId', message: 'walletId is required' });
+    if (!this.isNonEmptyString(body.destinationAddress))
+      issues.push({
+        field: 'destinationAddress',
+        message: 'destinationAddress is required',
+      });
+    if (
+      !Array.isArray(body.amounts) ||
+      body.amounts.length !== 1 ||
+      !body.amounts.every((amount) => this.isNonEmptyString(amount))
+    )
+      issues.push({
+        field: 'amounts',
+        message: 'exactly one transfer amount is required',
+      });
+    if (!this.isNonEmptyString(body.tokenId))
+      issues.push({ field: 'tokenId', message: 'tokenId is required' });
+    if (issues.length) this.throwValidationError(issues);
+  }
+
+  private decimalUnits(value: unknown, decimals: number): bigint | null {
+    if (typeof value !== 'string' || !/^\d+(?:\.\d+)?$/.test(value))
+      return null;
+    const [whole, fraction = ''] = value.split('.');
+    if (fraction.length > decimals) return null;
+    return (
+      BigInt(whole) * 10n ** BigInt(decimals) +
+      BigInt((fraction + '0'.repeat(decimals)).slice(0, decimals))
+    );
+  }
+
+  private arcGasReserveUnits(estimate: W3sActionResult): bigint {
+    const level = [estimate.medium, estimate.high, estimate.low].find((value) =>
+      this.isRecord(value),
+    );
+    const gasLimit =
+      typeof level?.gasLimit === 'string' && /^\d+$/.test(level.gasLimit)
+        ? BigInt(level.gasLimit)
+        : null;
+    const maxFeeGwei = this.decimalUnits(level?.maxFee ?? level?.gasPrice, 9);
+    if (!gasLimit || maxFeeGwei === null) return 100_000n;
+    const feeWei = gasLimit * maxFeeGwei;
+    const feeUnits = (feeWei + 10n ** 12n - 1n) / 10n ** 12n;
+    const variableMargin = (feeUnits * 2_000n + 9_999n) / 10_000n;
+    return feeUnits + variableMargin + 5_000n;
+  }
+
+  private assertArcTransferBalance(
+    request: Record<string, unknown>,
+    balances: unknown,
+    reserveUnits: bigint,
+  ) {
+    if (!Array.isArray(balances))
+      throw new Error(
+        'Circle wallet balances are unavailable for gas validation.',
+      );
+    const rows = balances.filter((value): value is Record<string, unknown> =>
+      this.isRecord(value),
+    );
+    const tokenId = String(request.tokenId);
+    const input = rows.find(
+      (row) => this.isRecord(row.token) && row.token.id === tokenId,
+    );
+    const usdc = rows.find(
+      (row) =>
+        this.isRecord(row.token) &&
+        String(row.token.symbol).toUpperCase() === 'USDC',
+    );
+    const inputUnits = this.decimalUnits(input?.amount, 6);
+    const usdcUnits = this.decimalUnits(usdc?.amount, 6);
+    const amount = this.decimalUnits((request.amounts as unknown[])[0], 6);
+    if (inputUnits === null || usdcUnits === null || amount === null)
+      throw new Error(
+        'Circle wallet balances could not be validated for network fees.',
+      );
+    if (amount > inputUnits)
+      throw new Error('Insufficient transfer token balance.');
+    const inputIsUsdc = input === usdc;
+    if (
+      (inputIsUsdc && amount + reserveUnits > usdcUnits) ||
+      (!inputIsUsdc && reserveUnits > usdcUnits)
+    ) {
+      throw new Error('Leave enough USDC available for network fees.');
     }
   }
 
