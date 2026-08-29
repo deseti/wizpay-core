@@ -16,6 +16,7 @@ import {
   extractChallengeId,
   normalizeCircleWalletTokenBalance,
   type CircleSession,
+  type CircleW3SSession,
   type CirclePasskeyChallenge,
   type CircleWalletTokenBalance,
 } from "@/services/circle-auth.service";
@@ -85,7 +86,7 @@ export interface ChallengeActionsDeps {
     forceReinitialize?: boolean;
     reason?: string;
     refreshWallets?: boolean;
-  }) => Promise<void>;
+  }) => Promise<CircleSession | null | undefined>;
   postW3sAction: (
     action: string,
     params?: Record<string, unknown>,
@@ -111,34 +112,38 @@ export function useChallengeActions({
   passkeyRuntimeByWalletIdRef,
 }: ChallengeActionsDeps) {
   const withRecoveredSession = useCallback(
-    async <T,>(
+    async <T>(
       actionLabel: string,
-      action: () => Promise<T>,
+      action: (activeSession: CircleW3SSession) => Promise<T>,
       options?: { refreshWallets?: boolean },
     ) => {
       if (!session || isPasskeySession(session) || !session.userToken) {
         throw new Error("Circle session is not available.");
       }
 
-      await ensureCircleSessionReady({
+      const recovered = await ensureCircleSessionReady({
         reason: `${actionLabel}:preflight`,
         refreshWallets: options?.refreshWallets,
       });
+      const activeSession =
+        recovered && !isPasskeySession(recovered) ? recovered : session;
 
       try {
-        return await action();
+        return await action(activeSession);
       } catch (error) {
         if (!isCircleRecoverableSessionError(error)) {
           throw error;
         }
 
-        await ensureCircleSessionReady({
+        const retried = await ensureCircleSessionReady({
           forceReinitialize: true,
           reason: `${actionLabel}:retry`,
           refreshWallets: true,
         });
 
-        return action();
+        return action(
+          retried && !isPasskeySession(retried) ? retried : activeSession,
+        );
       }
     },
     [ensureCircleSessionReady, session],
@@ -156,7 +161,8 @@ export function useChallengeActions({
 
       return withRecoveredSession(
         "executeChallenge",
-        () => executeChallengeForSession(challengeId, session),
+        (activeSession) =>
+          executeChallengeForSession(challengeId, activeSession),
         { refreshWallets: false },
       );
     },
@@ -215,10 +221,10 @@ export function useChallengeActions({
 
       const response = await withRecoveredSession(
         "createContractExecutionChallenge",
-        () =>
+        (activeSession) =>
           postW3sAction(
             "createContractExecutionChallenge",
-            buildW3sUserActionParams(payload, session.userToken),
+            buildW3sUserActionParams(payload, activeSession.userToken),
           ),
       );
 
@@ -248,10 +254,10 @@ export function useChallengeActions({
 
       const response = await withRecoveredSession(
         "createTransferChallenge",
-        () =>
+        (activeSession) =>
           postW3sAction(
             "createTransferChallenge",
-            buildW3sUserActionParams(payload, session.userToken),
+            buildW3sUserActionParams(payload, activeSession.userToken),
           ),
       );
 
@@ -314,10 +320,10 @@ export function useChallengeActions({
 
       const response = await withRecoveredSession(
         "createTypedDataChallenge",
-        () =>
+        (activeSession) =>
           postW3sAction(
             "createTypedDataChallenge",
-            buildW3sUserActionParams(payload, session.userToken),
+            buildW3sUserActionParams(payload, activeSession.userToken),
           ),
       );
 
@@ -363,9 +369,9 @@ export function useChallengeActions({
 
       const response = await withRecoveredSession(
         "getWalletBalances",
-        () =>
+        (activeSession) =>
           postW3sAction("getWalletBalances", {
-            userToken: session.userToken,
+            userToken: activeSession.userToken,
             walletId,
           }),
         { refreshWallets: false },

@@ -24,7 +24,8 @@ function isMobileRecoveryEnvironment() {
   const isMobileDevice = /android|iphone|ipad|ipod|mobile/i.test(userAgent);
   const isStandalone =
     window.matchMedia("(display-mode: standalone)").matches ||
-    (window.navigator as Navigator & { standalone?: boolean }).standalone === true;
+    (window.navigator as Navigator & { standalone?: boolean }).standalone ===
+      true;
 
   return isMobileDevice || isStandalone;
 }
@@ -35,7 +36,10 @@ export interface CircleMobileRecoveryDeps {
   authRequestInFlightRef: React.MutableRefObject<boolean>;
   ensureDeviceId: () => Promise<string>;
   handleAuthFailure: (error: unknown) => void;
-  loadWalletsEnsuringSolana: (authSession: CircleSession) => Promise<unknown>;
+  loadWalletsForArcStartup: (authSession: CircleSession) => Promise<unknown>;
+  refreshCircleSession: (options?: {
+    force?: boolean;
+  }) => Promise<CircleSession>;
   rearmSdkForSession: (
     authSession: CircleSession,
     options?: { forceReinitialize?: boolean },
@@ -51,7 +55,8 @@ export function useCircleMobileRecovery({
   authRequestInFlightRef,
   ensureDeviceId,
   handleAuthFailure,
-  loadWalletsEnsuringSolana,
+  loadWalletsForArcStartup,
+  refreshCircleSession,
   rearmSdkForSession,
   resetActiveCircleSession,
   setAuthError,
@@ -59,7 +64,7 @@ export function useCircleMobileRecovery({
 }: CircleMobileRecoveryDeps) {
   const hiddenAtRef = useRef<number | null>(null);
   const needsRecoveryRef = useRef(false);
-  const recoveryInFlightRef = useRef<Promise<void> | null>(null);
+  const recoveryInFlightRef = useRef<Promise<CircleSession> | null>(null);
   const lastSuccessfulCheckAtRef = useRef(0);
 
   const ensureCircleSessionReady = useCallback(
@@ -76,11 +81,12 @@ export function useCircleMobileRecovery({
         authRequestInFlightRef.current ||
         !isMobileRecoveryEnvironment()
       ) {
-        return;
+        return activeSession;
       }
 
       const now = Date.now();
-      const isStale = now - lastSuccessfulCheckAtRef.current > SESSION_FRESHNESS_MS;
+      const isStale =
+        now - lastSuccessfulCheckAtRef.current > SESSION_FRESHNESS_MS;
       const shouldRefreshWallets =
         Boolean(options?.refreshWallets) ||
         needsRecoveryRef.current ||
@@ -88,7 +94,7 @@ export function useCircleMobileRecovery({
         !ready;
 
       if (!options?.forceReinitialize && !shouldRefreshWallets) {
-        return;
+        return activeSession;
       }
 
       if (recoveryInFlightRef.current) {
@@ -99,26 +105,35 @@ export function useCircleMobileRecovery({
         setAuthStatus("Restoring Circle wallet session...");
 
         try {
-          await rearmSdkForSession(activeSession, {
+          const recoveredSession = await refreshCircleSession();
+          await rearmSdkForSession(recoveredSession, {
             forceReinitialize: options?.forceReinitialize,
           });
           await ensureDeviceId();
 
           if (shouldRefreshWallets || options?.forceReinitialize) {
-            await loadWalletsEnsuringSolana(activeSession);
+            await loadWalletsForArcStartup(recoveredSession);
           }
 
           needsRecoveryRef.current = false;
           lastSuccessfulCheckAtRef.current = Date.now();
           setAuthError(null);
           setAuthStatus(null);
+          return recoveredSession;
         } catch (error) {
           if (isCircleExpiredSessionError(error)) {
-            const message =
-              getErrorMessage(error) ||
-              "Your Circle session expired. Sign in again to continue.";
-            resetActiveCircleSession(message);
-            throw new Error(message);
+            try {
+              const refreshed = await refreshCircleSession({ force: true });
+              await rearmSdkForSession(refreshed, { forceReinitialize: true });
+              await loadWalletsForArcStartup(refreshed);
+              return refreshed;
+            } catch (refreshError) {
+              const message =
+                getErrorMessage(refreshError) ||
+                "Your Circle session expired. Sign in again to continue.";
+              resetActiveCircleSession(message);
+              throw new Error(message);
+            }
           }
 
           setAuthStatus(null);
@@ -130,7 +145,7 @@ export function useCircleMobileRecovery({
       recoveryInFlightRef.current = nextRecovery;
 
       try {
-        await nextRecovery;
+        return await nextRecovery;
       } finally {
         if (recoveryInFlightRef.current === nextRecovery) {
           recoveryInFlightRef.current = null;
@@ -141,8 +156,9 @@ export function useCircleMobileRecovery({
       authRequestInFlightRef,
       ensureDeviceId,
       handleAuthFailure,
-      loadWalletsEnsuringSolana,
+      loadWalletsForArcStartup,
       ready,
+      refreshCircleSession,
       rearmSdkForSession,
       resetActiveCircleSession,
       session,
@@ -152,7 +168,11 @@ export function useCircleMobileRecovery({
   );
 
   useEffect(() => {
-    if (!session || isPasskeySession(session) || !isMobileRecoveryEnvironment()) {
+    if (
+      !session ||
+      isPasskeySession(session) ||
+      !isMobileRecoveryEnvironment()
+    ) {
       return;
     }
 

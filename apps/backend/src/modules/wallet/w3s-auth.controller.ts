@@ -3,7 +3,6 @@ import {
   Body,
   Controller,
   HttpException,
-  InternalServerErrorException,
   Post,
 } from '@nestjs/common';
 import { W3sAuthService } from './w3s-auth.service';
@@ -33,7 +32,8 @@ export class W3sAuthController {
     }
 
     // Extract params (everything except "action")
-    const { action: _removed, ...params } = body;
+    const params = { ...body };
+    delete params.action;
 
     try {
       return await this.w3sAuthService.dispatch(action, params);

@@ -9,10 +9,10 @@ import { ERC20_ABI } from "@/constants/erc20";
 import { useActiveWalletAddress } from "@/hooks/useActiveWalletAddress";
 import { arcTestnet } from "@/lib/wagmi";
 import {
-  parseAmountToUnits,
-  TOKEN_OPTIONS,
-  type TokenSymbol,
-} from "@/lib/wizpay";
+  circleBalanceAmountToUnits,
+  selectCircleTransferToken,
+} from "@/services/circle-auth.service";
+import { TOKEN_OPTIONS, type TokenSymbol } from "@/lib/wizpay";
 
 interface UseTokenBalancesOptions {
   enabled?: boolean;
@@ -70,19 +70,16 @@ export function useTokenBalances({
   const balances: Record<TokenSymbol, bigint> = { USDC: 0n, EURC: 0n };
 
   if (walletMode === "circle") {
-    (circleBalancesQuery.data ?? []).forEach((balance) => {
-      const token =
-        TOKEN_OPTIONS.find((candidate) => candidate.symbol === balance.symbol) ??
-        TOKEN_OPTIONS.find(
-          (candidate) =>
-            candidate.address.toLowerCase() === balance.tokenAddress?.toLowerCase()
-        );
-
-      if (!token) {
-        return;
-      }
-
-      balances[token.symbol] = parseAmountToUnits(balance.amount, token.decimals);
+    TOKEN_OPTIONS.forEach((token) => {
+      const balance = selectCircleTransferToken(circleBalancesQuery.data ?? [], {
+        blockchain: "ARC-TESTNET",
+        symbol: token.symbol,
+        tokenAddress: token.address,
+      });
+      const units = balance
+        ? circleBalanceAmountToUnits(balance.amount, token.decimals)
+        : null;
+      if (units !== null) balances[token.symbol] = units;
     });
   } else if (data) {
     TOKEN_OPTIONS.forEach((token, index) => {

@@ -8,6 +8,7 @@
  */
 
 import type { Address, Hex } from "viem";
+import type { CircleInitializationPhase } from "@/lib/circle-runtime";
 
 export type LoginMethod = "google" | "email" | "passkey";
 
@@ -58,6 +59,9 @@ export type CirclePasskeyChallenge =
 
 export type CircleWalletTokenBalance = {
   amount: string;
+  blockchain: string | null;
+  decimals: number | null;
+  isNative: boolean;
   raw: Record<string, unknown>;
   symbol: string | null;
   tokenAddress: string | null;
@@ -132,6 +136,7 @@ export type CircleWalletContextValue = {
   getWalletBalances: (walletId: string) => Promise<CircleWalletTokenBalance[]>;
   hasPendingEmailOtp: boolean;
   isAuthenticating: boolean;
+  initializationPhase: CircleInitializationPhase;
   login: () => void;
   loginMethodLabel: string;
   logout: () => void;
@@ -143,9 +148,6 @@ export type CircleWalletContextValue = {
   requestPasskeyLogin: () => Promise<void>;
   requestPasskeyRegistration: (username: string) => Promise<void>;
   sepoliaWallet: CircleUserWallet | null;
-  solanaWallet: CircleUserWallet | null;
-  /** Save a Solana address manually (for passkey users who have no Circle Solana wallet). */
-  savePasskeySolanaAddress: (address: string) => void;
   userEmail: string | null;
   /** Current Circle User-Controlled session token; send only as X-User-Token. */
   userToken: string | null;

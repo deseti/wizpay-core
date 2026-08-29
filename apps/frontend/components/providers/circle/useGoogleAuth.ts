@@ -3,6 +3,10 @@
 import { useCallback } from "react";
 import { SocialLoginProvider } from "@circle-fin/w3s-pw-web-sdk/dist/src/types";
 import {
+  CIRCLE_ACTION_TIMEOUT_MS,
+  withCircleTimeout,
+} from "@/lib/circle-runtime";
+import {
   CIRCLE_APP_ID,
   GOOGLE_CLIENT_ID,
   type W3SSdkInstance,
@@ -28,7 +32,9 @@ export interface GoogleAuthDeps {
     params?: Record<string, unknown>,
   ) => Promise<Record<string, unknown>>;
   storeLoginConfig: (value: StoredLoginConfig) => void;
-  clearStoredLoginConfig: (options?: { preserveGoogleCookies?: boolean }) => void;
+  clearStoredLoginConfig: (options?: {
+    preserveGoogleCookies?: boolean;
+  }) => void;
 }
 
 export function useGoogleAuth({
@@ -136,7 +142,11 @@ export function useGoogleAuth({
       // and the redirect. The SDK's saveOAuthInfo writes 'socialLoginProvider',
       // 'state', and 'nonce' to localStorage, and its checkSocialLoginState
       // reads them back on return. Manual management causes mismatches.
-      await sdk.performLogin(SocialLoginProvider.GOOGLE);
+      await withCircleTimeout(
+        sdk.performLogin(SocialLoginProvider.GOOGLE),
+        CIRCLE_ACTION_TIMEOUT_MS,
+        "restoring_session",
+      );
     } catch (error) {
       setIsAuthenticating(false);
       handleAuthFailure(error);

@@ -50,6 +50,13 @@ export type BackendWalletEnsureResult = {
   wallet: BackendManagedCircleWallet | null;
 };
 
+export function selectBackendWalletForBlockchain(
+  wallets: BackendManagedCircleWallet[],
+  blockchain: BackendWalletBlockchain,
+) {
+  return wallets.find((wallet) => wallet.blockchain === blockchain) ?? null;
+}
+
 type WalletApiError = Error & {
   code?: number | string;
   details?: unknown;
@@ -57,20 +64,26 @@ type WalletApiError = Error & {
 };
 
 export async function initializeBackendWallets(
-  params: WalletSessionParams
+  params: WalletSessionParams,
+  signal?: AbortSignal,
 ): Promise<BackendWalletInitializeResult> {
   try {
-    return await backendFetch<BackendWalletInitializeResult>("/wallets/initialize", {
-      method: "POST",
-      body: JSON.stringify(params),
-    });
+    return await backendFetch<BackendWalletInitializeResult>(
+      "/wallets/initialize",
+      {
+        method: "POST",
+        body: JSON.stringify(params),
+        signal,
+      },
+    );
   } catch (error) {
     throw normalizeWalletApiError(error);
   }
 }
 
 export async function syncBackendWallets(
-  params: WalletSessionParams
+  params: WalletSessionParams,
+  signal?: AbortSignal,
 ): Promise<BackendWalletSyncResult> {
   try {
     const result = await backendFetch<{
@@ -79,6 +92,7 @@ export async function syncBackendWallets(
     }>("/wallets/sync", {
       method: "POST",
       body: JSON.stringify(params),
+      signal,
     });
 
     return {
@@ -91,7 +105,7 @@ export async function syncBackendWallets(
 }
 
 export async function ensureBackendWallet(
-  params: WalletSessionParams & { chain: BackendWalletChain }
+  params: WalletSessionParams & { chain: BackendWalletChain },
 ): Promise<BackendWalletEnsureResult> {
   try {
     const result = await backendFetch<{
@@ -115,7 +129,9 @@ export async function ensureBackendWallet(
   }
 }
 
-function mapBackendWallet(wallet: BackendWalletRecord): BackendManagedCircleWallet {
+function mapBackendWallet(
+  wallet: BackendWalletRecord,
+): BackendManagedCircleWallet {
   return {
     address: wallet.address,
     blockchain: wallet.blockchain,
@@ -128,7 +144,9 @@ function mapBackendWallet(wallet: BackendWalletRecord): BackendManagedCircleWall
 
 function normalizeWalletApiError(error: unknown): WalletApiError {
   if (error instanceof BackendApiError) {
-    const nextError = new Error(formatWalletApiErrorMessage(error)) as WalletApiError;
+    const nextError = new Error(
+      formatWalletApiErrorMessage(error),
+    ) as WalletApiError;
     nextError.code = parseWalletApiCode(error.code);
     nextError.details = error.details;
     nextError.status = error.status;
@@ -155,7 +173,7 @@ function formatWalletApiErrorMessage(error: BackendApiError) {
     return joinMessageParts(
       error.message,
       error.details ||
-        "Start Docker Compose Postgres for local dev or point DATABASE_URL at 127.0.0.1:15432 when running apps/backend on the host."
+        "Start Docker Compose Postgres for local dev or point DATABASE_URL at 127.0.0.1:15432 when running apps/backend on the host.",
     );
   }
 
@@ -167,11 +185,13 @@ function formatWalletApiErrorMessage(error: BackendApiError) {
 }
 
 function joinMessageParts(...parts: Array<string | undefined>) {
-  return parts.filter((part, index, values) => {
-    if (!part) {
-      return false;
-    }
+  return parts
+    .filter((part, index, values) => {
+      if (!part) {
+        return false;
+      }
 
-    return values.indexOf(part) === index;
-  }).join(" ");
+      return values.indexOf(part) === index;
+    })
+    .join(" ");
 }

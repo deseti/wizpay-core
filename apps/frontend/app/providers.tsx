@@ -9,7 +9,6 @@ import { WagmiProvider } from "wagmi";
 import { CircleApiProxyProvider } from "@/components/providers/CircleApiProxyProvider";
 import { CircleWalletProvider } from "@/components/providers/CircleWalletProvider";
 import { HybridWalletProvider } from "@/components/providers/HybridWalletProvider";
-import { SolanaWalletProvider } from "@/components/providers/SolanaWalletProvider";
 import { arcTestnet, config } from "@/lib/wagmi";
 import { PwaRuntime } from "@/src/features/pwa/components/PwaRuntime";
 
@@ -36,14 +35,12 @@ export function Providers({ children }: { children: React.ReactNode }) {
           theme={midnightTheme()}
         >
           <CircleWalletProvider>
-            <SolanaWalletProvider>
-              <HybridWalletProvider>
-                <CircleApiProxyProvider>
-                  <PwaRuntime />
-                  {children}
-                </CircleApiProxyProvider>
-              </HybridWalletProvider>
-            </SolanaWalletProvider>
+            <HybridWalletProvider>
+              <CircleApiProxyProvider>
+                <PwaRuntime />
+                {children}
+              </CircleApiProxyProvider>
+            </HybridWalletProvider>
           </CircleWalletProvider>
         </RainbowKitProvider>
       </WagmiProvider>

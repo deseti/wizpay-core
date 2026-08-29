@@ -1,14 +1,12 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   createPublicClient,
   decodeEventLog,
-  decodeFunctionData,
   getAddress,
   http,
-  isAddress,
   isAddressEqual,
-  parseAbi,
   parseAbiItem,
   type Address,
   type Hex,
@@ -22,14 +20,14 @@ import {
   type InvoiceVerificationCode,
 } from './invoice.types';
 
-const ERC20_TRANSFER_ABI = parseAbi([
-  'function transfer(address to, uint256 amount) returns (bool)',
-]);
 const TRANSFER_EVENT = parseAbiItem(
   'event Transfer(address indexed from, address indexed to, uint256 value)',
 );
-const TRANSFER_SELECTOR = '0xa9059cbb';
-const EXACT_TRANSFER_CALLDATA_HEX_LENGTH = 2 + 8 + 64 + 64;
+const TRANSFER_TOPIC =
+  '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
+const ARC_NATIVE_ACCOUNTING_MIRROR = getAddress(
+  '0xfffffffffffffffffffffffffffffffffffffffe',
+);
 
 export type VerifyInvoiceTransferInput = {
   amountUnits: string;
@@ -47,6 +45,7 @@ export type VerifiedInvoiceTransfer = {
 
 @Injectable()
 export class InvoicePaymentVerifierService {
+  private readonly logger = new Logger(InvoicePaymentVerifierService.name);
   private readonly confirmationsRequired: number;
   private publicClient: PublicClient;
 
@@ -89,6 +88,12 @@ export class InvoicePaymentVerifierService {
   async verify(
     input: VerifyInvoiceTransferInput,
   ): Promise<VerifiedInvoiceTransfer> {
+    const requestId = randomUUID();
+    const verificationRef = this.stableIdentifier(input.transactionHash);
+    const startedAt = Date.now();
+    let stage = 'configured_chain';
+    let canonicalLogCount = 0;
+    let tokenLogCount = 0;
     try {
       const configuredChainId = await this.publicClient.getChainId();
       if (configuredChainId !== INVOICE_CHAIN_ID) {
@@ -98,6 +103,7 @@ export class InvoicePaymentVerifierService {
         );
       }
 
+      stage = 'transaction_receipt';
       const [transaction, receipt] = await Promise.all([
         this.publicClient.getTransaction({ hash: input.transactionHash }),
         this.publicClient.getTransactionReceipt({
@@ -124,97 +130,91 @@ export class InvoicePaymentVerifierService {
           INVOICE_ERROR_CODES.WRONG_CHAIN,
           'The transaction is not an Arc Testnet transaction.',
         );
-      if (!isAddress(transaction.from))
-        this.reject(
-          INVOICE_ERROR_CODES.WRONG_SENDER,
-          'The transaction sender is invalid.',
-        );
-      const payerAddress = getAddress(transaction.from);
-      if (isAddressEqual(payerAddress, input.merchantWalletAddress)) {
-        this.reject(
-          INVOICE_ERROR_CODES.SELF_PAYMENT,
-          "This invoice cannot be paid from the merchant's receiving wallet.",
-        );
-      }
-      if (
-        !transaction.to ||
-        !isAddress(transaction.to) ||
-        !isAddressEqual(getAddress(transaction.to), input.tokenAddress)
-      ) {
-        this.reject(
-          INVOICE_ERROR_CODES.WRONG_TOKEN,
-          'The transaction does not call the invoice token contract.',
-        );
-      }
       if (transaction.value !== 0n)
         this.reject(
           INVOICE_ERROR_CODES.NATIVE_VALUE,
           'The token payment transaction must not include native value.',
         );
-      if (
-        transaction.input.length !== EXACT_TRANSFER_CALLDATA_HEX_LENGTH ||
-        transaction.input.slice(0, 10).toLowerCase() !== TRANSFER_SELECTOR
-      ) {
+      stage = 'transfer_log_filter';
+      const canonicalLogs = receipt.logs.filter(
+        (log) =>
+          !isAddressEqual(log.address, ARC_NATIVE_ACCOUNTING_MIRROR) &&
+          log.topics[0]?.toLowerCase() === TRANSFER_TOPIC,
+      );
+      canonicalLogCount = canonicalLogs.length;
+      const tokenLogs = canonicalLogs.filter((log) =>
+        isAddressEqual(log.address, input.tokenAddress),
+      );
+      tokenLogCount = tokenLogs.length;
+      if (tokenLogs.length === 0) {
         this.reject(
-          INVOICE_ERROR_CODES.MALFORMED_CALLDATA,
-          'The transaction is not one exact ERC-20 transfer call.',
+          canonicalLogs.length > 0
+            ? INVOICE_ERROR_CODES.WRONG_TOKEN
+            : INVOICE_ERROR_CODES.TRANSFER_EVENT_MISSING,
+          canonicalLogs.length > 0
+            ? 'The canonical Transfer event was emitted by the wrong token contract.'
+            : 'The receipt is missing a canonical ERC-20 Transfer event.',
         );
       }
 
-      let recipient: Address;
-      let amount: bigint;
-      try {
-        const decoded = decodeFunctionData({
-          abi: ERC20_TRANSFER_ABI,
-          data: transaction.input,
-        });
-        if (decoded.functionName !== 'transfer' || decoded.args.length !== 2)
-          throw new Error('not transfer');
-        recipient = getAddress(decoded.args[0]);
-        amount = decoded.args[1];
-      } catch {
-        this.reject(
-          INVOICE_ERROR_CODES.MALFORMED_CALLDATA,
-          'The ERC-20 transfer calldata is malformed.',
-        );
-      }
-      if (!isAddressEqual(recipient!, input.merchantWalletAddress)) {
-        this.reject(
-          INVOICE_ERROR_CODES.WRONG_RECIPIENT,
-          'The transfer recipient does not match this invoice.',
-        );
-      }
-      if (amount! !== BigInt(input.amountUnits)) {
-        this.reject(
-          INVOICE_ERROR_CODES.WRONG_AMOUNT,
-          'The transfer amount does not exactly match this invoice.',
-        );
-      }
-
-      const matchingEvent = receipt.logs.some((log) => {
-        if (!isAddressEqual(log.address, input.tokenAddress)) return false;
+      const decodedTransfers = tokenLogs.flatMap((log, logIndex) => {
         try {
           const decoded = decodeEventLog({
             abi: [TRANSFER_EVENT],
             data: log.data,
             topics: log.topics,
           });
-          return (
-            decoded.eventName === 'Transfer' &&
-            isAddressEqual(decoded.args.from, payerAddress) &&
-            isAddressEqual(decoded.args.to, input.merchantWalletAddress) &&
-            decoded.args.value === BigInt(input.amountUnits)
-          );
+          if (decoded.eventName !== 'Transfer') return [];
+          return [
+            {
+              amount: decoded.args.value,
+              logIndex,
+              payerAddress: getAddress(decoded.args.from),
+              recipientAddress: getAddress(decoded.args.to),
+            },
+          ];
         } catch {
-          return false;
+          return [];
         }
       });
-      if (!matchingEvent)
+      if (decodedTransfers.length === 0)
         this.reject(
           INVOICE_ERROR_CODES.TRANSFER_EVENT_MISSING,
-          'The receipt is missing the exact canonical Transfer event.',
+          'The invoice token logs do not contain a valid canonical Transfer event.',
         );
+      const recipientMatches = decodedTransfers.filter((transfer) =>
+        isAddressEqual(transfer.recipientAddress, input.merchantWalletAddress),
+      );
+      if (recipientMatches.length === 0)
+        this.reject(
+          INVOICE_ERROR_CODES.WRONG_RECIPIENT,
+          'The transfer recipient does not match this invoice.',
+        );
+      const amountMatches = recipientMatches.filter(
+        (transfer) => transfer.amount === BigInt(input.amountUnits),
+      );
+      if (amountMatches.length === 0)
+        this.reject(
+          INVOICE_ERROR_CODES.WRONG_AMOUNT,
+          'The transfer amount does not exactly match this invoice.',
+        );
+      const externalMatches = amountMatches.filter(
+        (transfer) =>
+          !isAddressEqual(transfer.payerAddress, input.merchantWalletAddress),
+      );
+      if (externalMatches.length === 0)
+        this.reject(
+          INVOICE_ERROR_CODES.SELF_PAYMENT,
+          "This invoice cannot be paid from the merchant's receiving wallet.",
+        );
+      if (externalMatches.length !== 1)
+        this.reject(
+          INVOICE_ERROR_CODES.TRANSFER_EVENT_MISSING,
+          'The receipt contains multiple matching invoice transfers and cannot be accepted unambiguously.',
+        );
+      const matchedTransfer = externalMatches[0];
 
+      stage = 'confirmations';
       const currentBlock = await this.publicClient.getBlockNumber();
       const confirmationCount =
         currentBlock >= receipt.blockNumber
@@ -226,14 +226,23 @@ export class InvoicePaymentVerifierService {
           `Payment needs ${this.confirmationsRequired} Arc Testnet confirmations.`,
         );
       }
-      return {
+      const verified = {
         blockNumber: receipt.blockNumber,
         confirmations: confirmationCount,
-        payerAddress,
+        payerAddress: matchedTransfer.payerAddress,
         transactionHash: input.transactionHash,
       };
+      this.logger.log(
+        `Invoice verification requestId=${requestId} verificationRef=${verificationRef} stage=transfer_log_match outcome=verified canonicalLogs=${canonicalLogCount} tokenLogs=${tokenLogCount} logIndex=${matchedTransfer.logIndex} payerRef=${this.stableIdentifier(matchedTransfer.payerAddress)} confirmations=${confirmationCount} durationMs=${Date.now() - startedAt}`,
+      );
+      return verified;
     } catch (error) {
-      if (error instanceof InvoiceVerificationError) throw error;
+      if (error instanceof InvoiceVerificationError) {
+        this.logger.warn(
+          `Invoice verification requestId=${requestId} verificationRef=${verificationRef} stage=${stage} outcome=${error.retryable ? 'retry' : 'rejected'} code=${error.code} canonicalLogs=${canonicalLogCount} tokenLogs=${tokenLogCount} durationMs=${Date.now() - startedAt}`,
+        );
+        throw error;
+      }
       const name = error instanceof Error ? error.name : '';
       if (/TransactionReceiptNotFound/i.test(name))
         this.retry(
@@ -258,5 +267,12 @@ export class InvoicePaymentVerifierService {
 
   private reject(code: InvoiceVerificationCode, message: string): never {
     throw new InvoiceVerificationError(code, message, false);
+  }
+
+  private stableIdentifier(value: string): string {
+    return createHash('sha256')
+      .update(value.toLowerCase())
+      .digest('hex')
+      .slice(0, 12);
   }
 }

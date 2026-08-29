@@ -1,13 +1,7 @@
 "use client";
 
 import { ConnectButton } from "@rainbow-me/rainbowkit";
-import {
-  ArrowRightLeft,
-  Globe,
-  Shield,
-  Wallet,
-  Zap,
-} from "lucide-react";
+import { ArrowRightLeft, Globe, Shield, Wallet, Zap } from "lucide-react";
 
 import { useCircleWallet } from "@/components/providers/CircleWalletProvider";
 import { useHybridWallet } from "@/components/providers/HybridWalletProvider";
@@ -26,7 +20,7 @@ const features = [
 ];
 
 export function ConnectWalletCard() {
-  const { login, ready } = useCircleWallet();
+  const { authError, initializationPhase, login, ready } = useCircleWallet();
   const { externalConnectError, walletMode } = useHybridWallet();
   const title = getWalletModeLabel(walletMode);
   const description = getWalletModeDescription(walletMode);
@@ -49,8 +43,9 @@ export function ConnectWalletCard() {
             Welcome to WizPay
           </h1>
           <p className="mx-auto max-w-md text-sm leading-relaxed text-muted-foreground sm:text-base">
-            Choose how you want to transact. Keep the built-in Circle app wallet for
-            Google or email login, or use an external wallet through RainbowKit.
+            Choose how you want to transact. Keep the built-in Circle app wallet
+            for Google or email login, or use an external wallet through
+            RainbowKit.
           </p>
         </div>
 
@@ -86,7 +81,15 @@ export function ConnectWalletCard() {
                 className="glow-btn group relative inline-flex w-full items-center justify-center gap-2.5 rounded-2xl bg-gradient-to-r from-primary via-violet-500 to-primary px-8 py-4 text-base font-bold text-primary-foreground shadow-xl shadow-primary/25 transition-all hover:shadow-2xl hover:shadow-primary/40 hover:brightness-110 active:scale-[0.97]"
               >
                 <Wallet className="h-5 w-5 transition-transform group-hover:scale-110 group-hover:rotate-[-6deg]" />
-                {ready ? "Sign In with Circle" : "Loading Circle Wallet..."}
+                {ready
+                  ? "Sign In with Circle"
+                  : initializationPhase === "waiting_for_document"
+                    ? "Preparing secure wallet…"
+                    : initializationPhase === "loading_sdk"
+                      ? "Loading Circle security…"
+                      : initializationPhase === "restoring_session"
+                        ? "Restoring Circle session…"
+                        : "Circle wallet needs attention"}
               </button>
             ) : (
               <ConnectButton.Custom>
@@ -110,6 +113,15 @@ export function ConnectWalletCard() {
               {HAS_WALLETCONNECT_PROJECT_ID
                 ? "Browser wallets and WalletConnect QR are available in this build."
                 : "Browser wallets."}
+            </p>
+          ) : null}
+
+          {walletMode === "circle" && !ready && authError ? (
+            <p
+              role="alert"
+              className="mt-3 text-xs leading-relaxed text-amber-300/85"
+            >
+              {authError}
             </p>
           ) : null}
 

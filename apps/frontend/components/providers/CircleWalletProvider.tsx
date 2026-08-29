@@ -9,20 +9,11 @@ import {
   useRef,
   useState,
 } from "react";
-import { deleteCookie, getCookie, setCookie } from "cookies-next";
-import { SocialLoginProvider } from "@circle-fin/w3s-pw-web-sdk/dist/src/types";
-import type { Address, Hex } from "viem";
-
 import {
   clearStoredPasskeyCredential,
   createPasskeyRuntimeSet,
-  getCirclePasskeyConfig,
-  getPasskeySupportError,
-  getPasskeyTokenBalances,
-  loginWithPasskey,
   readStoredPasskeyCredential,
   readStoredPasskeyUsername,
-  registerWithPasskey,
   sendPasskeyUserOperation,
   signPasskeyTypedData,
   storePasskeyCredential,
@@ -31,11 +22,11 @@ import {
   type PasskeyRuntimeSet,
 } from "@/lib/circle-passkey";
 import {
-  ensureBackendWallet,
-  initializeBackendWallets,
-  syncBackendWallets,
-} from "@/lib/backend-wallets";
-import { buildBackendUrl, resolveBackendBaseUrl } from "@/lib/backend-api";
+  CIRCLE_DEVICE_ID_TIMEOUT_MS,
+  shouldRefreshCircleToken,
+  withCircleTimeout,
+  type CircleInitializationPhase,
+} from "@/lib/circle-runtime";
 
 import { LoginModal } from "./circle/LoginModal";
 import { usePasskeyAuth } from "./circle/usePasskeyAuth";
@@ -46,20 +37,14 @@ import { useChallengeActions } from "./circle/useChallengeActions";
 import { useSdkInitializer } from "./circle/useSdkInitializer";
 import { useCircleMobileRecovery } from "./circle/useMobileRecovery";
 import type {
-  LoginMethod,
-  W3SLoginMethod,
   CircleUserWallet,
   CircleW3SSession,
   CirclePasskeySession,
   CircleSession,
-  CircleChallengeHandle,
   CirclePasskeyChallenge,
-  CircleWalletTokenBalance,
   StoredLoginConfig,
   GoogleOAuthDiagnostics,
   W3SSdkInstance,
-  W3SSdkModule,
-  W3SLoginCompleteResult,
   CircleWalletContextValue,
 } from "@/services/circle-auth.service";
 import {
@@ -69,32 +54,19 @@ import {
   PASSKEY_CONFIG,
   INVALID_DEVICE_ERROR_CODES,
   OAUTH_RECOVERY_ERROR_CODES,
-  getGoogleOAuthErrorMessage,
   getErrorMessage,
   isRecord,
-  isW3SLoginCompleteResult,
   isPasskeySession,
-  createLocalChallengeId,
-  extractChallengeId,
-  normalizeCircleWalletTokenBalance,
-  readStoredJson,
   writeStoredJson,
   removeStoredValue,
-  readCircleOAuthBackup,
   getRestoredCircleAppId,
-  buildGoogleLoginConfigs,
-  readGoogleLoginConfigFromCookies,
-  persistGoogleLoginCookies,
-  restoreCircleOAuthStateFromCookies,
   clearGoogleLoginCookies,
   clearCircleOAuthState,
-  clearCircleOAuthBackups,
   DEVICE_ID_STORAGE_KEY,
   SESSION_STORAGE_KEY,
   LOGIN_CONFIG_STORAGE_KEY,
-  SUPPORTED_WALLET_CHAINS,
-  isHexValue,
-  getGoogleOAuthDiagnostics,
+  isDefinitiveCircleRefreshFailure,
+  mergeCircleRefreshedSession,
 } from "@/services/circle-auth.service";
 
 export const CircleWalletContext =
@@ -162,6 +134,7 @@ const DISABLED_CONTEXT_VALUE: CircleWalletContextValue = {
   getWalletBalances: async () => [],
   hasPendingEmailOtp: false,
   isAuthenticating: false,
+  initializationPhase: "recoverable_error",
   login: () => {},
   loginMethodLabel: "Circle",
   logout: () => {},
@@ -173,8 +146,6 @@ const DISABLED_CONTEXT_VALUE: CircleWalletContextValue = {
   requestPasskeyLogin: async () => {},
   requestPasskeyRegistration: async () => {},
   sepoliaWallet: null,
-  solanaWallet: null,
-  savePasskeySolanaAddress: () => {},
   userEmail: null,
   userToken: null,
   verifyEmailOtp: () => {},
@@ -191,6 +162,7 @@ function CircleWalletProviderInner({
   const googleOAuthDiagnosticsRef = useRef<GoogleOAuthDiagnostics | null>(null);
   const authRequestInFlightRef = useRef(false);
   const deviceIdInFlightRef = useRef<Promise<string> | null>(null);
+  const refreshInFlightRef = useRef<Promise<CircleW3SSession> | null>(null);
   const passkeyChallengeStoreRef = useRef(
     new Map<string, CirclePasskeyChallenge>(),
   );
@@ -204,6 +176,8 @@ function CircleWalletProviderInner({
   const [deviceId, setDeviceId] = useState<string>("");
   const [hasPendingEmailOtp, setHasPendingEmailOtp] = useState(false);
   const [isAuthenticating, setIsAuthenticating] = useState(false);
+  const [initializationPhase, setInitializationPhase] =
+    useState<CircleInitializationPhase>("waiting_for_document");
   const [isCircleVerificationActive, setIsCircleVerificationActive] =
     useState(false);
   const [isLoginOpen, setIsLoginOpen] = useState(false);
@@ -212,9 +186,6 @@ function CircleWalletProviderInner({
   >(null);
   const [ready, setReady] = useState(false);
   const [sepoliaWallet, setSepoliaWallet] = useState<CircleUserWallet | null>(
-    null,
-  );
-  const [solanaWallet, setSolanaWallet] = useState<CircleUserWallet | null>(
     null,
   );
   const [session, setSession] = useState<CircleSession | null>(null);
@@ -281,7 +252,11 @@ function CircleWalletProviderInner({
     }
 
     const nextDeviceIdPromise = (async () => {
-      const nextDeviceId = await sdk.getDeviceId();
+      const nextDeviceId = await withCircleTimeout(
+        sdk.getDeviceId(),
+        CIRCLE_DEVICE_ID_TIMEOUT_MS,
+        "restoring_session",
+      );
 
       if (!nextDeviceId) {
         throw new Error("Circle device ID is unavailable.");
@@ -348,17 +323,6 @@ function CircleWalletProviderInner({
       setSepoliaWallet(
         (runtimeSet?.sepolia?.wallet as CircleUserWallet | null) ?? null,
       );
-      // Passkey runtimeSet only contains EVM wallets (Arc + Sepolia).
-      // Solana wallet is kept from the previous state if it was already loaded
-      // via the backend; applyPasskeyRuntimeSet intentionally does NOT clear it.
-      const nextSolana =
-        nextWallets.find((wallet) => wallet.blockchain === "SOLANA-DEVNET") ??
-        null;
-      if (nextSolana) {
-        setSolanaWallet(nextSolana);
-      }
-      // If nextSolana is null, we leave solanaWallet as-is (may be populated
-      // from a prior syncBackendWallets call or a manual backend fetch).
     },
     [],
   );
@@ -373,23 +337,6 @@ function CircleWalletProviderInner({
     clearStoredPasskeyCredential();
     storePasskeyUsername(null);
   }, [resetPasskeyRuntimeState]);
-  const PASSKEY_SOLANA_CACHE_KEY = "passkey_manual_solana_address";
-
-  const savePasskeySolanaAddress = useCallback((address: string) => {
-    const syntheticWallet: import("@/services/circle-auth.service").CircleUserWallet =
-      {
-        id: "passkey-manual-solana",
-        address,
-        blockchain: "SOLANA-DEVNET",
-        accountType: "EOA",
-      };
-    setSolanaWallet(syntheticWallet);
-    writeStoredJson(PASSKEY_SOLANA_CACHE_KEY, {
-      address,
-      blockchain: "SOLANA-DEVNET",
-    });
-  }, []);
-
   const initializePasskeyWallets = useCallback(
     async ({
       credential,
@@ -414,25 +361,6 @@ function CircleWalletProviderInner({
 
       applyPasskeyRuntimeSet(runtimeSet);
 
-      // For passkey sessions, Circle AA wallets are EVM-only (no Solana).
-      // Restore Solana address from localStorage — prefer the user's manually
-      // saved address; fall back to an address cached from a prior W3S login.
-      const manualSolana = readStoredJson<{ address: string }>(
-        PASSKEY_SOLANA_CACHE_KEY,
-      );
-      const w3sCachedSolana = readStoredJson<{
-        address: string;
-        blockchain: string;
-      }>("solana_wallet_cache");
-      const solanaAddress = manualSolana?.address || w3sCachedSolana?.address;
-      if (solanaAddress) {
-        setSolanaWallet({
-          id: "passkey-manual-solana",
-          address: solanaAddress,
-          blockchain: "SOLANA-DEVNET",
-          accountType: "EOA",
-        } as CircleUserWallet);
-      }
       return runtimeSet;
     },
     [applyPasskeyRuntimeSet],
@@ -530,7 +458,7 @@ function CircleWalletProviderInner({
     postW3sAction,
     loadWallets,
     executeChallengeForSession,
-    loadWalletsEnsuringSolana,
+    loadWalletsForArcStartup,
     initializeAndLoadWallets,
   } = useWalletLoader({
     session,
@@ -542,9 +470,9 @@ function CircleWalletProviderInner({
     setWallets,
     setArcWallet,
     setSepoliaWallet,
-    setSolanaWallet,
     setAuthError,
     setAuthStatus,
+    setInitializationPhase,
     setIsAuthenticating,
     setIsLoginOpen,
     clearStoredLoginConfig,
@@ -564,11 +492,78 @@ function CircleWalletProviderInner({
     setReady,
     setAuthError,
     setAuthStatus,
+    setInitializationPhase,
     setSession,
     ready,
     deviceId,
     ensureDeviceId,
   });
+
+  const refreshCircleSession = useCallback(
+    async (options?: { force?: boolean }) => {
+      if (!session || isPasskeySession(session))
+        throw new Error("Circle session is not available for refresh.");
+      if (!options?.force && !shouldRefreshCircleToken(session.userToken))
+        return session;
+      if (refreshInFlightRef.current) return refreshInFlightRef.current;
+      const current = session;
+      const refresh = (async () => {
+        if (!current.refreshToken)
+          throw new Error("Circle session cannot be refreshed. Sign in again.");
+        setInitializationPhase("refreshing_session");
+        const currentDeviceId = await ensureDeviceId();
+        try {
+          const payload = await postW3sAction("refreshUserToken", {
+            deviceId: currentDeviceId,
+            refreshToken: current.refreshToken,
+            userToken: current.userToken,
+          });
+          const next = mergeCircleRefreshedSession(current, payload);
+          setSession(next);
+          persistSession(next);
+          setInitializationPhase("ready");
+          setAuthError(null);
+          return next;
+        } catch (error) {
+          if (isDefinitiveCircleRefreshFailure(error)) {
+            persistSession(null);
+            setSession(null);
+            setWallets([]);
+            setArcWallet(null);
+            setSepoliaWallet(null);
+            setInitializationPhase("reauthentication_required");
+            setAuthError(
+              "Your Circle session could not be refreshed. Sign in again to continue.",
+            );
+          } else {
+            setInitializationPhase("recoverable_error");
+          }
+          throw error;
+        }
+      })();
+      refreshInFlightRef.current = refresh;
+      try {
+        return await refresh;
+      } finally {
+        if (refreshInFlightRef.current === refresh)
+          refreshInFlightRef.current = null;
+      }
+    },
+    [ensureDeviceId, persistSession, postW3sAction, session],
+  );
+
+  useEffect(() => {
+    if (!session || isPasskeySession(session)) return;
+    const check = () => {
+      if (shouldRefreshCircleToken(session.userToken))
+        void refreshCircleSession().catch(() => {
+          /* state communicates retry or reauthentication */
+        });
+    };
+    check();
+    const timer = window.setInterval(check, 60_000);
+    return () => window.clearInterval(timer);
+  }, [refreshCircleSession, session]);
 
   const resetActiveCircleSession = useCallback(
     (message: string) => {
@@ -584,7 +579,6 @@ function CircleWalletProviderInner({
       setIsAuthenticating(false);
       setSession(null);
       setSepoliaWallet(null);
-      setSolanaWallet(null);
       setWallets([]);
     },
     [clearPasskeyState, clearStoredLoginConfig, persistSession],
@@ -632,7 +626,8 @@ function CircleWalletProviderInner({
     authRequestInFlightRef,
     ensureDeviceId,
     handleAuthFailure,
-    loadWalletsEnsuringSolana,
+    loadWalletsForArcStartup,
+    refreshCircleSession,
     rearmSdkForSession,
     resetActiveCircleSession,
     setAuthError,
@@ -667,7 +662,7 @@ function CircleWalletProviderInner({
         if (isPasskeySession(activeSession)) {
           await loadWallets(activeSession);
         } else {
-          await loadWalletsEnsuringSolana(activeSession as CircleSession);
+          await loadWalletsForArcStartup(activeSession as CircleSession);
         }
       } catch (error) {
         if (!cancelled) {
@@ -678,23 +673,53 @@ function CircleWalletProviderInner({
           setWallets([]);
           setArcWallet(null);
           setSepoliaWallet(null);
-          setSolanaWallet(null);
         }
       }
     }
 
-    if (wallets.length === 0) {
-      void hydrateWallets();
+    let visibilityTimer: number | null = null;
+    const startHydration = () => {
+      if (!cancelled && wallets.length === 0) void hydrateWallets();
+    };
+    const resumeVisible = () => {
+      if (document.visibilityState !== "visible") return;
+      document.removeEventListener("visibilitychange", resumeVisible);
+      if (visibilityTimer !== null) window.clearTimeout(visibilityTimer);
+      setAuthError(null);
+      startHydration();
+    };
+    if (document.visibilityState === "hidden") {
+      queueMicrotask(() => {
+        if (!cancelled) {
+          setInitializationPhase("restoring_session");
+          setAuthStatus(
+            "Circle wallet synchronization is paused while this page is in the background.",
+          );
+        }
+      });
+      document.addEventListener("visibilitychange", resumeVisible);
+      visibilityTimer = window.setTimeout(() => {
+        if (!cancelled && document.visibilityState === "hidden") {
+          setInitializationPhase("recoverable_error");
+          setAuthError(
+            "Circle wallet startup is paused because this page stayed in the background. Return to the page to resume.",
+          );
+        }
+      }, 15_000);
+    } else {
+      startHydration();
     }
 
     return () => {
       cancelled = true;
+      document.removeEventListener("visibilitychange", resumeVisible);
+      if (visibilityTimer !== null) window.clearTimeout(visibilityTimer);
     };
   }, [
     clearPasskeyState,
     handleAuthFailure,
     loadWallets,
-    loadWalletsEnsuringSolana,
+    loadWalletsForArcStartup,
     persistSession,
     session,
     wallets.length,
@@ -750,12 +775,10 @@ function CircleWalletProviderInner({
     setIsAuthenticating(false);
     setSession(null);
     setSepoliaWallet(null);
-    setSolanaWallet(null);
     setWallets([]);
   }, [clearPasskeyState, clearStoredLoginConfig, persistSession]);
 
-  const primaryWallet =
-    arcWallet ?? sepoliaWallet ?? solanaWallet ?? wallets[0] ?? null;
+  const primaryWallet = arcWallet ?? sepoliaWallet ?? wallets[0] ?? null;
   const shouldAllowAuthBeforeDeviceId = useMemo(
     () => isMobileOrStandaloneAuthRuntime(),
     [],
@@ -785,6 +808,7 @@ function CircleWalletProviderInner({
       getWalletBalances,
       hasPendingEmailOtp,
       isAuthenticating,
+      initializationPhase,
       login: () => setIsLoginOpen(true),
       loginMethodLabel:
         session?.authMethod === "google"
@@ -804,9 +828,7 @@ function CircleWalletProviderInner({
       requestGoogleLogin,
       requestPasskeyLogin,
       requestPasskeyRegistration,
-      savePasskeySolanaAddress,
       sepoliaWallet,
-      solanaWallet,
       userEmail: session?.email ?? null,
       userToken:
         session && !isPasskeySession(session) ? session.userToken : null,
@@ -825,6 +847,7 @@ function CircleWalletProviderInner({
       getWalletBalances,
       hasPendingEmailOtp,
       isAuthenticating,
+      initializationPhase,
       loadWallets,
       logout,
       primaryWallet,
@@ -833,9 +856,7 @@ function CircleWalletProviderInner({
       requestGoogleLogin,
       requestPasskeyLogin,
       requestPasskeyRegistration,
-      savePasskeySolanaAddress,
       sepoliaWallet,
-      solanaWallet,
       session,
       verifyEmailOtp,
       wallets,

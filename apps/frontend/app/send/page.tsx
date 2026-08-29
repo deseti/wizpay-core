@@ -23,7 +23,8 @@ import { ERC20_ABI } from "@/constants/erc20";
 import { parseEvmPaymentPayload } from "@/lib/evm-payment-uri";
 import { extractCircleTransactionHash, verifyCircleAppWalletTransfer, verifyErc20Transfer } from "@/lib/send-transaction";
 import { ARC_GAS_FALLBACK_UNITS, calculateArcMaxAmount, gasReserveFromFeeWei, hasArcGasForAmount, readCircleFeeEstimateWei } from "@/lib/arc-gas-reserve";
-import { archiveAndClearSendOperation, assertCircleTransactionMatches, classifySendStatusError, estimateUserTransferFee, extractSingleCorrelationId, findMatchingCircleTransaction, getUserChallengeStatus, getUserTransactionStatus, isCircleComplete, isCircleTerminalFailure, isSendOperationLocked, listUserTransactionStatus, readSendOperation, sendExecutionState, shouldPollSendOperation, writeSendOperation, type AppWalletSendOperation, type AppWalletSendStage, type SendOperationScope } from "@/lib/send-operation";
+import { acquireSendReconciliation, archiveAndClearSendOperation, assertCircleTransactionMatches, beginReconciliation, canSafelyUnlockPreChallenge, classifySendStatusError, estimateUserTransferFee, extractSingleCorrelationId, findMatchingCircleTransactionPaginated, getUserChallengeStatus, getUserTransactionStatus, isAmbiguousChallengeCreationError, isCircleComplete, isCircleTerminalFailure, isSendOperationLocked, listActiveUserChallenges, readSendOperation, sendExecutionState, shouldPollSendOperation, withSendMetadata, writeSendOperation, type AppWalletSendOperation, type AppWalletSendStage, type SendOperationScope } from "@/lib/send-operation";
+import { selectCircleTransferToken } from "@/services/circle-auth.service";
 import { arcTestnet } from "@/lib/wagmi";
 import { formatCompactAddress, formatTokenAmount, getExplorerTxUrl, SUPPORTED_TOKENS, TOKEN_OPTIONS, type TokenSymbol } from "@/lib/wizpay";
 
@@ -49,6 +50,8 @@ const STAGE_COPY: Record<Exclude<SendStage, "idle" | "completed">, string> = {
   provider_unavailable: "Circle status is temporarily unavailable. No new transfer can be created until this attempt is reconciled.",
   timed_out: "Status checking timed out without proving success or failure. The existing transfer remains protected.",
   recoverable_error: "We could not confirm the current status yet. The existing transfer remains recoverable.",
+  reconciling: "Checking Circle for the exact challenge or transfer before deciding whether retry is safe.",
+  pre_challenge_failed: "Circle definitively rejected the request before creating a transfer. It is safe to retry.",
   terminal_error: "The transaction was confirmed as failed and no funds were transferred.",
 };
 
@@ -116,9 +119,10 @@ function SendWorkspace() {
 
   const circleWalletId = circle.arcWallet?.id;
   const sendScope = useMemo<SendOperationScope | null>(() => {
-    if (wallet.walletMode !== "circle" || !circleWalletId || !wallet.activeWalletAddress || !isAddress(wallet.activeWalletAddress)) return null;
-    return { walletId: circleWalletId, sender: getAddress(wallet.activeWalletAddress) };
-  }, [circleWalletId, wallet.activeWalletAddress, wallet.walletMode]);
+    const userId = typeof circle.arcWallet?.userId === "string" ? circle.arcWallet.userId : null;
+    if (wallet.walletMode !== "circle" || !userId || !circleWalletId || !wallet.activeWalletAddress || !isAddress(wallet.activeWalletAddress)) return null;
+    return { userId, walletId: circleWalletId, sender: getAddress(wallet.activeWalletAddress), chainId: arcTestnet.id };
+  }, [circle.arcWallet?.userId, circleWalletId, wallet.activeWalletAddress, wallet.walletMode]);
 
   useEffect(() => {
     const restored = readSendOperation(typeof window === "undefined" ? undefined : window.localStorage, sendScope);
@@ -138,10 +142,11 @@ function SendWorkspace() {
   useEffect(() => () => abortRef.current?.abort(), []);
 
   function persistOperation(next: AppWalletSendOperation) {
-    setOperation(next);
-    writeSendOperation(typeof window === "undefined" ? undefined : window.localStorage, next);
-    setSubmissionLocked(isSendOperationLocked(next.stage));
-    setStage(next.stage);
+    const updated = withSendMetadata(next, {});
+    setOperation(updated);
+    writeSendOperation(typeof window === "undefined" ? undefined : window.localStorage, updated);
+    setSubmissionLocked(isSendOperationLocked(updated.stage));
+    setStage(updated.stage);
   }
 
   async function verifyRecoveredOperation(current: AppWalletSendOperation, hash: Hex) {
@@ -159,8 +164,18 @@ function SendWorkspace() {
 
   async function checkOperationStatus(candidate = operation, manual = false) {
     if (!candidate || !circle.userToken || statusInFlightRef.current) return;
+    const releaseReconciliation = acquireSendReconciliation(candidate);
+    if (!releaseReconciliation) return;
     const now = Date.now();
-    if (manual && now - lastStatusCheck < 5_000) return;
+    if (manual && now - lastStatusCheck < 5_000) {
+      releaseReconciliation();
+      return;
+    }
+    if (!manual && candidate.reconciliationDeadline && now >= Date.parse(candidate.reconciliationDeadline)) {
+      persistOperation(withSendMetadata(candidate, { stage: "status_unknown", reconciliationOutcome: "deadline_reached", lastError: "Automatic reconciliation reached its bounded deadline. Use Check status to retry the read-only proof." }));
+      releaseReconciliation();
+      return;
+    }
     statusInFlightRef.current = true;
     setCheckingStatus(true);
     if (manual) setLastStatusCheck(now);
@@ -169,7 +184,29 @@ function SendWorkspace() {
     try {
       let current = candidate;
       let transaction = null;
-      if (current.transactionId) {
+      if (!current.challengeId && !current.transactionId) {
+        current = beginReconciliation(current);
+        persistOperation(current);
+        const activeChallenges = await listActiveUserChallenges(circle.userToken, controller.signal);
+        if (activeChallenges.length > 0) {
+          persistOperation(withSendMetadata(current, { stage: "status_unknown", reconciliationOutcome: "pending", lastError: "Circle still reports an active challenge for this user. Without the exact challenge ID, retry remains blocked." }));
+          return;
+        }
+        transaction = await findMatchingCircleTransactionPaginated(current, circle.userToken, controller.signal);
+        if (!transaction) {
+          const reconciliationAge = Date.now() - Date.parse(current.reconciliationStartedAt ?? current.updatedAt);
+          if (current.retryCount < 2 || reconciliationAge < 10_000) {
+            persistOperation(withSendMetadata(current, { stage: "resolving_transaction", reconciliationOutcome: "pending", lastError: "No active challenge or matching transaction was found yet. WizPay will repeat the proof before unlocking." }));
+            return;
+          }
+          const proven = withSendMetadata(current, { stage: "pre_challenge_failed", reconciliationOutcome: "proven_not_created", lastError: "Circle returned all matching transaction pages without an exact match." });
+          persistOperation(proven);
+          if (canSafelyUnlockPreChallenge(proven)) archiveAndClearSendOperation(window.localStorage, proven);
+          setOperation(null); setSubmissionLocked(false); setStage("idle");
+          setError("The earlier request was proven not to have created a Circle transfer. You can retry safely.");
+          return;
+        }
+      } else if (current.transactionId) {
         transaction = await getUserTransactionStatus(current.transactionId, circle.userToken, controller.signal);
       } else if (current.challengeId) {
         const challenge = await getUserChallengeStatus(current.challengeId, circle.userToken, controller.signal);
@@ -189,8 +226,7 @@ function SendWorkspace() {
         }
       }
       if (!transaction) {
-        const listed = await listUserTransactionStatus(current.walletId, circle.userToken, controller.signal);
-        transaction = findMatchingCircleTransaction(current, listed);
+        transaction = await findMatchingCircleTransactionPaginated(current, circle.userToken, controller.signal);
       }
       if (!transaction) {
         persistOperation({ ...current, stage: "resolving_transaction", lastError: undefined });
@@ -198,7 +234,7 @@ function SendWorkspace() {
       }
       assertCircleTransactionMatches(current, transaction);
       if (!transaction.id) throw new Error("Circle transaction is missing its identifier.");
-      current = { ...current, transactionId: transaction.id, stage: "transaction_pending", lastError: undefined };
+      current = withSendMetadata(current, { transactionId: transaction.id, stage: "transaction_pending", reconciliationOutcome: "transaction_found", lastError: undefined });
       persistOperation(current);
       if (isCircleTerminalFailure(transaction.state)) {
         const message = `Circle transfer ended in ${String(transaction.state).toLowerCase()} state.`;
@@ -224,6 +260,7 @@ function SendWorkspace() {
         }
       }
     } finally {
+      releaseReconciliation();
       statusInFlightRef.current = false;
       setCheckingStatus(false);
       abortRef.current = null;
@@ -231,7 +268,7 @@ function SendWorkspace() {
   }
 
   useEffect(() => {
-    if (!operation || !circle.userToken || !shouldPollSendOperation(operation.stage)) return;
+    if (!operation || !circle.userToken || !shouldPollSendOperation(operation.stage) || operation.reconciliationOutcome === "deadline_reached") return;
     const initial = window.setTimeout(() => void checkOperationStatus(operation), 0);
     const timer = window.setInterval(() => void checkOperationStatus(operation), 5_000);
     return () => { window.clearTimeout(initial); window.clearInterval(timer); };
@@ -256,7 +293,7 @@ function SendWorkspace() {
       if (wallet.walletMode === "circle" && circle.authMethod !== "passkey") {
         if (!circle.arcWallet?.id || !circle.userToken) throw new Error("Circle session is unavailable.");
         const circleBalances = await circle.getWalletBalances(circle.arcWallet.id);
-        const metadata = circleBalances.find((entry) => entry.symbol === token.symbol || entry.tokenAddress?.toLowerCase() === token.address.toLowerCase());
+        const metadata = selectCircleTransferToken(circleBalances, { blockchain: "ARC-TESTNET", symbol: token.symbol, tokenAddress: token.address });
         if (!metadata?.tokenId) throw new Error("Circle token metadata is unavailable.");
         const estimate = await estimateUserTransferFee({ amounts: [formatUnits(units, token.decimals)], destinationAddress: checkedRecipient, tokenId: metadata.tokenId, walletId: circle.arcWallet.id }, circle.userToken);
         return gasReserveFromFeeWei(readCircleFeeEstimateWei(estimate));
@@ -315,28 +352,34 @@ function SendWorkspace() {
         await circle.ensureSessionReady();
         if (!circle.arcWallet?.id) throw new Error("Arc App Wallet is not ready.");
         const circleBalances = await circle.getWalletBalances(circle.arcWallet.id);
-        const balanceMetadata = circleBalances.find((entry) => entry.symbol === token.symbol || entry.tokenAddress?.toLowerCase() === token.address.toLowerCase());
+        const balanceMetadata = selectCircleTransferToken(circleBalances, { blockchain: "ARC-TESTNET", symbol: token.symbol, tokenAddress: token.address });
         if (!balanceMetadata?.tokenId) throw new Error(`${token.symbol} token metadata is unavailable for App Wallet Send.`);
         if (circle.authMethod !== "email" && circle.authMethod !== "google") throw new Error("Unsupported App Wallet session for Send.");
+        const circleUserId = typeof circle.arcWallet.userId === "string" ? circle.arcWallet.userId : "";
+        if (!circleUserId) throw new Error("Circle user identity is unavailable for scoped Send recovery.");
+        const now = new Date().toISOString();
         let pending: AppWalletSendOperation = {
-          version: 2, operationId: refId, idempotencyKey, walletMode: "circle", authMethod: circle.authMethod,
+          version: 3, operationId: refId, idempotencyKey, walletMode: "circle", authMethod: circle.authMethod, userId: circleUserId,
           walletId: circle.arcWallet.id, chainId: arcTestnet.id, sender: getAddress(wallet.activeWalletAddress),
           token: token.symbol, tokenAddress: token.address, circleTokenId: balanceMetadata.tokenId,
           recipient: checkedRecipient, amountUnits: units.toString(), amountDisplay: formatUnits(units, token.decimals),
-          createdAt: new Date().toISOString(), stage: "preparing",
+          createdAt: now, updatedAt: now, retryCount: 0, stage: "preparing",
         };
-        persistOperation(pending);
-        const challenge = await circle.createTransferChallenge({
-          amounts: [formatUnits(units, token.decimals)],
-          destinationAddress: checkedRecipient,
-          feeLevel: "MEDIUM",
-          idempotencyKey,
-          refId,
-          tokenId: balanceMetadata.tokenId,
-          walletId: circle.arcWallet.id,
-          wizpayChain: "ARC-TESTNET",
-        });
-        pending = { ...pending, challengeId: challenge.challengeId, stage: "challenge_created" };
+        setStage("preparing");
+        let challenge: Awaited<ReturnType<typeof circle.createTransferChallenge>>;
+        try {
+          challenge = await circle.createTransferChallenge({ amounts: [formatUnits(units, token.decimals)], destinationAddress: checkedRecipient, feeLevel: "MEDIUM", idempotencyKey, refId, tokenId: balanceMetadata.tokenId, walletId: circle.arcWallet.id, wizpayChain: "ARC-TESTNET" });
+        } catch (challengeError) {
+          if (!isAmbiguousChallengeCreationError(challengeError)) {
+            setStage("idle");
+            throw challengeError;
+          }
+          pending = beginReconciliation(withSendMetadata(pending, { stage: "status_unknown", reconciliationOutcome: "pending", lastError: challengeError instanceof Error ? challengeError.message : "Challenge creation outcome is unknown." }));
+          persistOperation(pending);
+          setError("Circle may have received this request, but the response was not received. The attempt is protected while WizPay reconciles it.");
+          return;
+        }
+        pending = withSendMetadata(pending, { challengeId: challenge.challengeId, stage: "challenge_created", reconciliationOutcome: "challenge_found" });
         persistOperation(pending);
         persistOperation({ ...pending, stage: "awaiting_user_authorization" });
         const circleResult = await circle.executeChallenge(challenge.challengeId);
@@ -405,12 +448,14 @@ function SendWorkspace() {
       const checkedRecipient = getAddress(recipient);
       const units = exactAmount(amount, token.decimals);
       const circleBalances = await circle.getWalletBalances(circle.arcWallet.id);
-      const metadata = circleBalances.find((entry) => entry.symbol === token.symbol || entry.tokenAddress?.toLowerCase() === token.address.toLowerCase());
+      const metadata = selectCircleTransferToken(circleBalances, { blockchain: "ARC-TESTNET", symbol: token.symbol, tokenAddress: token.address });
       if (!metadata?.tokenId) throw new Error(`${token.symbol} token metadata is unavailable.`);
       if (circle.authMethod !== "email" && circle.authMethod !== "google") throw new Error("Unsupported App Wallet session for recovery.");
-      const candidate: AppWalletSendOperation = { version: 2, operationId: `RECOVER-${crypto.randomUUID()}`, idempotencyKey: "read-only-legacy-recovery", walletMode: "circle", authMethod: circle.authMethod, walletId: circle.arcWallet.id, chainId: arcTestnet.id, sender: getAddress(wallet.activeWalletAddress), token: token.symbol, tokenAddress: token.address, circleTokenId: metadata.tokenId, recipient: checkedRecipient, amountUnits: units.toString(), amountDisplay: formatUnits(units, token.decimals), createdAt: new Date().toISOString(), stage: "resolving_transaction" };
-      const listed = await listUserTransactionStatus(candidate.walletId, circle.userToken);
-      const matched = findMatchingCircleTransaction(candidate, listed);
+      const userId = typeof circle.arcWallet.userId === "string" ? circle.arcWallet.userId : "";
+      if (!userId) throw new Error("Circle user identity is unavailable for scoped recovery.");
+      const now = new Date().toISOString();
+      const candidate: AppWalletSendOperation = { version: 3, operationId: `RECOVER-${crypto.randomUUID()}`, idempotencyKey: "read-only-legacy-recovery", walletMode: "circle", authMethod: circle.authMethod, userId, walletId: circle.arcWallet.id, chainId: arcTestnet.id, sender: getAddress(wallet.activeWalletAddress), token: token.symbol, tokenAddress: token.address, circleTokenId: metadata.tokenId, recipient: checkedRecipient, amountUnits: units.toString(), amountDisplay: formatUnits(units, token.decimals), createdAt: now, updatedAt: now, retryCount: 0, stage: "resolving_transaction" };
+      const matched = await findMatchingCircleTransactionPaginated(candidate, circle.userToken);
       if (!matched?.id) throw new Error("No unique existing Circle transaction matches those exact transfer details. Nothing was submitted or changed.");
       const recovered = { ...candidate, transactionId: matched.id };
       assertCircleTransactionMatches(recovered, matched);
@@ -431,7 +476,7 @@ function SendWorkspace() {
   if (showInitialSkeleton) return <SendPageSkeleton />;
 
   const statusStage = operation?.stage ?? (busy ? stage : null);
-  const executionState = statusStage && operation ? sendExecutionState(statusStage) : null;
+  const executionState = operation ? sendExecutionState(operation.stage) : null;
   const terminalFailed = executionState === "failed";
   const unavailable = executionState === "unknown" || executionState === "timeout";
   const statusTitle = terminalFailed ? "Transfer failed" : unavailable ? "Transfer status unavailable" : "Transfer in progress";

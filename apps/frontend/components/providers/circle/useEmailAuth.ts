@@ -38,9 +38,14 @@ export function useEmailAuth({
   storeLoginConfig,
 }: EmailAuthDeps) {
   const verificationObserverRef = useRef<MutationObserver | null>(null);
+  const verificationTimeoutRef = useRef<number | null>(null);
 
   useEffect(
-    () => () => verificationObserverRef.current?.disconnect(),
+    () => () => {
+      verificationObserverRef.current?.disconnect();
+      if (verificationTimeoutRef.current !== null)
+        window.clearTimeout(verificationTimeoutRef.current);
+    },
     [],
   );
 
@@ -165,18 +170,34 @@ export function useEmailAuth({
       } else if (sawCircleSurface) {
         observer.disconnect();
         verificationObserverRef.current = null;
+        if (verificationTimeoutRef.current !== null)
+          window.clearTimeout(verificationTimeoutRef.current);
+        verificationTimeoutRef.current = null;
         setIsCircleVerificationActive(false);
         setIsAuthenticating(false);
       }
     });
     verificationObserverRef.current = observer;
     observer.observe(document.body, { childList: true });
+    verificationTimeoutRef.current = window.setTimeout(() => {
+      observer.disconnect();
+      verificationObserverRef.current = null;
+      verificationTimeoutRef.current = null;
+      setIsCircleVerificationActive(false);
+      setIsAuthenticating(false);
+      setAuthError(
+        "Circle email verification did not complete in time. Reopen the existing verification flow; no wallet action was submitted.",
+      );
+    }, 120_000);
 
     try {
       sdk.verifyOtp();
     } catch (error) {
       observer.disconnect();
       verificationObserverRef.current = null;
+      if (verificationTimeoutRef.current !== null)
+        window.clearTimeout(verificationTimeoutRef.current);
+      verificationTimeoutRef.current = null;
       setIsCircleVerificationActive(false);
       setIsAuthenticating(false);
       handleAuthFailure(error);

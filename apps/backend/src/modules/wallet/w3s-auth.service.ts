@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { PrismaService } from '../../database/prisma.service';
 
 type W3sActionResult = Record<string, unknown>;
@@ -29,6 +29,7 @@ export type UserContractExecutionChallengeInput = {
 };
 
 const stablefxSignDiagnostics = new Map<string, StablefxSignDiagnostic>();
+const CIRCLE_HTTP_TIMEOUT_MS = 20_000;
 
 export function getStablefxSignDiagnostic(input: {
   expectedSignerAddress: string;
@@ -105,6 +106,8 @@ export class W3sAuthService {
         return this.createDeviceToken(params);
       case 'requestEmailOtp':
         return this.requestEmailOtp(params);
+      case 'refreshUserToken':
+        return this.refreshUserToken(params);
       case 'createContractExecutionChallenge':
         return this.proxyUserAction(
           'POST',
@@ -132,6 +135,10 @@ export class W3sAuthService {
           typeof params.challengeId === 'string' ? params.challengeId : '',
           typeof params.userToken === 'string' ? params.userToken : '',
         );
+      case 'listUserChallenges':
+        return this.listUserChallenges(
+          typeof params.userToken === 'string' ? params.userToken : '',
+        );
       case 'getUserTransaction':
         return this.getUserTransaction(
           typeof params.transactionId === 'string' ? params.transactionId : '',
@@ -142,6 +149,11 @@ export class W3sAuthService {
           {
             walletId:
               typeof params.walletId === 'string' ? params.walletId : '',
+            pageAfter:
+              typeof params.pageAfter === 'string'
+                ? params.pageAfter
+                : undefined,
+            from: typeof params.from === 'string' ? params.from : undefined,
           },
           typeof params.userToken === 'string' ? params.userToken : '',
         );
@@ -248,24 +260,53 @@ export class W3sAuthService {
       params,
     );
     this.validateTransferFields(normalized);
-    const estimate = await this.estimateUserTransferFee({
-      ...normalized,
-      userToken,
-    }).catch(() => ({}));
-    const reserveUnits = this.arcGasReserveUnits(estimate);
-    const balances = await this.getWalletBalances({
-      userToken,
-      walletId: normalized.walletId,
-    });
-    this.assertArcTransferBalance(
-      normalized,
-      balances.tokenBalances,
-      reserveUnits,
+    const requestId = randomUUID();
+    const walletRef = this.stableIdentifier(String(normalized.walletId));
+    const startedAt = Date.now();
+    let stage = 'preflight_estimate';
+    this.logger.log(
+      `W3S lifecycle requestId=${requestId} action=createTransferChallenge stage=${stage} walletRef=${walletRef} outcome=started`,
     );
-    return this.proxyUserAction('POST', '/v1/w3s/user/transactions/transfer', {
-      ...normalized,
-      userToken,
-    });
+    try {
+      const estimate = await this.estimateUserTransferFee({
+        ...normalized,
+        userToken,
+      }).catch(() => ({}));
+      const reserveUnits = this.arcGasReserveUnits(estimate);
+      stage = 'preflight_balances';
+      const balances = await this.getWalletBalances({
+        userToken,
+        walletId: normalized.walletId,
+      });
+      stage = 'preflight_validation';
+      this.assertArcTransferBalance(
+        normalized,
+        balances.tokenBalances,
+        reserveUnits,
+      );
+      stage = 'circle_transfer_creation';
+      const result = await this.proxyUserAction(
+        'POST',
+        '/v1/w3s/user/transactions/transfer',
+        {
+          ...normalized,
+          userToken,
+        },
+      );
+      this.logger.log(
+        `W3S lifecycle requestId=${requestId} action=createTransferChallenge stage=${stage} walletRef=${walletRef} outcome=success durationMs=${Date.now() - startedAt}`,
+      );
+      return result;
+    } catch (cause) {
+      const error = cause as Error & {
+        code?: string | number;
+        status?: number;
+      };
+      this.logger.warn(
+        `W3S lifecycle requestId=${requestId} action=createTransferChallenge stage=${stage} walletRef=${walletRef} outcome=failed status=${error.status ?? 500} code=${error.code ?? 'UNCLASSIFIED'} durationMs=${Date.now() - startedAt}`,
+      );
+      throw cause;
+    }
   }
 
   /** Read a transaction with the same authenticated user context that created it. */
@@ -291,7 +332,7 @@ export class W3sAuthService {
 
   /** List only transactions visible to the authenticated Circle user. */
   async listUserTransactions(
-    input: { walletId: string },
+    input: { walletId: string; pageAfter?: string; from?: string },
     userToken: string,
   ): Promise<W3sActionResult> {
     const walletId = input.walletId.trim();
@@ -304,12 +345,45 @@ export class W3sAuthService {
     }
     const query = new URLSearchParams({
       pageSize: '50',
+      order: 'ASC',
       walletIds: walletId,
     });
+    if (input.pageAfter?.trim()) query.set('pageAfter', input.pageAfter.trim());
+    if (input.from?.trim()) query.set('from', input.from.trim());
     return this.circleUserRequest({
       method: 'GET',
       path: `/v1/w3s/transactions?${query.toString()}`,
       userToken: normalizedUserToken,
+    });
+  }
+
+  private async refreshUserToken(
+    params: Record<string, unknown>,
+  ): Promise<W3sActionResult> {
+    const userToken =
+      typeof params.userToken === 'string' ? params.userToken.trim() : '';
+    const refreshToken =
+      typeof params.refreshToken === 'string' ? params.refreshToken.trim() : '';
+    const deviceId =
+      typeof params.deviceId === 'string' ? params.deviceId.trim() : '';
+    if (!userToken || !refreshToken || !deviceId) {
+      this.throwValidationError([
+        ...(!userToken
+          ? [{ field: 'userToken', message: 'userToken is required' }]
+          : []),
+        ...(!refreshToken
+          ? [{ field: 'refreshToken', message: 'refreshToken is required' }]
+          : []),
+        ...(!deviceId
+          ? [{ field: 'deviceId', message: 'deviceId is required' }]
+          : []),
+      ]);
+    }
+    return this.circleUserRequest({
+      body: { deviceId, idempotencyKey: randomUUID(), refreshToken },
+      method: 'POST',
+      path: '/v1/w3s/users/token/refresh',
+      userToken,
     });
   }
 
@@ -328,6 +402,17 @@ export class W3sAuthService {
     return this.circleUserRequest({
       method: 'GET',
       path: `/v1/w3s/user/challenges/${encodeURIComponent(normalizedChallengeId)}`,
+      userToken: normalizedUserToken,
+    });
+  }
+
+  async listUserChallenges(userToken: string): Promise<W3sActionResult> {
+    const normalizedUserToken = userToken.trim();
+    if (!normalizedUserToken)
+      throw new Error('Missing required field: userToken');
+    return this.circleUserRequest({
+      method: 'GET',
+      path: '/v1/w3s/user/challenges',
       userToken: normalizedUserToken,
     });
   }
@@ -358,11 +443,11 @@ export class W3sAuthService {
 
     const url = `${this.circleBaseUrl}/v1/w3s/users/social/token`;
 
-    this.logger.log('createDeviceToken:', {
-      url,
-      deviceId: deviceId.slice(0, 20) + '...',
-      keyPrefix: apiKey.slice(0, 12),
-    });
+    const requestId = randomUUID();
+    const startedAt = Date.now();
+    this.logger.log(
+      `Circle lifecycle requestId=${requestId} stage=create_device_token outcome=started`,
+    );
 
     let res: Response;
     try {
@@ -376,9 +461,12 @@ export class W3sAuthService {
           deviceId,
           idempotencyKey: randomUUID(),
         }),
+        signal: AbortSignal.timeout(CIRCLE_HTTP_TIMEOUT_MS),
       });
     } catch (fetchErr) {
-      this.logger.error('Circle fetch FAILED:', fetchErr);
+      this.logger.error(
+        `Circle lifecycle requestId=${requestId} stage=create_device_token outcome=transport_error durationMs=${Date.now() - startedAt}`,
+      );
       throw new Error(
         `Network error calling Circle API: ${fetchErr instanceof Error ? fetchErr.message : String(fetchErr)}`,
       );
@@ -386,7 +474,7 @@ export class W3sAuthService {
 
     const raw = await res.text();
     this.logger.log(
-      `Circle response status: ${res.status} | body length: ${raw.length}`,
+      `Circle lifecycle requestId=${requestId} stage=create_device_token outcome=response status=${res.status} durationMs=${Date.now() - startedAt}`,
     );
 
     if (!res.ok) {
@@ -418,8 +506,7 @@ export class W3sAuthService {
     }
 
     this.logger.log(
-      `createDeviceToken SUCCESS: deviceToken=${data.deviceToken.slice(0, 20)}..., ` +
-        `deviceEncryptionKey=${data.deviceEncryptionKey.slice(0, 10)}...`,
+      `Circle lifecycle requestId=${requestId} stage=create_device_token outcome=success durationMs=${Date.now() - startedAt}`,
     );
 
     return {
@@ -734,15 +821,19 @@ export class W3sAuthService {
     path: string;
   }): Promise<T> {
     const url = new URL(input.path, this.circleBaseUrl).toString();
+    const safePath = this.safeCircleRoute(input.path);
     const apiKey = this.getCircleApiKey();
 
+    const requestId = randomUUID();
+    const startedAt = Date.now();
     this.logger.log(
-      `Circle request: ${input.method} ${url} | API key: ${apiKey.slice(0, 8)}...${apiKey.slice(-4)}`,
+      `Circle lifecycle requestId=${requestId} stage=server_request method=${input.method} path=${safePath} outcome=started`,
     );
 
     const headers: Record<string, string> = {
       Accept: 'application/json',
       Authorization: `Bearer ${apiKey}`,
+      'X-Request-Id': requestId,
       'Content-Type': 'application/json',
     };
 
@@ -752,11 +843,11 @@ export class W3sAuthService {
         method: input.method,
         headers,
         body: input.body ? JSON.stringify(input.body) : undefined,
+        signal: AbortSignal.timeout(CIRCLE_HTTP_TIMEOUT_MS),
       });
     } catch (fetchError) {
       this.logger.error(
-        `Circle fetch failed for ${url}:`,
-        fetchError instanceof Error ? fetchError.message : fetchError,
+        `Circle lifecycle requestId=${requestId} stage=server_request path=${safePath} outcome=transport_error durationMs=${Date.now() - startedAt}`,
       );
       throw fetchError;
     }
@@ -778,7 +869,7 @@ export class W3sAuthService {
       payload = this.isRecord(parsed) ? parsed : {};
     } catch {
       this.logger.error(
-        `Circle response is not valid JSON: ${rawText.slice(0, 500)}`,
+        `Circle lifecycle requestId=${requestId} stage=server_request path=${safePath} outcome=invalid_json`,
       );
       payload = {};
     }
@@ -788,11 +879,14 @@ export class W3sAuthService {
         payload.error ||
         payload.message ||
         `Circle server request failed with status ${response.status}.`;
-      this.logger.error(`Circle API error [${response.status}]: ${message}`, {
-        path: input.path,
-        code: payload.code,
-        bodyLength: rawText.length,
-      });
+      this.logger.error(
+        `Circle lifecycle requestId=${requestId} stage=server_request path=${safePath} outcome=upstream_error status=${response.status}`,
+        {
+          path: safePath,
+          code: payload.code,
+          bodyLength: rawText.length,
+        },
+      );
       const error = new Error(message) as Error & {
         code?: string | number;
         status?: number;
@@ -815,11 +909,15 @@ export class W3sAuthService {
     userToken: string;
   }): Promise<T> {
     const url = new URL(input.path, this.circleBaseUrl).toString();
+    const safePath = this.safeCircleRoute(input.path);
     const apiKey = this.getCircleApiKey();
+    const requestId = randomUUID();
+    const startedAt = Date.now();
 
     const headers: Record<string, string> = {
       Accept: 'application/json',
       Authorization: `Bearer ${apiKey}`,
+      'X-Request-Id': requestId,
     };
 
     if (input.body) {
@@ -830,16 +928,15 @@ export class W3sAuthService {
       headers['X-User-Token'] = input.userToken;
     }
 
-    this.logger.log('Circle user request:', {
-      bodyKeys: input.body ? Object.keys(input.body) : [],
-      method: input.method,
-      path: input.path,
-    });
+    this.logger.log(
+      `Circle lifecycle requestId=${requestId} stage=user_request method=${input.method} path=${safePath} outcome=started`,
+    );
 
     const response = await fetch(url, {
       method: input.method,
       headers,
       body: input.body ? JSON.stringify(input.body) : undefined,
+      signal: AbortSignal.timeout(CIRCLE_HTTP_TIMEOUT_MS),
     });
 
     const payload = (await response.json().catch(() => ({}))) as {
@@ -855,11 +952,11 @@ export class W3sAuthService {
         payload.message ||
         `Circle user request failed with status ${response.status}.`;
       this.logger.error(
-        `Circle user API error [${response.status}] ${input.method} ${input.path}: ${message}`,
+        `Circle lifecycle requestId=${requestId} stage=user_request method=${input.method} path=${safePath} outcome=upstream_error status=${response.status} durationMs=${Date.now() - startedAt}`,
         {
           bodyLength: JSON.stringify(payload).length,
           code: payload.code,
-          path: input.path,
+          path: safePath,
         },
       );
       const error = new Error(message) as Error & {
@@ -886,6 +983,10 @@ export class W3sAuthService {
       }
       throw error;
     }
+
+    this.logger.log(
+      `Circle lifecycle requestId=${requestId} stage=user_request path=${safePath} outcome=success durationMs=${Date.now() - startedAt}`,
+    );
 
     return payload.data ?? (payload as T);
   }
@@ -1080,6 +1181,18 @@ export class W3sAuthService {
     );
   }
 
+  private decimalUnitsFloor(value: unknown, decimals: number): bigint | null {
+    if (typeof value !== 'string' || !/^\d+(?:\.\d+)?$/.test(value))
+      return null;
+    const [whole, fraction = ''] = value.split('.');
+    return (
+      BigInt(whole) * 10n ** BigInt(decimals) +
+      BigInt(
+        (fraction.slice(0, decimals) + '0'.repeat(decimals)).slice(0, decimals),
+      )
+    );
+  }
+
   private arcGasReserveUnits(estimate: W3sActionResult): bigint {
     const level = [estimate.medium, estimate.high, estimate.low].find((value) =>
       this.isRecord(value),
@@ -1102,7 +1215,8 @@ export class W3sAuthService {
     reserveUnits: bigint,
   ) {
     if (!Array.isArray(balances))
-      throw new Error(
+      this.throwTransferPreflightError(
+        'W3S_BALANCES_UNAVAILABLE',
         'Circle wallet balances are unavailable for gas validation.',
       );
     const rows = balances.filter((value): value is Record<string, unknown> =>
@@ -1112,27 +1226,84 @@ export class W3sAuthService {
     const input = rows.find(
       (row) => this.isRecord(row.token) && row.token.id === tokenId,
     );
-    const usdc = rows.find(
+    if (!input)
+      this.throwTransferPreflightError(
+        'W3S_TRANSFER_TOKEN_NOT_FOUND',
+        'The selected transfer token is not available in this Arc wallet.',
+      );
+    const inputToken = this.isRecord(input.token) ? input.token : {};
+    const inputIsNativeUsdc =
+      inputToken.isNative === true &&
+      String(inputToken.symbol).toUpperCase() === 'USDC';
+    const nativeUsdcRows = rows.filter(
       (row) =>
         this.isRecord(row.token) &&
+        row.token.isNative === true &&
         String(row.token.symbol).toUpperCase() === 'USDC',
     );
-    const inputUnits = this.decimalUnits(input?.amount, 6);
-    const usdcUnits = this.decimalUnits(usdc?.amount, 6);
+    const usdc = inputIsNativeUsdc
+      ? input
+      : nativeUsdcRows.length === 1
+        ? nativeUsdcRows[0]
+        : undefined;
+    if (!usdc)
+      this.throwTransferPreflightError(
+        'W3S_NATIVE_FEE_TOKEN_NOT_FOUND',
+        'The Arc native USDC fee balance could not be identified safely.',
+      );
+    const inputUnits = this.decimalUnitsFloor(input.amount, 6);
+    const usdcUnits = this.decimalUnitsFloor(usdc.amount, 6);
     const amount = this.decimalUnits((request.amounts as unknown[])[0], 6);
     if (inputUnits === null || usdcUnits === null || amount === null)
-      throw new Error(
+      this.throwTransferPreflightError(
+        'W3S_BALANCE_FORMAT_INVALID',
         'Circle wallet balances could not be validated for network fees.',
       );
     if (amount > inputUnits)
-      throw new Error('Insufficient transfer token balance.');
-    const inputIsUsdc = input === usdc;
+      this.throwTransferPreflightError(
+        'W3S_INSUFFICIENT_TRANSFER_BALANCE',
+        'Insufficient transfer token balance.',
+      );
+    const inputIsUsdc =
+      inputToken.id === (usdc.token as Record<string, unknown>).id;
     if (
       (inputIsUsdc && amount + reserveUnits > usdcUnits) ||
       (!inputIsUsdc && reserveUnits > usdcUnits)
     ) {
-      throw new Error('Leave enough USDC available for network fees.');
+      this.throwTransferPreflightError(
+        'W3S_INSUFFICIENT_ARC_GAS',
+        'Leave enough USDC available for network fees.',
+      );
     }
+  }
+
+  private throwTransferPreflightError(code: string, message: string): never {
+    const error = new Error(message) as Error & {
+      code: string;
+      details: Record<string, unknown>;
+      status: number;
+    };
+    error.code = code;
+    error.details = {
+      challengeCreationAttempted: false,
+      lifecycleStage: 'preflight_validation',
+    };
+    error.status = 422;
+    throw error;
+  }
+
+  private stableIdentifier(value: string): string {
+    return createHash('sha256').update(value).digest('hex').slice(0, 12);
+  }
+
+  private safeCircleRoute(path: string): string {
+    const parsed = new URL(path, 'https://circle.invalid');
+    const route = parsed.pathname.replace(
+      /\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?=\/|$)/gi,
+      '/:id',
+    );
+    const queryKeys = [...new Set(parsed.searchParams.keys())].sort();
+    return queryKeys.length ? `${route}?fields=${queryKeys.join(',')}` : route;
   }
 
   private throwValidationError(issues: W3sValidationIssue[]): never {

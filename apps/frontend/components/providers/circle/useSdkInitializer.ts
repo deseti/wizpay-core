@@ -5,6 +5,12 @@ import type React from "react";
 import { PASSKEY_CONFIG } from "@/services/circle-auth.service";
 import { getPasskeySupportError } from "@/lib/circle-passkey";
 import {
+  CIRCLE_SDK_IMPORT_TIMEOUT_MS,
+  waitForBoundedDocumentStart,
+  withCircleTimeout,
+  type CircleInitializationPhase,
+} from "@/lib/circle-runtime";
+import {
   readStoredJson,
   isW3SLoginCompleteResult,
   getGoogleOAuthDiagnostics,
@@ -21,59 +27,7 @@ import {
   type W3SSdkModule,
 } from "@/services/circle-auth.service";
 
-const MOBILE_UA_REGEX = /android|iphone|ipad|ipod|mobile/i;
 const TRANSIENT_DEVICE_ID_ERRORS = new Set(["Failed to receive deviceId"]);
-
-function isMobileOrStandaloneRuntime() {
-  if (typeof window === "undefined") {
-    return false;
-  }
-
-  return (
-    MOBILE_UA_REGEX.test(window.navigator.userAgent) ||
-    window.matchMedia("(display-mode: standalone)").matches ||
-    (window.navigator as Navigator & { standalone?: boolean }).standalone ===
-      true
-  );
-}
-
-function waitForWindowLoad() {
-  if (document.readyState === "complete") {
-    return Promise.resolve();
-  }
-
-  return new Promise<void>((resolve) => {
-    window.addEventListener("load", () => resolve(), { once: true });
-  });
-}
-
-function waitForVisibleDocument() {
-  if (document.visibilityState === "visible") {
-    return Promise.resolve();
-  }
-
-  return new Promise<void>((resolve) => {
-    const handleVisibilityChange = () => {
-      if (document.visibilityState !== "visible") {
-        return;
-      }
-
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
-      resolve();
-    };
-
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-  });
-}
-
-async function waitForCircleBrowserContextReady() {
-  if (typeof window === "undefined" || !isMobileOrStandaloneRuntime()) {
-    return;
-  }
-
-  await waitForWindowLoad();
-  await waitForVisibleDocument();
-}
 
 export interface SdkInitializerDeps {
   sdkRef: React.MutableRefObject<W3SSdkInstance | null>;
@@ -88,6 +42,7 @@ export interface SdkInitializerDeps {
   setReady: (v: boolean) => void;
   setAuthError: React.Dispatch<React.SetStateAction<string | null>>;
   setAuthStatus: (v: string | null) => void;
+  setInitializationPhase: (v: CircleInitializationPhase) => void;
   setSession: (v: CircleSession | null) => void;
   ready: boolean;
   deviceId: string;
@@ -107,6 +62,7 @@ export function useSdkInitializer({
   setReady,
   setAuthError,
   setAuthStatus,
+  setInitializationPhase,
   setSession,
   ready,
   deviceId,
@@ -172,7 +128,7 @@ export function useSdkInitializer({
 
   const initializeSdk = useCallback(
     async (options?: { force?: boolean }) => {
-      if (initInFlightRef.current && !options?.force) {
+      if (initInFlightRef.current) {
         return initInFlightRef.current;
       }
 
@@ -184,34 +140,42 @@ export function useSdkInitializer({
           }
         }
 
-      try {
-        await waitForCircleBrowserContextReady();
+        try {
+          setInitializationPhase("waiting_for_document");
+          await waitForBoundedDocumentStart();
 
-        if (unmountedRef.current) {
-          return null;
-        }
+          if (unmountedRef.current) {
+            return null;
+          }
 
-        const sdkModule =
-          (await import("@circle-fin/w3s-pw-web-sdk")) as unknown as W3SSdkModule;
+          setInitializationPhase("loading_sdk");
+          const sdkModule = await withCircleTimeout(
+            import("@circle-fin/w3s-pw-web-sdk") as unknown as Promise<W3SSdkModule>,
+            CIRCLE_SDK_IMPORT_TIMEOUT_MS,
+            "loading_sdk",
+          );
 
-        if (!sdkModule.W3SSdk) {
-          throw new Error("Circle Web SDK did not expose W3SSdk.");
-        }
+          if (!sdkModule.W3SSdk) {
+            throw new Error("Circle Web SDK did not expose W3SSdk.");
+          }
 
-        restoreCircleOAuthStateFromCookies();
+          restoreCircleOAuthStateFromCookies();
+          setInitializationPhase("restoring_session");
 
-        const restoredLoginConfig =
-          loginConfigRef.current ??
+          const restoredLoginConfig =
+            loginConfigRef.current ??
           readStoredJson<StoredLoginConfig>(LOGIN_CONFIG_STORAGE_KEY) ??
           readGoogleLoginConfigFromCookies();
 
         if (restoredLoginConfig) {
-          loginConfigRef.current = restoredLoginConfig;
+            loginConfigRef.current = restoredLoginConfig;
 
-          if (!unmountedRef.current) {
-            setHasPendingEmailOtp(restoredLoginConfig.loginMethod === "email");
+            if (!unmountedRef.current) {
+              setHasPendingEmailOtp(
+                restoredLoginConfig.loginMethod === "email",
+              );
+            }
           }
-        }
 
         googleOAuthDiagnosticsRef.current =
           getGoogleOAuthDiagnostics(restoredLoginConfig);
@@ -230,13 +194,15 @@ export function useSdkInitializer({
           }
 
           if (error || !isW3SLoginCompleteResult(result)) {
-            setIsAuthenticating(false);
-            handleAuthFailureRef.current?.(
-              error ??
-                new Error("Circle login did not return a valid auth payload."),
-            );
-            return;
-          }
+              setIsAuthenticating(false);
+              handleAuthFailureRef.current?.(
+                error ??
+                  new Error(
+                    "Circle login did not return a valid auth payload.",
+                  ),
+              );
+              return;
+            }
 
           googleOAuthDiagnosticsRef.current = null;
 
@@ -259,17 +225,19 @@ export function useSdkInitializer({
 
         sdkRef.current = sdk;
 
-        if (!unmountedRef.current) {
-          setReady(true);
-          setAuthStatus(null);
-        }
+          if (!unmountedRef.current) {
+            setReady(true);
+            setAuthStatus(null);
+            setInitializationPhase("ready");
+          }
 
-        return sdk;
-      } catch (error) {
-        if (!unmountedRef.current) {
-          setReady(true);
-          handleAuthFailureRef.current?.(error);
-        }
+          return sdk;
+        } catch (error) {
+          if (!unmountedRef.current) {
+            setReady(true);
+            setInitializationPhase("recoverable_error");
+            handleAuthFailureRef.current?.(error);
+          }
 
         return null;
       }
@@ -285,7 +253,17 @@ export function useSdkInitializer({
         }
       }
     },
-    [googleOAuthDiagnosticsRef, loginConfigRef, sdkRef, setAuthStatus, setHasPendingEmailOtp, setIsAuthenticating, setReady, setSession],
+    [
+      googleOAuthDiagnosticsRef,
+      loginConfigRef,
+      sdkRef,
+      setAuthStatus,
+      setHasPendingEmailOtp,
+      setInitializationPhase,
+      setIsAuthenticating,
+      setReady,
+      setSession,
+    ],
   );
 
   // Dynamically load and initialize the Circle W3S SDK

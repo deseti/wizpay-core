@@ -214,13 +214,6 @@ export class InvoiceService {
       });
     }
     if (invoice.payment?.status === 'VERIFIED') return this.toPublic(invoice);
-    if (invoice.payment?.status === 'REJECTED') {
-      throw new UnprocessableEntityException({
-        code: invoice.payment.rejectionCode,
-        message: 'This transaction does not satisfy the invoice payment terms.',
-      });
-    }
-
     if (!invoice.payment) {
       const reused = await this.prisma.invoicePayment.findUnique({
         where: { transactionHash },
@@ -289,7 +282,7 @@ export class InvoiceService {
           where: {
             invoiceId,
             transactionHash,
-            status: { in: ['SUBMITTED', 'VERIFYING'] },
+            status: { in: ['SUBMITTED', 'VERIFYING', 'REJECTED'] },
           },
           data: {
             status: 'VERIFIED',
@@ -311,7 +304,7 @@ export class InvoiceService {
           where: {
             invoiceId: invoice.id,
             transactionHash,
-            status: { in: ['SUBMITTED', 'VERIFYING'] },
+            status: { in: ['SUBMITTED', 'VERIFYING', 'REJECTED'] },
           },
           data: { status: 'VERIFYING', rejectionCode: null },
         });
@@ -325,7 +318,7 @@ export class InvoiceService {
         where: {
           invoiceId: invoice.id,
           transactionHash,
-          status: { in: ['SUBMITTED', 'VERIFYING'] },
+          status: { in: ['SUBMITTED', 'VERIFYING', 'REJECTED'] },
         },
         data: { status: 'REJECTED', rejectionCode: error.code },
       });

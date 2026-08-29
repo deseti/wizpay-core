@@ -1,8 +1,4 @@
-import {
-  BadRequestException,
-  Injectable,
-  Logger,
-} from '@nestjs/common';
+import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'node:crypto';
 import { PrismaService } from '../../database/prisma.service';
@@ -87,9 +83,8 @@ export class WalletProvisionError extends Error {
 }
 
 const CIRCLE_INITIALIZE_BLOCKCHAINS = ['ARC-TESTNET', 'ETH-SEPOLIA'] as const;
-const CIRCLE_INITIALIZE_BLOCKCHAINS_SET = new Set<SupportedUserWalletBlockchain>(
-  CIRCLE_INITIALIZE_BLOCKCHAINS,
-);
+const CIRCLE_INITIALIZE_BLOCKCHAINS_SET =
+  new Set<SupportedUserWalletBlockchain>(CIRCLE_INITIALIZE_BLOCKCHAINS);
 const SUPPORTED_BLOCKCHAINS = new Set<SupportedUserWalletBlockchain>([
   'ARC-TESTNET',
   'ETH-SEPOLIA',
@@ -371,7 +366,9 @@ export class WalletService {
       return 'SOLANA-DEVNET';
     }
 
-    return SUPPORTED_BLOCKCHAINS.has(normalized as SupportedUserWalletBlockchain)
+    return SUPPORTED_BLOCKCHAINS.has(
+      normalized as SupportedUserWalletBlockchain,
+    )
       ? (normalized as SupportedUserWalletBlockchain)
       : null;
   }
@@ -516,16 +513,20 @@ export class WalletService {
     path: string;
     userToken: string;
   }): Promise<T> {
-    const response = await fetch(new URL(input.path, this.circleBaseUrl).toString(), {
-      method: input.method,
-      headers: {
-        Accept: 'application/json',
-        Authorization: `Bearer ${this.getCircleApiKey()}`,
-        ...(input.body ? { 'Content-Type': 'application/json' } : {}),
-        'X-User-Token': input.userToken,
+    const response = await fetch(
+      new URL(input.path, this.circleBaseUrl).toString(),
+      {
+        method: input.method,
+        headers: {
+          Accept: 'application/json',
+          Authorization: `Bearer ${this.getCircleApiKey()}`,
+          ...(input.body ? { 'Content-Type': 'application/json' } : {}),
+          'X-User-Token': input.userToken,
+        },
+        body: input.body ? JSON.stringify(input.body) : undefined,
+        signal: AbortSignal.timeout(20_000),
       },
-      body: input.body ? JSON.stringify(input.body) : undefined,
-    });
+    );
     const payload = (await response.json().catch(() => ({}))) as {
       code?: string | number;
       data?: T;

@@ -8,11 +8,18 @@ import type {
   PasskeyRuntimeSet,
 } from "@/lib/circle-passkey";
 import {
-  ensureBackendWallet,
   initializeBackendWallets,
+  selectBackendWalletForBlockchain,
   syncBackendWallets,
 } from "@/lib/backend-wallets";
 import { buildBackendUrl, resolveBackendBaseUrl } from "@/lib/backend-api";
+import {
+  CIRCLE_ACTION_TIMEOUT_MS,
+  CIRCLE_EXECUTE_TIMEOUT_MS,
+  CIRCLE_WALLET_LOAD_TIMEOUT_MS,
+  withCircleTimeout,
+  type CircleInitializationPhase,
+} from "@/lib/circle-runtime";
 import { readStoredPasskeyCredential } from "@/lib/circle-passkey";
 import {
   SUPPORTED_WALLET_CHAINS,
@@ -20,7 +27,6 @@ import {
   isRecord,
   getErrorMessage,
   clearCircleOAuthBackups,
-  writeStoredJson,
   type CircleUserWallet,
   type CircleW3SSession,
   type CircleSession,
@@ -42,9 +48,9 @@ export interface WalletLoaderDeps {
   setWallets: (v: CircleUserWallet[]) => void;
   setArcWallet: (v: CircleUserWallet | null) => void;
   setSepoliaWallet: (v: CircleUserWallet | null) => void;
-  setSolanaWallet: (v: CircleUserWallet | null) => void;
   setAuthError: (v: string | null) => void;
   setAuthStatus: (v: string | null) => void;
+  setInitializationPhase: (v: CircleInitializationPhase) => void;
   setIsAuthenticating: (v: boolean) => void;
   setIsLoginOpen: (v: boolean) => void;
   clearStoredLoginConfig: (opts?: { preserveGoogleCookies?: boolean }) => void;
@@ -61,15 +67,18 @@ export function useWalletLoader({
   setWallets,
   setArcWallet,
   setSepoliaWallet,
-  setSolanaWallet,
   setAuthError,
   setAuthStatus,
+  setInitializationPhase,
   setIsAuthenticating,
   setIsLoginOpen,
   clearStoredLoginConfig,
   authRequestInFlightRef,
 }: WalletLoaderDeps) {
-  const ensuredSolanaByUserTokenRef = useRef(new Set<string>());
+  const walletLoadInFlightRef = useRef<Promise<CircleUserWallet[]> | null>(
+    null,
+  );
+  const walletInitializationInFlightRef = useRef<Promise<void> | null>(null);
 
   const postW3sAction = useCallback(
     async (action: string, params: Record<string, unknown> = {}) => {
@@ -81,6 +90,7 @@ export function useWalletLoader({
             "Content-Type": "application/json",
           },
           body: JSON.stringify({ action, ...params }),
+          signal: AbortSignal.timeout(CIRCLE_ACTION_TIMEOUT_MS),
         },
       );
 
@@ -120,7 +130,7 @@ export function useWalletLoader({
     [],
   );
 
-  const loadWallets = useCallback(
+  const loadWalletsUncached = useCallback(
     async (authSessionOverride?: CircleSession | null) => {
       const activeSession = authSessionOverride ?? session;
 
@@ -153,46 +163,31 @@ export function useWalletLoader({
         setWallets([]);
         setArcWallet(null);
         setSepoliaWallet(null);
-        setSolanaWallet(null);
         resetPasskeyRuntimeState();
         return [] as CircleUserWallet[];
       }
 
-      const { wallets: syncedWallets } = await syncBackendWallets({
-        email: activeSession.email,
-        userToken,
-      });
+      setInitializationPhase("syncing_wallets");
+      const { wallets: syncedWallets } = await withCircleTimeout(
+        syncBackendWallets(
+          {
+            email: activeSession.email,
+            userToken,
+          },
+          AbortSignal.timeout(CIRCLE_WALLET_LOAD_TIMEOUT_MS),
+        ),
+        CIRCLE_WALLET_LOAD_TIMEOUT_MS,
+        "syncing_wallets",
+      );
 
       const nextWallets = syncedWallets.filter((wallet) =>
         SUPPORTED_WALLET_CHAINS.has(wallet.blockchain),
       );
 
       setWallets(nextWallets);
-      setArcWallet(
-        nextWallets.find((wallet) => wallet.blockchain === "ARC-TESTNET") ??
-          null,
-      );
-      setSepoliaWallet(
-        nextWallets.find((wallet) => wallet.blockchain === "ETH-SEPOLIA") ??
-          null,
-      );
-      setSolanaWallet(
-        nextWallets.find((wallet) => wallet.blockchain === "SOLANA-DEVNET") ??
-          null,
-      );
-
-      // Cache Solana wallet address so passkey sessions can show it.
-      const nextSolanaWallet = nextWallets.find(
-        (wallet) => wallet.blockchain === "SOLANA-DEVNET",
-      );
-      if (nextSolanaWallet) {
-        writeStoredJson("solana_wallet_cache", {
-          address: nextSolanaWallet.address,
-          blockchain: nextSolanaWallet.blockchain,
-          id: nextSolanaWallet.id,
-        });
-      }
-
+      setArcWallet(selectBackendWalletForBlockchain(nextWallets, "ARC-TESTNET"));
+      setSepoliaWallet(selectBackendWalletForBlockchain(nextWallets, "ETH-SEPOLIA"));
+      setInitializationPhase("ready");
       return nextWallets;
     },
     [
@@ -202,9 +197,28 @@ export function useWalletLoader({
       session,
       setArcWallet,
       setSepoliaWallet,
-      setSolanaWallet,
+      setInitializationPhase,
       setWallets,
     ],
+  );
+
+  const loadWallets = useCallback(
+    async (authSessionOverride?: CircleSession | null) => {
+      if (walletLoadInFlightRef.current) return walletLoadInFlightRef.current;
+      const next = withCircleTimeout(
+        loadWalletsUncached(authSessionOverride),
+        CIRCLE_WALLET_LOAD_TIMEOUT_MS,
+        "syncing_wallets",
+      );
+      walletLoadInFlightRef.current = next;
+      try {
+        return await next;
+      } finally {
+        if (walletLoadInFlightRef.current === next)
+          walletLoadInFlightRef.current = null;
+      }
+    },
+    [loadWalletsUncached],
   );
 
   const executeChallengeForSession = useCallback(
@@ -224,20 +238,22 @@ export function useWalletLoader({
         encryptionKey: authSession.encryptionKey,
       });
 
-      return new Promise<unknown>((resolve, reject) => {
-        sdk.execute(challengeId, (error, result) => {
-          if (error) {
-            const nextError = new Error(getErrorMessage(error)) as Error & {
+      return withCircleTimeout(
+        new Promise<unknown>((resolve, reject) => {
+          sdk.execute(challengeId, (error, result) => {
+            if (error) {
+              const nextError = new Error(getErrorMessage(error)) as Error & {
               code?: number | string;
               raw?: unknown;
             };
 
-            if (
-              isRecord(error) &&
-              (typeof error.code === "number" || typeof error.code === "string")
-            ) {
-              nextError.code = error.code;
-            } else if (
+              if (
+                isRecord(error) &&
+                (typeof error.code === "number" ||
+                  typeof error.code === "string")
+              ) {
+                nextError.code = error.code;
+              } else if (
               isRecord(error) &&
               isRecord(error.error) &&
               (typeof error.error.code === "number" ||
@@ -251,120 +267,59 @@ export function useWalletLoader({
             return;
           }
 
-          resolve(result);
-        });
-      });
+            resolve(result);
+          });
+        }),
+        CIRCLE_EXECUTE_TIMEOUT_MS,
+        "initializing_wallets",
+      );
     },
     [executePasskeyChallenge, sdkRef],
   );
 
-  const loadWalletsEnsuringSolana = useCallback(
-    async (authSession: CircleSession) => {
-      const existingWallets = await loadWallets(authSession);
-
-      if (isPasskeySession(authSession)) {
-        return existingWallets;
-      }
-
-      if (
-        existingWallets.some((wallet) => wallet.blockchain === "SOLANA-DEVNET")
-      ) {
-        ensuredSolanaByUserTokenRef.current.add(authSession.userToken);
-        return existingWallets;
-      }
-
-      if (ensuredSolanaByUserTokenRef.current.has(authSession.userToken)) {
-        return existingWallets;
-      }
-
-      try {
-        setAuthStatus("Creating your Solana Devnet user wallet...");
-
-        const response = await ensureBackendWallet({
-          chain: "SOLANA",
-          email: authSession.email,
-          userToken: authSession.userToken,
-        });
-
-        if (!response.requiresUserApproval) {
-          if (response.wallet) {
-            ensuredSolanaByUserTokenRef.current.add(authSession.userToken);
-            return loadWallets(authSession);
-          }
-
-          return existingWallets;
-        }
-
-        const challengeId = response.challengeId;
-
-        if (!challengeId) {
-          return existingWallets;
-        }
-
-        setAuthStatus("Confirming Solana wallet challenge...");
-        await executeChallengeForSession(challengeId, authSession);
-        await new Promise((resolve) => {
-          window.setTimeout(resolve, 1500);
-        });
-
-        setAuthStatus("Loading Circle wallets...");
-        const updatedWallets = await loadWallets(authSession);
-
-        if (
-          updatedWallets.some((wallet) => wallet.blockchain === "SOLANA-DEVNET")
-        ) {
-          ensuredSolanaByUserTokenRef.current.add(authSession.userToken);
-        }
-
-        return updatedWallets;
-      } catch (error) {
-        console.warn(
-          "[CircleWalletProvider] Failed to auto-create Solana user wallet",
-          error,
-        );
-        return existingWallets;
-      }
-    },
-    [executeChallengeForSession, loadWallets, setAuthStatus],
-  );
+  const loadWalletsForArcStartup = loadWallets;
 
   const initializeAndLoadWallets = useCallback(
     async (authSession: CircleW3SSession) => {
-      setIsAuthenticating(true);
-      setAuthError(null);
-      setAuthStatus("Initializing your Circle wallet...");
+      if (walletInitializationInFlightRef.current)
+        return walletInitializationInFlightRef.current;
+      const initialization = (async () => {
+        setIsAuthenticating(true);
+        setAuthError(null);
+        setAuthStatus("Initializing your Circle wallet...");
+        setInitializationPhase("initializing_wallets");
 
-      try {
-        const payload = await initializeBackendWallets({
-          email: authSession.email,
-          userToken: authSession.userToken,
-        });
-
-        if (payload.challengeId) {
-          setAuthStatus(
-            "Circle wallet challenge ready. Confirm it to finish setup.",
+        try {
+          const payload = await initializeBackendWallets(
+            {
+              email: authSession.email,
+              userToken: authSession.userToken,
+            },
+            AbortSignal.timeout(CIRCLE_WALLET_LOAD_TIMEOUT_MS),
           );
-          await executeChallengeForSession(payload.challengeId, authSession);
-          await new Promise((resolve) => {
-            window.setTimeout(resolve, 1500);
-          });
-        }
 
-        setAuthStatus("Loading Circle wallets...");
-        await loadWalletsEnsuringSolana(authSession);
-        setAuthStatus("Circle wallet ready.");
-        setIsLoginOpen(false);
-        clearCircleOAuthBackups();
+          if (payload.challengeId) {
+            setAuthStatus(
+              "Circle wallet challenge ready. Confirm it to finish setup.",
+            );
+            await executeChallengeForSession(payload.challengeId, authSession);
+          }
+
+          setAuthStatus("Loading Circle wallets...");
+          await loadWalletsForArcStartup(authSession);
+          setAuthStatus("Circle wallet ready.");
+          setIsLoginOpen(false);
+          clearCircleOAuthBackups();
         clearStoredLoginConfig({ preserveGoogleCookies: true });
       } catch (error) {
         const code = (error as Error & { code?: number | string }).code;
 
-        if (code === 155106 || code === "155106") {
-          setAuthStatus("Existing Circle wallet found. Loading wallets...");
-          await loadWalletsEnsuringSolana(authSession);
-          setAuthStatus("Circle wallet restored.");
-          setIsLoginOpen(false);
-          clearCircleOAuthBackups();
+          if (code === 155106 || code === "155106") {
+            setAuthStatus("Existing Circle wallet found. Loading wallets...");
+            await loadWalletsForArcStartup(authSession);
+            setAuthStatus("Circle wallet restored.");
+            setIsLoginOpen(false);
+            clearCircleOAuthBackups();
           clearStoredLoginConfig({ preserveGoogleCookies: true });
           setIsAuthenticating(false);
           return;
@@ -372,17 +327,26 @@ export function useWalletLoader({
 
         setAuthError(getErrorMessage(error));
       } finally {
-        authRequestInFlightRef.current = false;
-        setIsAuthenticating(false);
+          authRequestInFlightRef.current = false;
+          setIsAuthenticating(false);
+        }
+      })();
+      walletInitializationInFlightRef.current = initialization;
+      try {
+        await initialization;
+      } finally {
+        if (walletInitializationInFlightRef.current === initialization)
+          walletInitializationInFlightRef.current = null;
       }
     },
     [
       authRequestInFlightRef,
       clearStoredLoginConfig,
       executeChallengeForSession,
-      loadWalletsEnsuringSolana,
+      loadWalletsForArcStartup,
       setAuthError,
       setAuthStatus,
+      setInitializationPhase,
       setIsAuthenticating,
       setIsLoginOpen,
     ],
@@ -392,7 +356,7 @@ export function useWalletLoader({
     postW3sAction,
     loadWallets,
     executeChallengeForSession,
-    loadWalletsEnsuringSolana,
+    loadWalletsForArcStartup,
     initializeAndLoadWallets,
   };
 }

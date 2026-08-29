@@ -267,6 +267,64 @@ describe('InvoiceService', () => {
     expect(prisma.invoicePayment.create).not.toHaveBeenCalled();
   });
 
+  it('atomically re-verifies an existing rejected payment with the same hash without creating another record', async () => {
+    let paid = false;
+    prisma.invoice.findUnique.mockImplementation(async () =>
+      invoice({
+        status: paid ? 'PAID' : 'VERIFYING',
+        paidAt: paid ? new Date() : null,
+        payment: {
+          status: paid ? 'VERIFIED' : 'REJECTED',
+          transactionHash: HASH,
+          rejectionCode: paid ? null : 'INVOICE_WRONG_TOKEN',
+          verifiedAt: paid ? new Date() : null,
+          payerAddress: paid ? MERCHANT_B.merchantWalletAddress : null,
+        },
+      }),
+    );
+    verifier.verify.mockResolvedValue({
+      payerAddress: MERCHANT_B.merchantWalletAddress,
+      transactionHash: HASH,
+      confirmations: 2,
+      blockNumber: 100n,
+    });
+    prisma.invoice.updateMany.mockImplementation(async ({ data }: any) => {
+      if (data.status === 'PAID') paid = true;
+      return { count: 1 };
+    });
+
+    await expect(
+      service.verifyPublicPayment('abcdefghijklmnopqrstuv', HASH),
+    ).resolves.toMatchObject({
+      status: 'PAID',
+      transactionHash: HASH,
+    });
+    expect(verifier.verify).toHaveBeenCalledTimes(1);
+    expect(prisma.invoicePayment.create).not.toHaveBeenCalled();
+    expect(prisma.invoicePayment.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          invoiceId: '3fcbcc73-3471-4e64-8dda-63c12ebf6c3c',
+          transactionHash: HASH,
+          status: { in: ['SUBMITTED', 'VERIFYING', 'REJECTED'] },
+        }),
+        data: expect.objectContaining({
+          status: 'VERIFIED',
+          rejectionCode: null,
+        }),
+      }),
+    );
+    expect(prisma.invoice.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          id: '3fcbcc73-3471-4e64-8dda-63c12ebf6c3c',
+          status: 'VERIFYING',
+        }),
+        data: expect.objectContaining({ status: 'PAID' }),
+      }),
+    );
+  });
+
   it('keeps provider failures retryable and records strict mismatches as rejected', async () => {
     prisma.invoice.findUnique.mockResolvedValue(
       invoice({

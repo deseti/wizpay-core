@@ -59,7 +59,6 @@ export const SOCIAL_LOGIN_NONCE_STORAGE_KEY = "nonce";
 export const SUPPORTED_WALLET_CHAINS = new Set([
   "ARC-TESTNET",
   "ETH-SEPOLIA",
-  "SOLANA-DEVNET",
 ]);
 export const INVALID_DEVICE_ERROR_CODES = new Set([155113, 155137, 155143, 155144, 155145]);
 export const OAUTH_RECOVERY_ERROR_CODES = new Set([155114, 155140]);
@@ -169,6 +168,26 @@ export function isCircleRecoverableSessionError(error: unknown) {
 export function isCircleExpiredSessionError(error: unknown) {
   const { code } = getCircleErrorDetail(error);
   return EXPIRED_SESSION_ERROR_CODES.has(code ?? -1);
+}
+
+export function isDefinitiveCircleRefreshFailure(error: unknown) {
+  const status = isRecord(error) && typeof error.status === "number" ? error.status : null;
+  return status === 400 || status === 401 || status === 403;
+}
+
+export function mergeCircleRefreshedSession(
+  current: import("./circle-auth.types").CircleW3SSession,
+  payload: Record<string, unknown>,
+) {
+  if (typeof payload.userToken !== "string" || typeof payload.encryptionKey !== "string") {
+    throw new Error("Circle returned incomplete refreshed session material.");
+  }
+  return {
+    ...current,
+    userToken: payload.userToken,
+    encryptionKey: payload.encryptionKey,
+    refreshToken: typeof payload.refreshToken === "string" ? payload.refreshToken : current.refreshToken,
+  };
 }
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
@@ -371,6 +390,15 @@ export function normalizeCircleWalletTokenBalance(
 
   return {
     amount: record.amount,
+    blockchain:
+      typeof token?.blockchain === "string" && token.blockchain
+        ? token.blockchain
+        : null,
+    decimals:
+      typeof token?.decimals === "number" && Number.isInteger(token.decimals)
+        ? token.decimals
+        : null,
+    isNative: token?.isNative === true,
     raw: record,
     symbol:
       typeof token?.symbol === "string" && token.symbol ? token.symbol : null,
@@ -386,6 +414,42 @@ export function normalizeCircleWalletTokenBalance(
           ? record.updatedAt
           : null,
   };
+}
+
+export function selectCircleTransferToken(
+  balances: CircleWalletTokenBalance[],
+  input: { blockchain: string; symbol: string; tokenAddress: string },
+): CircleWalletTokenBalance | null {
+  const onChain = balances.filter(
+    (balance) =>
+      balance.blockchain === null ||
+      balance.blockchain.toUpperCase() === input.blockchain.toUpperCase(),
+  );
+  const normalizedAddress = input.tokenAddress.toLowerCase();
+  const byAddress = onChain.filter(
+    (balance) => balance.tokenAddress?.toLowerCase() === normalizedAddress,
+  );
+  if (byAddress.length === 1) return byAddress[0];
+  if (byAddress.length > 1) return null;
+
+  const bySymbol = onChain.filter(
+    (balance) => balance.symbol?.toUpperCase() === input.symbol.toUpperCase(),
+  );
+  return bySymbol.length === 1 ? bySymbol[0] : null;
+}
+
+export function circleBalanceAmountToUnits(
+  amount: string,
+  decimals: number,
+): bigint | null {
+  if (!/^\d+(?:\.\d+)?$/.test(amount) || decimals < 0) return null;
+  const [whole, fraction = ""] = amount.split(".");
+  return (
+    BigInt(whole) * 10n ** BigInt(decimals) +
+    BigInt(
+      (fraction.slice(0, decimals) + "0".repeat(decimals)).slice(0, decimals),
+    )
+  );
 }
 
 export function readStoredJson<T>(key: string) {
@@ -754,4 +818,3 @@ export function clearCircleOAuthState() {
   removeStoredValue(SOCIAL_LOGIN_NONCE_STORAGE_KEY);
   clearCircleOAuthBackups();
 }
-

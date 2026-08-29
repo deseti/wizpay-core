@@ -1,21 +1,15 @@
 /* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access */
 import { ConfigService } from '@nestjs/config';
-import {
-  encodeAbiParameters,
-  encodeEventTopics,
-  encodeFunctionData,
-  parseAbi,
-  parseAbiItem,
-} from 'viem';
+import { encodeAbiParameters, encodeEventTopics, parseAbiItem } from 'viem';
 import { InvoicePaymentVerifierService } from './invoice-payment-verifier.service';
 
 const PAYER = '0x56DE876C902AdA72CF8E7595715127cEA27d43E6';
 const MERCHANT = '0x32F251fc36A1174901124589EAC2d4E391816F69';
 const TOKEN = '0x3600000000000000000000000000000000000000';
+const ENTRYPOINT = '0x5ff137d4b0fdcd49dca30c7cf57e578a026d2789';
+const BUNDLER = '0xbb9e6a30d234f68b50c7d4128e9453e3822a6c94';
+const MIRROR = '0xfffffffffffffffffffffffffffffffffffffffe';
 const HASH = `0x${'a'.repeat(64)}` as const;
-const ABI = parseAbi([
-  'function transfer(address to, uint256 amount) returns (bool)',
-]);
 const EVENT = parseAbiItem(
   'event Transfer(address indexed from, address indexed to, uint256 value)',
 );
@@ -42,6 +36,25 @@ describe('InvoicePaymentVerifierService', () => {
     });
   });
 
+  it('accepts an ERC-4337 EntryPoint envelope and derives payer only from the canonical token log', async () => {
+    client.getTransaction.mockResolvedValue({
+      ...validTransaction(),
+      from: BUNDLER,
+      to: ENTRYPOINT,
+      input: '0x1234',
+    });
+    await expect(service.verify(input())).resolves.toMatchObject({
+      payerAddress: PAYER,
+    });
+  });
+
+  it('keeps a direct EOA token transfer valid', async () => {
+    await expect(service.verify(input())).resolves.toMatchObject({
+      payerAddress: PAYER,
+    });
+    expect(validTransaction().to).toBe(TOKEN);
+  });
+
   it.each([
     [
       'wrong transaction chain',
@@ -54,11 +67,16 @@ describe('InvoicePaymentVerifierService', () => {
       'INVOICE_WRONG_CHAIN',
     ],
     [
-      'wrong token contract',
+      'wrong log emitter',
       (c: any) => {
-        c.getTransaction.mockResolvedValue({
-          ...validTransaction(),
-          to: '0x1111111111111111111111111111111111111111',
+        c.getTransactionReceipt.mockResolvedValue({
+          ...validReceipt(),
+          logs: [
+            {
+              ...transferLog(),
+              address: '0x1111111111111111111111111111111111111111',
+            },
+          ],
         });
       },
       'INVOICE_WRONG_TOKEN',
@@ -72,44 +90,6 @@ describe('InvoicePaymentVerifierService', () => {
         });
       },
       'INVOICE_NATIVE_VALUE_NOT_ZERO',
-    ],
-    [
-      'wrong recipient calldata',
-      (c: any) => {
-        c.getTransaction.mockResolvedValue({
-          ...validTransaction(),
-          input: encodeFunctionData({
-            abi: ABI,
-            functionName: 'transfer',
-            args: ['0x1111111111111111111111111111111111111111', 1_000_000n],
-          }),
-        });
-      },
-      'INVOICE_WRONG_RECIPIENT',
-    ],
-    [
-      'wrong amount calldata',
-      (c: any) => {
-        c.getTransaction.mockResolvedValue({
-          ...validTransaction(),
-          input: encodeFunctionData({
-            abi: ABI,
-            functionName: 'transfer',
-            args: [MERCHANT, 999_999n],
-          }),
-        });
-      },
-      'INVOICE_WRONG_AMOUNT',
-    ],
-    [
-      'malformed calldata',
-      (c: any) => {
-        c.getTransaction.mockResolvedValue({
-          ...validTransaction(),
-          input: '0xa9059cbb',
-        });
-      },
-      'INVOICE_MALFORMED_CALLDATA',
     ],
     [
       'failed receipt',
@@ -144,7 +124,7 @@ describe('InvoicePaymentVerifierService', () => {
           ],
         });
       },
-      'INVOICE_TRANSFER_EVENT_MISSING',
+      'INVOICE_WRONG_TOKEN',
     ],
     [
       'event to wrong recipient',
@@ -158,7 +138,7 @@ describe('InvoicePaymentVerifierService', () => {
           ],
         });
       },
-      'INVOICE_TRANSFER_EVENT_MISSING',
+      'INVOICE_WRONG_RECIPIENT',
     ],
     [
       'event with wrong amount',
@@ -168,7 +148,7 @@ describe('InvoicePaymentVerifierService', () => {
           logs: [transferLog({ value: 999_999n })],
         });
       },
-      'INVOICE_TRANSFER_EVENT_MISSING',
+      'INVOICE_WRONG_AMOUNT',
     ],
   ])('rejects %s', async (_label, mutate, code) => {
     mutate(client);
@@ -178,13 +158,47 @@ describe('InvoicePaymentVerifierService', () => {
     });
   });
 
-  it('rejects authoritative self-payment even with otherwise valid evidence', async () => {
+  it('rejects self-payment from the Transfer topic even when receipt.from is a bundler', async () => {
     client.getTransaction.mockResolvedValue({
       ...validTransaction(),
-      from: MERCHANT,
+      from: BUNDLER,
+      to: ENTRYPOINT,
+    });
+    client.getTransactionReceipt.mockResolvedValue({
+      ...validReceipt(),
+      logs: [transferLog({ from: MERCHANT })],
     });
     await expect(service.verify(input())).rejects.toMatchObject({
       code: 'INVOICE_SELF_PAYMENT',
+      retryable: false,
+    });
+  });
+
+  it('ignores the Arc native accounting mirror emitter', async () => {
+    client.getTransactionReceipt.mockResolvedValue({
+      ...validReceipt(),
+      logs: [
+        { ...transferLog({ from: MERCHANT }), address: MIRROR },
+        transferLog(),
+      ],
+    });
+    await expect(service.verify(input())).resolves.toMatchObject({
+      payerAddress: PAYER,
+    });
+  });
+
+  it('rejects a log with a non-Transfer topic even when its fields resemble payment evidence', async () => {
+    client.getTransactionReceipt.mockResolvedValue({
+      ...validReceipt(),
+      logs: [
+        {
+          ...transferLog(),
+          topics: [`0x${'1'.repeat(64)}`],
+        },
+      ],
+    });
+    await expect(service.verify(input())).rejects.toMatchObject({
+      code: 'INVOICE_TRANSFER_EVENT_MISSING',
       retryable: false,
     });
   });
@@ -232,11 +246,7 @@ function validTransaction() {
     from: PAYER,
     to: TOKEN,
     value: 0n,
-    input: encodeFunctionData({
-      abi: ABI,
-      functionName: 'transfer',
-      args: [MERCHANT, 1_000_000n],
-    }),
+    input: '0xa9059cbb',
   };
 }
 function validReceipt() {
