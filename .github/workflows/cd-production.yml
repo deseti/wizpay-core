@@ -40,7 +40,8 @@ jobs:
              test -z "$(git status --short)"
              git fetch origin main
              git merge --ff-only origin/main
-             docker compose -p wizpay -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.vps2.yml build backend frontend
+             docker compose -p wizpay -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.vps2.yml build backend
+             docker compose -p wizpay -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.vps2.yml build frontend
              docker compose -p wizpay -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.vps2.yml up -d postgres redis backend frontend
              containers_healthy=false
              for attempt in $(seq 1 30); do
