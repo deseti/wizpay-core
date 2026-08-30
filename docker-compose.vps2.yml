@@ -1,0 +1,23 @@
+services:
+  nginx:
+    profiles:
+      - legacy-nginx
+
+  frontend:
+    ports: !override
+      - "127.0.0.1:3100:3000"
+
+  backend:
+    ports: !override
+      - "127.0.0.1:4100:4000"
+
+  redis:
+    ports: !override []
+
+  postgres:
+    ports: !override
+      - "127.0.0.1:15432:5432"
+
+networks:
+  wizpay-network:
+    name: wizpay_vps2_network

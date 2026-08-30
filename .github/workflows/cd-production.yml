@@ -36,12 +36,12 @@ jobs:
             -o StrictHostKeyChecking=yes \
             "${{ secrets.WIZPAY_VM_USER }}@${{ secrets.WIZPAY_VM_HOST }}" \
             'set -euo pipefail
-             cd /home/ubuntu/wizpay
+             cd /home/wizpay/apps/wizpay/repo
              test -z "$(git status --short)"
              git fetch origin main
              git merge --ff-only origin/main
-             docker compose -f docker-compose.yml -f docker-compose.prod.yml build backend frontend
-             docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d backend frontend
+             docker compose -p wizpay -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.vps2.yml build backend frontend
+             docker compose -p wizpay -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.vps2.yml up -d postgres redis backend frontend
              containers_healthy=false
              for attempt in $(seq 1 30); do
                backend_health=$(docker inspect -f "{{.State.Health.Status}}" wizpay-backend-1 2>/dev/null || true)
@@ -55,74 +55,14 @@ jobs:
                fi
              done
              if [ "$containers_healthy" != "true" ]; then
-               docker compose -f docker-compose.yml -f docker-compose.prod.yml ps
-               docker compose -f docker-compose.yml -f docker-compose.prod.yml logs --tail=100 backend
-               docker compose -f docker-compose.yml -f docker-compose.prod.yml logs --tail=100 frontend
+               docker compose -p wizpay -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.vps2.yml ps
+               docker compose -p wizpay -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.vps2.yml logs --tail=100 backend
+               docker compose -p wizpay -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.vps2.yml logs --tail=100 frontend
                exit 1
              fi
-             # Validate the repository-managed proxy before touching the
-             # currently serving container. Keep the certificate tree read
-             # only because nginx -t validates the configured certificate
-             # paths as well as nginx.conf.
-             compose_args="-f docker-compose.yml -f docker-compose.prod.yml"
-             docker compose $compose_args run --rm --no-deps nginx nginx -t
-
-             legacy_name=wizpay-nginx
-             legacy_id=$(docker inspect -f "{{.Id}}" "$legacy_name" 2>/dev/null || true)
-             managed_id=$(docker compose $compose_args ps -aq nginx 2>/dev/null || true)
-             managed=false
-             if [ -n "$legacy_id" ] && [ -n "$managed_id" ] && [ "$legacy_id" = "$managed_id" ]; then
-               compose_project=$(docker inspect -f "{{ index .Config.Labels \"com.docker.compose.project\" }}" "$legacy_id" 2>/dev/null || true)
-               compose_service=$(docker inspect -f "{{ index .Config.Labels \"com.docker.compose.service\" }}" "$legacy_id" 2>/dev/null || true)
-               if [ -n "$compose_project" ] && [ "$compose_service" = "nginx" ]; then
-                 managed=true
-               fi
-             fi
-
-             if [ "$managed" = "true" ]; then
-               docker compose $compose_args up -d nginx
-             else
-               legacy_renamed=false
-               if [ -n "$legacy_id" ]; then
-                 legacy_project=$(docker inspect -f "{{ index .Config.Labels \"com.docker.compose.project\" }}" "$legacy_id" 2>/dev/null || true)
-                 legacy_service=$(docker inspect -f "{{ index .Config.Labels \"com.docker.compose.service\" }}" "$legacy_id" 2>/dev/null || true)
-                 if [ -n "$legacy_project" ] || [ -n "$legacy_service" ]; then
-                   echo "wizpay-nginx exists but is not the current Compose nginx service (project=$legacy_project service=$legacy_service)"
-                   echo "Refusing to replace a container with unknown Compose ownership"
-                   exit 1
-                 else
-                   echo "wizpay-nginx is an unmanaged legacy container; preparing reversible cutover"
-                 fi
-                 docker stop "$legacy_name" >/dev/null 2>&1 || true
-                 docker rename "$legacy_name" "${legacy_name}-legacy"
-                 legacy_renamed=true
-               fi
-
-               if ! docker compose $compose_args up -d nginx; then
-                 if [ "$legacy_renamed" = "true" ]; then
-                   docker rm -f "$legacy_name" >/dev/null 2>&1 || true
-                   docker rename "${legacy_name}-legacy" "$legacy_name"
-                   docker start "$legacy_name" >/dev/null 2>&1 || true
-                 fi
-                 exit 1
-               fi
-
-               if ! curl -kfsS --resolve app.wizpay.xyz:443:127.0.0.1 https://app.wizpay.xyz/ >/dev/null; then
-                 docker compose $compose_args logs --tail=100 nginx || true
-                 docker rm -f "$legacy_name" >/dev/null 2>&1 || true
-                 if [ "$legacy_renamed" = "true" ]; then
-                   docker rename "${legacy_name}-legacy" "$legacy_name"
-                   docker start "$legacy_name" >/dev/null 2>&1 || true
-                 fi
-                 exit 1
-               fi
-
-               if [ "$legacy_renamed" = "true" ]; then
-                 docker rm "${legacy_name}-legacy"
-               fi
-             fi
-             curl -fsS http://127.0.0.1:3000 >/dev/null
-             curl -fsS http://127.0.0.1:4000/tasks >/dev/null
+             systemctl is-active --quiet caddy
+             curl -fsS http://127.0.0.1:3100 >/dev/null
+             curl -fsS http://127.0.0.1:4100/tasks >/dev/null
              invoice_headers=$(mktemp)
              invoice_body=$(mktemp)
              invoice_status=$(curl -ksS \
@@ -140,4 +80,4 @@ jobs:
                exit 1
              fi
              rm -f "$invoice_headers" "$invoice_body"
-             docker compose -f docker-compose.yml -f docker-compose.prod.yml ps'
+             docker compose -p wizpay -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.vps2.yml ps'
