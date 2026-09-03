@@ -29,6 +29,7 @@ import { resolveArcTestnetRpcUrl } from '../config/arc-rpc';
 import { PrismaService } from '../database/prisma.service';
 import { W3sAuthService } from '../modules/wallet/w3s-auth.service';
 import { WalletService } from '../modules/wallet/wallet.service';
+import { ActivityService } from '../activity/activity.service';
 import type { AppWalletXylonetOperationDto } from './dto/app-wallet-xylonet-operation.dto';
 import {
   APP_WALLET_XYLONET_ERRORS,
@@ -199,6 +200,8 @@ export class AppWalletXylonetUserControlledExecutorService {
     @Optional()
     @Inject(APP_WALLET_XYLONET_PUBLIC_CLIENT)
     private readonly injectedPublicClient?: PublicClient,
+    @Optional()
+    private readonly activityService?: ActivityService,
   ) {}
 
   async quote(request: AppWalletXylonetOperationDto, userToken: string) {
@@ -579,6 +582,7 @@ export class AppWalletXylonetUserControlledExecutorService {
         userToken,
       );
       if (synced.operation.terminalStatus) {
+        await this.projectVerifiedActivity(synced.operation);
         return this.toPublic(synced.operation);
       }
       const now = new Date();
@@ -640,10 +644,23 @@ export class AppWalletXylonetUserControlledExecutorService {
     } else if (operation.lifecycleStage === 'swap_submitted') {
       operation = await this.pollStage(operation, 'swap', userToken);
     }
+    await this.projectVerifiedActivity(operation);
     return this.toPublic(
       operation,
       await this.getVerifiedActualOutput(operation),
     );
+  }
+
+  private async projectVerifiedActivity(
+    operation: AppWalletXylonetOperation,
+  ): Promise<void> {
+    try {
+      await this.activityService?.projectVerifiedXylonetOperation(operation);
+    } catch (error) {
+      this.logger.warn(
+        `[app-wallet-xylonet] operationId=${operation.operationId} activity projection deferred: ${this.errorMessage(error)}`,
+      );
+    }
   }
 
   private async getVerifiedActualOutput(

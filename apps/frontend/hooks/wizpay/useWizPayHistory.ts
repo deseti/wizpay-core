@@ -4,7 +4,8 @@ import { type Address, type Hex } from "viem";
 import { useActiveWalletAddress } from "@/hooks/useActiveWalletAddress";
 import { sameAddress } from "@/lib/wizpay";
 import type { HistoryItem, UnifiedHistoryItem } from "@/lib/types";
-import { useBackendTaskHistory } from "@/hooks/useBackendTaskHistory";
+import { useUnifiedActivity } from "@/hooks/useUnifiedActivity";
+import { useCircleWallet } from "@/components/providers/CircleWalletProvider";
 
 function isValidTxHash(value: string): value is Hex {
   return /^0x[a-fA-F0-9]{64}$/.test(value);
@@ -15,15 +16,16 @@ export function useWizPayHistory({
 }: {
   activeToken: { address: Address };
 }) {
-  const { isConnected } = useActiveWalletAddress();
+  const { isConnected, walletMode } = useActiveWalletAddress();
+  const { userToken } = useCircleWallet();
   // Backend task history only (no on-chain log scans).
-  const { items: backendItems, isLoading: backendLoading } = useBackendTaskHistory({
-    // Keep history complete while older tasks may not carry initiator wallet metadata.
-    // Once all task types persist walletAddress consistently, this can be re-enabled.
-    walletAddress: undefined,
-    limit: 50,
-    enabled: isConnected,
-  });
+  const { items: backendItems, isLoading: backendLoading } = useUnifiedActivity(
+    {
+      userToken: walletMode === "circle" ? userToken : null,
+      limit: 50,
+      enabled: isConnected && walletMode === "circle",
+    },
+  );
   const unifiedHistory = useMemo<UnifiedHistoryItem[]>(() => {
     const seen = new Set<string>();
     const deduped = [...backendItems].filter((item) => {
@@ -42,26 +44,30 @@ export function useWizPayHistory({
 
   const history = useMemo<HistoryItem[]>(() => {
     return unifiedHistory
-      .filter((item): item is UnifiedHistoryItem & {
-        tokenIn: Address;
-        tokenOut: Address;
-        totalAmountIn: bigint;
-        totalAmountOut: bigint;
-        totalFees: bigint;
-        recipientCount: number;
-        referenceId: string;
-      } => {
-        return (
-          item.type === "payroll" &&
-          Boolean(item.tokenIn) &&
-          Boolean(item.tokenOut) &&
-          item.totalAmountIn !== undefined &&
-          item.totalAmountOut !== undefined &&
-          item.totalFees !== undefined &&
-          item.recipientCount !== undefined &&
-          Boolean(item.referenceId)
-        );
-      })
+      .filter(
+        (
+          item,
+        ): item is UnifiedHistoryItem & {
+          tokenIn: Address;
+          tokenOut: Address;
+          totalAmountIn: bigint;
+          totalAmountOut: bigint;
+          totalFees: bigint;
+          recipientCount: number;
+          referenceId: string;
+        } => {
+          return (
+            item.type === "payroll" &&
+            Boolean(item.tokenIn) &&
+            Boolean(item.tokenOut) &&
+            item.totalAmountIn !== undefined &&
+            item.totalAmountOut !== undefined &&
+            item.totalFees !== undefined &&
+            item.recipientCount !== undefined &&
+            Boolean(item.referenceId)
+          );
+        },
+      )
       .map((item) => ({
         contractAddress: activeToken.address,
         tokenIn: item.tokenIn,
@@ -71,7 +77,9 @@ export function useWizPayHistory({
         totalFees: item.totalFees,
         recipientCount: item.recipientCount,
         referenceId: item.referenceId,
-        txHash: isValidTxHash(item.txHash) ? item.txHash : ("0x0000000000000000000000000000000000000000000000000000000000000000" as Hex),
+        txHash: isValidTxHash(item.txHash)
+          ? item.txHash
+          : ("0x0000000000000000000000000000000000000000000000000000000000000000" as Hex),
         blockNumber: item.blockNumber,
         timestampMs: item.timestampMs,
       }));

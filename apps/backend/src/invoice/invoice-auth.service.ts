@@ -15,6 +15,11 @@ type CircleWallet = {
   blockchain?: string;
 };
 
+export type AuthenticatedCirclePrincipal = InvoiceMerchantPrincipal & {
+  circleWalletId: string;
+  userToken: string;
+};
+
 @Injectable()
 export class InvoiceAuthService {
   private readonly circleBaseUrl: string;
@@ -31,6 +36,17 @@ export class InvoiceAuthService {
   async authenticate(
     authorization?: string,
   ): Promise<InvoiceMerchantPrincipal> {
+    const principal = await this.authenticateCirclePrincipal(authorization);
+    return {
+      merchantUserId: principal.merchantUserId,
+      merchantWalletAddress: principal.merchantWalletAddress,
+      merchantDisplayLabel: principal.merchantDisplayLabel,
+    };
+  }
+
+  async authenticateCirclePrincipal(
+    authorization?: string,
+  ): Promise<AuthenticatedCirclePrincipal> {
     const userToken = this.extractBearerToken(authorization);
     const user = await this.circleRequest<CircleUser>(
       '/v1/w3s/user',
@@ -117,6 +133,8 @@ export class InvoiceAuthService {
       merchantUserId,
       merchantWalletAddress: canonical,
       merchantDisplayLabel: null,
+      circleWalletId: arcWallet.walletId,
+      userToken,
     };
   }
 

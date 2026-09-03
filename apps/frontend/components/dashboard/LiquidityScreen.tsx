@@ -37,6 +37,7 @@ import {
 import { buildXShareUrl } from "@/lib/social";
 import { USDC_ADDRESS, EURC_ADDRESS } from "@/constants/addresses";
 import { initLiquidityTask, reportLiquidityResult } from "@/lib/swap-service";
+import { useActiveWalletAddress } from "@/hooks/useActiveWalletAddress";
 
 const TOKEN_ADDRESSES: Record<TokenSymbol, `0x${string}`> = {
   USDC: USDC_ADDRESS,
@@ -62,6 +63,7 @@ function getErrorMessage(error: unknown): string {
 }
 
 export function LiquidityScreen() {
+  const { walletAddress } = useActiveWalletAddress();
   const [selectedToken, setSelectedToken] = useState<TokenSymbol>("USDC");
   const [amountStr, setAmountStr] = useState("");
   const [activeTab, setActiveTab] = useState<"deposit" | "withdraw">("deposit");
@@ -103,11 +105,13 @@ export function LiquidityScreen() {
     let txHashResult: string | null = null;
 
     try {
+      if (!walletAddress) throw new Error("Connect a wallet before adding liquidity.");
       // Register liquidity task in backend before execution
       const plan = await initLiquidityTask({
         operation: "add",
         token: tokenAddress,
         amount: amountBn.toString(),
+        walletAddress,
       });
       taskId = plan.taskId;
       unitId = plan.unitId;
@@ -158,11 +162,13 @@ export function LiquidityScreen() {
     let txHashResult: string | null = null;
 
     try {
+      if (!walletAddress) throw new Error("Connect a wallet before removing liquidity.");
       // Register liquidity task in backend before execution
       const plan = await initLiquidityTask({
         operation: "remove",
         token: tokenAddress,
         amount: amountBn.toString(),
+        walletAddress,
       });
       taskId = plan.taskId;
       unitId = plan.unitId;

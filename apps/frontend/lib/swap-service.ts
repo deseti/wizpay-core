@@ -15,6 +15,7 @@ export async function initLiquidityTask(params: {
   operation: "add" | "remove";
   token: string;
   amount: string;
+  walletAddress: string;
 }): Promise<LiquidityTaskPlan> {
   return backendFetch<LiquidityTaskPlan>("/tasks/liquidity/init", {
     method: "POST",

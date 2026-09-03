@@ -14,6 +14,9 @@ vi.mock("@/hooks/useActiveWalletAddress", () => ({
     walletMode: activeWalletMode,
   }),
 }));
+vi.mock("@/components/providers/CircleWalletProvider", () => ({
+  useCircleWallet: () => ({ userToken: "circle-user-token" }),
+}));
 vi.mock("@/lib/backend-api", () => ({ backendFetch: vi.fn() }));
 
 const backendFetchMock = vi.mocked(backendFetch);

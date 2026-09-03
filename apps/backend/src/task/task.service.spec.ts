@@ -1,4 +1,8 @@
-import { BadRequestException, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  NotFoundException,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { TaskService, ALLOWED_TRANSITIONS, FX_STEPS } from './task.service';
 import { TaskStatus } from './task-status.enum';
 import { TaskLogService } from './task-log.service';
@@ -28,6 +32,7 @@ describe('TaskService', () => {
         findUnique: jest.fn(),
         update: jest.fn(),
         create: jest.fn(),
+        findFirst: jest.fn(),
         findMany: jest.fn(),
         count: jest.fn(),
       },
@@ -110,6 +115,111 @@ describe('TaskService', () => {
 
     it('has exactly 9 FX step identifiers', () => {
       expect(Object.keys(FX_STEPS)).toHaveLength(9);
+    });
+  });
+
+  describe('owned task history', () => {
+    const ownedTask = {
+      id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      type: 'swap',
+      status: 'executed',
+      metadata: {},
+      payload: {},
+      result: null,
+      logs: [],
+      units: [],
+      transactions: [],
+      createdAt: new Date('2026-08-31T00:00:00.000Z'),
+      updatedAt: new Date('2026-08-31T00:00:00.000Z'),
+    };
+
+    it('normalizes wallet scope and compares every ownership field case-insensitively', async () => {
+      (prisma.task.findMany as jest.Mock).mockResolvedValue([ownedTask]);
+      (prisma.task.count as jest.Mock).mockResolvedValue(1);
+
+      await expect(
+        taskService.getTaskList({
+          walletAddress: '  0xAbCdEfabcdefABCDEFabcdefAbcdefABcDefABCD  ',
+        }),
+      ).resolves.toEqual({ items: [ownedTask], total: 1 });
+
+      const addressFilter = {
+        equals: '0xabcdefabcdefabcdefabcdefabcdefabcdefabcd',
+        mode: 'insensitive',
+      };
+      expect(prisma.task.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            OR: [
+              { metadata: { path: ['walletAddress'], ...addressFilter } },
+              { metadata: { path: ['sourceAddress'], ...addressFilter } },
+              { payload: { path: ['walletAddress'], ...addressFilter } },
+              { payload: { path: ['sourceAddress'], ...addressFilter } },
+            ],
+          },
+        }),
+      );
+    });
+
+    it('fails closed rather than querying global task history without ownership scope', async () => {
+      await expect(
+        taskService.getTaskList({ walletAddress: '' }),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+      expect(prisma.task.findMany as jest.Mock).not.toHaveBeenCalled();
+      expect(prisma.task.count as jest.Mock).not.toHaveBeenCalled();
+    });
+
+    it('returns an owned detail and hides the same task from another wallet', async () => {
+      (prisma.task.findFirst as jest.Mock)
+        .mockResolvedValueOnce(ownedTask)
+        .mockResolvedValueOnce(null);
+
+      await expect(
+        taskService.getOwnedTaskById(
+          ownedTask.id,
+          '0xAbCdEfabcdefABCDEFabcdefAbcdefABcDefABCD',
+        ),
+      ).resolves.toEqual(ownedTask);
+      await expect(
+        taskService.getOwnedTaskById(
+          ownedTask.id,
+          '0x1111111111111111111111111111111111111111',
+        ),
+      ).rejects.toBeInstanceOf(NotFoundException);
+
+      expect(prisma.task.findFirst).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({
+          where: expect.objectContaining({
+            id: ownedTask.id,
+            OR: expect.any(Array),
+          }),
+        }),
+      );
+    });
+  });
+
+  describe('task ownership persistence guards', () => {
+    it('rejects generic and payroll task creation without an initiator/source owner', async () => {
+      await expect(
+        taskService.createTask('fx', { amount: '1' }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      await expect(
+        taskService.createPayrollTask({ recipients: [] }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(prisma.task.create as jest.Mock).not.toHaveBeenCalled();
+    });
+
+    it('rejects enabled liquidity task creation without an initiator/source owner', async () => {
+      process.env.WIZPAY_ENABLE_LEGACY_LIQUIDITY = 'true';
+
+      await expect(
+        taskService.createLiquidityTask({
+          operation: 'add',
+          token: 'USDC',
+          amount: '1000000',
+        }),
+      ).rejects.toBeInstanceOf(BadRequestException);
     });
   });
 

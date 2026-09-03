@@ -41,7 +41,56 @@ export interface HistoryItem {
 }
 
 /* ── Unified history covering all dashboard event types ── */
-export type HistoryActionType = "payroll" | "add_lp" | "remove_lp" | "swap" | "bridge" | "fx";
+export type HistoryActionType =
+  | "payroll"
+  | "send"
+  | "receive"
+  | "swap"
+  | "bridge"
+  | "fx"
+  | "invoice_payment";
+
+export interface ActivityDto {
+  id: string;
+  type: HistoryActionType;
+  direction: "outgoing" | "incoming" | null;
+  status:
+    | "pending"
+    | "submitted"
+    | "confirming"
+    | "completed"
+    | "failed"
+    | "expired"
+    | "cancelled"
+    | "recovery_required";
+  source: string;
+  sourceReferenceType: string;
+  sourceReferenceId: string;
+  taskId: string | null;
+  operationId: string | null;
+  challengeId: string | null;
+  transactionId: string | null;
+  chainId: number | null;
+  txHash: string | null;
+  inputTokenSymbol: string | null;
+  inputTokenAddress: string | null;
+  inputAmount: string | null;
+  outputTokenSymbol: string | null;
+  outputTokenAddress: string | null;
+  outputAmount: string | null;
+  feeAmount: string | null;
+  feeTokenSymbol: string | null;
+  counterparty: string | null;
+  metadata: Record<string, string | number | boolean> | null;
+  occurredAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ActivityListResponse {
+  items: ActivityDto[];
+  nextCursor: string | null;
+}
 
 /** One atomic step of a cross-chain bridge transfer. */
 export interface NormalizedBridgeStep {
@@ -66,10 +115,17 @@ export interface NormalizedBridgeTransfer {
 }
 
 export interface UnifiedHistoryItem {
+  id?: string;
   type: HistoryActionType;
   txHash: Hex;
   blockNumber: bigint;
   timestampMs: number;
+  direction?: "outgoing" | "incoming" | null;
+  status?: ActivityDto["status"];
+  tokenSymbol?: string;
+  amountDisplay?: string;
+  counterparty?: string;
+  chainId?: number;
   /* Payroll-specific */
   tokenIn?: Address;
   tokenOut?: Address;
@@ -186,14 +242,23 @@ export interface WizPayState {
   /* token selection */
   selectedToken: TokenSymbol;
   setSelectedToken: (token: TokenSymbol) => void;
-  activeToken: { symbol: TokenSymbol; name: string; address: Address; decimals: number };
+  activeToken: {
+    symbol: TokenSymbol;
+    name: string;
+    address: Address;
+    decimals: number;
+  };
 
   /* recipients */
   recipients: RecipientDraft[];
   preparedRecipients: PreparedRecipient[];
   addRecipient: () => void;
   removeRecipient: (id: string) => void;
-  updateRecipient: (id: string, field: keyof Omit<RecipientDraft, "id">, value: string) => void;
+  updateRecipient: (
+    id: string,
+    field: keyof Omit<RecipientDraft, "id">,
+    value: string,
+  ) => void;
 
   /* reference */
   referenceId: string;
@@ -251,9 +316,15 @@ export interface WizPayState {
   sessionTotalAmount: bigint;
   setSessionTotalAmount: (amount: bigint | ((prev: bigint) => bigint)) => void;
   sessionTotalRecipients: number;
-  setSessionTotalRecipients: (count: number | ((prev: number) => number)) => void;
+  setSessionTotalRecipients: (
+    count: number | ((prev: number) => number),
+  ) => void;
   sessionTotalDistributed: Record<TokenSymbol, bigint>;
-  setSessionTotalDistributed: (arg: Record<TokenSymbol, bigint> | ((prev: Record<TokenSymbol, bigint>) => Record<TokenSymbol, bigint>)) => void;
+  setSessionTotalDistributed: (
+    arg:
+      | Record<TokenSymbol, bigint>
+      | ((prev: Record<TokenSymbol, bigint>) => Record<TokenSymbol, bigint>),
+  ) => void;
 
   /* actions */
   handleApprove: () => Promise<TransactionActionResult>;

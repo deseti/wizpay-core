@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Get,
+  Headers,
   Inject,
   Param,
   ParseIntPipe,
@@ -15,6 +16,7 @@ import { TaskService } from '../task/task.service';
 import { TaskEmployeeBreakdownService } from '../task/task-employee-breakdown.service';
 import { TaskPayrollHistoryService } from '../task/task-payroll-history.service';
 import type { ReportTaskUnitInput } from '../task/task.types';
+import { InvoiceAuthService } from '../invoice/invoice-auth.service';
 
 @Controller('tasks')
 export class TaskController {
@@ -24,6 +26,7 @@ export class TaskController {
     private readonly taskEmployeeBreakdownService: TaskEmployeeBreakdownService,
     private readonly taskPayrollHistoryService: TaskPayrollHistoryService,
     private readonly payrollInitService: PayrollInitService,
+    private readonly invoiceAuthService: InvoiceAuthService,
   ) {}
 
   /**
@@ -59,28 +62,29 @@ export class TaskController {
   }
 
   /**
-   * GET /tasks — List tasks with optional filters.
+   * GET /tasks — List tasks owned by the authenticated Circle user.
    *
    * Query params:
    *   type       — filter by task type (payroll, swap, bridge, liquidity, fx)
    *   status     — filter by status (executed, failed, in_progress, …)
-   *   wallet     — filter by wallet/recipient address stored in metadata
    *   limit      — max results (default 50, max 200)
    *   offset     — pagination offset (default 0)
    */
   @Get()
   async listTasks(
+    @Headers('authorization') authorization?: string,
     @Query('type') type?: string,
     @Query('status') status?: string,
-    @Query('wallet') walletAddress?: string,
     @Query('limit', new ParseIntPipe({ optional: true })) limit?: number,
     @Query('offset', new ParseIntPipe({ optional: true })) offset?: number,
   ) {
+    const principal = await this.invoiceAuthService.authenticate(authorization);
+
     return {
       data: await this.taskService.getTaskList({
         type,
         status,
-        walletAddress,
+        walletAddress: principal.merchantWalletAddress,
         limit,
         offset,
       }),
@@ -107,26 +111,40 @@ export class TaskController {
    * GET /tasks/:id — Poll task status.
    *
    * Frontend polls this endpoint to track progress.
-   * Returns the full task with logs for fine-grained progress display.
+   * Returns the full task with logs only to its authenticated canonical owner.
    */
   @Get(':id')
-  async getTask(@Param('id', new ParseUUIDPipe()) id: string) {
+  async getTask(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Headers('authorization') authorization?: string,
+  ) {
+    const principal = await this.invoiceAuthService.authenticate(authorization);
+
     return {
-      data: await this.taskService.getTaskById(id),
+      data: await this.taskService.getOwnedTaskById(
+        id,
+        principal.merchantWalletAddress,
+      ),
     };
   }
 
   /**
    * GET /tasks/:id/employee-breakdown — Return confirmed employee-level payroll payments.
    *
-   * Frontend uses this endpoint to render recent payroll rows without scanning
+   * Frontend uses this endpoint to render owned payroll rows without scanning
    * chain logs or transaction receipts in the browser.
    */
   @Get(':id/employee-breakdown')
-  async getEmployeeBreakdown(@Param('id', new ParseUUIDPipe()) id: string) {
+  async getEmployeeBreakdown(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Headers('authorization') authorization?: string,
+  ) {
+    const principal = await this.invoiceAuthService.authenticate(authorization);
+
     return {
       data: await this.taskEmployeeBreakdownService.getPayrollEmployeeBreakdown(
         id,
+        principal.merchantWalletAddress,
       ),
     };
   }

@@ -1,16 +1,18 @@
 "use client";
 
-import { ExternalLink, Search, ChevronLeft, ChevronRight, Clock, X } from "lucide-react";
+import {
+  ExternalLink,
+  Search,
+  ChevronLeft,
+  ChevronRight,
+  Clock,
+  X,
+} from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Table,
   TableBody,
@@ -23,12 +25,17 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { TokenIcon } from "@/components/ui/token-icon";
 import { TOKEN_BY_ADDRESS } from "@/constants/erc20";
 import type { UnifiedHistoryItem, HistoryActionType } from "@/lib/types";
+import { ACTIVITY_LABELS } from "@/lib/activity-labels";
+import { ActivityTypeIcon } from "@/components/dashboard/ActivityTypeIcon";
 import {
   formatTokenAmount,
   getExplorerTxUrl,
   ARC_TESTNET_CHAIN_ID,
 } from "@/lib/wizpay";
-import { useActivityHistory, type ActivityFilter } from "@/hooks/useActivityHistory";
+import {
+  useActivityHistory,
+  type ActivityFilter,
+} from "@/hooks/useActivityHistory";
 
 /** Returns the best explorer URL for a history item.
  *  For bridge items, prefers step-level explorerUrls from normalizedTransfer
@@ -38,7 +45,11 @@ function resolveExplorerUrl(item: UnifiedHistoryItem): string | null {
   if (evmUrl) return evmUrl;
 
   // Bridge: walk steps for the first valid explorerUrl
-  const bt = (item as UnifiedHistoryItem & { bridgeTransfer?: { steps?: { explorerUrl: string | null }[] } }).bridgeTransfer;
+  const bt = (
+    item as UnifiedHistoryItem & {
+      bridgeTransfer?: { steps?: { explorerUrl: string | null }[] };
+    }
+  ).bridgeTransfer;
   if (bt?.steps) {
     for (const step of bt.steps) {
       if (step.explorerUrl && step.explorerUrl.startsWith("https://")) {
@@ -62,60 +73,90 @@ const ACTION_CONFIG: Record<
   { label: string; className: string }
 > = {
   payroll: {
-    label: "Payroll Batch",
+    label: ACTIVITY_LABELS.payroll,
     className: "bg-emerald-500/12 text-emerald-300/90 border-emerald-500/25",
   },
-  add_lp: {
-    label: "Add LP",
-    className: "bg-blue-500/12 text-blue-300/90 border-blue-500/25",
+  send: {
+    label: ACTIVITY_LABELS.send,
+    className: "bg-emerald-500/12 text-emerald-300/90 border-emerald-500/25",
   },
-  remove_lp: {
-    label: "Remove LP",
-    className: "bg-amber-500/12 text-amber-300/90 border-amber-500/25",
+  receive: {
+    label: ACTIVITY_LABELS.receive,
+    className: "bg-sky-500/12 text-sky-300/90 border-sky-500/25",
   },
   swap: {
-    label: "Swap",
+    label: ACTIVITY_LABELS.swap,
     className: "bg-violet-500/12 text-violet-300/90 border-violet-500/25",
   },
   bridge: {
-    label: "Bridge",
+    label: ACTIVITY_LABELS.bridge,
     className: "bg-cyan-500/12 text-cyan-300/90 border-cyan-500/25",
   },
   fx: {
-    label: "FX",
+    label: ACTIVITY_LABELS.fx,
     className: "bg-pink-500/12 text-pink-300/90 border-pink-500/25",
+  },
+  invoice_payment: {
+    label: ACTIVITY_LABELS.invoice_payment,
+    className: "bg-teal-500/12 text-teal-300/90 border-teal-500/25",
   },
 };
 
 const FILTER_TABS: { value: ActivityFilter; label: string }[] = [
   { value: "all", label: "All" },
   { value: "payroll", label: "Payroll" },
+  { value: "send", label: "Send" },
+  { value: "receive", label: "Receive" },
   { value: "swap", label: "Swap" },
   { value: "bridge", label: "Bridge" },
   { value: "fx", label: "FX" },
-  { value: "add_lp", label: "Add LP" },
-  { value: "remove_lp", label: "Remove LP" },
+  { value: "invoice_payment", label: "Invoice Payment" },
 ];
 
 function usesTokenAmount(type: HistoryActionType): boolean {
-  return type === "payroll" || type === "swap" || type === "bridge" || type === "fx";
+  return (
+    type === "payroll" ||
+    type === "send" ||
+    type === "receive" ||
+    type === "invoice_payment" ||
+    type === "swap" ||
+    type === "bridge" ||
+    type === "fx"
+  );
 }
 
 function getDetailText(item: UnifiedHistoryItem): string {
+  const rawAmount = item.amountDisplay;
   if (item.type === "payroll") {
     const inToken =
       TOKEN_BY_ADDRESS.get(item.tokenIn?.toLowerCase() ?? "")?.symbol ?? "?";
-    return `${item.recipientCount} recipients · ${formatTokenAmount(item.totalAmountIn ?? 0n, 6)} ${inToken}`;
+    return `${item.recipientCount ?? 0} recipients · ${rawAmount ?? formatTokenAmount(item.totalAmountIn ?? 0n, 6)} ${inToken}`;
   }
   if (item.type === "swap") {
-    const inSym = TOKEN_BY_ADDRESS.get(item.tokenIn?.toLowerCase() ?? "")?.symbol ?? "Token";
-    const outSym = TOKEN_BY_ADDRESS.get(item.tokenOut?.toLowerCase() ?? "")?.symbol ?? "Token";
-    const amt = formatTokenAmount(item.totalAmountIn ?? 0n, 6);
+    const inSym =
+      TOKEN_BY_ADDRESS.get(item.tokenIn?.toLowerCase() ?? "")?.symbol ??
+      "Token";
+    const outSym =
+      TOKEN_BY_ADDRESS.get(item.tokenOut?.toLowerCase() ?? "")?.symbol ??
+      "Token";
+    const amt = rawAmount ?? formatTokenAmount(item.totalAmountIn ?? 0n, 6);
     return `${amt} ${inSym} → ${outSym}`;
   }
+  if (
+    item.type === "send" ||
+    item.type === "receive" ||
+    item.type === "invoice_payment"
+  ) {
+    const inSym =
+      TOKEN_BY_ADDRESS.get(item.tokenIn?.toLowerCase() ?? "")?.symbol ??
+      "Token";
+    return `${rawAmount ?? formatTokenAmount(item.totalAmountIn ?? 0n, 6)} ${inSym}`;
+  }
   if (item.type === "bridge" || item.type === "fx") {
-    const inSym = TOKEN_BY_ADDRESS.get(item.tokenIn?.toLowerCase() ?? "")?.symbol ?? "Token";
-    const amt = formatTokenAmount(item.totalAmountIn ?? 0n, 6);
+    const inSym =
+      TOKEN_BY_ADDRESS.get(item.tokenIn?.toLowerCase() ?? "")?.symbol ??
+      "Token";
+    const amt = rawAmount ?? formatTokenAmount(item.totalAmountIn ?? 0n, 6);
     return `${amt} ${inSym}`;
   }
   const tokenSym =
@@ -126,8 +167,6 @@ function getDetailText(item: UnifiedHistoryItem): string {
 
 function getReferenceText(item: UnifiedHistoryItem): string {
   if (item.referenceId) return item.referenceId;
-  if (item.type === "add_lp") return "Deposit Liquidity";
-  if (item.type === "remove_lp") return "Withdraw Liquidity";
   if (item.type === "swap") return "Token Swap";
   if (item.type === "bridge") return "Bridge Transfer";
   if (item.type === "fx") return "FX Settlement";
@@ -203,12 +242,23 @@ export function TransactionHistory({
           </CardTitle>
           <div className="flex items-center gap-2">
             {isFiltered && (
-              <Button variant="ghost" size="sm" onClick={resetFilters} className="h-7 gap-1 text-xs text-muted-foreground">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={resetFilters}
+                className="h-7 gap-1 text-xs text-muted-foreground"
+              >
                 <X className="h-3 w-3" /> Clear
               </Button>
             )}
-            <Badge variant="outline" className="border-primary/20 text-primary/70 bg-primary/5 text-xs">
-              {totalCount} {filter === "all" ? "events" : ACTION_CONFIG[filter as HistoryActionType]?.label ?? filter}
+            <Badge
+              variant="outline"
+              className="border-primary/20 text-primary/70 bg-primary/5 text-xs"
+            >
+              {totalCount}{" "}
+              {filter === "all"
+                ? "events"
+                : (ACTION_CONFIG[filter as HistoryActionType]?.label ?? filter)}
             </Badge>
           </div>
         </div>
@@ -263,7 +313,9 @@ export function TransactionHistory({
         ) : displayItems.length === 0 ? (
           <div className="rounded-2xl border border-dashed border-border/40 bg-background/30 p-8 text-center">
             <p className="text-sm font-semibold">
-              {isFiltered ? "No matching transactions found" : "No confirmed transactions yet"}
+              {isFiltered
+                ? "No matching transactions found"
+                : "No confirmed transactions yet"}
             </p>
             <p className="mt-1 text-sm text-muted-foreground/70">
               {isFiltered
@@ -271,7 +323,12 @@ export function TransactionHistory({
                 : "Once a transaction is confirmed, it will appear here automatically."}
             </p>
             {isFiltered && (
-              <Button variant="ghost" size="sm" className="mt-3 text-xs" onClick={resetFilters}>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="mt-3 text-xs"
+                onClick={resetFilters}
+              >
                 Clear filters
               </Button>
             )}
@@ -295,15 +352,22 @@ export function TransactionHistory({
                     const cfg = ACTION_CONFIG[item.type];
                     const txUrl = resolveExplorerUrl(item);
                     return (
-                      <TableRow key={`${item.txHash}-${idx}`} className="border-border/20 hover:bg-primary/3 transition-colors">
+                      <TableRow
+                        key={`${item.txHash}-${idx}`}
+                        className="border-border/20 hover:bg-primary/3 transition-colors"
+                      >
                         <TableCell className="text-sm whitespace-nowrap">
                           {formatDateTime(item.timestampMs)}
                         </TableCell>
                         <TableCell>
                           <Badge
                             variant="outline"
-                            className={cfg.className}
+                            className={`${cfg.className} gap-1`}
                           >
+                            <ActivityTypeIcon
+                              type={item.type}
+                              className="h-3 w-3"
+                            />
                             {cfg.label}
                           </Badge>
                         </TableCell>
@@ -313,24 +377,57 @@ export function TransactionHistory({
                               {getReferenceText(item)}
                             </p>
                             <p className="text-xs text-muted-foreground/60">
+                              {item.direction
+                                ? `${item.direction === "incoming" ? "Incoming" : "Outgoing"} · `
+                                : ""}
                               {getDetailText(item)}
                             </p>
                           </div>
                         </TableCell>
                         <TableCell className="font-mono text-sm whitespace-nowrap">
-                          <span className="flex items-center gap-2">{(usesTokenAmount(item.type) ? item.tokenIn : item.lpToken) ? <TokenIcon chainId={ARC_TESTNET_CHAIN_ID} address={(usesTokenAmount(item.type) ? item.tokenIn : item.lpToken) ?? ""} symbol={TOKEN_BY_ADDRESS.get(((usesTokenAmount(item.type) ? item.tokenIn : item.lpToken) ?? "").toLowerCase())?.symbol ?? "Token"} size={20} /> : null}{usesTokenAmount(item.type)
-                            ? `${formatTokenAmount(item.totalAmountIn ?? 0n, 6)} ${TOKEN_BY_ADDRESS.get(item.tokenIn?.toLowerCase() ?? "")?.symbol ?? ""}`
-                            : `${formatTokenAmount(item.lpAmount ?? 0n, 6)} ${TOKEN_BY_ADDRESS.get(item.lpToken?.toLowerCase() ?? "")?.symbol ?? ""}`}</span>
+                          <span className="flex items-center gap-2">
+                            {(
+                              usesTokenAmount(item.type)
+                                ? item.tokenIn
+                                : item.lpToken
+                            ) ? (
+                              <TokenIcon
+                                chainId={item.chainId ?? ARC_TESTNET_CHAIN_ID}
+                                address={
+                                  (usesTokenAmount(item.type)
+                                    ? item.tokenIn
+                                    : item.lpToken) ?? ""
+                                }
+                                symbol={
+                                  item.tokenSymbol ??
+                                  TOKEN_BY_ADDRESS.get(
+                                    (
+                                      (usesTokenAmount(item.type)
+                                        ? item.tokenIn
+                                        : item.lpToken) ?? ""
+                                    ).toLowerCase(),
+                                  )?.symbol ??
+                                  "Token"
+                                }
+                                size={20}
+                              />
+                            ) : null}
+                            {usesTokenAmount(item.type)
+                              ? `${item.amountDisplay ?? formatTokenAmount(item.totalAmountIn ?? 0n, 6)} ${item.tokenSymbol ?? TOKEN_BY_ADDRESS.get(item.tokenIn?.toLowerCase() ?? "")?.symbol ?? ""}`
+                              : `${formatTokenAmount(item.lpAmount ?? 0n, 6)} ${TOKEN_BY_ADDRESS.get(item.lpToken?.toLowerCase() ?? "")?.symbol ?? ""}`}
+                          </span>
                         </TableCell>
                         <TableCell>
                           <div className="flex items-center gap-2">
-                            {(item as { backendStatus?: string }).backendStatus && (item as { backendStatus?: string }).backendStatus !== "executed" ? (
-                              <Badge className={
-                                (item as { backendStatus?: string }).backendStatus === "failed"
-                                  ? "bg-red-500/12 text-red-300/90 border-red-500/25"
-                                  : "bg-yellow-500/12 text-yellow-300/90 border-yellow-500/25"
-                              }>
-                                {(item as { backendStatus?: string }).backendStatus}
+                            {item.status && item.status !== "completed" ? (
+                              <Badge
+                                className={
+                                  item.status === "failed"
+                                    ? "bg-red-500/12 text-red-300/90 border-red-500/25"
+                                    : "bg-yellow-500/12 text-yellow-300/90 border-yellow-500/25"
+                                }
+                              >
+                                {item.status.replaceAll("_", " ")}
                               </Badge>
                             ) : (
                               <Badge className="bg-emerald-500/12 text-emerald-300/90 border-emerald-500/25">
@@ -370,21 +467,55 @@ export function TransactionHistory({
                     <CardContent className="space-y-3 pt-4">
                       <div className="flex items-center justify-between gap-3">
                         <div>
-                          <p className="font-semibold">{getReferenceText(item)}</p>
+                          <p className="font-semibold">
+                            {getReferenceText(item)}
+                          </p>
                           <p className="text-xs text-muted-foreground/60">
                             {formatDateTime(item.timestampMs)}
                           </p>
                         </div>
-                        <Badge variant="outline" className={cfg.className}>
-                          {cfg.label}
-                        </Badge>
+                        <div className="flex flex-col items-end gap-1">
+                          <Badge
+                            variant="outline"
+                            className={`${cfg.className} gap-1`}
+                          >
+                            <ActivityTypeIcon
+                              type={item.type}
+                              className="h-3 w-3"
+                            />
+                            {cfg.label}
+                          </Badge>
+                          {item.status ? (
+                            <span className="text-[11px] capitalize text-muted-foreground">
+                              {item.status.replaceAll("_", " ")}
+                            </span>
+                          ) : null}
+                        </div>
                       </div>
                       <div className="rounded-xl border border-border/40 bg-background/35 px-3 py-2.5">
                         <p className="text-xs uppercase tracking-[0.16em] text-muted-foreground/60 font-semibold">
-                          {usesTokenAmount(item.type) ? "Total Amount" : "LP Amount"}
+                          {usesTokenAmount(item.type)
+                            ? "Total Amount"
+                            : "LP Amount"}
                         </p>
                         <p className="mt-1 flex items-center gap-2 font-mono text-sm font-medium">
-                          {item.tokenIn ? <TokenIcon chainId={ARC_TESTNET_CHAIN_ID} address={item.tokenIn} symbol={TOKEN_BY_ADDRESS.get(item.tokenIn.toLowerCase())?.symbol ?? "Token"} size={20} /> : null}{getDetailText(item)}
+                          {item.tokenIn ? (
+                            <TokenIcon
+                              chainId={item.chainId ?? ARC_TESTNET_CHAIN_ID}
+                              address={item.tokenIn}
+                              symbol={
+                                item.tokenSymbol ??
+                                TOKEN_BY_ADDRESS.get(item.tokenIn.toLowerCase())
+                                  ?.symbol ??
+                                "Token"
+                              }
+                              size={20}
+                            />
+                          ) : null}
+                          {item.direction
+                            ? `${item.direction === "incoming" ? "Incoming" : "Outgoing"} · `
+                            : ""}
+                          {getDetailText(item)}
                         </p>
                       </div>
                       {txUrl ? (

@@ -13,6 +13,10 @@ import {
 } from "@/lib/external-xylonet-swap";
 import { runAppWalletXylonetLifecycle } from "@/lib/app-wallet-xylonet-lifecycle";
 
+vi.mock("@tanstack/react-query", () => ({
+  useQueryClient: () => ({ invalidateQueries: vi.fn() }),
+}));
+
 const state = vi.hoisted(() => ({
   walletMode: "external" as "external" | "circle",
   walletAddress:

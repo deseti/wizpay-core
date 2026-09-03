@@ -357,6 +357,16 @@ export class W3sAuthService {
     });
   }
 
+  /** Read-only, authenticated token metadata source for activity reconciliation. */
+  async listUserTokenBalances(walletId: string, userToken: string): Promise<W3sActionResult> {
+    if (!walletId.trim() || !userToken.trim()) throw new Error('Missing Circle wallet authentication.');
+    return this.circleUserRequest({
+      method: 'GET',
+      path: `/v1/w3s/wallets/${encodeURIComponent(walletId.trim())}/balances`,
+      userToken: userToken.trim(),
+    });
+  }
+
   private async refreshUserToken(
     params: Record<string, unknown>,
   ): Promise<W3sActionResult> {

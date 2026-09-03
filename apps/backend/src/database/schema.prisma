@@ -290,3 +290,73 @@ model BridgeTransaction {
 
   @@index([status])
 }
+
+model Activity {
+  id                  String   @id @default(uuid()) @db.Uuid
+  ownerUserId         String
+  walletAddress       String
+  type                String
+  direction           String?
+  status              String
+  source              String
+  idempotencyKey      String   @unique
+  sourceReferenceType String
+  sourceReferenceId   String
+  taskId              String?
+  operationId         String?
+  challengeId         String?
+  transactionId       String?
+  chainId             Int?
+  txHash              String?
+  inputTokenSymbol    String?
+  inputTokenAddress   String?
+  inputAmount         String?
+  outputTokenSymbol   String?
+  outputTokenAddress  String?
+  outputAmount        String?
+  feeAmount           String?
+  feeTokenSymbol      String?
+  counterparty        String?
+  metadata            Json?
+  occurredAt          DateTime?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  @@unique([sourceReferenceType, sourceReferenceId])
+  @@index([ownerUserId, createdAt, id])
+  @@index([ownerUserId, type])
+  @@index([ownerUserId, status])
+  @@index([txHash])
+}
+
+model ActivityAuthSession {
+  id            String   @id @default(uuid()) @db.Uuid
+  sessionHash   String   @unique
+  ownerUserId   String
+  walletAddress String
+  expiresAt     DateTime
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([ownerUserId])
+  @@index([expiresAt])
+}
+
+model ActivitySyncState {
+  id                      String    @id @default(uuid()) @db.Uuid
+  ownerUserId             String
+  walletAddress           String
+  source                  String
+  checkpointTransactionId String?
+  leaseId                 String?
+  leaseExpiresAt          DateTime?
+  lastStartedAt           DateTime?
+  lastCompletedAt         DateTime?
+  nextAllowedAt           DateTime?
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
+
+  @@unique([ownerUserId, source])
+  @@index([leaseExpiresAt])
+  @@index([nextAllowedAt])
+}

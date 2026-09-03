@@ -14,5 +14,6 @@ import { PublicInvoiceController } from './public-invoice.controller';
     InvoicePaymentVerifierService,
     InvoiceService,
   ],
+  exports: [InvoiceAuthService],
 })
 export class InvoiceModule {}

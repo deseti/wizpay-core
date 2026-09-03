@@ -3,6 +3,7 @@ import { AdaptersModule } from '../adapters/adapters.module';
 import { AgentsModule } from '../agents/agents.module';
 import { ExecutionModule } from '../execution/execution.module';
 import { FxModule } from '../fx/fx.module';
+import { InvoiceModule } from '../invoice/invoice.module';
 import { QueueModule } from '../queue/queue.module';
 import { TaskModule } from '../task/task.module';
 import { UserSwapModule } from '../user-swap/user-swap.module';
@@ -17,6 +18,7 @@ import { TaskController } from './task.controller';
     TaskModule,
     AdaptersModule,
     FxModule,
+    InvoiceModule,
     UserSwapModule,
     forwardRef(() => QueueModule),
     forwardRef(() => AgentsModule),

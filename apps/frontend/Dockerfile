@@ -1,28 +1,36 @@
 # syntax=docker/dockerfile:1.7
 
-FROM node:22-alpine AS builder
+FROM node:22-alpine AS workspace-deps
 
 WORKDIR /repo
 
-ENV NEXT_TELEMETRY_DISABLED=1 \
-		npm_config_fetch_retries=5 \
-		npm_config_fetch_retry_factor=2 \
-		npm_config_fetch_retry_mintimeout=20000 \
-		npm_config_fetch_retry_maxtimeout=120000 \
-		npm_config_fetch_timeout=300000
+COPY package.json package-lock.json ./
+COPY apps/backend/package.json ./apps/backend/package.json
+COPY apps/frontend/package.json ./apps/frontend/package.json
+COPY packages/bridge-registry/package.json ./packages/bridge-registry/package.json
+COPY packages/contracts/package.json ./packages/contracts/package.json
+RUN --mount=type=cache,id=wizpay-npm-v1,target=/root/.npm,sharing=locked \
+    set -eu; attempt=1; \
+    while :; do \
+      if npm ci --legacy-peer-deps --no-audit --no-fund --prefer-offline \
+        > /tmp/npm-ci.log 2>&1; then \
+        cat /tmp/npm-ci.log; break; \
+      fi; \
+      cat /tmp/npm-ci.log; \
+      if [ "$attempt" -ge 2 ] || \
+        ! grep -Eq 'ECONNRESET|ETIMEDOUT|EAI_AGAIN|ERR_SOCKET|npm error network' /tmp/npm-ci.log; then \
+        exit 1; \
+      fi; \
+      attempt=2; \
+      echo 'npm ci hit a transient network failure; retrying once.'; \
+    done
 
-COPY . .
-RUN --mount=type=cache,target=/root/.npm \
-		attempt=1; \
-		until npm ci --legacy-peer-deps --no-audit --no-fund --prefer-offline; do \
-			if [ "$attempt" -ge 3 ]; then \
-				echo "npm install failed after $attempt attempts"; \
-				exit 1; \
-			fi; \
-			echo "npm install failed on attempt $attempt, retrying..."; \
-			attempt=$((attempt + 1)); \
-			npm cache verify || true; \
-		done
+FROM workspace-deps AS builder
+
+ENV NEXT_TELEMETRY_DISABLED=1
+
+COPY apps/frontend ./apps/frontend
+COPY packages/bridge-registry ./packages/bridge-registry
 
 # ── Build-time env vars ───────────────────────────────────────────────────────
 # Each ARG receives its value from docker-compose build.args (which reads from
@@ -104,13 +112,15 @@ ENV NEXT_TELEMETRY_DISABLED=1
 ENV HOSTNAME=0.0.0.0
 ENV PORT=3000
 
-COPY --from=builder /repo/apps/frontend/.next/standalone ./
-COPY --from=builder /repo/apps/frontend/.next/static ./.next/static
-COPY --from=builder /repo/apps/frontend/public ./public
+COPY --chown=node:node --from=builder /repo/apps/frontend/.next/standalone ./
+COPY --chown=node:node --from=builder /repo/apps/frontend/.next/static ./.next/static
+COPY --chown=node:node --from=builder /repo/apps/frontend/public ./public
 # React is a workspace root development dependency and is not always traced
 # into Next's standalone output when the app is built from the monorepo root.
-COPY --from=builder /repo/node_modules/react ./node_modules/react
-COPY --from=builder /repo/node_modules/react-dom ./node_modules/react-dom
+COPY --chown=node:node --from=builder /repo/node_modules/react ./node_modules/react
+COPY --chown=node:node --from=builder /repo/node_modules/react-dom ./node_modules/react-dom
+
+USER node
 
 EXPOSE 3000
 

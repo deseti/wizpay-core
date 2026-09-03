@@ -3,6 +3,7 @@ import {
   Inject,
   Injectable,
   NotFoundException,
+  UnauthorizedException,
   forwardRef,
 } from '@nestjs/common';
 import { PayrollBatchService } from '../agents/payroll/payroll-batch.service';
@@ -91,6 +92,7 @@ export class TaskService {
   ) {}
 
   async createTask(type: string, payload: TaskPayload): Promise<TaskDetails> {
+    const owner = this.normalizeTaskOwner(payload);
     const task = await this.prisma.task.create({
       data: {
         type,
@@ -98,7 +100,10 @@ export class TaskService {
         totalUnits: 0,
         completedUnits: 0,
         failedUnits: 0,
-        metadata: payload as Prisma.InputJsonValue,
+        metadata: {
+          ...payload,
+          [owner.field]: owner.address,
+        } as Prisma.InputJsonValue,
         payload: payload as Prisma.InputJsonValue,
       },
       include: { logs: true, units: true, transactions: true },
@@ -117,6 +122,7 @@ export class TaskService {
   async createPayrollTask(
     payload: TaskPayload,
   ): Promise<CreatePayrollTaskResult> {
+    const owner = this.normalizeTaskOwner(payload, ['walletAddress']);
     const validation = await this.validationService.validate(payload);
 
     if (!validation.valid) {
@@ -148,10 +154,6 @@ export class TaskService {
       .filter((r) => r.targetToken === sourceToken)
       .reduce((sum, r) => sum + r.amountUnits, 0n);
 
-    const walletAddress =
-      typeof payload.walletAddress === 'string' && payload.walletAddress.trim()
-        ? payload.walletAddress.trim().toLowerCase()
-        : undefined;
     const referenceId = this.normalizeReferenceId(payload.referenceId);
     const units = batches.map((batch) => ({
       type: 'batch' as const,
@@ -182,7 +184,7 @@ export class TaskService {
             approvalAmount: sourceTokenApprovalAmount.toString(),
             referenceId,
             sourceToken,
-            ...(walletAddress ? { walletAddress } : {}),
+            walletAddress: owner.address,
             totalBatches: totals.totalBatches,
             totalRecipients: totals.totalRecipients,
             totalAmount: totals.totalAmount.toString(),
@@ -265,6 +267,7 @@ export class TaskService {
     payload: TaskPayload,
   ): Promise<CreateLiquidityTaskResult> {
     assertLegacyLiquidityEnabled();
+    const owner = this.normalizeTaskOwner(payload);
 
     const operation =
       payload.operation === 'add' || payload.operation === 'remove'
@@ -287,7 +290,12 @@ export class TaskService {
           totalUnits: 1,
           completedUnits: 0,
           failedUnits: 0,
-          metadata: { operation, token, amount } as Prisma.InputJsonValue,
+          metadata: {
+            operation,
+            token,
+            amount,
+            [owner.field]: owner.address,
+          } as Prisma.InputJsonValue,
           payload: payload as Prisma.InputJsonValue,
         },
       });
@@ -620,71 +628,51 @@ export class TaskService {
     return this.mapTask(task);
   }
 
+  async getOwnedTaskById(
+    taskId: string,
+    walletAddress: string,
+  ): Promise<TaskDetails> {
+    const task = await this.prisma.task.findFirst({
+      where: {
+        id: taskId,
+        ...this.getTaskOwnerWhere(walletAddress),
+      },
+      include: {
+        logs: {
+          orderBy: { createdAt: 'asc' },
+        },
+        units: {
+          orderBy: [{ index: 'asc' }, { createdAt: 'asc' }],
+        },
+        transactions: {
+          orderBy: [{ batchIndex: 'asc' }, { createdAt: 'asc' }],
+        },
+      },
+    });
+
+    if (!task) {
+      throw new NotFoundException(`Task ${taskId} not found`);
+    }
+
+    return this.mapTask(task);
+  }
+
   async getTaskList(options: {
     type?: string;
     status?: string;
-    walletAddress?: string;
+    walletAddress: string;
     limit?: number;
     offset?: number;
   }): Promise<{ items: TaskDetails[]; total: number }> {
     const limit = Math.min(options.limit ?? 50, 200);
     const offset = options.offset ?? 0;
-
-    // Build where clause — wallet filtering matches against metadata JSON
+    // Only initiator/source fields establish task ownership. Recipient and
+    // destination fields may identify another user's payment target and must
+    // never grant access to the full private task record.
     const where: Prisma.TaskWhereInput = {
       ...(options.type ? { type: options.type } : {}),
       ...(options.status ? { status: options.status } : {}),
-      ...(options.walletAddress
-        ? {
-            OR: [
-              {
-                metadata: {
-                  path: ['walletAddress'],
-                  equals: options.walletAddress,
-                },
-              },
-              {
-                metadata: {
-                  path: ['recipient'],
-                  equals: options.walletAddress,
-                },
-              },
-              {
-                metadata: {
-                  path: ['destinationAddress'],
-                  equals: options.walletAddress,
-                },
-              },
-              {
-                metadata: {
-                  path: ['sourceAddress'],
-                  equals: options.walletAddress,
-                },
-              },
-              {
-                payload: {
-                  path: ['walletAddress'],
-                  equals: options.walletAddress,
-                },
-              },
-              {
-                payload: { path: ['recipient'], equals: options.walletAddress },
-              },
-              {
-                payload: {
-                  path: ['destinationAddress'],
-                  equals: options.walletAddress,
-                },
-              },
-              {
-                payload: {
-                  path: ['sourceAddress'],
-                  equals: options.walletAddress,
-                },
-              },
-            ],
-          }
-        : {}),
+      ...this.getTaskOwnerWhere(options.walletAddress),
     };
 
     const [tasks, total] = await Promise.all([
@@ -720,6 +708,52 @@ export class TaskService {
         `Invalid task status transition from ${currentStatus} to ${nextStatus}`,
       );
     }
+  }
+
+  private getTaskOwnerWhere(walletAddress: string): Prisma.TaskWhereInput {
+    const normalized = walletAddress?.trim().toLowerCase();
+    if (!normalized) {
+      throw new UnauthorizedException(
+        'Authenticated task ownership scope is required.',
+      );
+    }
+
+    const ownerFilter = (path: 'walletAddress' | 'sourceAddress') => ({
+      path: [path],
+      equals: normalized,
+      mode: 'insensitive' as const,
+    });
+
+    return {
+      OR: [
+        { metadata: ownerFilter('walletAddress') },
+        { metadata: ownerFilter('sourceAddress') },
+        { payload: ownerFilter('walletAddress') },
+        { payload: ownerFilter('sourceAddress') },
+      ],
+    };
+  }
+
+  private normalizeTaskOwner(
+    payload: TaskPayload,
+    allowedFields: Array<'walletAddress' | 'sourceAddress'> = [
+      'walletAddress',
+      'sourceAddress',
+    ],
+  ): { field: 'walletAddress' | 'sourceAddress'; address: string } {
+    for (const field of allowedFields) {
+      const value = payload[field];
+      if (
+        typeof value === 'string' &&
+        /^0x[a-fA-F0-9]{40}$/.test(value.trim())
+      ) {
+        return { field, address: value.trim().toLowerCase() };
+      }
+    }
+
+    throw new BadRequestException(
+      'A valid initiator walletAddress or sourceAddress is required before creating a task.',
+    );
   }
 
   private mapTask(task: TaskWithRelations): TaskDetails {

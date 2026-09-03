@@ -1,5 +1,4 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
-import { TaskType } from './task-type.enum';
 import { TaskService } from './task.service';
 import type { TaskEmployeeBreakdownItem } from './task.types';
 
@@ -14,10 +13,11 @@ export class TaskEmployeeBreakdownService {
 
   async getPayrollEmployeeBreakdown(
     taskId: string,
+    walletAddress: string,
   ): Promise<TaskEmployeeBreakdownItem[]> {
-    const task = await this.taskService.getTaskById(taskId);
+    const task = await this.taskService.getOwnedTaskById(taskId, walletAddress);
 
-    if (task.type !== TaskType.PAYROLL) {
+    if (task.type !== 'payroll') {
       throw new BadRequestException(
         'Employee breakdown is only available for payroll tasks.',
       );

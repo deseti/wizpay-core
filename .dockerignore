@@ -2,6 +2,14 @@
 .github
 .env
 .env.*
+**/.env
+**/.env.*
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
+**/secrets
+**/secrets/**
 **/node_modules
 **/.next
 **/dist
@@ -14,6 +22,14 @@
 **/.vercel
 **/.nyc_output
 **/storybook-static
+**/uploads
+**/uploads/**
+**/backups
+**/backups/**
+**/dumps
+**/dumps/**
+**/screenshots
+**/screenshots/**
 **/tmp
 **/temp
 **/*.log
@@ -26,5 +42,17 @@
 **/*.bak
 **/*.tgz
 **/*.tar
+**/*.dump
+**/*.backup
+**/*.sql.gz
+**/*.sqlite
+**/*.sqlite3
+**/.idea
+**/.vscode
+**/*~
 test-results
 playwright-report
+
+# Solidity build output and vendored sources are not used by app images.
+packages/contracts/**
+!packages/contracts/package.json

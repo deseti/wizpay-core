@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowRightLeft, ShieldCheck } from "lucide-react";
 import { formatUnits, type Hex } from "viem";
 import { usePublicClient, useReadContract, useWalletClient } from "wagmi";
+import { useQueryClient } from "@tanstack/react-query";
 
 import { useCircleWallet } from "@/components/providers/CircleWalletProvider";
 import { ExternalBridgePanel } from "@/components/dashboard/ExternalBridgePanel";
@@ -119,6 +120,7 @@ function assertAppWalletQuote(input: {
 }
 
 export function SwapScreen() {
+  const queryClient = useQueryClient();
   const { walletAddress, walletMode } = useActiveWalletAddress();
   const { arcWallet, executeChallenge, userToken } = useCircleWallet();
   const { data: walletClient } = useWalletClient();
@@ -494,6 +496,9 @@ export function SwapScreen() {
       const completed = isCircle
         ? await executeAppWalletSwap()
         : await executeExternalWalletSwap();
+      if (isCircle) {
+        await queryClient.invalidateQueries({ queryKey: ["unified-activity"] });
+      }
       setSwapSuccess({
         inputAmount: formatTokenAmount(
           completed.inputAmount,

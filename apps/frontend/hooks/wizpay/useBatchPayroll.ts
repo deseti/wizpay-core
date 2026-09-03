@@ -7,6 +7,7 @@ import { backendFetch } from "@/lib/backend-api";
 import { PayrollFxRecoveryError } from "@/lib/payroll-fx-recovery";
 import { allocateVerifiedPayrollOutput } from "@/lib/payroll-output-allocation";
 import { useActiveWalletAddress } from "@/hooks/useActiveWalletAddress";
+import { useCircleWallet } from "@/components/providers/CircleWalletProvider";
 import {
   getFriendlyErrorMessage,
   parseAmountToUnits,
@@ -376,6 +377,7 @@ export function useBatchPayroll({
   resumeAppWalletXylonetSwap,
 }: UseBatchPayrollOptions): BatchPayrollResult {
   const { walletAddress, walletMode } = useActiveWalletAddress();
+  const { userToken } = useCircleWallet();
   const batches = useMemo(
     () => normalizeBatches(recipients, pendingBatches),
     [pendingBatches, recipients],
@@ -397,11 +399,18 @@ export function useBatchPayroll({
   // Track referenceIds that have already been funded to prevent double-debit.
   const fundedReferenceIdsRef = useRef(new Set<string>());
 
-  const refreshTask = useCallback(async (nextTaskId: string) => {
-    const nextTask = await backendFetch<BackendTask>(`/tasks/${nextTaskId}`);
-    setTask(nextTask);
-    return nextTask;
-  }, []);
+  const refreshTask = useCallback(
+    async (nextTaskId: string) => {
+      if (walletMode !== "circle" || !userToken) return null;
+
+      const nextTask = await backendFetch<BackendTask>(`/tasks/${nextTaskId}`, {
+        headers: { Authorization: `Bearer ${userToken}` },
+      });
+      setTask(nextTask);
+      return nextTask;
+    },
+    [userToken, walletMode],
+  );
 
   useEffect(() => {
     if (!taskId || isTaskTerminal(task)) {

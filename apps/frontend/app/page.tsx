@@ -5,7 +5,6 @@ import Link from "next/link";
 import {
   QrCode,
   ArrowRightLeft,
-  ArrowUpRight,
   ReceiptText,
   TrendingUp,
   Wallet,
@@ -20,7 +19,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyStateView } from "@/components/ui/empty-state";
 import { TokenIcon } from "@/components/ui/token-icon";
 import { useActiveWalletAddress } from "@/hooks/useActiveWalletAddress";
-import { useBackendTaskHistory } from "@/hooks/useBackendTaskHistory";
+import { useCircleWallet } from "@/components/providers/CircleWalletProvider";
+import { useUnifiedActivity } from "@/hooks/useUnifiedActivity";
 import { useTokenBalances } from "@/hooks/useTokenBalances";
 import { useDelayedLoading } from "@/hooks/useDelayedLoading";
 import {
@@ -31,6 +31,8 @@ import {
   ARC_TESTNET_CHAIN_ID,
 } from "@/lib/wizpay";
 import { TOKEN_BY_ADDRESS } from "@/constants/erc20";
+import { ACTIVITY_LABELS } from "@/lib/activity-labels";
+import { ActivityTypeIcon } from "@/components/dashboard/ActivityTypeIcon";
 import type { UnifiedHistoryItem } from "@/lib/types";
 
 const QUICK_ACTIONS = [
@@ -106,18 +108,18 @@ function QuickActions() {
     <>
       <div className="grid grid-cols-3 gap-2 sm:gap-3">
         {QUICK_ACTIONS.map(({ href, label, icon: Icon, color }) => {
-        const content = (
-          <div
-            className={`flex min-h-[88px] flex-col items-center justify-center gap-2 rounded-2xl p-3 transition-all duration-200 active:scale-95 cursor-pointer sm:min-h-[104px] sm:p-4 ${COLOR_MAP[color]}`}
-          >
-            <div className="flex h-10 w-10 sm:h-12 sm:w-12 items-center justify-center rounded-xl bg-current/10">
-              <Icon className="h-5 w-5 sm:h-6 sm:w-6" />
+          const content = (
+            <div
+              className={`flex min-h-[88px] flex-col items-center justify-center gap-2 rounded-2xl p-3 transition-all duration-200 active:scale-95 cursor-pointer sm:min-h-[104px] sm:p-4 ${COLOR_MAP[color]}`}
+            >
+              <div className="flex h-10 w-10 sm:h-12 sm:w-12 items-center justify-center rounded-xl bg-current/10">
+                <Icon className="h-5 w-5 sm:h-6 sm:w-6" />
+              </div>
+              <span className="text-[11px] sm:text-xs font-semibold">
+                {label}
+              </span>
             </div>
-            <span className="text-[11px] sm:text-xs font-semibold">
-              {label}
-            </span>
-          </div>
-        );
+          );
 
           if (label === "Receive QR") {
             return (
@@ -175,7 +177,13 @@ function TokenList({ balances, isLoading }: BalanceSnapshotProps) {
         return (
           <Link key={token.symbol} href="/assets">
             <div className="flex items-center gap-3 rounded-xl px-3 py-3.5 transition-all hover:bg-muted/20 active:scale-[0.98] cursor-pointer min-h-[52px]">
-              <TokenIcon chainId={ARC_TESTNET_CHAIN_ID} address={token.address} symbol={token.symbol} size={32} decorative={false} />
+              <TokenIcon
+                chainId={ARC_TESTNET_CHAIN_ID}
+                address={token.address}
+                symbol={token.symbol}
+                size={32}
+                decorative={false}
+              />
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-semibold">{token.symbol}</p>
                 <p className="text-xs text-muted-foreground/60">{token.name}</p>
@@ -193,10 +201,17 @@ function TokenList({ balances, isLoading }: BalanceSnapshotProps) {
   );
 }
 
-const ACTION_LABELS: Record<string, { label: string; color: string }> = {
-  payroll: { label: "Send", color: "text-emerald-400" },
-  add_lp: { label: "Add LP", color: "text-blue-400" },
-  remove_lp: { label: "Remove LP", color: "text-amber-400" },
+const HOME_ACTIVITY_CONFIG: Record<
+  UnifiedHistoryItem["type"],
+  { color: string }
+> = {
+  payroll: { color: "text-emerald-400" },
+  send: { color: "text-emerald-400" },
+  receive: { color: "text-sky-400" },
+  swap: { color: "text-violet-400" },
+  bridge: { color: "text-cyan-400" },
+  fx: { color: "text-pink-400" },
+  invoice_payment: { color: "text-teal-400" },
 };
 
 function RecentActivity({
@@ -251,27 +266,47 @@ function RecentActivity({
   return (
     <div className="space-y-1">
       {recent.map((item) => {
-        const config = ACTION_LABELS[item.type] ?? ACTION_LABELS.payroll;
-        const tokenLabel = item.tokenIn
-          ? (TOKEN_BY_ADDRESS.get(item.tokenIn.toLowerCase())?.symbol ??
-            "Token")
-          : "Token";
-        const amount = item.totalAmountIn
-          ? formatTokenAmount(item.totalAmountIn, 6)
-          : item.lpAmount
-            ? formatTokenAmount(item.lpAmount, 6)
-            : "—";
+        const config = HOME_ACTIVITY_CONFIG[item.type];
+        const tokenLabel =
+          item.tokenSymbol ??
+          (item.tokenIn
+            ? (TOKEN_BY_ADDRESS.get(item.tokenIn.toLowerCase())?.symbol ??
+              "Token")
+            : "Token");
+        const amount =
+          item.amountDisplay ??
+          (item.totalAmountIn
+            ? formatTokenAmount(item.totalAmountIn, 6)
+            : item.lpAmount
+              ? formatTokenAmount(item.lpAmount, 6)
+              : "—");
         const txUrl = getExplorerTxUrl(item.txHash);
 
         return (
           <div
-            key={item.txHash}
+            key={
+              item.id ?? `${item.type}:${item.referenceId}:${item.timestampMs}`
+            }
             className="flex items-center gap-3 rounded-xl px-3 py-3.5 transition-all hover:bg-muted/20 active:scale-[0.98] min-h-[52px]"
           >
-            {item.tokenIn ? <TokenIcon chainId={ARC_TESTNET_CHAIN_ID} address={item.tokenIn} symbol={tokenLabel} size={24} /> : <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-muted/30"><ArrowUpRight className={`h-4 w-4 ${config.color}`} /></div>}
+            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-muted/30">
+              <ActivityTypeIcon
+                type={item.type}
+                className={`h-4 w-4 ${config.color}`}
+              />
+            </div>
             <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium">{config.label}</p>
+              <p className="text-sm font-medium">
+                {ACTIVITY_LABELS[item.type]}
+              </p>
               <p className="text-xs text-muted-foreground/60 truncate">
+                {item.direction === "incoming"
+                  ? "Incoming"
+                  : item.direction === "outgoing"
+                    ? "Outgoing"
+                    : "Transaction"}
+                {item.status ? ` · ${item.status.replaceAll("_", " ")}` : ""}
+                {" · "}
                 {new Date(item.timestampMs).toLocaleDateString(undefined, {
                   month: "short",
                   day: "numeric",
@@ -305,12 +340,14 @@ function RecentActivity({
 }
 
 function HomeContent() {
-  const { isConnected } = useActiveWalletAddress();
+  const { isConnected, walletMode } = useActiveWalletAddress();
+  const { userToken } = useCircleWallet();
   const { balances, isLoading: isBalancesLoading } = useTokenBalances({
     refetchInterval: 30_000,
   });
-  const { items, isLoading: isHistoryLoading } = useBackendTaskHistory({
-    enabled: isConnected,
+  const { items, isLoading: isHistoryLoading } = useUnifiedActivity({
+    userToken: walletMode === "circle" ? userToken : null,
+    enabled: isConnected && walletMode === "circle",
     limit: 25,
     refetchInterval: 60_000,
   });
@@ -380,7 +417,10 @@ function HomeContent() {
           </CardTitle>
         </CardHeader>
         <CardContent className="pt-0">
-          <RecentActivity items={unifiedHistory} isLoading={showHistoryLoading} />
+          <RecentActivity
+            items={unifiedHistory}
+            isLoading={showHistoryLoading}
+          />
         </CardContent>
       </Card>
     </div>

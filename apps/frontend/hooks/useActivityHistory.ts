@@ -1,8 +1,6 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { useActiveWalletAddress } from "@/hooks/useActiveWalletAddress";
 import type { UnifiedHistoryItem, HistoryActionType } from "@/lib/types";
 
 export type ActivityFilter = "all" | HistoryActionType | "swap" | "bridge";
@@ -23,8 +21,6 @@ export function useActivityHistory(
   options: UseActivityHistoryOptions = {}
 ) {
   const { pageSize = 10, initialFilter = "all" } = options;
-  const { walletAddress } = useActiveWalletAddress();
-
   const [filter, setFilter] = useState<ActivityFilter>(initialFilter);
   const [tokenFilter, setTokenFilter] = useState<string>("all");
   const [currentPage, setCurrentPage] = useState(0);
