@@ -3,13 +3,28 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 const {
+  ARC_EXPLORER_RESOURCES,
   ARC_NETWORK_DEFINITIONS,
+  ARC_PROTOCOL_CAPABILITY_RESOURCES,
+  ARC_PROTOCOL_CONTRACT_RESOURCES,
+  ARC_RPC_RESOURCES,
+  ARC_TOKEN_RESOURCES,
+  ARC_WIZPAY_CONTRACT_RESOURCES,
   ArcNetworkInvariantError,
+  UnavailableArcResourceError,
+  UnknownArcResourceError,
   UnsupportedArcNetworkError,
   assertValidArcNetworkDefinitions,
+  getArcExplorerResource,
   getArcNetworkByChainId,
   getArcNetworkByKey,
+  getArcProtocolCapabilityResource,
+  getArcProtocolContractResource,
+  getArcRpcResource,
+  getArcTokenResource,
+  getArcWizPayContractResource,
   parseArcNetworkKey,
+  requireAvailableArcResource,
 } = require(".");
 
 test("defines the exact Arc Testnet and Mainnet identities", () => {
@@ -154,4 +169,260 @@ test("detects duplicate keys and chain IDs", () => {
       ]),
     /Duplicate Arc chain ID/,
   );
+});
+
+test("resolves the exact available Arc Testnet RPC and explorer", () => {
+  assert.deepEqual(getArcRpcResource("arc-testnet"), {
+    status: "available",
+    value: { url: "https://rpc.testnet.arc.io" },
+  });
+  assert.deepEqual(getArcExplorerResource("arc-testnet"), {
+    status: "available",
+    value: { baseUrl: "https://testnet.arcscan.app" },
+  });
+});
+
+test("resolves the exact available Arc Testnet tokens", () => {
+  assert.deepEqual(getArcTokenResource("arc-testnet", "USDC"), {
+    status: "available",
+    value: {
+      symbol: "USDC",
+      address: "0x3600000000000000000000000000000000000000",
+      decimals: 6,
+    },
+  });
+  assert.deepEqual(getArcTokenResource("arc-testnet", "EURC"), {
+    status: "available",
+    value: {
+      symbol: "EURC",
+      address: "0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a",
+      decimals: 6,
+    },
+  });
+});
+
+test("keeps Arc Mainnet RPC, explorer, and tokens unavailable", () => {
+  assert.deepEqual(getArcRpcResource("arc-mainnet"), {
+    status: "unavailable",
+    reason: "OFFICIAL_ARC_MAINNET_RPC_UNAVAILABLE",
+  });
+  assert.deepEqual(getArcExplorerResource("arc-mainnet"), {
+    status: "unavailable",
+    reason: "OFFICIAL_ARC_MAINNET_EXPLORER_UNAVAILABLE",
+  });
+  assert.deepEqual(getArcTokenResource("arc-mainnet", "USDC"), {
+    status: "unavailable",
+    reason: "CIRCLE_ARC_MAINNET_USDC_NOT_YET_CONFIRMED",
+  });
+  assert.deepEqual(getArcTokenResource("arc-mainnet", "EURC"), {
+    status: "unavailable",
+    reason: "CIRCLE_ARC_MAINNET_EURC_NOT_YET_CONFIRMED",
+  });
+});
+
+test("records only authoritative Arc Testnet WizPay deployments", () => {
+  assert.deepEqual(getArcWizPayContractResource("arc-testnet", "wizpay"), {
+    status: "available",
+    value: {
+      contract: "WizPay",
+      address: "0x87ACE45582f45cC81AC1E627E875AE84cbd75946",
+      deploymentSource:
+        "packages/contracts/deployments/arc-testnet-wizpay-v2.json",
+    },
+  });
+  assert.deepEqual(
+    getArcWizPayContractResource("arc-testnet", "wizpay-swap-executor-v2"),
+    {
+      status: "available",
+      value: {
+        contract: "WizPaySwapExecutorV2",
+        address: "0x7B5573759576AD3AD9F9E3b4425ad68FD2b525ed",
+        deploymentSource:
+          "packages/contracts/deployments/arc-testnet-wizpay-swap-executor-v2.json",
+      },
+    },
+  );
+});
+
+test("keeps every Arc Mainnet WizPay contract unavailable", () => {
+  for (const contractKey of ["wizpay", "wizpay-swap-executor-v2"]) {
+    assert.deepEqual(getArcWizPayContractResource("arc-mainnet", contractKey), {
+      status: "unavailable",
+      reason: "WIZPAY_MAINNET_CONTRACT_NOT_DEPLOYED",
+    });
+  }
+});
+
+test("records the exact published Arc Mainnet Uniswap contract mapping", () => {
+  const expected = {
+    "uniswap-v3": {
+      v3CoreFactory: "0xf0db7b58379503491d857db50ac9ece64c653918",
+      multicall: "0x33e885ed0ec9bf04ecfb19341582aadcb4c8a9e7",
+      quoter: "0x7dfd4f31be6814d2906bde155c3e1b146eac1468",
+      nonfungiblePositionManager: "0x39654a85a4c05127f5fd6ed22caec077a0fb1377",
+      tickLens: "0x9eb8600665b55d10c1eb2316ca5127a9ca6e2e76",
+      swapRouter02: "0x53bf6b0684ec7ef91e1387da3d1a1769bc5a6f77",
+    },
+    "uniswap-v4": {
+      poolManager: "0x8366a39cc670b4001a1121b8f6a443a643e40951",
+      positionManager: "0x6049c9a0e26405c0985f9e3685c87d0ae917f82b",
+      stateView: "0xf3334192d15450cdd385c8b70e03f9a6bd9e673b",
+      quoter: "0x8dc178efb8111bb0973dd9d722ebeff267c98f94",
+    },
+    "universal-router": {
+      universalRouter: "0x4fca4a51ab4f23a7447b3284fbd7d73289a89fb1",
+    },
+  };
+
+  for (const [protocol, contracts] of Object.entries(expected)) {
+    for (const [contractKey, address] of Object.entries(contracts)) {
+      const resource = getArcProtocolContractResource(
+        "arc-mainnet",
+        protocol,
+        contractKey,
+      );
+      assert.equal(resource.status, "published");
+      assert.equal(resource.verification, "onchain-pending");
+      assert.equal(resource.executable, false);
+      assert.equal(resource.value.address, address);
+    }
+  }
+
+  assert.deepEqual(
+    getArcProtocolContractResource(
+      "arc-mainnet",
+      "universal-router",
+      "universalRouter",
+    ).value,
+    {
+      address: "0x4fca4a51ab4f23a7447b3284fbd7d73289a89fb1",
+      version: "2.1.1",
+      creationBlock: 1_950_059,
+    },
+  );
+});
+
+test("never exposes published or unavailable resources as executable", () => {
+  const publishedResource = getArcProtocolContractResource(
+    "arc-mainnet",
+    "uniswap-v3",
+    "swapRouter02",
+  );
+  assert.throws(
+    () => requireAvailableArcResource(publishedResource),
+    (error) =>
+      error instanceof UnavailableArcResourceError &&
+      error.resourceStatus === "published" &&
+      error.reason === "PUBLISHED_RESOURCE_ONCHAIN_VERIFICATION_PENDING",
+  );
+  assert.throws(
+    () => requireAvailableArcResource(getArcRpcResource("arc-mainnet")),
+    (error) =>
+      error instanceof UnavailableArcResourceError &&
+      error.resourceStatus === "unavailable" &&
+      error.reason === "OFFICIAL_ARC_MAINNET_RPC_UNAVAILABLE",
+  );
+  assert.deepEqual(
+    requireAvailableArcResource(getArcRpcResource("arc-testnet")),
+    {
+      url: "https://rpc.testnet.arc.io",
+    },
+  );
+});
+
+test("keeps Arc Mainnet USDC/EURC pool and liquidity unverified", () => {
+  assert.deepEqual(
+    getArcProtocolCapabilityResource(
+      "arc-mainnet",
+      "uniswap",
+      "usdc-eurc-pool",
+    ),
+    {
+      status: "unavailable",
+      reason: "UNISWAP_USDC_EURC_POOL_NOT_VERIFIED",
+    },
+  );
+  assert.deepEqual(
+    getArcProtocolCapabilityResource(
+      "arc-mainnet",
+      "uniswap",
+      "usdc-eurc-liquidity",
+    ),
+    {
+      status: "unavailable",
+      reason: "UNISWAP_USDC_EURC_LIQUIDITY_NOT_VERIFIED",
+    },
+  );
+});
+
+test("does not fall back across Arc networks", () => {
+  assert.equal(getArcRpcResource("arc-mainnet").status, "unavailable");
+  assert.equal(getArcExplorerResource("arc-mainnet").status, "unavailable");
+  assert.equal(
+    getArcTokenResource("arc-mainnet", "USDC").status,
+    "unavailable",
+  );
+  assert.equal(
+    getArcWizPayContractResource("arc-mainnet", "wizpay").status,
+    "unavailable",
+  );
+  assert.equal(
+    getArcProtocolContractResource("arc-testnet", "uniswap-v3", "swapRouter02")
+      .status,
+    "unavailable",
+  );
+});
+
+test("strictly rejects unknown and inexact resource keys", () => {
+  const calls = [
+    () => getArcTokenResource("arc-testnet", ""),
+    () => getArcTokenResource("arc-testnet", " "),
+    () => getArcTokenResource("arc-testnet", "usdc"),
+    () => getArcTokenResource("arc-testnet", "USD"),
+    () => getArcWizPayContractResource("arc-testnet", "WizPay"),
+    () => getArcProtocolContractResource("arc-mainnet", "uniswap", "quoter"),
+    () => getArcProtocolContractResource("arc-mainnet", "UNISWAP-V3", "quoter"),
+    () => getArcProtocolContractResource("arc-mainnet", "uniswap-v3", "Quoter"),
+    () => getArcProtocolContractResource("arc-mainnet", "uniswap-v3", "quote"),
+    () =>
+      getArcProtocolCapabilityResource(
+        "arc-mainnet",
+        "uniswap",
+        "usdc-eurc-pool ",
+      ),
+  ];
+
+  for (const call of calls) assert.throws(call, UnknownArcResourceError);
+});
+
+test("requires an explicit exact network for every resource lookup", () => {
+  const calls = [
+    () => getArcRpcResource(),
+    () => getArcExplorerResource(""),
+    () => getArcTokenResource(" ", "USDC"),
+    () => getArcWizPayContractResource("ARC-MAINNET", "wizpay"),
+    () =>
+      getArcProtocolContractResource("arc-mainnet ", "uniswap-v3", "quoter"),
+  ];
+
+  for (const call of calls) assert.throws(call, UnsupportedArcNetworkError);
+});
+
+test("deep-freezes every resource registry and nested value", () => {
+  const registries = [
+    ARC_RPC_RESOURCES,
+    ARC_EXPLORER_RESOURCES,
+    ARC_TOKEN_RESOURCES,
+    ARC_WIZPAY_CONTRACT_RESOURCES,
+    ARC_PROTOCOL_CONTRACT_RESOURCES,
+    ARC_PROTOCOL_CAPABILITY_RESOURCES,
+  ];
+
+  function assertDeepFrozen(value) {
+    if (!value || typeof value !== "object") return;
+    assert.equal(Object.isFrozen(value), true);
+    for (const child of Object.values(value)) assertDeepFrozen(child);
+  }
+
+  for (const registry of registries) assertDeepFrozen(registry);
 });
