@@ -1,0 +1,17 @@
+{
+  "name": "@wizpay/arc-network",
+  "version": "1.0.0",
+  "description": "Pure typed Arc network identity model for WizPay.",
+  "private": true,
+  "main": "index.js",
+  "types": "index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.js"
+    }
+  },
+  "scripts": {
+    "test": "node --test index.test.js"
+  }
+}
