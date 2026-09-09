@@ -9,6 +9,13 @@ import {
   type FeeLevel,
   type TokenBlockchain,
 } from '@circle-fin/developer-controlled-wallets';
+import {
+  CIRCLE_CONFIGURATION_ERROR_CODES,
+  CircleConfigurationError,
+  resolveCircleConfigurationFromService,
+} from '../config/circle-execution.config';
+import type { BackendArcNetworkConfiguration } from '../config/arc-network.config';
+import { getAddress, isAddressEqual } from 'viem';
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -19,9 +26,9 @@ export interface CircleTransferInput {
   amount: string;
   /** Token symbol (USDC, EURC) — mapped to on-chain tokenAddress internally */
   token: string;
-  /** Target network (e.g. "arc_testnet", "sepolia"). Falls back to env default if omitted. */
+  /** Target network. If present, it must match the selected Arc network. */
   network?: string;
-  /** Circle wallet ID to send from. Falls back to env default if omitted. */
+  /** Circle wallet ID to send from. If present, it must match selected configuration. */
   walletId?: string;
   /** Idempotency key. If omitted, a UUID is generated. */
   idempotencyKey?: string;
@@ -78,6 +85,11 @@ export interface CircleTransactionStatusResult {
   txHash: string | null;
   blockNumber: string | null;
   errorReason: string | null;
+  blockchain: string | null;
+  sourceAddress: string | null;
+  destinationAddress: string | null;
+  tokenAddress: string | null;
+  amount: string | null;
 }
 
 export interface CircleFxQuoteRequest {
@@ -124,10 +136,12 @@ export interface CircleWalletBalance {
   tokenAddress: string;
 }
 
-type CircleTransferPayloadWithTokenBlockchain =
-  Omit<CreateTransferTransactionInput, 'blockchain'> & {
-    blockchain: TokenBlockchain;
-  };
+type CircleTransferPayloadWithTokenBlockchain = Omit<
+  CreateTransferTransactionInput,
+  'blockchain'
+> & {
+  blockchain: TokenBlockchain;
+};
 
 export class CircleApiError extends Error {
   constructor(
@@ -141,18 +155,6 @@ export class CircleApiError extends Error {
 }
 
 // ─── Constants ──────────────────────────────────────────────────────
-
-/** On-chain token addresses per blockchain. Extend as new chains are added. */
-const TOKEN_ADDRESS_MAP: Record<string, Record<string, string>> = {
-  'ARC-TESTNET': {
-    USDC: '0x3600000000000000000000000000000000000000',
-    EURC: '0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a',
-  },
-  'ETH-SEPOLIA': {
-    USDC: '0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238',
-    EURC: '0x08210F9170F89Ab7658F0B5E3fF39b0E03C594D4',
-  },
-};
 
 const TERMINAL_STATUSES = new Set<string>([
   'COMPLETE',
@@ -172,8 +174,8 @@ const TERMINAL_STATUSES = new Set<string>([
  *
  * Two integration modes:
  *  1. **Developer-controlled wallets** (primary) — uses the Circle SDK
- *     (`@circle-fin/developer-controlled-wallets`) with `CIRCLE_API_KEY` +
- *     `CIRCLE_ENTITY_SECRET` to sign and submit transfers from a
+ *     (`@circle-fin/developer-controlled-wallets`) with the selected network's
+ *     scoped API credential and entity secret to sign and submit transfers from a
  *     backend-controlled treasury wallet.
  *  2. **StableFX** — REST calls for FX quotes and trades.
  *
@@ -182,81 +184,34 @@ const TERMINAL_STATUSES = new Set<string>([
 @Injectable()
 export class CircleService {
   private readonly logger = new Logger(CircleService.name);
-  private readonly baseUrl: string;
-  private readonly blockchain: string;
   private walletClient: CircleDeveloperControlledWalletsClient | null = null;
   private readonly walletAddressCache = new Map<string, string>();
 
-  constructor(private readonly configService: ConfigService) {
-    this.baseUrl = (
-      this.configService.get<string>('CIRCLE_WALLETS_BASE_URL') ||
-      this.configService.get<string>('CIRCLE_BASE_URL') ||
-      'https://api.circle.com'
-    )
-      .replace(/\/v1\/?$/, '')
-      .replace(/\/+$/, '');
+  constructor(private readonly configService: ConfigService) {}
 
-    this.blockchain =
-      this.configService.get<string>('CIRCLE_TRANSFER_BLOCKCHAIN') ||
-      'ARC-TESTNET';
-
-    // ── Startup env verification ──────────────────────────────────────
-    const arcWalletId = this.configService.get<string>('CIRCLE_WALLET_ID_ARC');
-    const sepoliaWalletId = this.configService.get<string>(
-      'CIRCLE_WALLET_ID_SEPOLIA',
+  private get circleConfig() {
+    return resolveCircleConfigurationFromService(
+      this.configService,
+      'developer-controlled',
     );
-    const apiKey = this.configService.get<string>('CIRCLE_API_KEY');
-    const entitySecret = this.configService.get<string>('CIRCLE_ENTITY_SECRET');
+  }
 
-    this.logger.log(
-      `CircleService init — ` +
-        `baseUrl=${this.baseUrl} ` +
-        `blockchain=${this.blockchain} ` +
-        `apiKeyConfigured=${apiKey ? 'yes' : 'no'} ` +
-        `entitySecretConfigured=${entitySecret ? 'yes' : 'no'} ` +
-        `arcWalletConfigured=${arcWalletId ? 'yes' : 'no'} ` +
-        `sepoliaWalletConfigured=${sepoliaWalletId ? 'yes' : 'no'}`,
-    );
+  private get baseUrl() {
+    return this.circleConfig.apiBaseUrl;
+  }
+
+  private get blockchain() {
+    return this.circleConfig.blockchain;
   }
 
   // ── Config accessors ─────────────────────────────────────────────
 
   private get apiKey(): string {
-    const key = this.configService.get<string>('CIRCLE_API_KEY');
-    if (!key) {
-      throw new Error(
-        'CIRCLE_API_KEY is not configured. Set it in the backend environment.',
-      );
-    }
-    return key;
+    return this.circleConfig.apiKey;
   }
 
   private get entitySecret(): string {
-    const secret = this.configService.get<string>('CIRCLE_ENTITY_SECRET');
-    if (!secret) {
-      throw new Error(
-        'CIRCLE_ENTITY_SECRET is not configured. Set it in the backend environment.',
-      );
-    }
-    return secret;
-  }
-
-  private getDefaultWalletId(blockchain: string): string {
-    const walletId =
-      blockchain === 'ETH-SEPOLIA'
-        ? this.configService.get<string>('CIRCLE_WALLET_ID_SEPOLIA') ||
-          this.configService.get<string>('CIRCLE_WALLET_ID')
-        : this.configService.get<string>('CIRCLE_WALLET_ID_ARC') ||
-          this.configService.get<string>('CIRCLE_WALLET_ID');
-
-    if (!walletId) {
-      throw new Error(
-        `No Circle wallet is configured for ${blockchain}. ` +
-          'Set the chain-specific wallet ID in the backend environment.',
-      );
-    }
-
-    return walletId;
+    return this.circleConfig.entitySecret!;
   }
 
   private get feeLevel(): FeeLevel {
@@ -294,9 +249,17 @@ export class CircleService {
     const client = this.getWalletClient();
     const response = await client.getWallet({ id: walletId });
     const walletAddress = response.data?.wallet?.address;
+    const wallet = response.data?.wallet;
 
-    if (!walletAddress) {
-      throw new Error(`Circle wallet ${walletId} did not return an address.`);
+    if (
+      !walletAddress ||
+      wallet?.blockchain !== this.blockchain ||
+      wallet?.walletSetId !== this.circleConfig.walletSetId
+    ) {
+      throw new CircleConfigurationError(
+        CIRCLE_CONFIGURATION_ERROR_CODES.WALLET_BLOCKCHAIN_MISMATCH,
+        'Circle returned a wallet outside the selected network or wallet set.',
+      );
     }
 
     this.walletAddressCache.set(walletId, walletAddress);
@@ -313,20 +276,23 @@ export class CircleService {
     switch (network.toLowerCase()) {
       case 'arc_testnet':
       case 'arc-testnet':
-        return 'ARC-TESTNET';
-      case 'sepolia':
-      case 'eth_sepolia':
-      case 'eth-sepolia':
-        return 'ETH-SEPOLIA';
+        if (this.blockchain === 'ARC-TESTNET') return 'ARC-TESTNET';
+        break;
       default:
-        throw new Error(`Unsupported network: ${network}`);
+        break;
     }
+    throw new CircleConfigurationError(
+      CIRCLE_CONFIGURATION_ERROR_CODES.CREDENTIAL_ENVIRONMENT_MISMATCH,
+      'The requested Circle network does not match the selected Arc network.',
+    );
   }
 
   // ── Idempotency key helpers ──────────────────────────────────────
 
   private isUuidFormat(value: string): boolean {
-    return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+      value,
+    );
   }
 
   private deriveUuidFromKey(key: string): string {
@@ -345,21 +311,35 @@ export class CircleService {
 
   private resolveTokenAddress(token: string, blockchain?: string): string {
     const chain = blockchain ?? this.blockchain;
-    const chainMap = TOKEN_ADDRESS_MAP[chain];
-    if (!chainMap) {
-      throw new Error(
-        `Unsupported blockchain: ${chain}. Add it to TOKEN_ADDRESS_MAP.`,
+    if (chain !== this.blockchain) {
+      throw new CircleConfigurationError(
+        CIRCLE_CONFIGURATION_ERROR_CODES.CREDENTIAL_ENVIRONMENT_MISMATCH,
+        'The requested token network does not match the selected Arc network.',
       );
     }
-
-    const address = chainMap[token.toUpperCase()];
-    if (!address) {
+    const arcNetwork =
+      this.configService.getOrThrow<BackendArcNetworkConfiguration>(
+        'arcNetwork',
+      );
+    const resource =
+      arcNetwork.tokens[token.toUpperCase() as keyof typeof arcNetwork.tokens];
+    if (!resource) {
       throw new Error(
-        `Unsupported token "${token}" on ${chain}. Available: ${Object.keys(chainMap).join(', ')}.`,
+        `Unsupported token "${token}" on the selected Arc network.`,
       );
     }
+    return resource.address;
+  }
 
-    return address;
+  private resolveWalletId(requested?: string): string {
+    const selected = this.circleConfig.walletId!;
+    if (requested && requested !== selected) {
+      throw new CircleConfigurationError(
+        CIRCLE_CONFIGURATION_ERROR_CODES.WALLET_SET_MISMATCH,
+        'The requested Circle wallet does not match selected configuration.',
+      );
+    }
+    return selected;
   }
 
   // ════════════════════════════════════════════════════════════════════
@@ -378,7 +358,7 @@ export class CircleService {
    */
   async transfer(input: CircleTransferInput): Promise<CircleTransferResult> {
     const blockchain = this.resolveBlockchain(input.network);
-    const walletId = input.walletId || this.getDefaultWalletId(blockchain);
+    const walletId = this.resolveWalletId(input.walletId);
     const tokenAddress = this.resolveTokenAddress(input.token, blockchain);
 
     // Circle requires UUID v4 format for idempotency keys.
@@ -459,7 +439,7 @@ export class CircleService {
     input: CircleContractExecutionInput,
   ): Promise<CircleContractExecutionResult> {
     const blockchain = this.resolveBlockchain(input.network);
-    const walletId = input.walletId || this.getDefaultWalletId(blockchain);
+    const walletId = this.resolveWalletId(input.walletId);
     const idempotencyKey = input.idempotencyKey || randomUUID();
     const client = this.getWalletClient();
 
@@ -525,12 +505,43 @@ export class CircleService {
       txHash: (tx as { txHash?: string }).txHash ?? null,
       blockNumber: (tx as { blockHeight?: string }).blockHeight ?? null,
       errorReason: (tx as { errorReason?: string }).errorReason ?? null,
+      blockchain: (tx as { blockchain?: string }).blockchain ?? null,
+      sourceAddress:
+        (tx as { sourceAddress?: string; from?: string }).sourceAddress ??
+        (tx as { from?: string }).from ??
+        null,
+      destinationAddress:
+        (tx as { destinationAddress?: string }).destinationAddress ?? null,
+      tokenAddress: (tx as { tokenAddress?: string }).tokenAddress ?? null,
+      amount: Array.isArray((tx as { amounts?: unknown }).amounts)
+        ? String((tx as { amounts: unknown[] }).amounts[0] ?? '') || null
+        : ((tx as { amount?: string }).amount ?? null),
     };
   }
 
   async signTypedData(
     input: CircleTypedDataSignatureInput,
   ): Promise<{ signature: string; raw: unknown }> {
+    const circle = this.circleConfig;
+    if (input.walletId && input.walletId !== circle.walletId) {
+      throw new CircleConfigurationError(
+        CIRCLE_CONFIGURATION_ERROR_CODES.WALLET_SET_MISMATCH,
+        'The requested Circle wallet does not match selected configuration.',
+      );
+    }
+    if (
+      input.walletAddress &&
+      (!circle.walletAddress ||
+        !isAddressEqual(
+          getAddress(input.walletAddress),
+          getAddress(circle.walletAddress),
+        ))
+    ) {
+      throw new CircleConfigurationError(
+        CIRCLE_CONFIGURATION_ERROR_CODES.WALLET_BLOCKCHAIN_MISMATCH,
+        'The requested Circle wallet address does not match selected configuration.',
+      );
+    }
     const client = this.getWalletClient();
     const blockchain = input.blockchain
       ? this.resolveBlockchain(input.blockchain)

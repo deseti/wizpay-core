@@ -4,6 +4,7 @@ import {
   parseArcNetworkKey,
   resolveArcCapabilities,
 } from '@wizpay/arc-network';
+import { validateCircleEnvironmentIsolation } from './circle-execution.config';
 
 type EnvironmentValues = Record<string, unknown> & {
   DATABASE_URL?: string;
@@ -24,6 +25,9 @@ export function validateEnvironment(config: Record<string, unknown>) {
   const arcNetworkKey = parseArcNetworkKey(environment.WIZPAY_ARC_NETWORK);
   resolveArcCapabilities(
     arcNetworkKey,
+    environment as Record<string, string | undefined>,
+  );
+  validateCircleEnvironmentIsolation(
     environment as Record<string, string | undefined>,
   );
 

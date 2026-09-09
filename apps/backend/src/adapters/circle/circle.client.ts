@@ -3,25 +3,27 @@ import {
   CircleDeveloperControlledWalletsClient,
   initiateDeveloperControlledWalletsClient,
 } from '@circle-fin/developer-controlled-wallets';
+import { ConfigService } from '@nestjs/config';
+import { resolveCircleConfigurationFromService } from '../../config/circle-execution.config';
 
 @Injectable()
 export class CircleClient {
   private readonly logger = new Logger(CircleClient.name);
-  private walletClient: CircleDeveloperControlledWalletsClient;
+  private walletClient: CircleDeveloperControlledWalletsClient | null = null;
 
-  constructor() {
-    const apiKey = process.env.CIRCLE_API_KEY || '';
-    const entitySecret = process.env.CIRCLE_ENTITY_SECRET || '';
-
-    this.walletClient = initiateDeveloperControlledWalletsClient({
-      apiKey,
-      entitySecret,
-    });
-
-    this.logger.log('Circle wallet SDK client initialized');
-  }
+  constructor(private readonly config: ConfigService) {}
 
   getWalletClient(): CircleDeveloperControlledWalletsClient {
+    if (this.walletClient) return this.walletClient;
+    const circle = resolveCircleConfigurationFromService(
+      this.config,
+      'developer-controlled',
+    );
+    this.walletClient = initiateDeveloperControlledWalletsClient({
+      apiKey: circle.apiKey,
+      entitySecret: circle.entitySecret!,
+      baseUrl: circle.apiBaseUrl,
+    });
     return this.walletClient;
   }
 }

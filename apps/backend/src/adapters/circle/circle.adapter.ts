@@ -1,74 +1,66 @@
 import { Injectable, InternalServerErrorException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'crypto';
+import {
+  CIRCLE_CONFIGURATION_ERROR_CODES,
+  CircleConfigurationError,
+  resolveCircleConfigurationFromService,
+} from '../../config/circle-execution.config';
 
 @Injectable()
 export class CircleAdapter {
-  private readonly baseUrl = process.env.CIRCLE_BASE_URL || 'https://api.circle.com';
-  private get apiKey() {
-    return process.env.CIRCLE_API_KEY;
+  constructor(private readonly config: ConfigService) {}
+
+  private get circle() {
+    return resolveCircleConfigurationFromService(
+      this.config,
+      'developer-controlled',
+    );
   }
 
   async createWalletSet() {
-    if (!this.apiKey) {
-      throw new InternalServerErrorException('server is missing Circle treasury wallet credentials');
-    }
-
-    try {
-      const response = await fetch(`${this.baseUrl}/v1/w3s/developer/walletSets`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${this.apiKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          idempotencyKey: randomUUID(),
-          name: 'Treasury Wallet Set',
-        }),
-      });
-
-      if (!response.ok) {
-        const errObj = await response.json().catch(() => ({}));
-        throw new Error(`Circle API error: ${response.status} - ${JSON.stringify(errObj)}`);
-      }
-
-      const data = await response.json();
-      return data.data.walletSet;
-    } catch (error) {
-      console.error('Circle initialization failed:', error);
-      throw new InternalServerErrorException('Circle initialization failed');
-    }
+    throw new CircleConfigurationError(
+      CIRCLE_CONFIGURATION_ERROR_CODES.WALLET_SET_MISMATCH,
+      'Runtime wallet-set creation is disabled; use the selected network wallet set.',
+    );
   }
 
   async createWallet(walletSetId: string) {
-    if (!this.apiKey) {
-      throw new InternalServerErrorException('server is missing Circle treasury wallet credentials');
-    }
-
     try {
-      const response = await fetch(`${this.baseUrl}/v1/w3s/developer/wallets`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${this.apiKey}`,
-          'Content-Type': 'application/json',
+      if (walletSetId !== this.circle.walletSetId) {
+        throw new Error(
+          'Circle wallet set does not match selected configuration.',
+        );
+      }
+      const response = await fetch(
+        `${this.circle.apiBaseUrl}/v1/w3s/developer/wallets`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${this.circle.apiKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            idempotencyKey: randomUUID(),
+            walletSetId,
+            blockchains: [this.circle.blockchain],
+            count: 1,
+            accountType: 'SCA',
+          }),
         },
-        body: JSON.stringify({
-          idempotencyKey: randomUUID(),
-          walletSetId,
-          blockchains: ['ETH-SEPOLIA'],
-          count: 1,
-          accountType: 'SCA'
-        }),
-      });
+      );
 
       if (!response.ok) {
         const errObj = await response.json().catch(() => ({}));
-        throw new Error(`Circle API error: ${response.status} - ${JSON.stringify(errObj)}`);
+        throw new Error(
+          `Circle API error: ${response.status} - ${JSON.stringify(errObj)}`,
+        );
       }
 
       const data = await response.json();
       return data.data.wallets[0];
     } catch (error) {
-      console.error('Circle initialization failed:', error);
+      if (error instanceof CircleConfigurationError) throw error;
       throw new InternalServerErrorException('Circle initialization failed');
     }
   }

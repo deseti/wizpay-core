@@ -97,7 +97,7 @@ export function CircleWalletProvider({
   // context that signals auth is unavailable rather than crashing.
   if (!CIRCLE_APP_ID) {
     console.warn(
-      "[CircleWalletProvider] NEXT_PUBLIC_CIRCLE_APP_ID is not set. " +
+      "[CircleWalletProvider] The selected network-scoped Circle App ID is not set. " +
         "Auth is disabled. Set it in .env and rebuild the Docker image.",
     );
     return (
@@ -114,7 +114,7 @@ const DISABLED_CONTEXT_VALUE: CircleWalletContextValue = {
   arcWallet: null,
   authMethod: null,
   authError:
-    "Circle App ID is not configured. Set NEXT_PUBLIC_CIRCLE_APP_ID and rebuild.",
+    "Circle App ID is not configured for the selected network and build.",
   authStatus: null,
   authenticated: false,
   closeLogin: () => {},

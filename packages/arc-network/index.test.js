@@ -3,6 +3,7 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 const {
+  ARC_CIRCLE_EXECUTION_DEFINITIONS,
   ARC_EXPLORER_RESOURCES,
   ARC_NETWORK_DEFINITIONS,
   ARC_PROTOCOL_CAPABILITY_RESOURCES,
@@ -25,11 +26,28 @@ const {
   getArcWizPayContractResource,
   parseArcNetworkKey,
   requireAvailableArcResource,
+  requireArcCircleBlockchain,
   ARC_CAPABILITY_DEFINITIONS,
   resolveArcCapabilities,
   parseArcCapabilityName,
   validateArcCapabilityDependencies,
 } = require(".");
+
+test("defines verified Circle Testnet support without inventing an Arc Mainnet identifier", () => {
+  assert.equal(
+    ARC_CIRCLE_EXECUTION_DEFINITIONS["arc-testnet"].blockchain,
+    "ARC-TESTNET",
+  );
+  assert.equal(
+    ARC_CIRCLE_EXECUTION_DEFINITIONS["arc-mainnet"].blockchain,
+    null,
+  );
+  assert.equal(requireArcCircleBlockchain("arc-testnet"), "ARC-TESTNET");
+  assert.throws(
+    () => requireArcCircleBlockchain("arc-mainnet"),
+    (error) => error.code === "CIRCLE_BLOCKCHAIN_UNSUPPORTED",
+  );
+});
 
 test("defines explicit Arc Testnet capabilities and all-false Arc Mainnet defaults", () => {
   assert.deepEqual(ARC_CAPABILITY_DEFINITIONS["arc-testnet"], {

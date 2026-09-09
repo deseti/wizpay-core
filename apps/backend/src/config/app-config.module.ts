@@ -6,6 +6,9 @@ import configuration from './configuration';
 import { validateEnvironment } from './env.validation';
 
 function resolveEnvFilePath(): string | undefined {
+  // Automated tests must never load developer credentials from a real .env.
+  if (process.env.NODE_ENV === 'test') return undefined;
+
   // Local backend runs should read only the monorepo root .env.
   // Docker injects env vars directly, so no file is needed in containers.
   const candidates = [path.resolve(process.cwd(), '../../.env')];

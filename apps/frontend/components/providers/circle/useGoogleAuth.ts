@@ -53,7 +53,7 @@ export function useGoogleAuth({
   const requestGoogleLogin = useCallback(async () => {
     if (!CIRCLE_APP_ID) {
       setAuthError(
-        "NEXT_PUBLIC_CIRCLE_APP_ID is missing. Configure Circle Wallets before signing in.",
+        "The selected network-scoped Circle App ID is missing. Configure Circle Wallets before signing in.",
       );
       return;
     }
@@ -108,7 +108,7 @@ export function useGoogleAuth({
         if (!payload.deviceEncryptionKey || !payload.deviceToken) {
           throw new Error(
             "Circle did not return device credentials. " +
-              "Check that CIRCLE_API_KEY is set on the backend.",
+              "Check the selected network's Circle API credential on the backend.",
           );
         }
 

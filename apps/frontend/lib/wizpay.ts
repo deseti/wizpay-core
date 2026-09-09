@@ -148,7 +148,7 @@ export function getFriendlyErrorMessage(error: unknown): string {
   }
 
   if (message.includes("standard circle rest api key prefix")) {
-    return "CIRCLE_API_KEY is using the wrong key type. Use a Circle REST API key with TEST_API_KEY or LIVE_API_KEY prefix in the root .env, or in a local frontend override if you are intentionally bypassing the shared root env.";
+    return "The selected network's Circle API credential is using the wrong key type. Configure the matching network-scoped server credential.";
   }
 
   if (
@@ -164,7 +164,7 @@ export function getFriendlyErrorMessage(error: unknown): string {
     message.includes("missing_api_key") ||
     message.includes("401 unauthorized")
   ) {
-    return "Circle StableFX is not authorized for the configured API key. Update CIRCLE_API_KEY with a StableFX-enabled key in the root .env, or in a local frontend override if you are intentionally bypassing the shared root env.";
+    return "Circle StableFX is not authorized for the selected network's StableFX credential. Configure the matching network-scoped server credential.";
   }
 
   if (message.includes("exchange rate not set")) {

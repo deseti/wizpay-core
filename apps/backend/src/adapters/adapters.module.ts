@@ -4,6 +4,7 @@ import { CircleService } from './circle.service';
 import { CircleAdapter } from './circle/circle.adapter';
 import { CircleClient } from './circle/circle.client';
 import { CircleTransferService } from './circle/circle-transfer.service';
+import { CircleReceiptVerifierService } from './circle/circle-receipt-verifier.service';
 import { DexService } from './dex.service';
 import { SolanaService } from './solana.service';
 
@@ -13,6 +14,7 @@ const ADAPTER_SERVICES = [
   CircleAdapter,
   CircleClient,
   CircleTransferService,
+  CircleReceiptVerifierService,
   DexService,
   SolanaService,
 ];

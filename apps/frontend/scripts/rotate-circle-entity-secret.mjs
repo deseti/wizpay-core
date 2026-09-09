@@ -17,17 +17,34 @@ try {
     ? readFileSync(envFilePath, "utf8")
     : "";
   const envValues = parseEnvFile(envFileContent);
-  const apiKey = envValues.CIRCLE_API_KEY || process.env.CIRCLE_API_KEY?.trim() || "";
-  const currentEntitySecret =
-    envValues.CIRCLE_ENTITY_SECRET || process.env.CIRCLE_ENTITY_SECRET?.trim() || "";
-  const baseUrl =
-    envValues.CIRCLE_BASE_URL || process.env.CIRCLE_BASE_URL?.trim() || "https://api.circle.com";
+  const network = resolveExactValue(envValues, "WIZPAY_ARC_NETWORK");
+  if (network !== "arc-testnet") {
+    throw new Error(
+      "Entity-secret rotation is unavailable unless WIZPAY_ARC_NETWORK is exactly arc-testnet."
+    );
+  }
+  for (const legacyKey of [
+    "CIRCLE_API_KEY",
+    "CIRCLE_ENTITY_SECRET",
+    "CIRCLE_BASE_URL",
+  ]) {
+    if (envValues[legacyKey] !== undefined || process.env[legacyKey] !== undefined) {
+      throw new Error(`${legacyKey} is ambiguous and is not accepted.`);
+    }
+  }
+  const apiKey = resolveExactValue(envValues, "CIRCLE_TESTNET_API_KEY");
+  const currentEntitySecret = resolveExactValue(
+    envValues,
+    "CIRCLE_TESTNET_ENTITY_SECRET",
+    true
+  );
+  const baseUrl = resolveExactValue(envValues, "CIRCLE_TESTNET_API_BASE_URL");
 
   const currentSummary = summarizeSecret(currentEntitySecret);
 
   if (!apiKey) {
     throw new Error(
-      `CIRCLE_API_KEY is missing from ${envFilePath}. Add it before rotating the Circle entity secret.`
+      `CIRCLE_TESTNET_API_KEY is missing from ${envFilePath}. Add it before rotating the Circle entity secret.`
     );
   }
 
@@ -79,7 +96,7 @@ try {
 
   const updatedEnvContent = upsertEnvValue(
     envFileContent,
-    "CIRCLE_ENTITY_SECRET",
+    "CIRCLE_TESTNET_ENTITY_SECRET",
     nextEntitySecret
   );
   writeFileSync(envFilePath, updatedEnvContent, "utf8");
@@ -168,6 +185,27 @@ function parseEnvFile(content) {
   return result;
 }
 
+function resolveExactValue(envValues, key, optional = false) {
+  const fileValue = envValues[key];
+  const processValue = process.env[key];
+  if (
+    fileValue !== undefined &&
+    processValue !== undefined &&
+    fileValue !== processValue
+  ) {
+    throw new Error(`${key} conflicts between the selected env file and process.`);
+  }
+  const value = fileValue ?? processValue;
+  if (value === undefined) {
+    if (optional) return "";
+    throw new Error(`${key} is required for the selected Circle environment.`);
+  }
+  if (!value || value !== value.trim()) {
+    throw new Error(`${key} must be a non-empty exact value.`);
+  }
+  return value;
+}
+
 function upsertEnvValue(content, key, value) {
   const nextLine = `${key}=${value}`;
   const linePattern = new RegExp(`^${escapeRegExp(key)}=.*$`, "m");
@@ -182,18 +220,18 @@ function upsertEnvValue(content, key, value) {
 
 function diagnoseCurrentSecret(secret) {
   if (!secret) {
-    return "CIRCLE_ENTITY_SECRET is missing from the active env file.";
+    return "CIRCLE_TESTNET_ENTITY_SECRET is missing from the active env file.";
   }
 
   if (isLowerHex64(secret)) {
-    return "The current CIRCLE_ENTITY_SECRET already has raw 64-character lowercase hex format. If Circle write calls still fail, the secret likely belongs to a different entity or needs to be rotated and re-registered for this API key.";
+    return "The current CIRCLE_TESTNET_ENTITY_SECRET already has raw 64-character lowercase hex format. If Circle write calls still fail, the secret likely belongs to a different entity or needs to be rotated and re-registered for this API key.";
   }
 
   if (looksBase64Like(secret)) {
-    return "The current CIRCLE_ENTITY_SECRET looks like a recovery file payload or ciphertext, not the raw secret required by the SDK.";
+    return "The current CIRCLE_TESTNET_ENTITY_SECRET looks like a recovery file payload or ciphertext, not the raw secret required by the SDK.";
   }
 
-  return "The current CIRCLE_ENTITY_SECRET has an unexpected format and should be replaced with a freshly generated raw secret that is registered against the active API key.";
+  return "The current CIRCLE_TESTNET_ENTITY_SECRET has an unexpected format and should be replaced with a freshly generated raw secret that is registered against the active API key.";
 }
 
 function summarizeSecret(secret) {
@@ -281,7 +319,7 @@ function getRemediationAdvice({ shouldApply, normalizedError, envFilePath }) {
       ? readFileSync(envFilePath, "utf8")
       : "";
     const envValues = parseEnvFile(envFileContent);
-    const currentEntitySecret = envValues.CIRCLE_ENTITY_SECRET || "";
+    const currentEntitySecret = envValues.CIRCLE_TESTNET_ENTITY_SECRET || "";
 
     return {
       summary:

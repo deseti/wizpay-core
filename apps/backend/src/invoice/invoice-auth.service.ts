@@ -2,6 +2,7 @@ import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { getAddress, isAddress, isAddressEqual } from 'viem';
 import { PrismaService } from '../database/prisma.service';
+import { resolveCircleConfigurationFromService } from '../config/circle-execution.config';
 import {
   INVOICE_ERROR_CODES,
   type InvoiceMerchantPrincipal,
@@ -13,6 +14,7 @@ type CircleWallet = {
   userId?: string;
   address?: string;
   blockchain?: string;
+  walletSetId?: string | null;
 };
 
 export type AuthenticatedCirclePrincipal = InvoiceMerchantPrincipal & {
@@ -22,16 +24,10 @@ export type AuthenticatedCirclePrincipal = InvoiceMerchantPrincipal & {
 
 @Injectable()
 export class InvoiceAuthService {
-  private readonly circleBaseUrl: string;
-
   constructor(
     private readonly config: ConfigService,
     private readonly prisma: PrismaService,
-  ) {
-    this.circleBaseUrl = (
-      this.config.get<string>('CIRCLE_BASE_URL') || 'https://api.circle.com'
-    ).replace(/\/+$/, '');
-  }
+  ) {}
 
   async authenticate(
     authorization?: string,
@@ -48,6 +44,10 @@ export class InvoiceAuthService {
     authorization?: string,
   ): Promise<AuthenticatedCirclePrincipal> {
     const userToken = this.extractBearerToken(authorization);
+    const circle = resolveCircleConfigurationFromService(
+      this.config,
+      'user-controlled',
+    );
     const user = await this.circleRequest<CircleUser>(
       '/v1/w3s/user',
       userToken,
@@ -70,12 +70,12 @@ export class InvoiceAuthService {
     const storedEvmWallets = await this.prisma.userWallet.findMany({
       where: {
         userId: merchantUserId,
-        blockchain: { in: ['ARC-TESTNET', 'ETH-SEPOLIA'] },
+        blockchain: circle.blockchain,
       },
       orderBy: { blockchain: 'asc' },
     });
     const arcWallet = storedEvmWallets.find(
-      (wallet) => wallet.blockchain === 'ARC-TESTNET',
+      (wallet) => wallet.blockchain === circle.blockchain,
     );
     if (!arcWallet) {
       throw this.unauthorized(
@@ -107,7 +107,7 @@ export class InvoiceAuthService {
       wallets?: CircleWallet[];
     }>('/v1/w3s/wallets?pageSize=50', userToken);
     const upstream = (walletResponse.wallets ?? []).filter(
-      (wallet) => wallet.blockchain?.toUpperCase() === 'ARC-TESTNET',
+      (wallet) => wallet.blockchain === circle.blockchain,
     );
     if (upstream.length !== 1) {
       throw this.unauthorized(
@@ -119,6 +119,9 @@ export class InvoiceAuthService {
     if (
       proven.id !== arcWallet.walletId ||
       proven.userId !== circleUserId ||
+      (circle.walletSetId !== null &&
+        (arcWallet.walletSetId !== circle.walletSetId ||
+          proven.walletSetId !== circle.walletSetId)) ||
       !proven.address ||
       !isAddress(proven.address) ||
       !isAddressEqual(getAddress(proven.address), canonical)
@@ -149,18 +152,16 @@ export class InvoiceAuthService {
   }
 
   private async circleRequest<T>(path: string, userToken: string): Promise<T> {
-    const apiKey = this.config.get<string>('CIRCLE_API_KEY')?.trim();
-    if (!apiKey)
-      throw this.unauthorized(
-        INVOICE_ERROR_CODES.AUTH_INVALID,
-        'Merchant authentication is unavailable.',
-      );
+    const circle = resolveCircleConfigurationFromService(
+      this.config,
+      'user-controlled',
+    );
     try {
-      const response = await fetch(`${this.circleBaseUrl}${path}`, {
+      const response = await fetch(`${circle.apiBaseUrl}${path}`, {
         method: 'GET',
         headers: {
           Accept: 'application/json',
-          Authorization: `Bearer ${apiKey}`,
+          Authorization: `Bearer ${circle.apiKey}`,
           'X-User-Token': userToken,
         },
       });

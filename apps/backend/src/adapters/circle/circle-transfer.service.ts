@@ -1,7 +1,20 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { CircleClient } from './circle.client';
-import { CircleDeveloperControlledWalletsClient, FeeLevel, TokenBlockchain, Blockchain } from '@circle-fin/developer-controlled-wallets';
+import {
+  CircleDeveloperControlledWalletsClient,
+  FeeLevel,
+  TokenBlockchain,
+  Blockchain,
+} from '@circle-fin/developer-controlled-wallets';
 import { randomUUID } from 'crypto';
+import { ConfigService } from '@nestjs/config';
+import {
+  CIRCLE_CONFIGURATION_ERROR_CODES,
+  CircleConfigurationError,
+  resolveCircleConfigurationFromService,
+} from '../../config/circle-execution.config';
+import type { BackendArcNetworkConfiguration } from '../../config/arc-network.config';
+import { getAddress, isAddressEqual } from 'viem';
 
 export interface CreateWalletInput {
   blockchain: string;
@@ -31,28 +44,38 @@ export interface CircleTransferResult {
 export class CircleTransferService {
   private readonly logger = new Logger(CircleTransferService.name);
 
-  constructor(private readonly circleClient: CircleClient) {}
+  constructor(
+    private readonly circleClient: CircleClient,
+    private readonly config: ConfigService,
+  ) {}
+
+  private get circle() {
+    return resolveCircleConfigurationFromService(
+      this.config,
+      'developer-controlled',
+    );
+  }
 
   async createWallet(input: CreateWalletInput) {
+    if (input.blockchain !== this.circle.blockchain) {
+      throw new CircleConfigurationError(
+        CIRCLE_CONFIGURATION_ERROR_CODES.CREDENTIAL_ENVIRONMENT_MISMATCH,
+        'Wallet creation blockchain does not match the selected Arc network.',
+      );
+    }
+    if (input.walletSetId !== this.circle.walletSetId) {
+      throw new CircleConfigurationError(
+        CIRCLE_CONFIGURATION_ERROR_CODES.WALLET_SET_MISMATCH,
+        'Wallet creation requires the selected network wallet set.',
+      );
+    }
     this.logger.log(`Creating wallet for ${input.blockchain}`);
     const client = this.circleClient.getWalletClient();
-    
-    let walletSetId = input.walletSetId;
-    if (!walletSetId) {
-      const setResponse = await client.createWalletSet({
-        name: 'WizPay Backend Wallet Set',
-        xRequestId: randomUUID(),
-      });
-      walletSetId = setResponse.data?.walletSet?.id;
-      if (!walletSetId) {
-        throw new Error('Circle did not return the created wallet set identifier.');
-      }
-    }
 
     const walletResponse = await client.createWallets({
       blockchains: [input.blockchain as Blockchain],
       count: 1,
-      walletSetId,
+      walletSetId: input.walletSetId,
       metadata: [
         {
           name: input.name || `WizPay Backend Wallet ${input.blockchain}`,
@@ -63,15 +86,69 @@ export class CircleTransferService {
     });
 
     const wallet = walletResponse.data?.wallets?.[0];
-    if (!wallet) {
+    if (
+      !wallet ||
+      wallet.blockchain !== this.circle.blockchain ||
+      wallet.walletSetId !== this.circle.walletSetId
+    ) {
       throw new Error('Circle did not return the created wallet.');
     }
 
     return wallet;
   }
 
-  async executeTransfer(input: ExecuteTransferInput): Promise<CircleTransferResult> {
-    this.logger.log(`Executing transfer to ${input.destinationAddress} on ${input.blockchain}`);
+  async executeTransfer(
+    input: ExecuteTransferInput,
+  ): Promise<CircleTransferResult> {
+    if (input.blockchain !== this.circle.blockchain) {
+      throw new CircleConfigurationError(
+        CIRCLE_CONFIGURATION_ERROR_CODES.CREDENTIAL_ENVIRONMENT_MISMATCH,
+        'Transfer blockchain does not match the selected Arc network.',
+      );
+    }
+    if (input.walletId && input.walletId !== this.circle.walletId) {
+      throw new CircleConfigurationError(
+        CIRCLE_CONFIGURATION_ERROR_CODES.WALLET_SET_MISMATCH,
+        'Transfer wallet does not match selected configuration.',
+      );
+    }
+    if (
+      input.walletAddress &&
+      (!this.circle.walletAddress ||
+        !isAddressEqual(
+          getAddress(input.walletAddress),
+          getAddress(this.circle.walletAddress),
+        ))
+    ) {
+      throw new CircleConfigurationError(
+        CIRCLE_CONFIGURATION_ERROR_CODES.WALLET_BLOCKCHAIN_MISMATCH,
+        'Transfer wallet address does not match selected configuration.',
+      );
+    }
+    if (!input.walletId && !input.walletAddress) {
+      throw new CircleConfigurationError(
+        CIRCLE_CONFIGURATION_ERROR_CODES.MISSING,
+        'Transfer requires the selected Circle wallet identity.',
+      );
+    }
+    const arcNetwork =
+      this.config.getOrThrow<BackendArcNetworkConfiguration>('arcNetwork');
+    if (
+      !Object.values(arcNetwork.tokens).some((token) =>
+        isAddressEqual(
+          getAddress(token.address),
+          getAddress(input.tokenAddress),
+        ),
+      )
+    ) {
+      throw new CircleConfigurationError(
+        CIRCLE_CONFIGURATION_ERROR_CODES.WALLET_BLOCKCHAIN_MISMATCH,
+        'Transfer token does not belong to the selected Arc network.',
+      );
+    }
+    this.logger.log(
+      `Executing transfer to ${input.destinationAddress} on ${input.blockchain}`,
+    );
     const client = this.circleClient.getWalletClient();
     const requestId = randomUUID();
 
@@ -116,7 +193,7 @@ export class CircleTransferService {
         raw: createdTransfer,
       };
     } catch (error) {
-      this.logger.error('Transfer execution failed', error);
+      this.logger.error('Transfer execution failed.');
       throw error;
     }
   }

@@ -2,6 +2,11 @@ import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'node:crypto';
 import { PrismaService } from '../../database/prisma.service';
+import {
+  CIRCLE_CONFIGURATION_ERROR_CODES,
+  CircleConfigurationError,
+  resolveCircleConfigurationFromService,
+} from '../../config/circle-execution.config';
 
 export type WalletProvisionChain = 'EVM' | 'SOLANA';
 export type SupportedUserWalletBlockchain =
@@ -82,9 +87,6 @@ export class WalletProvisionError extends Error {
   }
 }
 
-const CIRCLE_INITIALIZE_BLOCKCHAINS = ['ARC-TESTNET', 'ETH-SEPOLIA'] as const;
-const CIRCLE_INITIALIZE_BLOCKCHAINS_SET =
-  new Set<SupportedUserWalletBlockchain>(CIRCLE_INITIALIZE_BLOCKCHAINS);
 const SUPPORTED_BLOCKCHAINS = new Set<SupportedUserWalletBlockchain>([
   'ARC-TESTNET',
   'ETH-SEPOLIA',
@@ -102,23 +104,23 @@ const WALLET_CHAIN_BY_BLOCKCHAIN: Record<
 @Injectable()
 export class WalletService {
   private readonly logger = new Logger(WalletService.name);
-  private readonly circleBaseUrl: string;
   private readonly solanaRpcUrl: string;
 
   constructor(
     private readonly configService: ConfigService,
     private readonly prisma: PrismaService,
   ) {
-    this.circleBaseUrl = (
-      this.configService.get<string>('CIRCLE_BASE_URL') ||
-      this.configService.get<string>('NEXT_PUBLIC_CIRCLE_BASE_URL') ||
-      'https://api.circle.com'
-    ).replace(/\/+$/, '');
-
     this.solanaRpcUrl =
       this.configService.get<string>('SOLANA_DEVNET_RPC_URL') ||
       this.configService.get<string>('SOLANA_RPC_URL') ||
       'https://api.devnet.solana.com';
+  }
+
+  private get circleConfig() {
+    return resolveCircleConfigurationFromService(
+      this.configService,
+      'user-controlled',
+    );
   }
 
   async initializeWallets(
@@ -129,8 +131,8 @@ export class WalletService {
     // Circle returns conflict when user wallets are already initialized.
     // Short-circuit to keep this endpoint idempotent and avoid noisy 409s.
     const existingWallets = await this.listUpstreamWallets(input.userToken);
-    const alreadyInitialized = existingWallets.some((wallet) =>
-      CIRCLE_INITIALIZE_BLOCKCHAINS_SET.has(wallet.blockchain),
+    const alreadyInitialized = existingWallets.some(
+      (wallet) => wallet.blockchain === this.circleConfig.blockchain,
     );
 
     if (alreadyInitialized) {
@@ -145,7 +147,7 @@ export class WalletService {
       payload = await this.circleRequest<Record<string, unknown>>({
         body: {
           accountType: 'EOA',
-          blockchains: [...CIRCLE_INITIALIZE_BLOCKCHAINS],
+          blockchains: [this.circleConfig.blockchain],
           idempotencyKey: randomUUID(),
         },
         method: 'POST',
@@ -252,6 +254,33 @@ export class WalletService {
     return wallet ? this.toPersistedWallet(wallet) : null;
   }
 
+  async getStoredWalletForSelectedArc(userId: string, walletId: string) {
+    const circle = this.circleConfig;
+    const wallet = await this.prisma.userWallet.findUnique({
+      where: { walletId },
+    });
+    if (
+      !wallet ||
+      wallet.userId !== userId ||
+      wallet.blockchain !== circle.blockchain
+    ) {
+      throw new CircleConfigurationError(
+        CIRCLE_CONFIGURATION_ERROR_CODES.WALLET_BLOCKCHAIN_MISMATCH,
+        'The persisted Circle wallet does not match the selected Arc network.',
+      );
+    }
+    if (
+      circle.walletSetId &&
+      (!wallet.walletSetId || wallet.walletSetId !== circle.walletSetId)
+    ) {
+      throw new CircleConfigurationError(
+        CIRCLE_CONFIGURATION_ERROR_CODES.WALLET_SET_MISMATCH,
+        'The persisted Circle wallet does not match the selected wallet set.',
+      );
+    }
+    return this.toPersistedWallet(wallet);
+  }
+
   resolveUserId(input: {
     email?: string | null;
     userId?: string | null;
@@ -319,14 +348,11 @@ export class WalletService {
     const walletType =
       this.normalizeOptionalValue(wallet.walletType) ??
       this.normalizeOptionalValue(wallet.type);
-    const walletSetId = this.normalizeOptionalValue(wallet.walletSetId);
-
     this.logger.log(
       `[circle-wallet-metadata] walletId=${walletId} ` +
         `blockchain=${this.normalizeOptionalValue(wallet.blockchain) ?? 'unavailable'} ` +
         `address=${this.normalizeOptionalValue(wallet.address) ?? 'unavailable'} ` +
         `accountType=${accountType ?? 'unavailable'} ` +
-        `walletSetId=${walletSetId ?? 'unavailable'} ` +
         `custodyType=${custodyType ?? 'unavailable'} ` +
         `walletType=${walletType ?? 'unavailable'} ` +
         `rawTopLevelKeys=${rawKeys.join(',')}`,
@@ -514,7 +540,7 @@ export class WalletService {
     userToken: string;
   }): Promise<T> {
     const response = await fetch(
-      new URL(input.path, this.circleBaseUrl).toString(),
+      new URL(input.path, this.circleConfig.apiBaseUrl).toString(),
       {
         method: input.method,
         headers: {
@@ -550,17 +576,11 @@ export class WalletService {
   }
 
   private getCircleApiKey() {
-    const apiKey = this.configService.get<string>('CIRCLE_API_KEY');
-
-    if (!apiKey) {
-      throw new Error('CIRCLE_API_KEY is not configured on the backend.');
-    }
-
-    return apiKey;
+    return this.circleConfig.apiKey;
   }
 
   private resolveTargetBlockchain(chain: WalletProvisionChain) {
-    return chain === 'SOLANA' ? 'SOLANA-DEVNET' : 'ARC-TESTNET';
+    return chain === 'SOLANA' ? 'SOLANA-DEVNET' : this.circleConfig.blockchain;
   }
 
   private toCircleBlockchain(blockchain: SupportedUserWalletBlockchain) {

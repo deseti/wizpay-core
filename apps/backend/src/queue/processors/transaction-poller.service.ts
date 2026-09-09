@@ -4,6 +4,10 @@ import { TaskService } from '../../task/task.service';
 import { TaskStatus } from '../../task/task-status.enum';
 import { QueueService } from '../../queue/queue.service';
 import { TxPollJobData } from '../../queue/queue.types';
+import { ConfigService } from '@nestjs/config';
+import { getAddress, parseUnits } from 'viem';
+import { CircleReceiptVerifierService } from '../../adapters/circle/circle-receipt-verifier.service';
+import type { BackendArcNetworkConfiguration } from '../../config/arc-network.config';
 
 // ─── Constants ──────────────────────────────────────────────────────
 
@@ -53,6 +57,8 @@ export class TransactionPollerService {
     private readonly circleService: CircleService,
     private readonly taskService: TaskService,
     private readonly queueService: QueueService,
+    private readonly receiptVerifier: CircleReceiptVerifierService,
+    private readonly config: ConfigService,
   ) {}
 
   /**
@@ -141,7 +147,58 @@ export class TransactionPollerService {
           `TX failed — taskId=${taskId} txId=${txId} status=${circleStatus.status} reason="${reason}"`,
         );
       } else {
-        // Transaction completed
+        const trackedTransactions =
+          await this.taskService.getTaskTransactions(taskId);
+        const tracked = trackedTransactions.find(
+          (transaction) => transaction.txId === txId,
+        );
+        if (!tracked || !circleStatus.txHash) {
+          await this.requeueUnverified(jobData);
+          return;
+        }
+        const arcNetwork =
+          this.config.getOrThrow<BackendArcNetworkConfiguration>('arcNetwork');
+        const token =
+          arcNetwork.tokens[tracked.currency as keyof typeof arcNetwork.tokens];
+        if (!token) {
+          await this.failVerification(
+            taskId,
+            txId,
+            attempt,
+            'Tracked Circle transaction token is unavailable.',
+          );
+          return;
+        }
+        try {
+          await this.receiptVerifier.verifyTransfer({
+            transactionHash: circleStatus.txHash as `0x${string}`,
+            senderAddress: circleStatus.sourceAddress
+              ? getAddress(circleStatus.sourceAddress)
+              : null,
+            recipientAddress: getAddress(tracked.recipient),
+            tokenAddress: getAddress(token.address),
+            amountUnits: parseUnits(tracked.amount, token.decimals),
+            circleBlockchain: circleStatus.blockchain,
+          });
+        } catch (error) {
+          if (
+            error &&
+            typeof error === 'object' &&
+            'retryable' in error &&
+            error.retryable === true
+          ) {
+            await this.requeueUnverified(jobData);
+          } else {
+            await this.failVerification(
+              taskId,
+              txId,
+              attempt,
+              'Circle transaction receipt verification failed.',
+            );
+          }
+          return;
+        }
+        // Circle COMPLETE is accepted only after selected-network receipt proof.
         await this.taskService.updateTransaction(txId, {
           status: 'completed',
           txHash: circleStatus.txHash,
@@ -179,6 +236,37 @@ export class TransactionPollerService {
       { taskId, txId, attempt: attempt + 1 },
       POLL_DELAY_MS,
     );
+  }
+
+  private async requeueUnverified(jobData: TxPollJobData): Promise<void> {
+    await this.taskService.updateTransaction(jobData.txId, {
+      status: 'pending',
+      pollAttempts: jobData.attempt + 1,
+    });
+    await this.queueService.enqueueTransactionPoll(
+      { ...jobData, attempt: jobData.attempt + 1 },
+      POLL_DELAY_MS,
+    );
+  }
+
+  private async failVerification(
+    taskId: string,
+    txId: string,
+    attempt: number,
+    errorReason: string,
+  ): Promise<void> {
+    await this.taskService.updateTransaction(txId, {
+      status: 'failed',
+      errorReason,
+      pollAttempts: attempt + 1,
+    });
+    await this.taskService.logStep(
+      taskId,
+      'tx.receipt_verification_failed',
+      TaskStatus.IN_PROGRESS,
+      errorReason,
+    );
+    await this.checkAndFinalizeTask(taskId);
   }
 
   // ════════════════════════════════════════════════════════════════════

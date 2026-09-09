@@ -52,6 +52,14 @@ class ArcCapabilityConfigurationError extends Error {
   }
 }
 
+class CircleExecutionConfigurationError extends Error {
+  constructor(code, message) {
+    super(message);
+    this.name = "CircleExecutionConfigurationError";
+    this.code = code;
+  }
+}
+
 function deepFreeze(value) {
   if (value && typeof value === "object" && !Object.isFrozen(value)) {
     Object.freeze(value);
@@ -316,6 +324,68 @@ const ARC_PROTOCOL_CAPABILITY_RESOURCES = deepFreeze({
   },
 });
 
+// Circle Wallets supported-blockchain documentation checked 2026-09-10:
+// https://developers.circle.com/wallets/supported-blockchains
+// It explicitly lists ARC-TESTNET. It does not publish an Arc Mainnet Wallets
+// chain code, so Mainnet remains unavailable rather than using an inferred enum.
+const ARC_CIRCLE_EXECUTION_DEFINITIONS = deepFreeze({
+  "arc-testnet": {
+    environment: "testnet",
+    blockchain: "ARC-TESTNET",
+    apiBaseUrlEnvironmentKey: "CIRCLE_TESTNET_API_BASE_URL",
+    applicationIdEnvironmentKey: "CIRCLE_TESTNET_APP_ID",
+    apiCredentialEnvironmentKey: "CIRCLE_TESTNET_API_KEY",
+    entitySecretEnvironmentKey: "CIRCLE_TESTNET_ENTITY_SECRET",
+    walletSetIdEnvironmentKey: "CIRCLE_TESTNET_WALLET_SET_ID",
+    walletIdEnvironmentKey: "CIRCLE_TESTNET_WALLET_ID",
+    walletAddressEnvironmentKey: "CIRCLE_TESTNET_WALLET_ADDRESS",
+    receiptConfirmationsEnvironmentKey: "CIRCLE_TESTNET_RECEIPT_CONFIRMATIONS",
+    support: {
+      walletCreation: true,
+      walletLookup: true,
+      transfer: true,
+      contractExecution: true,
+      typedData: true,
+    },
+    receiptVerification: { required: true, chainId: 5_042_002 },
+  },
+  "arc-mainnet": {
+    environment: "mainnet",
+    blockchain: null,
+    apiBaseUrlEnvironmentKey: "CIRCLE_MAINNET_API_BASE_URL",
+    applicationIdEnvironmentKey: "CIRCLE_MAINNET_APP_ID",
+    apiCredentialEnvironmentKey: "CIRCLE_MAINNET_API_KEY",
+    entitySecretEnvironmentKey: "CIRCLE_MAINNET_ENTITY_SECRET",
+    walletSetIdEnvironmentKey: "CIRCLE_MAINNET_WALLET_SET_ID",
+    walletIdEnvironmentKey: "CIRCLE_MAINNET_WALLET_ID",
+    walletAddressEnvironmentKey: "CIRCLE_MAINNET_WALLET_ADDRESS",
+    receiptConfirmationsEnvironmentKey: "CIRCLE_MAINNET_RECEIPT_CONFIRMATIONS",
+    support: {
+      walletCreation: false,
+      walletLookup: false,
+      transfer: false,
+      contractExecution: false,
+      typedData: false,
+    },
+    receiptVerification: { required: true, chainId: 5_042 },
+  },
+});
+
+function getArcCircleExecutionDefinition(networkKey) {
+  return ARC_CIRCLE_EXECUTION_DEFINITIONS[parseArcNetworkKey(networkKey)];
+}
+
+function requireArcCircleBlockchain(networkKey) {
+  const definition = getArcCircleExecutionDefinition(networkKey);
+  if (!definition.blockchain) {
+    throw new CircleExecutionConfigurationError(
+      "CIRCLE_BLOCKCHAIN_UNSUPPORTED",
+      "Circle Wallets support for the selected Arc network is unverified.",
+    );
+  }
+  return definition.blockchain;
+}
+
 const ARC_CAPABILITY_NAMES = Object.freeze([
   "send",
   "sameTokenPayroll",
@@ -432,7 +502,7 @@ function resolveArcCapabilities(networkKey, environment = {}) {
     if (enabled && !MAINNET_CONFIGURABLE_CAPABILITIES.has(capability)) {
       throw new ArcCapabilityConfigurationError(
         "CAPABILITY_FORBIDDEN_FOR_NETWORK",
-        `${capability} cannot be enabled for Arc Mainnet in Phase 2.`,
+        `${capability} cannot be enabled for Arc Mainnet while required execution resources are unavailable.`,
         capability,
       );
     }
@@ -442,7 +512,10 @@ function resolveArcCapabilities(networkKey, environment = {}) {
   const directResourcesAvailable =
     ARC_RPC_RESOURCES[key].status === "available" &&
     ARC_TOKEN_RESOURCES[key].USDC.status === "available" &&
-    ARC_TOKEN_RESOURCES[key].EURC.status === "available";
+    ARC_TOKEN_RESOURCES[key].EURC.status === "available" &&
+    ARC_CIRCLE_EXECUTION_DEFINITIONS[key].blockchain !== null &&
+    ARC_CIRCLE_EXECUTION_DEFINITIONS[key].support.transfer &&
+    ARC_CIRCLE_EXECUTION_DEFINITIONS[key].support.contractExecution;
   for (const capability of [
     "send",
     "sameTokenPayroll",
@@ -623,6 +696,7 @@ function requireAvailableArcResource(resource) {
 }
 
 module.exports = {
+  ARC_CIRCLE_EXECUTION_DEFINITIONS,
   ARC_EXPLORER_RESOURCES,
   ARC_CAPABILITY_DEFINITIONS,
   ARC_CAPABILITY_NAMES,
@@ -635,11 +709,13 @@ module.exports = {
   ARC_WIZPAY_CONTRACT_RESOURCES,
   ArcNetworkInvariantError,
   ArcCapabilityConfigurationError,
+  CircleExecutionConfigurationError,
   UnavailableArcResourceError,
   UnknownArcResourceError,
   UnsupportedArcNetworkError,
   assertValidArcNetworkDefinitions,
   getArcExplorerResource,
+  getArcCircleExecutionDefinition,
   getArcNetworkByChainId,
   getArcNetworkByKey,
   getArcProtocolCapabilityResource,
@@ -651,6 +727,7 @@ module.exports = {
   parseArcCapabilityName,
   parseArcNetworkKey,
   requireAvailableArcResource,
+  requireArcCircleBlockchain,
   resolveArcCapabilities,
   validateArcCapabilityDependencies,
 };

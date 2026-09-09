@@ -337,7 +337,7 @@ export class StablefxExecutionService {
       throw new ServiceUnavailableException({
         code: USER_SWAP_ERROR_CODES.STABLEFX_API_KEY_MISSING,
         message:
-          'StableFX execution is selected but CIRCLE_STABLEFX_API_KEY is not configured.',
+          'StableFX execution is selected but CIRCLE_TESTNET_STABLEFX_API_KEY is not configured.',
       });
     }
   }
@@ -346,8 +346,7 @@ export class StablefxExecutionService {
     return (
       process.env.WIZPAY_SWAP_PROVIDER?.trim().toLowerCase() === 'stablefx' ||
       process.env.USE_REAL_STABLEFX?.trim().toLowerCase() === 'true' ||
-      process.env.NEXT_PUBLIC_USE_REAL_STABLEFX?.trim().toLowerCase() ===
-        'true'
+      process.env.NEXT_PUBLIC_USE_REAL_STABLEFX?.trim().toLowerCase() === 'true'
     );
   }
 
@@ -1098,7 +1097,15 @@ export class StablefxExecutionService {
   }
 
   private getApiKey(): string {
-    return process.env.CIRCLE_STABLEFX_API_KEY?.trim() ?? '';
+    const value = process.env.CIRCLE_TESTNET_STABLEFX_API_KEY;
+    if (value === undefined) return '';
+    if (!value || value !== value.trim()) {
+      throw new ServiceUnavailableException({
+        code: USER_SWAP_ERROR_CODES.STABLEFX_API_KEY_MISSING,
+        message: 'The selected StableFX API credential must be an exact value.',
+      });
+    }
+    return value;
   }
 
   private isRecord(value: unknown): value is Record<string, unknown> {

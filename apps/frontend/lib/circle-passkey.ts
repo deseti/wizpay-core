@@ -18,6 +18,7 @@ import {
 } from "viem/account-abstraction";
 import type { Transport } from "viem";
 import { parsePublicKey } from "webauthn-p256";
+import { parseArcNetworkKey } from "@wizpay/arc-network";
 
 import { ERC20_ABI } from "@/constants/erc20";
 import {
@@ -183,8 +184,35 @@ function isBundlerRpcUnavailableError(error: unknown) {
 }
 
 export function getCirclePasskeyConfig(): CirclePasskeyConfig {
+  const network = parseArcNetworkKey(
+    process.env.NEXT_PUBLIC_WIZPAY_ARC_NETWORK
+  );
+  if (
+    process.env.NEXT_PUBLIC_CIRCLE_PASSKEY_CLIENT_KEY !== undefined ||
+    process.env.NEXT_PUBLIC_CIRCLE_PASSKEY_CLIENT_URL !== undefined
+  ) {
+    throw new Error(
+      "Generic Circle passkey client configuration is ambiguous and is not accepted."
+    );
+  }
+  if (network === "arc-mainnet") {
+    return {
+      arcModularUrl: null,
+      clientKey: "",
+      clientUrl: "",
+      rpId: process.env.NEXT_PUBLIC_CIRCLE_PASSKEY_RP_ID ?? "app.wizpay.xyz",
+      sepoliaModularUrl: null,
+    };
+  }
+  const clientKey = exactOptional(
+    process.env.NEXT_PUBLIC_CIRCLE_TESTNET_PASSKEY_CLIENT_KEY,
+    "NEXT_PUBLIC_CIRCLE_TESTNET_PASSKEY_CLIENT_KEY"
+  );
   const clientUrl =
-    process.env.NEXT_PUBLIC_CIRCLE_PASSKEY_CLIENT_URL?.trim() ||
+    exactOptional(
+      process.env.NEXT_PUBLIC_CIRCLE_TESTNET_PASSKEY_CLIENT_URL,
+      "NEXT_PUBLIC_CIRCLE_TESTNET_PASSKEY_CLIENT_URL"
+    ) ||
     DEFAULT_CIRCLE_PASSKEY_CLIENT_URL;
   const defaultArcModularUrl = `${clientUrl}/arcTestnet`;
   // NOTE: Ethereum Sepolia is NOT supported by Circle's modular wallets SDK.
@@ -199,7 +227,7 @@ export function getCirclePasskeyConfig(): CirclePasskeyConfig {
       normalizeOptionalUrl(
         process.env.NEXT_PUBLIC_CIRCLE_PASSKEY_MODULAR_RPC_URL_ARC_TESTNET
       ) ?? defaultArcModularUrl,
-    clientKey: process.env.NEXT_PUBLIC_CIRCLE_PASSKEY_CLIENT_KEY?.trim() || "",
+    clientKey,
     clientUrl,
     rpId:
       process.env.NEXT_PUBLIC_CIRCLE_PASSKEY_RP_ID?.trim() || "app.wizpay.xyz",
@@ -209,15 +237,23 @@ export function getCirclePasskeyConfig(): CirclePasskeyConfig {
   };
 }
 
+function exactOptional(value: string | undefined, key: string) {
+  if (value === undefined || value === "") return "";
+  if (value !== value.trim()) {
+    throw new Error(`${key} must be a non-empty exact value.`);
+  }
+  return value;
+}
+
 export function getPasskeySupportError(
   config: CirclePasskeyConfig = getCirclePasskeyConfig()
 ) {
   if (!config.clientKey) {
-    return "NEXT_PUBLIC_CIRCLE_PASSKEY_CLIENT_KEY is missing. Add the Circle modular-wallet client key first.";
+    return "NEXT_PUBLIC_CIRCLE_TESTNET_PASSKEY_CLIENT_KEY is missing. Add the Circle modular-wallet client key first.";
   }
 
   if (!config.clientUrl) {
-    return "NEXT_PUBLIC_CIRCLE_PASSKEY_CLIENT_URL is missing. Add the Circle modular-wallet client URL first.";
+    return "NEXT_PUBLIC_CIRCLE_TESTNET_PASSKEY_CLIENT_URL is missing. Add the Circle modular-wallet client URL first.";
   }
 
   if (typeof window === "undefined") {

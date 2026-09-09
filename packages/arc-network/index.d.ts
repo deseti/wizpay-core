@@ -1,5 +1,28 @@
 export type ArcNetworkKey = "arc-testnet" | "arc-mainnet";
 
+export type CircleEnvironment = "testnet" | "mainnet";
+export type CircleBlockchain = "ARC-TESTNET";
+export type ArcCircleExecutionDefinition = Readonly<{
+  environment: CircleEnvironment;
+  blockchain: CircleBlockchain | null;
+  apiBaseUrlEnvironmentKey: string;
+  applicationIdEnvironmentKey: string;
+  apiCredentialEnvironmentKey: string;
+  entitySecretEnvironmentKey: string;
+  walletSetIdEnvironmentKey: string;
+  walletIdEnvironmentKey: string;
+  walletAddressEnvironmentKey: string;
+  receiptConfirmationsEnvironmentKey: string;
+  support: Readonly<{
+    walletCreation: boolean;
+    walletLookup: boolean;
+    transfer: boolean;
+    contractExecution: boolean;
+    typedData: boolean;
+  }>;
+  receiptVerification: Readonly<{ required: true; chainId: number }>;
+}>;
+
 export type ArcNetworkEnvironment = "testnet" | "mainnet";
 
 export type ArcCapabilityName =
@@ -140,6 +163,9 @@ export declare class ArcCapabilityConfigurationError extends Error {
 }
 
 export declare const ARC_CAPABILITY_NAMES: readonly ArcCapabilityName[];
+export declare const ARC_CIRCLE_EXECUTION_DEFINITIONS: Readonly<
+  Record<ArcNetworkKey, ArcCircleExecutionDefinition>
+>;
 export declare const ARC_CAPABILITY_DEFINITIONS: Readonly<
   Record<ArcNetworkKey, ArcCapabilities>
 >;
@@ -151,6 +177,12 @@ export declare class UnsupportedArcNetworkError extends Error {
   readonly name: "UnsupportedArcNetworkError";
   readonly code: UnsupportedArcNetworkCode;
   constructor(code: UnsupportedArcNetworkCode, value: unknown);
+}
+
+export declare class CircleExecutionConfigurationError extends Error {
+  readonly name: "CircleExecutionConfigurationError";
+  readonly code: string;
+  constructor(code: string, message: string);
 }
 
 export declare class UnknownArcResourceError extends Error {
@@ -243,6 +275,12 @@ export declare function assertValidArcNetworkDefinitions(
 ): true;
 
 export declare function parseArcNetworkKey(value: unknown): ArcNetworkKey;
+export declare function getArcCircleExecutionDefinition(
+  networkKey: ArcNetworkKey,
+): ArcCircleExecutionDefinition;
+export declare function requireArcCircleBlockchain(
+  networkKey: ArcNetworkKey,
+): CircleBlockchain;
 export declare function parseArcCapabilityName(
   value: unknown,
 ): ArcCapabilityName;

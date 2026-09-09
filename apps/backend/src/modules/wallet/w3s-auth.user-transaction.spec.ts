@@ -7,16 +7,31 @@ describe('W3sAuthService User-Controlled transaction lookup', () => {
   let service: W3sAuthService;
 
   beforeEach(() => {
+    const values: Record<string, unknown> = {
+      'arcNetwork.key': 'arc-testnet',
+      CIRCLE_TESTNET_API_KEY: 'TEST_API_KEY',
+      CIRCLE_TESTNET_APP_ID: 'testnet-app-id',
+      CIRCLE_TESTNET_API_BASE_URL: 'https://api.circle.test',
+      CIRCLE_TESTNET_RECEIPT_CONFIRMATIONS: '2',
+    };
     const config = {
-      get: jest.fn((key: string) => {
-        if (key === 'CIRCLE_API_KEY') return 'TEST_API_KEY';
-        if (key === 'CIRCLE_BASE_URL') return 'https://api.circle.test';
-        return undefined;
+      get: jest.fn((key: string) => values[key]),
+      getOrThrow: jest.fn((key: string) => {
+        if (values[key] === undefined) throw new Error(`Missing ${key}`);
+        return values[key];
       }),
     } as unknown as ConfigService;
+    const prisma = {
+      userWallet: {
+        findUnique: jest.fn().mockResolvedValue({
+          blockchain: 'ARC-TESTNET',
+          walletSetId: null,
+        }),
+      },
+    };
     service = new W3sAuthService(
       config,
-      {} as never,
+      prisma as never,
       { assertW3sAction: jest.fn() } as never,
     );
   });

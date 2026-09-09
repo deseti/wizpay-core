@@ -309,8 +309,8 @@ export function useSdkInitializer({
             return;
           }
 
-          // Surface a clear, actionable message when the server-side API key
-          // is missing — this is the most common Docker misconfiguration.
+          // Surface a clear, actionable message when the selected network's
+          // server-side credential is missing.
           if (
             message.includes("CIRCLE_API_KEY") ||
             message.includes("createDeviceToken") ||
@@ -318,14 +318,14 @@ export function useSdkInitializer({
           ) {
             console.error(
               "[CircleWalletProvider] createDeviceToken failed. " +
-                "Check that CIRCLE_API_KEY is set in root .env and the Docker " +
-                "container was restarted. Also verify http://localhost:3000 is " +
+                "Check the selected network's Circle API credential and restart " +
+                "the container. Also verify http://localhost:3000 is " +
                 "listed in Circle Console → Allowed Origins.",
               error,
             );
             setAuthError(
               "Authentication initialization failed. " +
-                "The server CIRCLE_API_KEY may be missing or the Circle App ID may not " +
+                "The selected network's server credential may be missing or the Circle App ID may not " +
                 "allow localhost:3000. Check server logs and Circle Console.",
             );
           } else {

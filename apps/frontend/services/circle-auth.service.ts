@@ -4,6 +4,7 @@ import { deleteCookie, getCookie, setCookie } from "cookies-next";
 import { SocialLoginProvider } from "@circle-fin/w3s-pw-web-sdk/dist/src/types";
 
 import { getCirclePasskeyConfig } from "@/lib/circle-passkey";
+import { resolveFrontendCircleApplicationId } from "@/lib/circle-network-config";
 import type {
   CirclePasskeySession,
   CircleSession,
@@ -31,10 +32,21 @@ export type {
   W3SSdkModule,
 } from "./circle-auth.types";
 
-export const CIRCLE_APP_ID = process.env.NEXT_PUBLIC_CIRCLE_APP_ID ?? "";
+export const CIRCLE_APP_ID = resolveFrontendCircleApplicationId(
+  process.env.NEXT_PUBLIC_WIZPAY_ARC_NETWORK,
+  {
+    NEXT_PUBLIC_CIRCLE_APP_ID: process.env.NEXT_PUBLIC_CIRCLE_APP_ID,
+    NEXT_PUBLIC_CIRCLE_TESTNET_APP_ID:
+      process.env.NEXT_PUBLIC_CIRCLE_TESTNET_APP_ID,
+    NEXT_PUBLIC_CIRCLE_MAINNET_APP_ID:
+      process.env.NEXT_PUBLIC_CIRCLE_MAINNET_APP_ID,
+  }
+);
 export const GOOGLE_CLIENT_ID = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID ?? "";
 // Passkey is disabled when the env var is empty — controls both UI and logic.
-export const PASSKEY_ENABLED = Boolean(process.env.NEXT_PUBLIC_CIRCLE_PASSKEY_CLIENT_KEY?.trim());
+export const PASSKEY_ENABLED = Boolean(
+  process.env.NEXT_PUBLIC_CIRCLE_TESTNET_PASSKEY_CLIENT_KEY
+);
 export const PASSKEY_CONFIG = getCirclePasskeyConfig();
 export const APP_ID_COOKIE_KEY = "wizpay.circle.app-id";
 export const DEVICE_ID_STORAGE_KEY = "wizpay.circle.device-id";
@@ -93,7 +105,7 @@ export function getGoogleOAuthErrorMessage(diagnostics: GoogleOAuthDiagnostics |
     return `Google returned an ID token for ${audienceLabel}, but this app is configured for ${configuredLabel}.`;
   }
 
-  return "Google redirect passed the browser-side state, nonce, and client ID checks, but Circle still rejected the token. That usually means the Google client ID is not enabled on the same Circle User-Controlled Wallet app as NEXT_PUBLIC_CIRCLE_APP_ID in Circle Console.";
+  return "Google redirect passed the browser-side state, nonce, and client ID checks, but Circle still rejected the token. That usually means the Google client ID is not enabled on the selected Circle User-Controlled Wallet app in Circle Console.";
 }
 
 export function getErrorMessage(
@@ -112,7 +124,7 @@ export function getErrorMessage(
   }
 
   if (directCode === 155114) {
-    return "Circle app ID does not match this wallet app. Verify NEXT_PUBLIC_CIRCLE_APP_ID comes from the same User-Controlled Wallet app in Circle Console.";
+    return "Circle app ID does not match this wallet app. Verify the selected network-scoped App ID comes from the same User-Controlled Wallet app in Circle Console.";
   }
 
   if (directCode === 155140) {
@@ -551,7 +563,7 @@ export function readCircleOAuthBackup() {
 }
 
 export function getRestoredCircleAppId() {
-  return readCookieString(APP_ID_COOKIE_KEY) || CIRCLE_APP_ID;
+  return CIRCLE_APP_ID;
 }
 
 export function buildGoogleLoginConfigs({

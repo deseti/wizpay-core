@@ -3,6 +3,11 @@ import { ConfigService } from '@nestjs/config';
 import { createHash, randomUUID } from 'node:crypto';
 import { PrismaService } from '../../database/prisma.service';
 import { CapabilityService } from '../../capabilities/capability.service';
+import {
+  CIRCLE_CONFIGURATION_ERROR_CODES,
+  CircleConfigurationError,
+  resolveCircleConfigurationFromService,
+} from '../../config/circle-execution.config';
 
 type W3sActionResult = Record<string, unknown>;
 type W3sValidationIssue = {
@@ -63,7 +68,7 @@ function getStablefxSignDiagnosticKey(
 
 /**
  * Server-side proxy for Circle W3S user-controlled wallet actions
- * that require the CIRCLE_API_KEY (which must never be exposed to the browser).
+ * that require the selected network's API credential (never exposed to the browser).
  *
  * The frontend calls these actions via the /w3s/action endpoint so the
  * sensitive API key stays on the server.
@@ -71,29 +76,18 @@ function getStablefxSignDiagnosticKey(
 @Injectable()
 export class W3sAuthService {
   private readonly logger = new Logger(W3sAuthService.name);
-  private readonly circleBaseUrl: string;
 
   constructor(
     private readonly configService: ConfigService,
     private readonly prisma: PrismaService,
     private readonly capabilities: CapabilityService,
-  ) {
-    const envBaseUrl =
-      this.configService.get<string>('CIRCLE_BASE_URL') ||
-      this.configService.get<string>('NEXT_PUBLIC_CIRCLE_BASE_URL');
+  ) {}
 
-    if (envBaseUrl) {
-      this.circleBaseUrl = envBaseUrl.replace(/\/+$/, '');
-    } else {
-      // Fall back based on CIRCLE_ENV
-      const circleEnv = this.configService.get<string>('CIRCLE_ENV') ?? '';
-      this.circleBaseUrl =
-        circleEnv.toLowerCase() === 'sandbox'
-          ? 'https://api-sandbox.circle.com'
-          : 'https://api.circle.com';
-    }
-
-    this.logger.log(`Circle base URL: ${this.circleBaseUrl}`);
+  private get circleConfig() {
+    return resolveCircleConfigurationFromService(
+      this.configService,
+      'user-controlled',
+    );
   }
 
   /**
@@ -188,6 +182,7 @@ export class W3sAuthService {
       'createContractExecutionChallenge',
       input,
     );
+    await this.assertPersistedWalletNetwork(input.walletId);
     return this.circleUserRequest({
       body: {
         callData: input.callData,
@@ -231,6 +226,7 @@ export class W3sAuthService {
       params,
     );
     this.validateTransferFields(normalized);
+    await this.assertPersistedWalletNetwork(String(normalized.walletId));
     if (!userToken) {
       this.throwValidationError([
         { field: 'userToken', message: 'userToken is required' },
@@ -462,7 +458,7 @@ export class W3sAuthService {
       );
     }
 
-    const url = `${this.circleBaseUrl}/v1/w3s/users/social/token`;
+    const url = `${this.circleConfig.apiBaseUrl}/v1/w3s/users/social/token`;
 
     const requestId = randomUUID();
     const startedAt = Date.now();
@@ -677,6 +673,9 @@ export class W3sAuthService {
 
     const bodyParams = this.normalizeUserActionParams(path, params);
     this.validateUserActionParams(path, bodyParams);
+    if (method === 'POST' && typeof bodyParams.walletId === 'string') {
+      await this.assertPersistedWalletNetwork(bodyParams.walletId);
+    }
     const stablefxDiagnosticsEnabled =
       process.env.WIZPAY_STABLEFX_SIGN_DIAGNOSTICS === 'true';
     const stablefxDiagnostics = stablefxDiagnosticsEnabled
@@ -834,14 +833,14 @@ export class W3sAuthService {
   }
 
   /**
-   * Make a server-authenticated request to Circle (uses CIRCLE_API_KEY only).
+   * Make a server-authenticated request with the selected network credential.
    */
   private async circleServerRequest<T extends Record<string, unknown>>(input: {
     body?: Record<string, unknown>;
     method: 'GET' | 'POST';
     path: string;
   }): Promise<T> {
-    const url = new URL(input.path, this.circleBaseUrl).toString();
+    const url = new URL(input.path, this.circleConfig.apiBaseUrl).toString();
     const safePath = this.safeCircleRoute(input.path);
     const apiKey = this.getCircleApiKey();
 
@@ -929,7 +928,7 @@ export class W3sAuthService {
     path: string;
     userToken: string;
   }): Promise<T> {
-    const url = new URL(input.path, this.circleBaseUrl).toString();
+    const url = new URL(input.path, this.circleConfig.apiBaseUrl).toString();
     const safePath = this.safeCircleRoute(input.path);
     const apiKey = this.getCircleApiKey();
     const requestId = randomUUID();
@@ -1013,16 +1012,30 @@ export class W3sAuthService {
   }
 
   private getCircleApiKey(): string {
-    const apiKey = this.configService.get<string>('CIRCLE_API_KEY');
+    return this.circleConfig.apiKey;
+  }
 
-    if (!apiKey) {
-      throw new Error(
-        'CIRCLE_API_KEY is not configured on the backend. ' +
-          'Set it in your .env file and restart the server.',
+  private async assertPersistedWalletNetwork(walletId: string): Promise<void> {
+    const circle = this.circleConfig;
+    const wallet = await this.prisma.userWallet.findUnique({
+      where: { walletId },
+      select: { blockchain: true, walletSetId: true },
+    });
+    if (!wallet || wallet.blockchain !== circle.blockchain) {
+      throw new CircleConfigurationError(
+        CIRCLE_CONFIGURATION_ERROR_CODES.WALLET_BLOCKCHAIN_MISMATCH,
+        'The Circle wallet does not belong to the selected Arc network.',
       );
     }
-
-    return apiKey;
+    if (
+      circle.walletSetId &&
+      (!wallet.walletSetId || wallet.walletSetId !== circle.walletSetId)
+    ) {
+      throw new CircleConfigurationError(
+        CIRCLE_CONFIGURATION_ERROR_CODES.WALLET_SET_MISMATCH,
+        'The Circle wallet does not belong to the selected wallet set.',
+      );
+    }
   }
 
   private normalizeUserActionParams(

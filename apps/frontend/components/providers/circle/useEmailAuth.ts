@@ -53,7 +53,7 @@ export function useEmailAuth({
     async (email: string) => {
       if (!CIRCLE_APP_ID) {
         setAuthError(
-          "NEXT_PUBLIC_CIRCLE_APP_ID is missing. Configure Circle Wallets before signing in.",
+          "The selected network-scoped Circle App ID is missing. Configure Circle Wallets before signing in.",
         );
         return;
       }

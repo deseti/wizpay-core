@@ -86,6 +86,7 @@ describe('TreasuryService', () => {
       rfqClient,
       fxRetryService,
       settlementValidator,
+      {} as never,
     );
 
     // Suppress logger output in tests

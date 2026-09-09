@@ -1,23 +1,24 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { CircleAdapter } from '../adapters/circle/circle.adapter';
 import { CircleClient } from '../adapters/circle/circle.client';
-import { StableFXRfqClient, StableFxRfqError } from '../fx/stablefx-rfq-client.service';
+import {
+  StableFXRfqClient,
+  StableFxRfqError,
+} from '../fx/stablefx-rfq-client.service';
 import { FxRetryService } from '../fx/fx-retry.service';
 import { SettlementValidator } from '../fx/settlement-validator.service';
 import { RfqQuote } from '../fx/fx.types';
+import { ConfigService } from '@nestjs/config';
+import { resolveCircleConfigurationFromService } from '../config/circle-execution.config';
 
 type CircleTreasuryWallet = {
   id: string;
 };
 
-type CircleTreasuryWalletSet = {
-  id: string;
-};
-
 type TreasuryWalletConfig = {
-  walletAddress: string | undefined;
-  walletId: string | undefined;
-  walletSetId: string | undefined;
+  walletAddress: string;
+  walletId: string;
+  walletSetId: string;
   blockchain: string;
   balance?: { amount: string; symbol: string } | null;
 };
@@ -90,6 +91,7 @@ export class TreasuryService {
     private readonly rfqClient: StableFXRfqClient,
     private readonly fxRetryService: FxRetryService,
     private readonly settlementValidator: SettlementValidator,
+    private readonly config: ConfigService,
   ) {}
 
   // ─────────────────────────────────────────────────────────────────────────────
@@ -173,7 +175,8 @@ export class TreasuryService {
   private async executeCrossCurrencyOperation(
     payload: TreasuryOperationPayload,
   ): Promise<TreasuryOperationResult> {
-    const { taskId, sourceToken, destinationToken, amount, minOutput } = payload;
+    const { taskId, sourceToken, destinationToken, amount, minOutput } =
+      payload;
 
     // Step 1: Request quote — on failure, reject immediately (Requirement 6.3)
     let quote: RfqQuote;
@@ -225,7 +228,8 @@ export class TreasuryService {
     payload: TreasuryOperationPayload,
     initialQuote: RfqQuote,
   ): Promise<TreasuryOperationResult> {
-    const { taskId, sourceToken, destinationToken, amount, minOutput } = payload;
+    const { taskId, sourceToken, destinationToken, amount, minOutput } =
+      payload;
     let currentQuote = initialQuote;
 
     for (let attempt = 1; attempt <= TREASURY_MAX_RETRIES; attempt++) {
@@ -312,8 +316,7 @@ export class TreasuryService {
           transferType: 'fx',
         };
       } catch (error) {
-        const reason =
-          error instanceof Error ? error.message : String(error);
+        const reason = error instanceof Error ? error.message : String(error);
 
         this.logger.error(
           `[treasury] Settlement attempt ${attempt}/${TREASURY_MAX_RETRIES} failed: ` +
@@ -355,77 +358,60 @@ export class TreasuryService {
   // ─────────────────────────────────────────────────────────────────────────────
 
   async initializeTreasury() {
-    console.log('Creating wallet set...');
-    const walletSet =
-      (await this.circleAdapter.createWalletSet()) as CircleTreasuryWalletSet;
+    const circle = resolveCircleConfigurationFromService(
+      this.config,
+      'developer-controlled',
+    );
     const wallet = (await this.circleAdapter.createWallet(
-      walletSet.id,
+      circle.walletSetId!,
     )) as CircleTreasuryWallet;
 
-    console.log('Wallet created:', wallet.id);
-
     return {
-      walletSetId: walletSet.id,
+      walletSetId: circle.walletSetId!,
       walletId: wallet.id,
     };
   }
 
-  async getTreasuryWallet(blockchain: string): Promise<TreasuryWalletConfig | null> {
-    // Return the pre-configured treasury wallet based on the backend environment variables
-    const isArc = blockchain === 'ARC-TESTNET';
-    const isSepolia = blockchain === 'ETH-SEPOLIA';
-    const isSolana = blockchain === 'SOLANA-DEVNET';
-
-    let config: TreasuryWalletConfig | null = null;
-
-    if (isArc) {
-      config = {
-        walletId: process.env.CIRCLE_WALLET_ID_ARC,
-        walletSetId: process.env.CIRCLE_WALLET_SET_ID_ARC,
-        walletAddress: process.env.CIRCLE_WALLET_ADDRESS_ARC,
-        blockchain,
-      };
-    } else if (isSepolia) {
-      config = {
-        walletId: process.env.CIRCLE_WALLET_ID_SEPOLIA,
-        walletSetId: process.env.CIRCLE_WALLET_SET_ID_SEPOLIA,
-        walletAddress: process.env.CIRCLE_WALLET_ADDRESS_SEPOLIA,
-        blockchain,
-      };
-    } else if (isSolana) {
-      config = {
-        walletId: process.env.CIRCLE_WALLET_ID_SOLANA,
-        walletSetId: process.env.CIRCLE_WALLET_SET_ID_SOLANA,
-        walletAddress: process.env.CIRCLE_WALLET_ADDRESS_SOLANA,
-        blockchain,
-      };
-    }
-
-    if (!config || !config.walletId) {
+  async getTreasuryWallet(
+    blockchain: string,
+  ): Promise<TreasuryWalletConfig | null> {
+    const circle = resolveCircleConfigurationFromService(
+      this.config,
+      'developer-controlled',
+    );
+    if (blockchain !== circle.blockchain) {
       return null;
     }
+    const config: TreasuryWalletConfig = {
+      walletId: circle.walletId!,
+      walletSetId: circle.walletSetId!,
+      walletAddress: circle.walletAddress!,
+      blockchain: circle.blockchain,
+    };
 
     try {
-      const response = await this.circleClient.getWalletClient().getWalletTokenBalance({
-        id: config.walletId
-      });
-      
+      const response = await this.circleClient
+        .getWalletClient()
+        .getWalletTokenBalance({
+          id: config.walletId,
+        });
+
       const balances = response?.data?.tokenBalances || [];
       const usdcBalance = balances.find((b: any) => b.token?.symbol === 'USDC');
-      
+
       if (usdcBalance) {
         config.balance = {
           amount: usdcBalance.amount,
-          symbol: 'USDC'
+          symbol: 'USDC',
         };
       } else {
         config.balance = {
           amount: '0',
-          symbol: 'USDC'
+          symbol: 'USDC',
         };
       }
-    } catch (error) {
-      console.error(`Failed to fetch balance for treasury wallet ${config.walletId}:`, error);
+    } catch {
+      this.logger.warn('Failed to fetch the selected treasury wallet balance.');
       config.balance = null;
     }
 
