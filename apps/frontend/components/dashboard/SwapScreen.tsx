@@ -76,6 +76,7 @@ import {
   parseAmountToUnits,
   type TokenSymbol,
 } from "@/lib/wizpay";
+import { useCapability } from "@/components/providers/CapabilityProvider";
 
 type QuoteState = AppWalletSwapQuoteResponse | UserSwapQuoteResponse;
 type RequestStatus =
@@ -131,6 +132,30 @@ function assertAppWalletQuote(input: {
 }
 
 export function SwapScreen() {
+  const swapCapability = useCapability("swap");
+  const bridgeCapability = useCapability("bridge");
+  if (!swapCapability.enabled && !bridgeCapability.enabled) {
+    return (
+      <p role="alert" className="text-sm text-amber-300">
+        {swapCapability.unavailableMessage}
+      </p>
+    );
+  }
+  return (
+    <SwapWorkspace
+      swapCapability={swapCapability}
+      bridgeCapability={bridgeCapability}
+    />
+  );
+}
+
+function SwapWorkspace({
+  swapCapability,
+  bridgeCapability,
+}: {
+  swapCapability: ReturnType<typeof useCapability>;
+  bridgeCapability: ReturnType<typeof useCapability>;
+}) {
   const queryClient = useQueryClient();
   const { walletAddress, walletMode } = useActiveWalletAddress();
   const { arcWallet, executeChallenge, userToken } = useCircleWallet();
@@ -525,6 +550,7 @@ export function SwapScreen() {
   }
 
   async function handleSwap() {
+    swapCapability.assertEnabled();
     setError(null);
     if (blockedReason) {
       setError(blockedReason);
@@ -782,6 +808,7 @@ export function SwapScreen() {
         tokenIsUsdc: tokenIn === "USDC",
       }));
   const disabled =
+    !swapCapability.enabled ||
     busy ||
     recoveryLocked ||
     Boolean(blockedReason) ||
@@ -807,6 +834,7 @@ export function SwapScreen() {
         type="button"
         variant={screenMode === "bridge" ? "default" : "ghost"}
         onClick={() => setScreenMode("bridge")}
+        disabled={!bridgeCapability.enabled}
       >
         Bridge
       </Button>
@@ -814,6 +842,13 @@ export function SwapScreen() {
   ) : null;
 
   if (effectiveScreenMode === "bridge" && isExternal && walletAddress) {
+    if (!bridgeCapability.enabled) {
+      return (
+        <p role="alert" className="text-sm text-amber-300">
+          {bridgeCapability.unavailableMessage}
+        </p>
+      );
+    }
     return (
       <div>
         {modeSelector}
@@ -1088,6 +1123,11 @@ export function SwapScreen() {
                 {amountUnits > inputBalance
                   ? `Insufficient ${tokenIn} balance.`
                   : "Leave enough USDC available for network fees."}
+              </div>
+            ) : null}
+            {!swapCapability.enabled ? (
+              <div role="alert" className="text-sm text-amber-300">
+                {swapCapability.unavailableMessage}
               </div>
             ) : null}
             <Button

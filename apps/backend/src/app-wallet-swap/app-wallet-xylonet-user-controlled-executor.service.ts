@@ -30,6 +30,7 @@ import { PrismaService } from '../database/prisma.service';
 import { W3sAuthService } from '../modules/wallet/w3s-auth.service';
 import { WalletService } from '../modules/wallet/wallet.service';
 import { ActivityService } from '../activity/activity.service';
+import { CapabilityService } from '../capabilities/capability.service';
 import type { AppWalletXylonetOperationDto } from './dto/app-wallet-xylonet-operation.dto';
 import {
   APP_WALLET_XYLONET_ERRORS,
@@ -197,6 +198,7 @@ export class AppWalletXylonetUserControlledExecutorService {
     private readonly prisma: PrismaService,
     private readonly walletService: WalletService,
     private readonly w3sAuthService: W3sAuthService,
+    private readonly capabilities: CapabilityService,
     @Optional()
     @Inject(APP_WALLET_XYLONET_PUBLIC_CLIENT)
     private readonly injectedPublicClient?: PublicClient,
@@ -205,6 +207,7 @@ export class AppWalletXylonetUserControlledExecutorService {
   ) {}
 
   async quote(request: AppWalletXylonetOperationDto, userToken: string) {
+    this.capabilities.assert('swap');
     const config = this.getConfig();
     await this.assertOnchainCapability(config);
     const identity = await this.authenticateWallet(
@@ -281,6 +284,7 @@ export class AppWalletXylonetUserControlledExecutorService {
     request: AppWalletXylonetOperationDto,
     userToken: string,
   ): Promise<AppWalletXylonetOperationResponse> {
+    this.capabilities.assert('swap');
     const config = this.getConfig();
     await this.assertOnchainCapability(config);
     const identity = await this.authenticateWallet(
@@ -414,6 +418,7 @@ export class AppWalletXylonetUserControlledExecutorService {
     operationId: string,
     userToken: string,
   ): Promise<AppWalletXylonetOperationResponse> {
+    this.capabilities.assert('swap');
     const operation = await this.getOwnedOperation(operationId, userToken);
     return this.toPublic(
       await this.reconcileCompletedSwapTransactionHash(operation, userToken),
@@ -424,6 +429,7 @@ export class AppWalletXylonetUserControlledExecutorService {
     operationId: string,
     userToken: string,
   ): Promise<AppWalletXylonetOperationResponse> {
+    this.capabilities.assert('swap');
     const operation = await this.getOwnedOperation(operationId, userToken);
     this.assertNotTerminal(operation);
     if (
@@ -504,6 +510,7 @@ export class AppWalletXylonetUserControlledExecutorService {
     operationId: string,
     userToken: string,
   ): Promise<AppWalletXylonetOperationResponse> {
+    this.capabilities.assert('swap');
     const operation = await this.getOwnedOperation(operationId, userToken);
     this.assertNotTerminal(operation);
     if (
@@ -556,6 +563,7 @@ export class AppWalletXylonetUserControlledExecutorService {
     result: { status: string; reason?: string },
     userToken: string,
   ): Promise<AppWalletXylonetOperationResponse> {
+    this.capabilities.assert('swap');
     const operation = await this.getOwnedOperation(operationId, userToken);
     this.assertNotTerminal(operation);
     const expectedStage =
@@ -612,6 +620,7 @@ export class AppWalletXylonetUserControlledExecutorService {
     operationId: string,
     userToken: string,
   ): Promise<AppWalletXylonetOperationResponse> {
+    this.capabilities.assert('swap');
     let operation = await this.getOwnedOperation(operationId, userToken);
     if (operation.terminalStatus) {
       operation = await this.reconcileCompletedSwapTransactionHash(

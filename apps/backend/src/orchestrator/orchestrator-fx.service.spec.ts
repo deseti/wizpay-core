@@ -9,6 +9,7 @@ import { QueueService } from '../queue/queue.service';
 import { ExecutionRouterService } from '../execution/execution-router.service';
 import { FxRoutingGuard } from '../fx/fx-routing-guard.service';
 import { StableFXRfqClient } from '../fx/stablefx-rfq-client.service';
+import { CapabilityService } from '../capabilities/capability.service';
 import { FxOperationPayload } from '../fx/fx.types';
 import { TaskStatus } from '../task/task-status.enum';
 import { TaskType } from '../task/task-type.enum';
@@ -106,6 +107,10 @@ describe('OrchestratorService — handleFxOperation', () => {
             requestQuote: jest.fn().mockResolvedValue(mockQuote),
             createTrade: jest.fn().mockResolvedValue(mockTrade),
           },
+        },
+        {
+          provide: CapabilityService,
+          useValue: { assert: jest.fn(), assertPayroll: jest.fn() },
         },
       ],
     }).compile();

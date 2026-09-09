@@ -13,6 +13,7 @@ import { AppWalletXylonetChallengeResultDto } from './dto/app-wallet-xylonet-cha
 import { AppWalletXylonetOperationDto } from './dto/app-wallet-xylonet-operation.dto';
 import { AppWalletXylonetUserControlledExecutorService } from './app-wallet-xylonet-user-controlled-executor.service';
 import { APP_WALLET_XYLONET_ERRORS } from './app-wallet-xylonet.types';
+import { CapabilityService } from '../capabilities/capability.service';
 
 @Controller('app-wallet-swap')
 @UsePipes(
@@ -30,6 +31,7 @@ import { APP_WALLET_XYLONET_ERRORS } from './app-wallet-xylonet.types';
 export class AppWalletSwapController {
   constructor(
     private readonly xylonetExecutor: AppWalletXylonetUserControlledExecutorService,
+    private readonly capabilities: CapabilityService,
   ) {}
 
   @Post('xylonet/quote')
@@ -37,6 +39,7 @@ export class AppWalletSwapController {
     @Headers('x-user-token') userToken: string,
     @Body() body: AppWalletXylonetOperationDto,
   ) {
+    this.capabilities.assert('swap');
     return { data: await this.xylonetExecutor.quote(body, userToken) };
   }
 
@@ -45,6 +48,7 @@ export class AppWalletSwapController {
     @Headers('x-user-token') userToken: string,
     @Body() body: AppWalletXylonetOperationDto,
   ) {
+    this.capabilities.assert('swap');
     return {
       data: await this.xylonetExecutor.createOperation(body, userToken),
     };
@@ -55,6 +59,7 @@ export class AppWalletSwapController {
     @Headers('x-user-token') userToken: string,
     @Param('id') operationId: string,
   ) {
+    this.capabilities.assert('swap');
     return {
       data: await this.xylonetExecutor.getOperation(operationId, userToken),
     };
@@ -65,6 +70,7 @@ export class AppWalletSwapController {
     @Headers('x-user-token') userToken: string,
     @Param('id') operationId: string,
   ) {
+    this.capabilities.assert('swap');
     return {
       data: await this.xylonetExecutor.createApprovalChallenge(
         operationId,
@@ -79,6 +85,7 @@ export class AppWalletSwapController {
     @Param('id') operationId: string,
     @Body() body: AppWalletXylonetChallengeResultDto,
   ) {
+    this.capabilities.assert('swap');
     return {
       data: await this.xylonetExecutor.recordChallengeResult(
         operationId,
@@ -94,6 +101,7 @@ export class AppWalletSwapController {
     @Headers('x-user-token') userToken: string,
     @Param('id') operationId: string,
   ) {
+    this.capabilities.assert('swap');
     return {
       data: await this.xylonetExecutor.createSwapChallenge(
         operationId,
@@ -108,6 +116,7 @@ export class AppWalletSwapController {
     @Param('id') operationId: string,
     @Body() body: AppWalletXylonetChallengeResultDto,
   ) {
+    this.capabilities.assert('swap');
     return {
       data: await this.xylonetExecutor.recordChallengeResult(
         operationId,
@@ -123,6 +132,7 @@ export class AppWalletSwapController {
     @Headers('x-user-token') userToken: string,
     @Param('id') operationId: string,
   ) {
+    this.capabilities.assert('swap');
     return { data: await this.xylonetExecutor.poll(operationId, userToken) };
   }
 }

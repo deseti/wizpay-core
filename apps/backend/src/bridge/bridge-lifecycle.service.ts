@@ -39,6 +39,7 @@ import {
   ReportBridgeSourceDto,
 } from './dto/bridge-intent.dto';
 import { addressToBytes32, decodeCctpV2Message } from './bridge-message';
+import { CapabilityService } from '../capabilities/capability.service';
 
 const DESTINATION_LEASE_MS = 5 * 60 * 1000;
 
@@ -212,9 +213,13 @@ export interface BridgeLifecycleResult {
 export class BridgeLifecycleService {
   private readonly clients = new Map<BridgeTestnetCode, PublicClient>();
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly capabilities: CapabilityService,
+  ) {}
 
   async createIntent(input: CreateBridgeIntentDto) {
+    this.capabilities.assert('bridge');
     const { source, destination } = this.getRoute(
       input.sourceCode,
       input.destinationCode,
@@ -326,6 +331,7 @@ export class BridgeLifecycleService {
   }
 
   async getIntent(id: string, input: BridgeWalletDto) {
+    this.capabilities.assert('bridge');
     const operation = await this.getOwned(id, input.walletAddress);
     const result = this.result(operation);
     if (operation.status === 'completed') return this.toResponse(operation);
@@ -347,6 +353,7 @@ export class BridgeLifecycleService {
   }
 
   async reportApproval(id: string, input: ReportBridgeApprovalDto) {
+    this.capabilities.assert('bridge');
     const operation = await this.getOwned(id, input.walletAddress);
     const payload = this.payload(operation);
     const result = this.result(operation);
@@ -403,6 +410,7 @@ export class BridgeLifecycleService {
   }
 
   async reportSource(id: string, input: ReportBridgeSourceDto) {
+    this.capabilities.assert('bridge');
     const operation = await this.getOwned(id, input.walletAddress);
     const payload = this.payload(operation);
     const result = this.result(operation);
@@ -479,6 +487,7 @@ export class BridgeLifecycleService {
   }
 
   async getAttestation(id: string, input: BridgeWalletDto) {
+    this.capabilities.assert('bridge');
     const operation = await this.getOwned(id, input.walletAddress);
     const payload = this.payload(operation);
     const result = this.result(operation);
@@ -628,6 +637,7 @@ export class BridgeLifecycleService {
   }
 
   async reattest(id: string, input: BridgeWalletDto) {
+    this.capabilities.assert('bridge');
     const operation = await this.getOwned(id, input.walletAddress);
     const result = this.result(operation);
     if (!result.nonce || !result.sourceTransactionHash) {
@@ -655,6 +665,7 @@ export class BridgeLifecycleService {
   }
 
   async reportDestination(id: string, input: ReportBridgeDestinationDto) {
+    this.capabilities.assert('bridge');
     const operation = await this.getOwned(id, input.walletAddress);
     if (operation.status === 'completed') {
       const existing = this.result(operation).destinationTransactionHash;
@@ -670,6 +681,7 @@ export class BridgeLifecycleService {
   }
 
   async authorizeDestination(id: string, input: BridgeWalletDto) {
+    this.capabilities.assert('bridge');
     let operation = await this.getOwned(id, input.walletAddress);
     if (
       operation.status === 'completed' ||
@@ -728,6 +740,7 @@ export class BridgeLifecycleService {
   }
 
   async submitDestination(id: string, input: SubmitBridgeDestinationDto) {
+    this.capabilities.assert('bridge');
     let operation = await this.getOwned(id, input.walletAddress);
     this.assertDestinationMessage(operation, input.messageHash as Hex);
     if (operation.destinationTransactionHash) {
@@ -772,6 +785,7 @@ export class BridgeLifecycleService {
   }
 
   async verifyDestination(id: string, input: BridgeWalletDto) {
+    this.capabilities.assert('bridge');
     const operation = await this.getOwned(id, input.walletAddress);
     if (operation.status === 'completed') return this.toResponse(operation);
     const hash = operation.destinationTransactionHash as Hex | null;

@@ -9,6 +9,7 @@ import {
 import { UserSwapQuoteDto } from './dto/user-swap-quote.dto';
 import { UserSwapService } from './user-swap.service';
 import { USER_SWAP_ERROR_CODES } from './user-swap.types';
+import { CapabilityService } from '../capabilities/capability.service';
 
 @Controller('user-swap')
 @UsePipes(
@@ -24,10 +25,14 @@ import { USER_SWAP_ERROR_CODES } from './user-swap.types';
   }),
 )
 export class UserSwapController {
-  constructor(private readonly userSwapService: UserSwapService) {}
+  constructor(
+    private readonly userSwapService: UserSwapService,
+    private readonly capabilities: CapabilityService,
+  ) {}
 
   @Post('quote')
   async quote(@Body() body: UserSwapQuoteDto) {
+    this.capabilities.assert('swap');
     return {
       data: await this.userSwapService.quote(body),
     };

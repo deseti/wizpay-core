@@ -1,6 +1,14 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { PublicInvoiceCheckout } from "./PublicInvoiceCheckout";
+
+vi.mock("@/components/providers/CapabilityProvider", () => ({
+  useCapability: () => ({
+    enabled: true,
+    unavailableMessage: null,
+    assertEnabled: vi.fn(),
+  }),
+}));
 import { getPublicInvoice, type PublicInvoice } from "@/lib/invoice-api";
 import QRCode from "qrcode";
 
@@ -141,9 +149,15 @@ describe("PublicInvoiceCheckout", () => {
       canContinueAppAuthorization: true,
     };
     render(<PublicInvoiceCheckout publicId={invoice().publicId} />);
-    expect(await screen.findByRole("radio", { name: /App Wallet/ })).toBeDisabled();
-    expect(screen.getByRole("radio", { name: /External Wallet/ })).toBeDisabled();
-    fireEvent.click(screen.getByRole("button", { name: "Authorize existing payment" }));
+    expect(
+      await screen.findByRole("radio", { name: /App Wallet/ }),
+    ).toBeDisabled();
+    expect(
+      screen.getByRole("radio", { name: /External Wallet/ }),
+    ).toBeDisabled();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Authorize existing payment" }),
+    );
     expect(paymentState.continueAppAuthorization).toHaveBeenCalledTimes(1);
   });
 
@@ -157,8 +171,12 @@ describe("PublicInvoiceCheckout", () => {
     });
     paymentState = { ...paymentState, stage: "paid", locked: true };
     render(<PublicInvoiceCheckout publicId={invoice().publicId} />);
-    expect(await screen.findByRole("heading", { name: "Invoice paid" })).toBeInTheDocument();
-    expect(screen.queryByRole("radiogroup", { name: "Payment method" })).not.toBeInTheDocument();
+    expect(
+      await screen.findByRole("heading", { name: "Invoice paid" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("radiogroup", { name: "Payment method" }),
+    ).not.toBeInTheDocument();
     expect(paymentState.pay).not.toHaveBeenCalled();
   });
 

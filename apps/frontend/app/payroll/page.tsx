@@ -15,6 +15,7 @@ import { useWizPay } from "@/hooks/wizpay";
 import { useDelayedLoading } from "@/hooks/useDelayedLoading";
 import { SUPPORTED_TOKENS, type TokenSymbol } from "@/lib/wizpay";
 import { useState } from "react";
+import { useCapability } from "@/components/providers/CapabilityProvider";
 
 function getTaskMetadataString(
   metadata: Record<string, unknown> | null | undefined,
@@ -41,11 +42,15 @@ function getTaskMetadataToken(
 }
 
 function PayrollWorkspace() {
+  const sameTokenCapability = useCapability("sameTokenPayroll");
+  const crossTokenCapability = useCapability("crossTokenPayroll");
   const wp = useWizPay();
   const { walletAddress } = useActiveWalletAddress();
   const [showReceive, setShowReceive] = useState(false);
   const showBalanceLoading = useDelayedLoading(wp.balanceLoading && !wp.isBusy);
-  const showAllowanceLoading = useDelayedLoading(wp.allowanceLoading && !wp.isBusy);
+  const showAllowanceLoading = useDelayedLoading(
+    wp.allowanceLoading && !wp.isBusy,
+  );
   const showFeeLoading = useDelayedLoading(wp.feeLoading && !wp.isBusy);
   const showSuccessModal = wp.payrollTask?.status === "executed";
   const taskMetadata = wp.payrollTask?.metadata;
@@ -71,6 +76,16 @@ function PayrollWorkspace() {
     (wp.sessionTotalRecipients > 0
       ? wp.sessionTotalRecipients
       : wp.validRecipientCount);
+  const payrollIsCrossToken = wp.preparedRecipients.some(
+    (recipient) => recipient.targetToken !== wp.activeToken.symbol,
+  );
+  const payrollCapability = payrollIsCrossToken
+    ? crossTokenCapability
+    : sameTokenCapability;
+  const submitPayroll = async () => {
+    payrollCapability.assertEnabled();
+    return wp.handleSmartBatchSubmit();
+  };
 
   return (
     <>
@@ -115,6 +130,11 @@ function PayrollWorkspace() {
         />
 
         <section className="grid gap-6 xl:grid-cols-[minmax(0,2fr)_minmax(320px,1fr)]">
+          {!payrollCapability.enabled ? (
+            <p role="alert" className="text-sm text-amber-300 xl:col-span-2">
+              {payrollCapability.unavailableMessage}
+            </p>
+          ) : null}
           <BatchComposer
             selectedToken={wp.selectedToken}
             activeToken={wp.activeToken}
@@ -146,7 +166,7 @@ function PayrollWorkspace() {
             smartBatchButtonText={wp.smartBatchButtonText}
             smartBatchHelperText={wp.smartBatchHelperText}
             swapProviderLabel={wp.swapProviderLabel}
-            handleSmartBatchSubmit={wp.handleSmartBatchSubmit}
+            handleSmartBatchSubmit={submitPayroll}
           />
 
           <PreflightPanel
@@ -176,7 +196,9 @@ function PayrollWorkspace() {
 
         {wp.errorMessage && (
           <div className="flex items-start justify-between gap-3 rounded-xl border border-destructive/25 bg-destructive/5 px-4 py-3 text-sm text-destructive">
-            <span className="whitespace-pre-wrap break-all">{wp.errorMessage}</span>
+            <span className="whitespace-pre-wrap break-all">
+              {wp.errorMessage}
+            </span>
             <Button
               variant="ghost"
               size="sm"
@@ -212,10 +234,23 @@ function PayrollWorkspace() {
   );
 }
 
+function PayrollCapabilityBoundary() {
+  const sameTokenCapability = useCapability("sameTokenPayroll");
+  const crossTokenCapability = useCapability("crossTokenPayroll");
+  if (!sameTokenCapability.enabled && !crossTokenCapability.enabled) {
+    return (
+      <p role="alert" className="text-sm text-amber-300">
+        {sameTokenCapability.unavailableMessage}
+      </p>
+    );
+  }
+  return <PayrollWorkspace />;
+}
+
 export default function PayrollPage() {
   return (
     <DashboardAppFrame>
-      <PayrollWorkspace />
+      <PayrollCapabilityBoundary />
     </DashboardAppFrame>
   );
 }

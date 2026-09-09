@@ -24,6 +24,7 @@ import { getPublicInvoice, type PublicInvoice } from "@/lib/invoice-api";
 import { getInvoiceCheckoutUrl } from "@/lib/invoice-links";
 import { ARC_CHAIN_ID, getExplorerTxUrl } from "@/lib/wizpay";
 import { InvoiceQrCode } from "./InvoiceQrCode";
+import { useCapability } from "@/components/providers/CapabilityProvider";
 
 export function PublicInvoiceCheckout({ publicId }: { publicId: string }) {
   const [invoice, setInvoice] = useState<PublicInvoice | null>(null);
@@ -87,6 +88,7 @@ function CheckoutLoaded({
   successOpen: boolean;
   setSuccessOpen: (open: boolean) => void;
 }) {
+  const paymentLinkCapability = useCapability("paymentLink");
   const payment = useInvoicePayment(invoice, onInvoice);
   const checkoutUrl = getInvoiceCheckoutUrl(invoice.publicId);
   const explorerUrl = getExplorerTxUrl(invoice.transactionHash, ARC_CHAIN_ID);
@@ -248,8 +250,13 @@ function CheckoutLoaded({
                     <Button
                       className="w-full"
                       size="lg"
-                      disabled={payment.checking}
-                      onClick={() => void payment.continueAppAuthorization()}
+                      disabled={
+                        !paymentLinkCapability.enabled || payment.checking
+                      }
+                      onClick={() => {
+                        paymentLinkCapability.assertEnabled();
+                        void payment.continueAppAuthorization();
+                      }}
                     >
                       {payment.checking ? (
                         <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -259,7 +266,11 @@ function CheckoutLoaded({
                       Authorize existing payment
                     </Button>
                   ) : (
-                    <PaymentButton invoice={invoice} payment={payment} />
+                    <PaymentButton
+                      invoice={invoice}
+                      payment={payment}
+                      enabled={paymentLinkCapability.enabled}
+                    />
                   )
                 ) : !payment.isConnected ? (
                   <ConnectButton.Custom>
@@ -276,7 +287,11 @@ function CheckoutLoaded({
                     )}
                   </ConnectButton.Custom>
                 ) : (
-                  <PaymentButton invoice={invoice} payment={payment} />
+                  <PaymentButton
+                    invoice={invoice}
+                    payment={payment}
+                    enabled={paymentLinkCapability.enabled}
+                  />
                 )}
 
                 {(payment.transactionHash ||
@@ -293,6 +308,11 @@ function CheckoutLoaded({
                     />
                     Check status now
                   </Button>
+                ) : null}
+                {!paymentLinkCapability.enabled ? (
+                  <p role="alert" className="text-sm text-amber-300">
+                    {paymentLinkCapability.unavailableMessage}
+                  </p>
                 ) : null}
                 <p className="text-center text-xs text-muted-foreground">
                   Never pay from the merchant receiving wallet. QR scanning only
@@ -352,15 +372,17 @@ function CheckoutLoaded({
 function PaymentButton({
   invoice,
   payment,
+  enabled,
 }: {
   invoice: PublicInvoice;
   payment: ReturnType<typeof useInvoicePayment>;
+  enabled: boolean;
 }) {
   return (
     <Button
       className="w-full"
       size="lg"
-      disabled={payment.locked || payment.checking}
+      disabled={!enabled || payment.locked || payment.checking}
       onClick={() => void payment.pay()}
     >
       {payment.checking ? (
@@ -368,9 +390,11 @@ function PaymentButton({
       ) : (
         <ArrowRightLeft className="mr-2 h-4 w-4" />
       )}
-      {payment.locked
-        ? "Payment submitted"
-        : `Pay ${invoice.amount} ${invoice.token.symbol}`}
+      {!enabled
+        ? "Payment unavailable"
+        : payment.locked
+          ? "Payment submitted"
+          : `Pay ${invoice.amount} ${invoice.token.symbol}`}
     </Button>
   );
 }

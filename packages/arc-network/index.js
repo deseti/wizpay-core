@@ -43,6 +43,15 @@ class UnavailableArcResourceError extends Error {
   }
 }
 
+class ArcCapabilityConfigurationError extends Error {
+  constructor(code, message, capability) {
+    super(message);
+    this.name = "ArcCapabilityConfigurationError";
+    this.code = code;
+    this.capability = capability;
+  }
+}
+
 function deepFreeze(value) {
   if (value && typeof value === "object" && !Object.isFrozen(value)) {
     Object.freeze(value);
@@ -307,6 +316,196 @@ const ARC_PROTOCOL_CAPABILITY_RESOURCES = deepFreeze({
   },
 });
 
+const ARC_CAPABILITY_NAMES = Object.freeze([
+  "send",
+  "sameTokenPayroll",
+  "invoice",
+  "paymentLink",
+  "bridge",
+  "swap",
+  "crossTokenPayroll",
+  "crossTokenInvoice",
+  "stableFx",
+  "nanoAgentApi",
+]);
+
+const ARC_TESTNET_CAPABILITIES = deepFreeze({
+  send: true,
+  sameTokenPayroll: true,
+  invoice: true,
+  paymentLink: true,
+  bridge: true,
+  swap: true,
+  crossTokenPayroll: true,
+  crossTokenInvoice: false,
+  stableFx: false,
+  nanoAgentApi: false,
+});
+
+const ARC_MAINNET_CAPABILITIES = deepFreeze(
+  Object.fromEntries(ARC_CAPABILITY_NAMES.map((name) => [name, false])),
+);
+
+const ARC_CAPABILITY_DEFINITIONS = deepFreeze({
+  "arc-testnet": ARC_TESTNET_CAPABILITIES,
+  "arc-mainnet": ARC_MAINNET_CAPABILITIES,
+});
+
+const ARC_MAINNET_CAPABILITY_ENV_KEYS = deepFreeze({
+  send: "WIZPAY_ARC_MAINNET_CAPABILITY_SEND",
+  sameTokenPayroll: "WIZPAY_ARC_MAINNET_CAPABILITY_SAME_TOKEN_PAYROLL",
+  invoice: "WIZPAY_ARC_MAINNET_CAPABILITY_INVOICE",
+  paymentLink: "WIZPAY_ARC_MAINNET_CAPABILITY_PAYMENT_LINK",
+  bridge: "WIZPAY_ARC_MAINNET_CAPABILITY_BRIDGE",
+  swap: "WIZPAY_ARC_MAINNET_CAPABILITY_SWAP",
+  crossTokenPayroll: "WIZPAY_ARC_MAINNET_CAPABILITY_CROSS_TOKEN_PAYROLL",
+  crossTokenInvoice: "WIZPAY_ARC_MAINNET_CAPABILITY_CROSS_TOKEN_INVOICE",
+  stableFx: "WIZPAY_ARC_MAINNET_CAPABILITY_STABLE_FX",
+  nanoAgentApi: "WIZPAY_ARC_MAINNET_CAPABILITY_NANO_AGENT_API",
+});
+
+const MAINNET_CONFIGURABLE_CAPABILITIES = new Set([
+  "send",
+  "sameTokenPayroll",
+  "invoice",
+  "paymentLink",
+]);
+
+function parseArcCapabilityName(value) {
+  if (typeof value !== "string" || !ARC_CAPABILITY_NAMES.includes(value)) {
+    throw new ArcCapabilityConfigurationError(
+      "UNKNOWN_CAPABILITY",
+      `Unknown Arc capability: ${JSON.stringify(value)}.`,
+    );
+  }
+  return value;
+}
+
+function parseStrictCapabilityBoolean(key, value) {
+  if (value === "true") return true;
+  if (value === "false") return false;
+  throw new ArcCapabilityConfigurationError(
+    "INVALID_CAPABILITY_CONFIGURATION",
+    `${key} must be exactly "true" or "false" when configured.`,
+  );
+}
+
+function assertKnownCapabilityEnvironmentKeys(environment) {
+  const knownKeys = new Set(Object.values(ARC_MAINNET_CAPABILITY_ENV_KEYS));
+  for (const key of Object.keys(environment)) {
+    if (
+      key.startsWith("WIZPAY_ARC_MAINNET_CAPABILITY_") &&
+      !knownKeys.has(key)
+    ) {
+      throw new ArcCapabilityConfigurationError(
+        "UNKNOWN_CAPABILITY_CONFIGURATION",
+        `Unknown Arc capability configuration key: ${key}.`,
+      );
+    }
+  }
+}
+
+function resolveArcCapabilities(networkKey, environment = {}) {
+  const key = parseArcNetworkKey(networkKey);
+  assertKnownCapabilityEnvironmentKeys(environment);
+
+  if (key === "arc-testnet") {
+    for (const envKey of Object.values(ARC_MAINNET_CAPABILITY_ENV_KEYS)) {
+      if (environment[envKey] === undefined) continue;
+      const enabled = parseStrictCapabilityBoolean(envKey, environment[envKey]);
+      if (enabled) {
+        throw new ArcCapabilityConfigurationError(
+          "CONTRADICTORY_CAPABILITY_CONFIGURATION",
+          `${envKey} cannot configure Arc Testnet capabilities.`,
+        );
+      }
+    }
+    return ARC_TESTNET_CAPABILITIES;
+  }
+
+  const capabilities = { ...ARC_MAINNET_CAPABILITIES };
+  for (const capability of ARC_CAPABILITY_NAMES) {
+    const envKey = ARC_MAINNET_CAPABILITY_ENV_KEYS[capability];
+    const raw = environment[envKey];
+    if (raw === undefined) continue;
+    const enabled = parseStrictCapabilityBoolean(envKey, raw);
+    if (enabled && !MAINNET_CONFIGURABLE_CAPABILITIES.has(capability)) {
+      throw new ArcCapabilityConfigurationError(
+        "CAPABILITY_FORBIDDEN_FOR_NETWORK",
+        `${capability} cannot be enabled for Arc Mainnet in Phase 2.`,
+        capability,
+      );
+    }
+    capabilities[capability] = enabled;
+  }
+
+  const directResourcesAvailable =
+    ARC_RPC_RESOURCES[key].status === "available" &&
+    ARC_TOKEN_RESOURCES[key].USDC.status === "available" &&
+    ARC_TOKEN_RESOURCES[key].EURC.status === "available";
+  for (const capability of [
+    "send",
+    "sameTokenPayroll",
+    "invoice",
+    "paymentLink",
+  ]) {
+    if (capabilities[capability] && !directResourcesAvailable) {
+      throw new ArcCapabilityConfigurationError(
+        "CAPABILITY_RESOURCE_DEPENDENCY_UNAVAILABLE",
+        `${capability} requires verified Arc RPC and token resources.`,
+        capability,
+      );
+    }
+  }
+
+  return deepFreeze(capabilities);
+}
+
+function isArcCapabilityEnabled(capabilities, capability) {
+  const name = parseArcCapabilityName(capability);
+  return capabilities[name] === true;
+}
+
+function validateArcCapabilityDependencies(capabilities, resources) {
+  for (const name of ARC_CAPABILITY_NAMES) parseArcCapabilityName(name);
+  const requireResource = (capability, resource) => {
+    if (capabilities[capability] && resources[resource] !== true) {
+      throw new ArcCapabilityConfigurationError(
+        "CAPABILITY_RESOURCE_DEPENDENCY_UNAVAILABLE",
+        `${capability} requires ${resource} resources.`,
+        capability,
+      );
+    }
+  };
+  for (const capability of [
+    "send",
+    "sameTokenPayroll",
+    "invoice",
+    "paymentLink",
+  ]) {
+    requireResource(capability, "directPayment");
+  }
+  requireResource("bridge", "bridge");
+  requireResource("swap", "swap");
+  requireResource("stableFx", "stableFx");
+  requireResource("nanoAgentApi", "nanoAgentApi");
+  if (capabilities.crossTokenPayroll && !capabilities.swap) {
+    throw new ArcCapabilityConfigurationError(
+      "CONTRADICTORY_CAPABILITY_CONFIGURATION",
+      "crossTokenPayroll requires swap.",
+      "crossTokenPayroll",
+    );
+  }
+  if (capabilities.crossTokenInvoice && !capabilities.swap) {
+    throw new ArcCapabilityConfigurationError(
+      "CONTRADICTORY_CAPABILITY_CONFIGURATION",
+      "crossTokenInvoice requires swap.",
+      "crossTokenInvoice",
+    );
+  }
+  return true;
+}
+
 function assertValidArcNetworkDefinitions(entries) {
   assertValidDefinitionShape(entries);
 
@@ -425,6 +624,9 @@ function requireAvailableArcResource(resource) {
 
 module.exports = {
   ARC_EXPLORER_RESOURCES,
+  ARC_CAPABILITY_DEFINITIONS,
+  ARC_CAPABILITY_NAMES,
+  ARC_MAINNET_CAPABILITY_ENV_KEYS,
   ARC_NETWORK_DEFINITIONS,
   ARC_PROTOCOL_CAPABILITY_RESOURCES,
   ARC_PROTOCOL_CONTRACT_RESOURCES,
@@ -432,6 +634,7 @@ module.exports = {
   ARC_TOKEN_RESOURCES,
   ARC_WIZPAY_CONTRACT_RESOURCES,
   ArcNetworkInvariantError,
+  ArcCapabilityConfigurationError,
   UnavailableArcResourceError,
   UnknownArcResourceError,
   UnsupportedArcNetworkError,
@@ -444,6 +647,10 @@ module.exports = {
   getArcRpcResource,
   getArcTokenResource,
   getArcWizPayContractResource,
+  isArcCapabilityEnabled,
+  parseArcCapabilityName,
   parseArcNetworkKey,
   requireAvailableArcResource,
+  resolveArcCapabilities,
+  validateArcCapabilityDependencies,
 };

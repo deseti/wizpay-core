@@ -18,10 +18,14 @@ import {
   ReportBridgeSourceDto,
   SubmitBridgeDestinationDto,
 } from './dto/bridge-intent.dto';
+import { CapabilityService } from '../capabilities/capability.service';
 
 @Controller('bridge')
 export class BridgeController {
-  constructor(private readonly lifecycle: BridgeLifecycleService) {}
+  constructor(
+    private readonly lifecycle: BridgeLifecycleService,
+    private readonly capabilities: CapabilityService,
+  ) {}
 
   @Post('intents')
   createIntent(
@@ -34,6 +38,7 @@ export class BridgeController {
     )
     body: CreateBridgeIntentDto,
   ) {
+    this.capabilities.assert('bridge');
     return this.wrap(this.lifecycle.createIntent(body));
   }
 
@@ -49,6 +54,7 @@ export class BridgeController {
     )
     query: BridgeWalletDto,
   ) {
+    this.capabilities.assert('bridge');
     return this.wrap(this.lifecycle.getIntent(id, query));
   }
 
@@ -64,6 +70,7 @@ export class BridgeController {
     )
     body: ReportBridgeApprovalDto,
   ) {
+    this.capabilities.assert('bridge');
     return this.wrap(this.lifecycle.reportApproval(id, body));
   }
 
@@ -79,6 +86,7 @@ export class BridgeController {
     )
     body: ReportBridgeSourceDto,
   ) {
+    this.capabilities.assert('bridge');
     return this.wrap(this.lifecycle.reportSource(id, body));
   }
 
@@ -94,6 +102,7 @@ export class BridgeController {
     )
     body: BridgeWalletDto,
   ) {
+    this.capabilities.assert('bridge');
     return this.wrap(this.lifecycle.getAttestation(id, body));
   }
 
@@ -109,6 +118,7 @@ export class BridgeController {
     )
     body: BridgeWalletDto,
   ) {
+    this.capabilities.assert('bridge');
     return this.wrap(this.lifecycle.reattest(id, body));
   }
 
@@ -124,6 +134,7 @@ export class BridgeController {
     )
     body: ReportBridgeDestinationDto,
   ) {
+    this.capabilities.assert('bridge');
     return this.wrap(this.lifecycle.reportDestination(id, body));
   }
 
@@ -139,6 +150,7 @@ export class BridgeController {
     )
     body: AuthorizeBridgeDestinationDto,
   ) {
+    this.capabilities.assert('bridge');
     return this.wrap(this.lifecycle.authorizeDestination(id, body));
   }
 
@@ -154,6 +166,7 @@ export class BridgeController {
     )
     body: SubmitBridgeDestinationDto,
   ) {
+    this.capabilities.assert('bridge');
     return this.wrap(this.lifecycle.submitDestination(id, body));
   }
 
@@ -169,6 +182,7 @@ export class BridgeController {
     )
     body: BridgeWalletDto,
   ) {
+    this.capabilities.assert('bridge');
     return this.wrap(this.lifecycle.verifyDestination(id, body));
   }
 

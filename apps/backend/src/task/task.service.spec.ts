@@ -77,6 +77,7 @@ describe('TaskService', () => {
       taskUnitService,
       validationService,
       batchService,
+      { assert: jest.fn(), assertPayroll: jest.fn() } as never,
     );
   });
 

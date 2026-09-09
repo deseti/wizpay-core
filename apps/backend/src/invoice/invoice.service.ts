@@ -25,6 +25,7 @@ import {
   type InvoiceMerchantPrincipal,
   type InvoiceTokenSymbol,
 } from './invoice.types';
+import { CapabilityService } from '../capabilities/capability.service';
 
 const DEFAULT_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000;
 const MAX_EXPIRY_MS = 365 * 24 * 60 * 60 * 1000;
@@ -37,9 +38,11 @@ export class InvoiceService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly verifier: InvoicePaymentVerifierService,
+    private readonly capabilities: CapabilityService,
   ) {}
 
   async create(principal: InvoiceMerchantPrincipal, dto: CreateInvoiceDto) {
+    this.capabilities.assert('invoice');
     const token = INVOICE_TOKENS[dto.token];
     let amountUnits: bigint;
     try {
@@ -183,6 +186,7 @@ export class InvoiceService {
   }
 
   async verifyPublicPayment(publicId: string, submittedHash: string) {
+    this.capabilities.assert('paymentLink');
     this.assertPublicId(publicId);
     const transactionHash = submittedHash.toLowerCase();
     await this.expireOpenInvoices({ publicId });

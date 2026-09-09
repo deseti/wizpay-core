@@ -1,4 +1,10 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { SwapScreen } from "./SwapScreen";
@@ -13,14 +19,21 @@ import {
 } from "@/lib/external-xylonet-swap";
 import { runAppWalletXylonetLifecycle } from "@/lib/app-wallet-xylonet-lifecycle";
 
+vi.mock("@/components/providers/CapabilityProvider", () => ({
+  useCapability: () => ({
+    enabled: true,
+    unavailableMessage: null,
+    assertEnabled: vi.fn(),
+  }),
+}));
+
 vi.mock("@tanstack/react-query", () => ({
   useQueryClient: () => ({ invalidateQueries: vi.fn() }),
 }));
 
 const state = vi.hoisted(() => ({
   walletMode: "external" as "external" | "circle",
-  walletAddress:
-    "0x90ab859240b941eaf0cbcbf42df5086e0ad54147" as `0x${string}`,
+  walletAddress: "0x90ab859240b941eaf0cbcbf42df5086e0ad54147" as `0x${string}`,
   hash: `0x${"ab".repeat(32)}` as `0x${string}`,
   writeContract: vi.fn(),
   readContract: vi.fn(),
@@ -137,7 +150,11 @@ async function enterAmountAndExecute(buttonName: RegExp) {
   fireEvent.change(screen.getByRole("textbox", { name: "Swap amount" }), {
     target: { value: "1" },
   });
-  const button = await screen.findByRole("button", { name: buttonName }, { timeout: 2_000 });
+  const button = await screen.findByRole(
+    "button",
+    { name: buttonName },
+    { timeout: 2_000 },
+  );
   await waitFor(() => expect(button).toBeEnabled(), { timeout: 2_000 });
   fireEvent.click(button);
 }
@@ -201,8 +218,12 @@ describe("SwapScreen verified success modal", () => {
     render(<SwapScreen />);
     fireEvent.click(screen.getByRole("combobox", { name: "From token" }));
     await waitFor(() => {
-      expect(document.querySelector('img[src$="/tokens/usdc.png"]')).toBeInTheDocument();
-      expect(document.querySelector('img[src$="/tokens/eurc.png"]')).toBeInTheDocument();
+      expect(
+        document.querySelector('img[src$="/tokens/usdc.png"]'),
+      ).toBeInTheDocument();
+      expect(
+        document.querySelector('img[src$="/tokens/eurc.png"]'),
+      ).toBeInTheDocument();
     });
   });
 
@@ -210,7 +231,11 @@ describe("SwapScreen verified success modal", () => {
     state.walletMode = "circle";
     render(<SwapScreen />);
     fireEvent.click(screen.getByRole("button", { name: "Max" }));
-    await waitFor(() => expect(screen.getByRole("textbox", { name: "Swap amount" })).toHaveValue("9.95"));
+    await waitFor(() =>
+      expect(screen.getByRole("textbox", { name: "Swap amount" })).toHaveValue(
+        "9.95",
+      ),
+    );
     expect(quoteAppWalletXylonetSwap).toHaveBeenCalledWith(
       expect.objectContaining({ amountIn: "10000000", tokenIn: "USDC" }),
       "user-token",
@@ -227,10 +252,9 @@ describe("SwapScreen verified success modal", () => {
     expect(screen.getByText("1.00 USDC")).toBeInTheDocument();
     expect(screen.getByText("0.95 EURC")).toBeInTheDocument();
     expect(screen.getByText("External Wallet")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /View on explorer/ })).toHaveAttribute(
-      "href",
-      `https://testnet.arcscan.app/tx/${state.hash}`,
-    );
+    expect(
+      screen.getByRole("link", { name: /View on explorer/ }),
+    ).toHaveAttribute("href", `https://testnet.arcscan.app/tx/${state.hash}`);
   });
 
   it("shows non-modal progress immediately and keeps one External Wallet submission active", async () => {
@@ -243,7 +267,9 @@ describe("SwapScreen verified success modal", () => {
     render(<SwapScreen />);
     await enterAmountAndExecute(/Swap with XyloNet/);
 
-    expect(screen.getByRole("region", { name: "Swap progress" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("region", { name: "Swap progress" }),
+    ).toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: "Swap amount" })).toBeDisabled();
     expect(screen.queryByText("Approving token")).not.toBeInTheDocument();
 
@@ -261,7 +287,9 @@ describe("SwapScreen verified success modal", () => {
   });
 
   it("keeps a failed swap visible without retrying automatically", async () => {
-    state.writeContract.mockRejectedValueOnce(new Error("User rejected request"));
+    state.writeContract.mockRejectedValueOnce(
+      new Error("User rejected request"),
+    );
     render(<SwapScreen />);
     await enterAmountAndExecute(/Swap with XyloNet/);
 
@@ -282,10 +310,7 @@ describe("SwapScreen verified success modal", () => {
   it("opens after App Wallet reports confirmed completion and verified output", async () => {
     state.walletMode = "circle";
     vi.mocked(runAppWalletXylonetLifecycle).mockResolvedValue({
-      ...(await createAppWalletXylonetOperation(
-        {} as never,
-        "user-token",
-      )),
+      ...(await createAppWalletXylonetOperation({} as never, "user-token")),
       lifecycleStage: "completed",
       terminalStatus: "confirmed",
       verifiedActualOutput: "960000",
@@ -314,10 +339,7 @@ describe("SwapScreen verified success modal", () => {
   ])("does not open for %s App Wallet state", async (_label, override) => {
     state.walletMode = "circle";
     vi.mocked(runAppWalletXylonetLifecycle).mockResolvedValue({
-      ...(await createAppWalletXylonetOperation(
-        {} as never,
-        "user-token",
-      )),
+      ...(await createAppWalletXylonetOperation({} as never, "user-token")),
       ...override,
     } as never);
     render(<SwapScreen />);
@@ -327,9 +349,13 @@ describe("SwapScreen verified success modal", () => {
       screen.queryByRole("heading", { name: "Swap completed" }),
     ).not.toBeInTheDocument();
     if (_label === "failed") {
-      expect(screen.getByRole("heading", { name: "Swap failed" })).toBeInTheDocument();
+      expect(
+        screen.getByRole("heading", { name: "Swap failed" }),
+      ).toBeInTheDocument();
       expect(screen.queryByText("Swap in progress")).not.toBeInTheDocument();
-      expect(screen.getByRole("button", { name: "Start over" })).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: "Start over" }),
+      ).toBeInTheDocument();
     }
   });
 
@@ -342,6 +368,8 @@ describe("SwapScreen verified success modal", () => {
     expect(
       screen.queryByRole("heading", { name: "Swap completed" }),
     ).not.toBeInTheDocument();
-    expect(screen.getByRole("textbox", { name: "Swap amount" })).toHaveValue("");
+    expect(screen.getByRole("textbox", { name: "Swap amount" })).toHaveValue(
+      "",
+    );
   });
 });

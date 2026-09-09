@@ -77,6 +77,7 @@ import {
   TOKEN_OPTIONS,
   type TokenSymbol,
 } from "@/lib/wizpay";
+import { useCapability } from "@/components/providers/CapabilityProvider";
 
 type SendStage =
   | "idle"
@@ -175,6 +176,7 @@ function readPrefill(searchParams: URLSearchParams) {
 }
 
 function SendWorkspace() {
+  const sendCapability = useCapability("send");
   const searchParams = useSearchParams();
   const initialPrefill = useMemo(
     () => readPrefill(new URLSearchParams(searchParams.toString())),
@@ -230,7 +232,7 @@ function SendWorkspace() {
   const token = SUPPORTED_TOKENS[tokenSymbol];
   const busy =
     stage !== "idle" && stage !== "completed" && stage !== "terminal_error";
-  const formLocked = busy || submissionLocked;
+  const formLocked = busy || submissionLocked || !sendCapability.enabled;
 
   const circleWalletId = circle.arcWallet?.id;
   const sendScope = useMemo<SendOperationScope | null>(() => {
@@ -671,6 +673,7 @@ function SendWorkspace() {
   }
 
   async function submit() {
+    sendCapability.assertEnabled();
     if (submittingRef.current) return;
     submittingRef.current = true;
     const startedVersion = formVersion.current;
@@ -909,6 +912,7 @@ function SendWorkspace() {
   }
 
   async function continueAuthorization() {
+    sendCapability.assertEnabled();
     if (
       !operation?.challengeId ||
       !circle.userToken ||
@@ -953,6 +957,7 @@ function SendWorkspace() {
   }
 
   async function recoverExistingTransfer() {
+    sendCapability.assertEnabled();
     if (
       wallet.walletMode !== "circle" ||
       circle.authMethod === "passkey" ||
@@ -1240,6 +1245,7 @@ function SendWorkspace() {
                     {operation?.stage === "awaiting_user_authorization" ? (
                       <Button
                         size="sm"
+                        disabled={!sendCapability.enabled}
                         onClick={() => void continueAuthorization()}
                       >
                         Authorize existing transfer
@@ -1280,8 +1286,15 @@ function SendWorkspace() {
               >
                 {submissionLocked
                   ? "Existing transfer is being recovered"
-                  : "Review and send"}
+                  : sendCapability.enabled
+                    ? "Review and send"
+                    : "Send unavailable"}
               </Button>
+              {!sendCapability.enabled ? (
+                <p role="alert" className="text-sm text-amber-300">
+                  {sendCapability.unavailableMessage}
+                </p>
+              ) : null}
               {!operation &&
               wallet.walletMode === "circle" &&
               circle.authMethod !== "passkey" ? (
@@ -1289,7 +1302,11 @@ function SendWorkspace() {
                   className="w-full"
                   variant="ghost"
                   disabled={
-                    checkingStatus || !recipient || !amount || !circle.userToken
+                    !sendCapability.enabled ||
+                    checkingStatus ||
+                    !recipient ||
+                    !amount ||
+                    !circle.userToken
                   }
                   onClick={() => void recoverExistingTransfer()}
                 >

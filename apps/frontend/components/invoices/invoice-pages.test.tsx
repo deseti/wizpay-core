@@ -12,6 +12,14 @@ import {
 } from "@/lib/invoice-api";
 import QRCode from "qrcode";
 
+vi.mock("@/components/providers/CapabilityProvider", () => ({
+  useCapability: () => ({
+    enabled: true,
+    unavailableMessage: null,
+    assertEnabled: vi.fn(),
+  }),
+}));
+
 vi.mock("@/components/providers/CircleWalletProvider", () => ({
   useCircleWallet: () => ({
     authMethod: "email",
@@ -118,26 +126,42 @@ describe("merchant invoice pages", () => {
     render(<NewInvoicePage />);
     expect(screen.getByLabelText("Fixed amount")).toHaveValue("");
     expect(screen.getByPlaceholderText("Enter amount")).toBeInTheDocument();
-    expect(screen.getByText("Enter amount", { selector: "strong" })).toBeInTheDocument();
+    expect(
+      screen.getByText("Enter amount", { selector: "strong" }),
+    ).toBeInTheDocument();
     expect(screen.queryByDisplayValue("0.1")).not.toBeInTheDocument();
 
     fireEvent.change(screen.getByLabelText("Fixed amount"), {
       target: { value: "1.2345678" },
     });
-    expect(screen.getByText("Enter amount", { selector: "strong" })).toBeInTheDocument();
+    expect(
+      screen.getByText("Enter amount", { selector: "strong" }),
+    ).toBeInTheDocument();
   });
 
   it("accepts an explicitly entered arbitrary EURC amount", async () => {
     render(<NewInvoicePage />);
-    fireEvent.change(screen.getByLabelText("Token"), { target: { value: "EURC" } });
-    fireEvent.change(screen.getByLabelText("Fixed amount"), { target: { value: "98.765432" } });
-    fireEvent.change(screen.getByLabelText("Customer-facing title"), { target: { value: "EURC invoice" } });
+    fireEvent.change(screen.getByLabelText("Token"), {
+      target: { value: "EURC" },
+    });
+    fireEvent.change(screen.getByLabelText("Fixed amount"), {
+      target: { value: "98.765432" },
+    });
+    fireEvent.change(screen.getByLabelText("Customer-facing title"), {
+      target: { value: "EURC invoice" },
+    });
     fireEvent.click(screen.getByRole("button", { name: "Create invoice" }));
 
-    await waitFor(() => expect(createInvoice).toHaveBeenCalledWith(
-      expect.objectContaining({ token: "EURC", amount: "98.765432", title: "EURC invoice" }),
-      "circle-user-token",
-    ));
+    await waitFor(() =>
+      expect(createInvoice).toHaveBeenCalledWith(
+        expect.objectContaining({
+          token: "EURC",
+          amount: "98.765432",
+          title: "EURC invoice",
+        }),
+        "circle-user-token",
+      ),
+    );
   });
 
   it("renders immutable detail and permits cancellation only while open", async () => {

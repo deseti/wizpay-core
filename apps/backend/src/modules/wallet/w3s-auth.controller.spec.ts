@@ -16,7 +16,9 @@ describe('W3sAuthController', () => {
     const service = {
       dispatch: jest.fn().mockRejectedValue(upstreamError),
     } as unknown as W3sAuthService;
-    const controller = new W3sAuthController(service);
+    const controller = new W3sAuthController(service, {
+      assertW3sAction: jest.fn(),
+    } as never);
 
     let thrown: HttpException | null = null;
     try {

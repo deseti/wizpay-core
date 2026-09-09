@@ -2,6 +2,27 @@ export type ArcNetworkKey = "arc-testnet" | "arc-mainnet";
 
 export type ArcNetworkEnvironment = "testnet" | "mainnet";
 
+export type ArcCapabilityName =
+  | "send"
+  | "sameTokenPayroll"
+  | "invoice"
+  | "paymentLink"
+  | "bridge"
+  | "swap"
+  | "crossTokenPayroll"
+  | "crossTokenInvoice"
+  | "stableFx"
+  | "nanoAgentApi";
+
+export type ArcCapabilities = Readonly<Record<ArcCapabilityName, boolean>>;
+export type ArcCapabilityDependencyState = Readonly<{
+  directPayment: boolean;
+  bridge: boolean;
+  swap: boolean;
+  stableFx: boolean;
+  nanoAgentApi: boolean;
+}>;
+
 export type ArcNetworkDefinition =
   | {
       readonly key: "arc-testnet";
@@ -105,6 +126,27 @@ export declare class ArcNetworkInvariantError extends Error {
   constructor(message: string);
 }
 
+export declare class ArcCapabilityConfigurationError extends Error {
+  readonly name: "ArcCapabilityConfigurationError";
+  readonly code:
+    | "UNKNOWN_CAPABILITY"
+    | "UNKNOWN_CAPABILITY_CONFIGURATION"
+    | "INVALID_CAPABILITY_CONFIGURATION"
+    | "CONTRADICTORY_CAPABILITY_CONFIGURATION"
+    | "CAPABILITY_FORBIDDEN_FOR_NETWORK"
+    | "CAPABILITY_RESOURCE_DEPENDENCY_UNAVAILABLE";
+  readonly capability?: ArcCapabilityName;
+  constructor(code: string, message: string, capability?: ArcCapabilityName);
+}
+
+export declare const ARC_CAPABILITY_NAMES: readonly ArcCapabilityName[];
+export declare const ARC_CAPABILITY_DEFINITIONS: Readonly<
+  Record<ArcNetworkKey, ArcCapabilities>
+>;
+export declare const ARC_MAINNET_CAPABILITY_ENV_KEYS: Readonly<
+  Record<ArcCapabilityName, string>
+>;
+
 export declare class UnsupportedArcNetworkError extends Error {
   readonly name: "UnsupportedArcNetworkError";
   readonly code: UnsupportedArcNetworkCode;
@@ -201,6 +243,21 @@ export declare function assertValidArcNetworkDefinitions(
 ): true;
 
 export declare function parseArcNetworkKey(value: unknown): ArcNetworkKey;
+export declare function parseArcCapabilityName(
+  value: unknown,
+): ArcCapabilityName;
+export declare function resolveArcCapabilities(
+  networkKey: ArcNetworkKey,
+  environment?: Record<string, string | undefined>,
+): ArcCapabilities;
+export declare function isArcCapabilityEnabled(
+  capabilities: ArcCapabilities,
+  capability: unknown,
+): boolean;
+export declare function validateArcCapabilityDependencies(
+  capabilities: ArcCapabilities,
+  resources: ArcCapabilityDependencyState,
+): true;
 
 export declare function getArcNetworkByKey(
   value: unknown,

@@ -25,7 +25,131 @@ const {
   getArcWizPayContractResource,
   parseArcNetworkKey,
   requireAvailableArcResource,
+  ARC_CAPABILITY_DEFINITIONS,
+  resolveArcCapabilities,
+  parseArcCapabilityName,
+  validateArcCapabilityDependencies,
 } = require(".");
+
+test("defines explicit Arc Testnet capabilities and all-false Arc Mainnet defaults", () => {
+  assert.deepEqual(ARC_CAPABILITY_DEFINITIONS["arc-testnet"], {
+    send: true,
+    sameTokenPayroll: true,
+    invoice: true,
+    paymentLink: true,
+    bridge: true,
+    swap: true,
+    crossTokenPayroll: true,
+    crossTokenInvoice: false,
+    stableFx: false,
+    nanoAgentApi: false,
+  });
+  assert.equal(
+    Object.values(resolveArcCapabilities("arc-mainnet", {})).every(
+      (value) => value === false,
+    ),
+    true,
+  );
+});
+
+test("keeps configurable Mainnet flags false when absent or explicitly false", () => {
+  const configured = resolveArcCapabilities("arc-mainnet", {
+    WIZPAY_ARC_MAINNET_CAPABILITY_SEND: "false",
+    WIZPAY_ARC_MAINNET_CAPABILITY_SAME_TOKEN_PAYROLL: "false",
+    WIZPAY_ARC_MAINNET_CAPABILITY_INVOICE: "false",
+    WIZPAY_ARC_MAINNET_CAPABILITY_PAYMENT_LINK: "false",
+  });
+  for (const capability of [
+    "send",
+    "sameTokenPayroll",
+    "invoice",
+    "paymentLink",
+  ]) {
+    assert.equal(configured[capability], false);
+  }
+});
+
+test("rejects Mainnet flags on Testnet as contradictory configuration", () => {
+  assert.throws(
+    () =>
+      resolveArcCapabilities("arc-testnet", {
+        WIZPAY_ARC_MAINNET_CAPABILITY_SEND: "true",
+      }),
+    (error) => error.code === "CONTRADICTORY_CAPABILITY_CONFIGURATION",
+  );
+});
+
+test("parses capability flags exactly and fails closed for malformed or unknown input", () => {
+  for (const value of ["TRUE", " true", "true ", "1", "yes", ""]) {
+    assert.throws(
+      () =>
+        resolveArcCapabilities("arc-mainnet", {
+          WIZPAY_ARC_MAINNET_CAPABILITY_SEND: value,
+        }),
+      (error) => error.code === "INVALID_CAPABILITY_CONFIGURATION",
+    );
+  }
+  assert.throws(
+    () => parseArcCapabilityName("Send"),
+    (error) => error.code === "UNKNOWN_CAPABILITY",
+  );
+  assert.throws(
+    () =>
+      resolveArcCapabilities("arc-mainnet", {
+        WIZPAY_ARC_MAINNET_CAPABILITY_UNKNOWN: "false",
+      }),
+    (error) => error.code === "UNKNOWN_CAPABILITY_CONFIGURATION",
+  );
+});
+
+test("rejects forbidden Mainnet enablement and unavailable direct resources", () => {
+  assert.throws(
+    () =>
+      resolveArcCapabilities("arc-mainnet", {
+        WIZPAY_ARC_MAINNET_CAPABILITY_SWAP: "true",
+      }),
+    (error) => error.code === "CAPABILITY_FORBIDDEN_FOR_NETWORK",
+  );
+  assert.throws(
+    () =>
+      resolveArcCapabilities("arc-mainnet", {
+        WIZPAY_ARC_MAINNET_CAPABILITY_SEND: "true",
+      }),
+    (error) => error.code === "CAPABILITY_RESOURCE_DEPENDENCY_UNAVAILABLE",
+  );
+});
+
+test("rejects dependency-invalid capability combinations", () => {
+  const allFalse = resolveArcCapabilities("arc-mainnet", {});
+  assert.throws(
+    () =>
+      validateArcCapabilityDependencies(
+        { ...allFalse, crossTokenPayroll: true },
+        {
+          directPayment: true,
+          bridge: true,
+          swap: true,
+          stableFx: true,
+          nanoAgentApi: true,
+        },
+      ),
+    (error) => error.code === "CONTRADICTORY_CAPABILITY_CONFIGURATION",
+  );
+  assert.throws(
+    () =>
+      validateArcCapabilityDependencies(
+        { ...allFalse, bridge: true },
+        {
+          directPayment: true,
+          bridge: false,
+          swap: true,
+          stableFx: true,
+          nanoAgentApi: true,
+        },
+      ),
+    (error) => error.code === "CAPABILITY_RESOURCE_DEPENDENCY_UNAVAILABLE",
+  );
+});
 
 test("defines the exact Arc Testnet and Mainnet identities", () => {
   assert.deepEqual(ARC_NETWORK_DEFINITIONS, [

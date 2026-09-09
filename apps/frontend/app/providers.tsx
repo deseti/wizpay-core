@@ -11,6 +11,7 @@ import { CircleWalletProvider } from "@/components/providers/CircleWalletProvide
 import { HybridWalletProvider } from "@/components/providers/HybridWalletProvider";
 import { arcTestnet, config } from "@/lib/wagmi";
 import { PwaRuntime } from "@/src/features/pwa/components/PwaRuntime";
+import { CapabilityProvider } from "@/components/providers/CapabilityProvider";
 
 export function Providers({ children }: { children: React.ReactNode }) {
   const [queryClient] = useState(
@@ -24,23 +25,22 @@ export function Providers({ children }: { children: React.ReactNode }) {
             retry: 2,
           },
         },
-      })
+      }),
   );
 
   return (
     <QueryClientProvider client={queryClient}>
       <WagmiProvider config={config}>
-        <RainbowKitProvider
-          initialChain={arcTestnet}
-          theme={midnightTheme()}
-        >
+        <RainbowKitProvider initialChain={arcTestnet} theme={midnightTheme()}>
           <CircleWalletProvider>
-            <HybridWalletProvider>
-              <CircleApiProxyProvider>
-                <PwaRuntime />
-                {children}
-              </CircleApiProxyProvider>
-            </HybridWalletProvider>
+            <CapabilityProvider>
+              <HybridWalletProvider>
+                <CircleApiProxyProvider>
+                  <PwaRuntime />
+                  {children}
+                </CircleApiProxyProvider>
+              </HybridWalletProvider>
+            </CapabilityProvider>
           </CircleWalletProvider>
         </RainbowKitProvider>
       </WagmiProvider>

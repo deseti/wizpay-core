@@ -19,7 +19,10 @@ describe('UserSwapService', () => {
       raw: {},
     })),
   };
-  const service = new UserSwapService(xylonet as never);
+  const service = new UserSwapService(
+    xylonet as never,
+    { assert: jest.fn() } as never,
+  );
 
   beforeEach(() => jest.clearAllMocks());
 

@@ -50,6 +50,7 @@ describe('QueueService', () => {
       configService,
       taskService as unknown as TaskService,
       telegramService as unknown as TelegramService,
+      { assert: jest.fn(), assertPayroll: jest.fn() } as never,
     );
   });
 
@@ -100,5 +101,26 @@ describe('QueueService', () => {
     const MockQueue = Queue as jest.MockedClass<typeof Queue>;
     // Queue constructor should have been called only once
     expect(MockQueue).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects a disabled task before creating a queue or recording side effects', async () => {
+    queueService = new QueueService(
+      configService,
+      taskService as unknown as TaskService,
+      telegramService as unknown as TelegramService,
+      {
+        assert: jest.fn(),
+        assertPayroll: jest.fn(() => {
+          throw new Error('CAPABILITY_DISABLED');
+        }),
+      } as never,
+    );
+
+    await expect(queueService.enqueueTask(route, jobData)).rejects.toThrow(
+      'CAPABILITY_DISABLED',
+    );
+    expect(Queue).not.toHaveBeenCalled();
+    expect(taskService.logStep).not.toHaveBeenCalled();
+    expect(telegramService.notifyTaskUpdate).not.toHaveBeenCalled();
   });
 });

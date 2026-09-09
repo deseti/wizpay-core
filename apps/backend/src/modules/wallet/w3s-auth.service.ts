@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createHash, randomUUID } from 'node:crypto';
 import { PrismaService } from '../../database/prisma.service';
+import { CapabilityService } from '../../capabilities/capability.service';
 
 type W3sActionResult = Record<string, unknown>;
 type W3sValidationIssue = {
@@ -75,6 +76,7 @@ export class W3sAuthService {
   constructor(
     private readonly configService: ConfigService,
     private readonly prisma: PrismaService,
+    private readonly capabilities: CapabilityService,
   ) {
     const envBaseUrl =
       this.configService.get<string>('CIRCLE_BASE_URL') ||
@@ -101,6 +103,7 @@ export class W3sAuthService {
     action: string,
     params: Record<string, unknown>,
   ): Promise<W3sActionResult> {
+    this.capabilities.assertW3sAction(action, params);
     switch (action) {
       case 'createDeviceToken':
         return this.createDeviceToken(params);
@@ -181,6 +184,10 @@ export class W3sAuthService {
   async createUserContractExecutionChallenge(
     input: UserContractExecutionChallengeInput,
   ): Promise<W3sActionResult> {
+    this.capabilities.assertW3sAction(
+      'createContractExecutionChallenge',
+      input,
+    );
     return this.circleUserRequest({
       body: {
         callData: input.callData,
@@ -358,8 +365,12 @@ export class W3sAuthService {
   }
 
   /** Read-only, authenticated token metadata source for activity reconciliation. */
-  async listUserTokenBalances(walletId: string, userToken: string): Promise<W3sActionResult> {
-    if (!walletId.trim() || !userToken.trim()) throw new Error('Missing Circle wallet authentication.');
+  async listUserTokenBalances(
+    walletId: string,
+    userToken: string,
+  ): Promise<W3sActionResult> {
+    if (!walletId.trim() || !userToken.trim())
+      throw new Error('Missing Circle wallet authentication.');
     return this.circleUserRequest({
       method: 'GET',
       path: `/v1/w3s/wallets/${encodeURIComponent(walletId.trim())}/balances`,

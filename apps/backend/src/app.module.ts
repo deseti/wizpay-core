@@ -18,12 +18,14 @@ import { TaskModule } from './task/task.module';
 import { UserSwapModule } from './user-swap/user-swap.module';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
+import { CapabilityModule } from './capabilities/capability.module';
 
 @Module({
   controllers: [AppController],
   providers: [AppService],
   imports: [
     AppConfigModule,
+    CapabilityModule,
     DatabaseModule,
     AdaptersModule,
     AgentsModule,

@@ -17,6 +17,7 @@ import { TaskEmployeeBreakdownService } from '../task/task-employee-breakdown.se
 import { TaskPayrollHistoryService } from '../task/task-payroll-history.service';
 import type { ReportTaskUnitInput } from '../task/task.types';
 import { InvoiceAuthService } from '../invoice/invoice-auth.service';
+import { CapabilityService } from '../capabilities/capability.service';
 
 @Controller('tasks')
 export class TaskController {
@@ -27,6 +28,7 @@ export class TaskController {
     private readonly taskPayrollHistoryService: TaskPayrollHistoryService,
     private readonly payrollInitService: PayrollInitService,
     private readonly invoiceAuthService: InvoiceAuthService,
+    private readonly capabilities: CapabilityService,
   ) {}
 
   /**
@@ -38,6 +40,7 @@ export class TaskController {
    */
   @Post('payroll/init')
   async initPayroll(@Body() payload: Record<string, unknown>) {
+    this.capabilities.assertPayroll(payload ?? {});
     return {
       data: await this.payrollInitService.prepare(payload ?? {}),
     };
@@ -56,6 +59,7 @@ export class TaskController {
     @Param('unitId', new ParseUUIDPipe()) unitId: string,
     @Body() body: ReportTaskUnitInput,
   ) {
+    this.capabilities.assert('sameTokenPayroll');
     return {
       data: await this.taskService.reportUnit(taskId, unitId, body),
     };

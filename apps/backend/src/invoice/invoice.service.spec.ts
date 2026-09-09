@@ -22,7 +22,11 @@ describe('InvoiceService', () => {
   beforeEach(() => {
     prisma = prismaMock();
     verifier = { verify: jest.fn() };
-    service = new InvoiceService(prisma as never, verifier as never);
+    service = new InvoiceService(
+      prisma as never,
+      verifier as never,
+      { assert: jest.fn() } as never,
+    );
   });
 
   it('creates immutable payment terms from the canonical registry and authenticated principal', async () => {

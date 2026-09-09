@@ -14,6 +14,7 @@ import { CreateInvoiceDto } from './dto/create-invoice.dto';
 import { ListInvoicesDto } from './dto/list-invoices.dto';
 import { InvoiceAuthService } from './invoice-auth.service';
 import { InvoiceService } from './invoice.service';
+import { CapabilityService } from '../capabilities/capability.service';
 
 const invoiceValidationPipe = new ValidationPipe({
   transform: true,
@@ -32,6 +33,7 @@ export class InvoiceController {
   constructor(
     private readonly auth: InvoiceAuthService,
     private readonly invoices: InvoiceService,
+    private readonly capabilities: CapabilityService,
   ) {}
 
   @Post()
@@ -39,6 +41,7 @@ export class InvoiceController {
     @Headers('authorization') authorization: string | undefined,
     @Body() body: CreateInvoiceDto,
   ) {
+    this.capabilities.assert('invoice');
     const principal = await this.auth.authenticate(authorization);
     return { data: await this.invoices.create(principal, body) };
   }
@@ -48,6 +51,7 @@ export class InvoiceController {
     @Headers('authorization') authorization: string | undefined,
     @Query() query: ListInvoicesDto,
   ) {
+    this.capabilities.assert('invoice');
     const principal = await this.auth.authenticate(authorization);
     return { data: await this.invoices.list(principal, query) };
   }
@@ -57,6 +61,7 @@ export class InvoiceController {
     @Headers('authorization') authorization: string | undefined,
     @Param('id') id: string,
   ) {
+    this.capabilities.assert('invoice');
     const principal = await this.auth.authenticate(authorization);
     return { data: await this.invoices.getOwned(principal, id) };
   }
@@ -66,6 +71,7 @@ export class InvoiceController {
     @Headers('authorization') authorization: string | undefined,
     @Param('id') id: string,
   ) {
+    this.capabilities.assert('invoice');
     const principal = await this.auth.authenticate(authorization);
     return { data: await this.invoices.cancel(principal, id) };
   }

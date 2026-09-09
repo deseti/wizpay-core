@@ -7,6 +7,7 @@ import {
   type UserSwapToken,
 } from './user-swap.types';
 import { XylonetQuoteProviderService } from './xylonet-quote-provider.service';
+import { CapabilityService } from '../capabilities/capability.service';
 
 export const USER_SWAP_USDC_ADDRESS =
   '0x3600000000000000000000000000000000000000' as const;
@@ -20,9 +21,11 @@ const SUPPORTED_TOKENS = new Set<UserSwapToken>(['USDC', 'EURC']);
 export class UserSwapService {
   constructor(
     private readonly xylonetQuoteProvider: XylonetQuoteProviderService,
+    private readonly capabilities: CapabilityService,
   ) {}
 
   async quote(request: UserSwapQuoteRequest): Promise<UserSwapNormalizedQuote> {
+    this.capabilities.assert('swap');
     const normalized = this.normalize(request);
     return this.xylonetQuoteProvider.quote(normalized);
   }

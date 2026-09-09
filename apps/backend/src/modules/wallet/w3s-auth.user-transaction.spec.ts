@@ -14,7 +14,11 @@ describe('W3sAuthService User-Controlled transaction lookup', () => {
         return undefined;
       }),
     } as unknown as ConfigService;
-    service = new W3sAuthService(config, {} as never);
+    service = new W3sAuthService(
+      config,
+      {} as never,
+      { assertW3sAction: jest.fn() } as never,
+    );
   });
 
   afterEach(() => {

@@ -9,6 +9,7 @@ import { TaskStatus } from './task/task-status.enum';
 import { TaskType } from './task/task-type.enum';
 import { TaskDetails } from './task/task.types';
 import { InvoiceAuthService } from './invoice/invoice-auth.service';
+import { CapabilityService } from './capabilities/capability.service';
 
 describe('TaskController', () => {
   let controller: TaskController;
@@ -71,6 +72,10 @@ describe('TaskController', () => {
         {
           provide: InvoiceAuthService,
           useValue: invoiceAuthService,
+        },
+        {
+          provide: CapabilityService,
+          useValue: { assert: jest.fn(), assertPayroll: jest.fn() },
         },
       ],
     }).compile();

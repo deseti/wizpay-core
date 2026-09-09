@@ -11,6 +11,7 @@ import { TaskService } from '../task/task.service';
 import { TaskStatus } from '../task/task-status.enum';
 import { QueueName, QueueRoutingDefinition } from './queue.constants';
 import { TaskQueueJobData, TxPollJobData } from './queue.types';
+import { CapabilityService } from '../capabilities/capability.service';
 
 /**
  * QueueService is responsible ONLY for enqueuing jobs.
@@ -30,6 +31,7 @@ export class QueueService implements OnModuleDestroy {
     private readonly configService: ConfigService,
     private readonly taskService: TaskService,
     private readonly telegramService: TelegramService,
+    private readonly capabilities: CapabilityService,
   ) {}
 
   // ────────────────────────────────────────────────────────────────────
@@ -40,6 +42,11 @@ export class QueueService implements OnModuleDestroy {
     route: QueueRoutingDefinition,
     jobData: TaskQueueJobData,
   ): Promise<void> {
+    if (jobData.taskType === 'payroll')
+      this.capabilities.assertPayroll(jobData.payload);
+    else if (jobData.taskType === 'swap') this.capabilities.assert('swap');
+    else if (jobData.taskType === 'bridge') this.capabilities.assert('bridge');
+    else if (jobData.taskType === 'fx') this.capabilities.assert('stableFx');
     const queue = this.getOrCreateQueue(route.queueName);
 
     await queue.add(`${jobData.taskType}:${jobData.taskId}`, jobData, {

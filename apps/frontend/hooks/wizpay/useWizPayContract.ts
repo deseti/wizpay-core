@@ -202,7 +202,9 @@ async function readPostSettlementTokenState({
   try {
     return await verificationRequest;
   } finally {
-    if (postSettlementVerificationRequests.get(requestKey) === verificationRequest) {
+    if (
+      postSettlementVerificationRequests.get(requestKey) === verificationRequest
+    ) {
       postSettlementVerificationRequests.delete(requestKey);
     }
   }
@@ -674,7 +676,9 @@ export function useWizPayContract({
     );
     const batchTargetToken = batchPreparedRecipients[0]?.targetToken;
     const effectiveTokenIn =
-      allSameTarget && batchTargetToken && batchTargetToken !== activeToken.symbol
+      allSameTarget &&
+      batchTargetToken &&
+      batchTargetToken !== activeToken.symbol
         ? SUPPORTED_TOKENS[batchTargetToken].address
         : activeToken.address;
     const effectiveTokenInSymbol =
@@ -802,9 +806,11 @@ export function useWizPayContract({
           // Only use txHash if it's a real EVM hash. The `hash` field may
           // contain a Circle referenceId (UUID) which must NOT be passed to RPC.
           const approvalEvmHash =
-            approvalResult.txHash && /^0x[a-fA-F0-9]{64}$/.test(approvalResult.txHash)
+            approvalResult.txHash &&
+            /^0x[a-fA-F0-9]{64}$/.test(approvalResult.txHash)
               ? approvalResult.txHash
-              : approvalResult.hash && /^0x[a-fA-F0-9]{64}$/.test(approvalResult.hash)
+              : approvalResult.hash &&
+                  /^0x[a-fA-F0-9]{64}$/.test(approvalResult.hash)
                 ? approvalResult.hash
                 : null;
 
@@ -835,7 +841,11 @@ export function useWizPayContract({
             await waitFor(3000);
           }
 
-          for (let attempt = 0; attempt < MAX_CONFIRMATION_POLLS; attempt += 1) {
+          for (
+            let attempt = 0;
+            attempt < MAX_CONFIRMATION_POLLS;
+            attempt += 1
+          ) {
             const nextAllowance = (await publicClient.readContract({
               address: effectiveTokenIn,
               abi: ERC20_ABI,
@@ -902,10 +912,7 @@ export function useWizPayContract({
             // Floor: amount after fee deduction
             return (a * (10000n - feeBps)) / 10000n;
           })
-        : await getMinimumAmountsOut(
-            batchPreparedRecipients,
-            batchRecipients,
-          );
+        : await getMinimumAmountsOut(batchPreparedRecipients, batchRecipients);
 
       logPayrollRouteDiagnostic(
         "[official-payroll-route] batchRouteAndPay args",
@@ -966,7 +973,7 @@ export function useWizPayContract({
         chainId: arcTestnet.id,
         contractAddress: WIZPAY_ADDRESS,
         functionName: "batchRouteAndPay",
-        refId: referenceId,
+        refId: `PAYROLL-${referenceId}`,
       });
 
       state.setSubmitState("confirming");

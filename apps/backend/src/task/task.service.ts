@@ -36,6 +36,7 @@ import {
   assertLegacyLiquidityEnabled,
   throwOfficialStableFxAuthRequired,
 } from '../fx/stablefx-cutover.guard';
+import { CapabilityService } from '../capabilities/capability.service';
 
 // ════════════════════════════════════════════════════════════════════
 //  FX-specific step identifiers for the StableFX settlement lifecycle.
@@ -89,9 +90,11 @@ export class TaskService {
     private readonly validationService: PayrollValidationService,
     @Inject(forwardRef(() => PayrollBatchService))
     private readonly batchService: PayrollBatchService,
+    private readonly capabilities: CapabilityService,
   ) {}
 
   async createTask(type: string, payload: TaskPayload): Promise<TaskDetails> {
+    this.assertTaskCapability(type, payload);
     const owner = this.normalizeTaskOwner(payload);
     const task = await this.prisma.task.create({
       data: {
@@ -122,6 +125,7 @@ export class TaskService {
   async createPayrollTask(
     payload: TaskPayload,
   ): Promise<CreatePayrollTaskResult> {
+    this.capabilities.assertPayroll(payload);
     const owner = this.normalizeTaskOwner(payload, ['walletAddress']);
     const validation = await this.validationService.validate(payload);
 
@@ -256,6 +260,7 @@ export class TaskService {
   }
 
   async createSwapTask(payload: TaskPayload): Promise<CreateSwapTaskResult> {
+    this.capabilities.assert('swap');
     // Swap is the same FX capability as cross-currency Send.
     // Block with official RFQ auth required until Circle StableFX entitlement is available.
     // When official Circle StableFX RFQ is implemented, replace this guard with
@@ -336,6 +341,13 @@ export class TaskService {
       token,
       amount,
     };
+  }
+
+  private assertTaskCapability(type: string, payload: TaskPayload) {
+    if (type === TaskType.PAYROLL) this.capabilities.assertPayroll(payload);
+    else if (type === TaskType.SWAP) this.capabilities.assert('swap');
+    else if (type === TaskType.BRIDGE) this.capabilities.assert('bridge');
+    else if (type === TaskType.FX) this.capabilities.assert('stableFx');
   }
 
   async updateStatus(

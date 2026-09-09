@@ -14,6 +14,7 @@ import {
 import { VerifyInvoicePaymentDto } from './dto/verify-invoice-payment.dto';
 import { InvoiceService } from './invoice.service';
 import { INVOICE_ERROR_CODES } from './invoice.types';
+import { CapabilityService } from '../capabilities/capability.service';
 
 const publicValidationPipe = new ValidationPipe({
   transform: true,
@@ -31,10 +32,14 @@ const publicValidationPipe = new ValidationPipe({
 export class PublicInvoiceController {
   private readonly attempts = new Map<string, number[]>();
 
-  constructor(private readonly invoices: InvoiceService) {}
+  constructor(
+    private readonly invoices: InvoiceService,
+    private readonly capabilities: CapabilityService,
+  ) {}
 
   @Get(':publicId')
   async get(@Param('publicId') publicId: string) {
+    this.capabilities.assert('paymentLink');
     return { data: await this.invoices.getPublic(publicId) };
   }
 
@@ -44,6 +49,7 @@ export class PublicInvoiceController {
     @Ip() ip: string,
     @Body() body: VerifyInvoicePaymentDto,
   ) {
+    this.capabilities.assert('paymentLink');
     this.enforceRateLimit(`${ip}:${publicId}`);
     return {
       data: await this.invoices.verifyPublicPayment(

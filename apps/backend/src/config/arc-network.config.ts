@@ -7,6 +7,7 @@ import {
   getArcWizPayContractResource,
   parseArcNetworkKey,
   requireAvailableArcResource,
+  resolveArcCapabilities,
   type ArcNetworkDefinition,
   type ArcNetworkKey,
   type ArcResource,
@@ -160,9 +161,9 @@ export function requireBackendArcNetworkReadiness(
 export function loadBackendArcNetworkConfiguration(
   environment: ArcNetworkEnvironment = process.env,
 ): BackendArcNetworkConfiguration {
-  const state = resolveBackendArcNetworkResourceState(
-    environment.WIZPAY_ARC_NETWORK,
-  );
+  const key = parseArcNetworkKey(environment.WIZPAY_ARC_NETWORK);
+  resolveArcCapabilities(key, environment);
+  const state = resolveBackendArcNetworkResourceState(key);
   const config = requireBackendArcNetworkReadiness(state);
   validateLegacyActiveConfiguration(config, environment);
   return config;

@@ -22,8 +22,10 @@ import {
   SUPPORTED_TOKENS,
   type TokenSymbol,
 } from "@/lib/wizpay";
+import { useCapability } from "@/components/providers/CapabilityProvider";
 
 export default function NewInvoicePage() {
+  const invoiceCapability = useCapability("invoice");
   const session = useMerchantInvoiceSession();
   const [token, setToken] = useState<TokenSymbol>("USDC");
   const [amount, setAmount] = useState("");
@@ -40,6 +42,7 @@ export default function NewInvoicePage() {
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
+    invoiceCapability.assertEnabled();
     if (!session.userToken || submitting) return;
     setSubmitting(true);
     setError(null);
@@ -116,6 +119,11 @@ export default function NewInvoicePage() {
           onSubmit={submit}
           className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_340px]"
         >
+          {!invoiceCapability.enabled ? (
+            <p role="alert" className="text-sm text-amber-300">
+              {invoiceCapability.unavailableMessage}
+            </p>
+          ) : null}
           <Card className="glass-card border-border/40">
             <CardContent className="space-y-5 p-5 sm:p-6">
               <div className="space-y-2">
@@ -208,7 +216,7 @@ export default function NewInvoicePage() {
                 type="submit"
                 className="w-full"
                 size="lg"
-                disabled={submitting}
+                disabled={submitting || !invoiceCapability.enabled}
               >
                 {submitting ? (
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />

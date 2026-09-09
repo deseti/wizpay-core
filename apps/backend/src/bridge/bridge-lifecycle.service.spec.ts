@@ -31,6 +31,7 @@ const MESSAGE_TRANSMITTER =
 const SOURCE_USDC = '0x3600000000000000000000000000000000000000' as const;
 const DESTINATION_USDC = '0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238' as const;
 const DESTINATION_HASH = `0x${'77'.repeat(32)}` as Hex;
+const capabilities = { assert: jest.fn() };
 
 function createHarness(existing: BridgeTransaction | null = null) {
   const now = new Date();
@@ -55,7 +56,11 @@ function createHarness(existing: BridgeTransaction | null = null) {
     bridgeTransaction: { findUnique: jest.fn().mockResolvedValue(existing) },
     $transaction: jest.fn().mockImplementation((callback) => callback(tx)),
   };
-  return { service: new BridgeLifecycleService(prisma as never), prisma, tx };
+  return {
+    service: new BridgeLifecycleService(prisma as never, capabilities as never),
+    prisma,
+    tx,
+  };
 }
 
 function request(sourceCode = 'ARC-TESTNET', destinationCode = 'BASE-SEPOLIA') {
@@ -164,7 +169,10 @@ function legacyRecoveryHarness(result: Record<string, unknown> = {}) {
     },
     $transaction: jest.fn().mockImplementation((callback) => callback(tx)),
   };
-  const service = new BridgeLifecycleService(prisma as never);
+  const service = new BridgeLifecycleService(
+    prisma as never,
+    capabilities as never,
+  );
   const receipt = {
     status: 'success',
     from: WALLET,
@@ -781,7 +789,10 @@ function destinationHarness(
     },
     $transaction: jest.fn().mockImplementation((callback) => callback(tx)),
   };
-  const service = new BridgeLifecycleService(prisma as never);
+  const service = new BridgeLifecycleService(
+    prisma as never,
+    capabilities as never,
+  );
   (service as any).getClient = jest.fn().mockReturnValue(client);
   return { service, operation, tx, client, prisma };
 }

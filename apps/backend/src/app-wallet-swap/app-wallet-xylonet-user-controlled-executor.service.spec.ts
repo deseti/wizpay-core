@@ -41,6 +41,7 @@ describe('AppWalletXylonetUserControlledExecutorService', () => {
   let walletService: any;
   let w3s: any;
   let publicClient: any;
+  let capabilities: { assert: jest.Mock };
   let service: AppWalletXylonetUserControlledExecutorService;
 
   beforeEach(() => {
@@ -129,10 +130,12 @@ describe('AppWalletXylonetUserControlledExecutorService', () => {
       getTransaction: jest.fn(),
       getBalance: jest.fn(async () => 100n * 10n ** 18n),
     };
+    capabilities = { assert: jest.fn() };
     service = new AppWalletXylonetUserControlledExecutorService(
       prisma,
       walletService,
       w3s,
+      capabilities as never,
       publicClient,
     );
   });
@@ -146,6 +149,44 @@ describe('AppWalletXylonetUserControlledExecutorService', () => {
     delete process.env.APP_XYLONET_DEADLINE_MAX_SECONDS;
     delete process.env.WIZPAY_FEE_SAFE;
   });
+
+  it.each([
+    ['get operation', () => service.getOperation('operation-id', USER_TOKEN)],
+    [
+      'approval retry',
+      () => service.createApprovalChallenge('operation-id', USER_TOKEN),
+    ],
+    [
+      'swap retry',
+      () => service.createSwapChallenge('operation-id', USER_TOKEN),
+    ],
+    [
+      'result resume',
+      () =>
+        service.recordChallengeResult(
+          'operation-id',
+          'swap',
+          { status: 'COMPLETE' },
+          USER_TOKEN,
+        ),
+    ],
+    ['poll resume', () => service.poll('operation-id', USER_TOKEN)],
+  ])(
+    'rejects disabled %s before reads, writes, challenges, or RPC calls',
+    async (_name, operation) => {
+      capabilities.assert.mockImplementation(() => {
+        throw new Error('CAPABILITY_DISABLED');
+      });
+
+      await expect(operation()).rejects.toThrow('CAPABILITY_DISABLED');
+      expect(
+        prisma.appWalletXylonetOperation.findUnique,
+      ).not.toHaveBeenCalled();
+      expect(prisma.appWalletXylonetOperation.update).not.toHaveBeenCalled();
+      expect(w3s.createUserContractExecutionChallenge).not.toHaveBeenCalled();
+      expect(publicClient.readContract).not.toHaveBeenCalled();
+    },
+  );
 
   it('fails closed before wallet lookup when disabled', async () => {
     process.env.APP_WALLET_XYLONET_USER_CONTROLLED_ENABLED = 'false';

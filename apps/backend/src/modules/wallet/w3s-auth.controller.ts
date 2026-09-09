@@ -6,6 +6,7 @@ import {
   Post,
 } from '@nestjs/common';
 import { W3sAuthService } from './w3s-auth.service';
+import { CapabilityService } from '../../capabilities/capability.service';
 
 type W3sActionBody = {
   action?: string;
@@ -21,7 +22,10 @@ type W3sActionBody = {
  */
 @Controller('w3s')
 export class W3sAuthController {
-  constructor(private readonly w3sAuthService: W3sAuthService) {}
+  constructor(
+    private readonly w3sAuthService: W3sAuthService,
+    private readonly capabilities: CapabilityService,
+  ) {}
 
   @Post('action')
   async dispatchAction(@Body() body: W3sActionBody) {
@@ -34,6 +38,7 @@ export class W3sAuthController {
     // Extract params (everything except "action")
     const params = { ...body };
     delete params.action;
+    this.capabilities.assertW3sAction(action, params);
 
     try {
       return await this.w3sAuthService.dispatch(action, params);

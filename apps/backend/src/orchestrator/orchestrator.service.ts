@@ -19,6 +19,7 @@ import {
   assertLegacyFxEnabled,
   assertLegacyLiquidityEnabled,
 } from '../fx/stablefx-cutover.guard';
+import { CapabilityService } from '../capabilities/capability.service';
 
 @Injectable()
 export class OrchestratorService {
@@ -30,6 +31,7 @@ export class OrchestratorService {
     private readonly executionRouter: ExecutionRouterService,
     private readonly fxRoutingGuard: FxRoutingGuard,
     private readonly rfqClient: StableFXRfqClient,
+    private readonly capabilities: CapabilityService,
   ) {}
 
   // ─────────────────────────────────────────────────────────────────────────────
@@ -37,6 +39,7 @@ export class OrchestratorService {
   // ─────────────────────────────────────────────────────────────────────────────
 
   async handleTask(type: TaskType, payload: TaskPayload): Promise<TaskDetails> {
+    this.assertTaskCapability(type, payload);
     if (type === TaskType.BRIDGE) {
       throw new BadRequestException(
         'Legacy bridge tasks were removed. Use the external-wallet /bridge/intents lifecycle.',
@@ -107,6 +110,7 @@ export class OrchestratorService {
    * Requirements: 1.1, 1.7, 2.1, 3.1, 9.1, 9.3, 9.4, 9.5, 10.3
    */
   async handleFxOperation(payload: FxOperationPayload): Promise<TaskDetails> {
+    this.capabilities.assert('stableFx');
     const mode = this.fxRoutingGuard.getActiveMode();
     const operationId = this.generateOperationId();
     const timestamp = new Date().toISOString();
@@ -331,6 +335,7 @@ export class OrchestratorService {
    */
   async executeTask(taskId: string): Promise<AgentExecutionResult | null> {
     const task = await this.taskService.getTaskById(taskId);
+    this.assertTaskCapability(task.type as TaskType, task.payload);
 
     // ── Idempotency guard ────────────────────────────────────────────────────
     if (task.status !== TaskStatus.ASSIGNED) {
@@ -439,6 +444,13 @@ export class OrchestratorService {
     );
 
     return this.executionRouter.execute(task);
+  }
+
+  private assertTaskCapability(type: TaskType, payload: TaskPayload) {
+    if (type === TaskType.PAYROLL) this.capabilities.assertPayroll(payload);
+    else if (type === TaskType.SWAP) this.capabilities.assert('swap');
+    else if (type === TaskType.BRIDGE) this.capabilities.assert('bridge');
+    else if (type === TaskType.FX) this.capabilities.assert('stableFx');
   }
 
   async updateTaskState(taskId: string, state: string, result?: any) {
