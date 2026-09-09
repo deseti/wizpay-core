@@ -1,19 +1,32 @@
 import { getAddress, type Address } from 'viem';
+import {
+  getArcNetworkByKey,
+  getArcTokenResource,
+  requireAvailableArcResource,
+} from '@wizpay/arc-network';
 
-export const INVOICE_CHAIN_ID = 5_042_002;
-export const INVOICE_CHAIN_NAME = 'Arc Testnet';
+const INVOICE_ARC_NETWORK = getArcNetworkByKey('arc-testnet');
+const INVOICE_USDC = requireAvailableArcResource(
+  getArcTokenResource(INVOICE_ARC_NETWORK.key, 'USDC'),
+);
+const INVOICE_EURC = requireAvailableArcResource(
+  getArcTokenResource(INVOICE_ARC_NETWORK.key, 'EURC'),
+);
+
+export const INVOICE_CHAIN_ID = INVOICE_ARC_NETWORK.chainId;
+export const INVOICE_CHAIN_NAME = `Arc ${INVOICE_ARC_NETWORK.environment[0].toUpperCase()}${INVOICE_ARC_NETWORK.environment.slice(1)}`;
 export const INVOICE_MAX_AMOUNT_UNITS = 1_000_000_000_000_000n;
 export const INVOICE_PUBLIC_ID_BYTES = 16;
 
 export const INVOICE_TOKENS = {
   USDC: {
-    address: getAddress('0x3600000000000000000000000000000000000000'),
+    address: getAddress(INVOICE_USDC.address),
     decimals: 6,
     name: 'USD Coin',
     symbol: 'USDC',
   },
   EURC: {
-    address: getAddress('0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a'),
+    address: getAddress(INVOICE_EURC.address),
     decimals: 6,
     name: 'Euro Coin',
     symbol: 'EURC',

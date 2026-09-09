@@ -5,17 +5,19 @@ import Link from "next/link";
 
 import { DashboardAppFrame } from "@/components/dashboard/DashboardAppFrame";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { EmptyStateView } from "@/components/ui/empty-state";
 import { TokenIcon } from "@/components/ui/token-icon";
 import { useTokenBalances } from "@/hooks/useTokenBalances";
 import { useWizPay } from "@/hooks/wizpay";
-import { ARC_TESTNET_CHAIN_ID, formatTokenAmount, getExplorerTxUrl, TOKEN_OPTIONS, EXPLORER_BASE_URL } from "@/lib/wizpay";
+import {
+  ARC_CHAIN_ID,
+  ARC_TESTNET_CHAIN_ID,
+  formatTokenAmount,
+  getExplorerTxUrl,
+  TOKEN_OPTIONS,
+  EXPLORER_BASE_URL,
+} from "@/lib/wizpay";
 import { useActiveWalletAddress } from "@/hooks/useActiveWalletAddress";
 import { useDelayedLoading } from "@/hooks/useDelayedLoading";
 import { PageSkeleton, SkeletonCard } from "@/components/ui/skeleton-loaders";
@@ -40,26 +42,36 @@ function TokenDetailCard({
   const isEmpty = balance === 0n;
 
   // Filter history for this token
-  const tokenHistory = history.filter(
-    (item) =>
-      item.tokenIn?.toLowerCase() === address.toLowerCase() ||
-      item.tokenOut?.toLowerCase() === address.toLowerCase() ||
-      item.lpToken?.toLowerCase() === address.toLowerCase()
-  ).slice(0, 5);
+  const tokenHistory = history
+    .filter(
+      (item) =>
+        item.tokenIn?.toLowerCase() === address.toLowerCase() ||
+        item.tokenOut?.toLowerCase() === address.toLowerCase() ||
+        item.lpToken?.toLowerCase() === address.toLowerCase(),
+    )
+    .slice(0, 5);
 
   return (
     <Card className="glass-card border-border/40 overflow-hidden">
       <CardHeader className="pb-3">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <TokenIcon chainId={ARC_TESTNET_CHAIN_ID} address={address} symbol={symbol} size={40} decorative={false} />
+            <TokenIcon
+              chainId={ARC_TESTNET_CHAIN_ID}
+              address={address}
+              symbol={symbol}
+              size={40}
+              decorative={false}
+            />
             <div>
               <CardTitle className="text-lg">{symbol}</CardTitle>
               <p className="text-xs text-muted-foreground/60">{name}</p>
             </div>
           </div>
           <div className="text-right">
-            <p className={`text-xl font-bold font-mono ${isEmpty ? "text-muted-foreground/40" : ""}`}>
+            <p
+              className={`text-xl font-bold font-mono ${isEmpty ? "text-muted-foreground/40" : ""}`}
+            >
               {formattedBalance}
             </p>
           </div>
@@ -70,13 +82,21 @@ function TokenDetailCard({
         {/* Quick actions */}
         <div className="flex gap-2">
           <Link href="/send" className="flex-1">
-            <Button variant="outline" size="sm" className="w-full gap-1.5 border-border/40">
+            <Button
+              variant="outline"
+              size="sm"
+              className="w-full gap-1.5 border-border/40"
+            >
               <ArrowRightLeft className="h-3.5 w-3.5" />
               Send
             </Button>
           </Link>
           <Link href="/swap" className="flex-1">
-            <Button variant="outline" size="sm" className="w-full gap-1.5 border-border/40">
+            <Button
+              variant="outline"
+              size="sm"
+              className="w-full gap-1.5 border-border/40"
+            >
               <TrendingUp className="h-3.5 w-3.5" />
               Swap
             </Button>
@@ -87,7 +107,11 @@ function TokenDetailCard({
             rel="noopener noreferrer"
             className="flex-1"
           >
-            <Button variant="outline" size="sm" className="w-full gap-1.5 border-border/40">
+            <Button
+              variant="outline"
+              size="sm"
+              className="w-full gap-1.5 border-border/40"
+            >
               <ExternalLink className="h-3.5 w-3.5" />
               Explorer
             </Button>
@@ -101,15 +125,13 @@ function TokenDetailCard({
               Recent Activity
             </p>
             {tokenHistory.map((item) => {
-              const actionLabel =
-                item.type === "payroll" ? "Send" :
-                item.type;
+              const actionLabel = item.type === "payroll" ? "Send" : item.type;
               const amount = item.totalAmountIn
                 ? formatTokenAmount(item.totalAmountIn, 6)
                 : item.lpAmount
                   ? formatTokenAmount(item.lpAmount, 6)
                   : "—";
-              const txUrl = getExplorerTxUrl(item.txHash);
+              const txUrl = getExplorerTxUrl(item.txHash, ARC_CHAIN_ID);
               const itemKey =
                 item.txHash !== "0x"
                   ? item.txHash
@@ -123,13 +145,24 @@ function TokenDetailCard({
                   <div>
                     <p className="text-xs font-medium">{actionLabel}</p>
                     <p className="text-[10px] text-muted-foreground/50">
-                      {new Date(item.timestampMs).toLocaleDateString(undefined, {
-                        month: "short",
-                        day: "numeric",
-                      })}
+                      {new Date(item.timestampMs).toLocaleDateString(
+                        undefined,
+                        {
+                          month: "short",
+                          day: "numeric",
+                        },
+                      )}
                     </p>
                   </div>
-                  <p className="flex items-center gap-1.5 text-xs font-mono"><TokenIcon chainId={ARC_TESTNET_CHAIN_ID} address={address} symbol={symbol} size={20} />{amount} {symbol}</p>
+                  <p className="flex items-center gap-1.5 text-xs font-mono">
+                    <TokenIcon
+                      chainId={ARC_TESTNET_CHAIN_ID}
+                      address={address}
+                      symbol={symbol}
+                      size={20}
+                    />
+                    {amount} {symbol}
+                  </p>
                   {txUrl ? (
                     <a
                       href={txUrl}
@@ -140,7 +173,9 @@ function TokenDetailCard({
                       View tx
                     </a>
                   ) : (
-                    <span className="text-[10px] text-muted-foreground/60">Pending hash</span>
+                    <span className="text-[10px] text-muted-foreground/60">
+                      Pending hash
+                    </span>
                   )}
                 </div>
               );
@@ -180,7 +215,9 @@ function AssetsContent() {
     <div className="animate-fade-up space-y-5 stagger-children">
       <div className="flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">Assets</h1>
+          <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">
+            Assets
+          </h1>
           <p className="text-sm text-muted-foreground/70">
             Your token balances and activity on Arc Testnet.
           </p>
@@ -206,7 +243,8 @@ function AssetsContent() {
                 Portfolio Value
               </p>
               <p className="mt-2 text-2xl font-bold tracking-tight neon-text">
-                ${totalUsdValue.toLocaleString("en-US", {
+                $
+                {totalUsdValue.toLocaleString("en-US", {
                   minimumFractionDigits: 2,
                   maximumFractionDigits: 2,
                 })}
@@ -216,9 +254,7 @@ function AssetsContent() {
               <p className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground/55">
                 Active Tokens
               </p>
-              <p className="mt-2 text-xl font-semibold">
-                {activeTokenCount}
-              </p>
+              <p className="mt-2 text-xl font-semibold">{activeTokenCount}</p>
             </div>
             <div>
               <p className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground/55">

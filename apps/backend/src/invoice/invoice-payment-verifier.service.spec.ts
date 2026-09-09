@@ -23,6 +23,10 @@ describe('InvoicePaymentVerifierService', () => {
       get: jest.fn((key: string) =>
         key === 'INVOICE_PAYMENT_CONFIRMATIONS' ? '2' : undefined,
       ),
+      getOrThrow: jest.fn(() => ({
+        chainId: 5_042_002,
+        rpcUrl: 'https://rpc.testnet.arc.io',
+      })),
     } as unknown as ConfigService);
     client = validClient();
     (service as unknown as { publicClient: unknown }).publicClient = client;

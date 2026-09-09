@@ -15,12 +15,10 @@ services:
       REDIS_HOST: redis
       REDIS_PORT: 6379
       DOCKER: "true"
+      WIZPAY_ARC_NETWORK: ${WIZPAY_ARC_NETWORK:?WIZPAY_ARC_NETWORK is required}
       # ── CORS ─────────────────────────────────────────────────────────────
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://localhost:3001}
       # ── Chain / RPC config ───────────────────────────────────────────────
-      RPC_URL: ${RPC_URL:-https://rpc.testnet.arc.io}
-      ARC_RPC_URL: ${ARC_RPC_URL:-https://rpc.testnet.arc.io}
-      CHAIN_ID: ${CHAIN_ID:-5042002}
       ETH_SEPOLIA_RPC_URL: ${ETH_SEPOLIA_RPC_URL:-}
       ARC_TESTNET_RPC_URL: ${ARC_TESTNET_RPC_URL:-https://rpc.testnet.arc.io}
       ETHEREUM_SEPOLIA_RPC_URL: ${ETHEREUM_SEPOLIA_RPC_URL:-https://ethereum-sepolia-rpc.publicnode.com}
@@ -100,6 +98,7 @@ services:
       # To change a value: edit root .env, then rebuild with:
       #   docker compose down && docker compose up --build
       args:
+        WIZPAY_ARC_NETWORK: ${WIZPAY_ARC_NETWORK:?WIZPAY_ARC_NETWORK is required}
         NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL}
         NEXT_PUBLIC_WIZPAY_PUBLIC_APP_URL: ${NEXT_PUBLIC_WIZPAY_PUBLIC_APP_URL:-http://localhost:3000}
         NEXT_PUBLIC_BACKEND_API_BASE_URL: ${NEXT_PUBLIC_BACKEND_API_BASE_URL}
@@ -113,9 +112,7 @@ services:
         NEXT_PUBLIC_CIRCLE_PASSKEY_MODULAR_RPC_URL_ARC_TESTNET: ${NEXT_PUBLIC_CIRCLE_PASSKEY_MODULAR_RPC_URL_ARC_TESTNET:-}
         NEXT_PUBLIC_CIRCLE_PASSKEY_MODULAR_RPC_URL_ETH_SEPOLIA: ${NEXT_PUBLIC_CIRCLE_PASSKEY_MODULAR_RPC_URL_ETH_SEPOLIA:-}
         NEXT_PUBLIC_CIRCLE_PASSKEY_RP_ID: ${NEXT_PUBLIC_CIRCLE_PASSKEY_RP_ID:-app.wizpay.xyz}
-        NEXT_PUBLIC_RPC_URL: ${NEXT_PUBLIC_RPC_URL:-https://rpc.testnet.arc.io}
         NEXT_PUBLIC_ARC_TESTNET_RPC_URL: ${NEXT_PUBLIC_ARC_TESTNET_RPC_URL:-https://rpc.testnet.arc.io}
-        NEXT_PUBLIC_ARC_MAINNET_EXPLORER_URL: ${NEXT_PUBLIC_ARC_MAINNET_EXPLORER_URL:-}
         NEXT_PUBLIC_ETHEREUM_SEPOLIA_RPC_URL: ${NEXT_PUBLIC_ETHEREUM_SEPOLIA_RPC_URL:-}
         NEXT_PUBLIC_ETHEREUM_SEPOLIA_RPC_URLS: ${NEXT_PUBLIC_ETHEREUM_SEPOLIA_RPC_URLS:-}
         NEXT_PUBLIC_BASE_SEPOLIA_RPC_URL: ${NEXT_PUBLIC_BASE_SEPOLIA_RPC_URL:-https://sepolia.base.org}
@@ -125,10 +122,6 @@ services:
         NEXT_PUBLIC_USE_REAL_STABLEFX: ${NEXT_PUBLIC_USE_REAL_STABLEFX:-false}
         NEXT_PUBLIC_CIRCLE_API_PROXY_ENABLED: ${NEXT_PUBLIC_CIRCLE_API_PROXY_ENABLED:-false}
         NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID: ${NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID:-}
-        NEXT_PUBLIC_ARC_USDC: ${NEXT_PUBLIC_ARC_USDC:-}
-        NEXT_PUBLIC_WIZPAY_SWAP_EXECUTOR_V2_ADDRESS: ${WIZPAY_SWAP_EXECUTOR_V2_ADDRESS:-0x7B5573759576AD3AD9F9E3b4425ad68FD2b525ed}
-        NEXT_PUBLIC_CONTRACT_ADDRESS: ${NEXT_PUBLIC_CONTRACT_ADDRESS:-}
-        NEXT_PUBLIC_WIZPAY_ADDRESS: ${NEXT_PUBLIC_WIZPAY_ADDRESS:-}
         NEXT_PUBLIC_WIZPAY_AGENTIC_NANO_ADDRESS: ${NEXT_PUBLIC_WIZPAY_AGENTIC_NANO_ADDRESS:-}
     depends_on:
       backend:
@@ -137,6 +130,7 @@ services:
         condition: service_healthy
     environment:
       PORT: 3000
+      WIZPAY_ARC_NETWORK: ${WIZPAY_ARC_NETWORK:?WIZPAY_ARC_NETWORK is required}
       # ── Frontend runtime vars (Next.js dev server / SSR) ───────────────────
       # Keep these sourced from the root .env so docker-compose.dev does not
       # depend on apps/frontend/.env.local.
@@ -153,7 +147,6 @@ services:
       NEXT_PUBLIC_CIRCLE_PASSKEY_MODULAR_RPC_URL_ARC_TESTNET: ${NEXT_PUBLIC_CIRCLE_PASSKEY_MODULAR_RPC_URL_ARC_TESTNET:-}
       NEXT_PUBLIC_CIRCLE_PASSKEY_MODULAR_RPC_URL_ETH_SEPOLIA: ${NEXT_PUBLIC_CIRCLE_PASSKEY_MODULAR_RPC_URL_ETH_SEPOLIA:-}
       NEXT_PUBLIC_CIRCLE_PASSKEY_RP_ID: ${NEXT_PUBLIC_CIRCLE_PASSKEY_RP_ID:-app.wizpay.xyz}
-      NEXT_PUBLIC_RPC_URL: ${NEXT_PUBLIC_RPC_URL:-https://rpc.testnet.arc.io}
       NEXT_PUBLIC_ARC_TESTNET_RPC_URL: ${NEXT_PUBLIC_ARC_TESTNET_RPC_URL:-https://rpc.testnet.arc.io}
       NEXT_PUBLIC_ETHEREUM_SEPOLIA_RPC_URL: ${NEXT_PUBLIC_ETHEREUM_SEPOLIA_RPC_URL:-https://ethereum-sepolia-rpc.publicnode.com}
       NEXT_PUBLIC_ETHEREUM_SEPOLIA_RPC_URLS: ${NEXT_PUBLIC_ETHEREUM_SEPOLIA_RPC_URLS:-}
@@ -164,10 +157,6 @@ services:
       NEXT_PUBLIC_USE_REAL_STABLEFX: ${NEXT_PUBLIC_USE_REAL_STABLEFX:-false}
       NEXT_PUBLIC_CIRCLE_API_PROXY_ENABLED: ${NEXT_PUBLIC_CIRCLE_API_PROXY_ENABLED:-false}
       NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID: ${NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID:-}
-      NEXT_PUBLIC_ARC_USDC: ${NEXT_PUBLIC_ARC_USDC:-}
-      NEXT_PUBLIC_WIZPAY_SWAP_EXECUTOR_V2_ADDRESS: ${WIZPAY_SWAP_EXECUTOR_V2_ADDRESS:-0x7B5573759576AD3AD9F9E3b4425ad68FD2b525ed}
-      NEXT_PUBLIC_CONTRACT_ADDRESS: ${NEXT_PUBLIC_CONTRACT_ADDRESS:-}
-      NEXT_PUBLIC_WIZPAY_ADDRESS: ${NEXT_PUBLIC_WIZPAY_ADDRESS:-}
       NEXT_PUBLIC_WIZPAY_AGENTIC_NANO_ADDRESS: ${NEXT_PUBLIC_WIZPAY_AGENTIC_NANO_ADDRESS:-}
       # ── Server-side runtime vars (Next.js API routes, not bundled) ──────────
       # IMPORTANT: Add http://localhost:3000 to Circle Console → Allowed Origins
@@ -209,7 +198,11 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-wizpay}
       POSTGRES_DB: ${POSTGRES_DB:-wizpay}
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-wizpay} -d ${POSTGRES_DB:-wizpay}"]
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER:-wizpay} -d ${POSTGRES_DB:-wizpay}",
+        ]
       interval: 5s
       timeout: 5s
       retries: 10

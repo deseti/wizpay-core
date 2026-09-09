@@ -16,6 +16,7 @@
     "test": "vitest run --maxWorkers=1 --no-file-parallelism"
   },
   "dependencies": {
+    "@wizpay/arc-network": "file:../../packages/arc-network",
     "@wizpay/bridge-registry": "file:../../packages/bridge-registry",
     "@circle-fin/modular-wallets-core": "^1.0.13",
     "@circle-fin/w3s-pw-web-sdk": "^1.1.11",

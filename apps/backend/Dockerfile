@@ -8,6 +8,7 @@ WORKDIR /repo
 COPY package.json package-lock.json ./
 COPY apps/backend/package.json ./apps/backend/package.json
 COPY apps/frontend/package.json ./apps/frontend/package.json
+COPY packages/arc-network/package.json ./packages/arc-network/package.json
 COPY packages/bridge-registry/package.json ./packages/bridge-registry/package.json
 COPY packages/contracts/package.json ./packages/contracts/package.json
 RUN --mount=type=cache,id=wizpay-npm-v1,target=/root/.npm,sharing=locked \
@@ -29,6 +30,7 @@ RUN --mount=type=cache,id=wizpay-npm-v1,target=/root/.npm,sharing=locked \
 FROM workspace-deps AS builder
 
 COPY apps/backend ./apps/backend
+COPY packages/arc-network ./packages/arc-network
 COPY packages/bridge-registry ./packages/bridge-registry
 RUN npm run prisma:generate -w backend
 RUN npm run build -w backend && test -f apps/backend/dist/main.js
@@ -58,6 +60,7 @@ COPY --from=circle-cli /usr/local/lib/node_modules/@circle-fin/cli /usr/local/li
 COPY --from=circle-cli /usr/local/bin/circle /usr/local/bin/circle
 COPY --from=production-deps /repo/node_modules ./node_modules
 COPY --from=builder /repo/node_modules/.prisma ./node_modules/.prisma
+COPY --from=builder /repo/packages/arc-network ./packages/arc-network
 COPY --from=builder /repo/packages/bridge-registry ./packages/bridge-registry
 COPY --from=builder /repo/apps/backend/dist ./dist
 COPY --from=builder /repo/apps/backend/src/database ./src/database

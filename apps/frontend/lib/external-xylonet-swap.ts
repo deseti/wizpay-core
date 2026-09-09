@@ -8,6 +8,7 @@ import {
 import type { UserSwapQuoteResponse } from "@/lib/user-swap-service";
 import { arcTestnet } from "@/lib/wagmi";
 import type { TokenSymbol } from "@/lib/wizpay";
+import { WIZPAY_SWAP_EXECUTOR_V2_ADDRESS } from "@/constants/addresses";
 
 export const WIZPAY_SWAP_EXECUTOR_V2_ABI = [
   {
@@ -131,8 +132,7 @@ export function validateExternalXylonetQuote(
     throw new Error("XyloNet quote token address mismatch.");
   }
 
-  const configuredExecutor =
-    process.env.NEXT_PUBLIC_WIZPAY_SWAP_EXECUTOR_V2_ADDRESS;
+  const configuredExecutor = WIZPAY_SWAP_EXECUTOR_V2_ADDRESS;
   const executor = requireAddress(quote.executorAddress, "executor");
   if (
     !configuredExecutor ||

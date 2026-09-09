@@ -1,13 +1,12 @@
-import {
-  DEFAULT_REDIS_HOST,
-  DEFAULT_REDIS_PORT,
-} from './configuration';
+import { DEFAULT_REDIS_HOST, DEFAULT_REDIS_PORT } from './configuration';
 import { normalizeRuntimeEnvironmentValues } from './runtime-env';
+import { parseArcNetworkKey } from '@wizpay/arc-network';
 
 type EnvironmentValues = Record<string, unknown> & {
   DATABASE_URL?: string;
   REDIS_HOST?: string;
   REDIS_PORT?: string;
+  WIZPAY_ARC_NETWORK?: string;
 };
 
 export function validateEnvironment(config: Record<string, unknown>) {
@@ -19,6 +18,7 @@ export function validateEnvironment(config: Record<string, unknown>) {
     environment.REDIS_PORT ?? String(DEFAULT_REDIS_PORT),
     10,
   );
+  const arcNetworkKey = parseArcNetworkKey(environment.WIZPAY_ARC_NETWORK);
 
   if (!databaseUrl) {
     throw new Error('DATABASE_URL is required');
@@ -33,5 +33,6 @@ export function validateEnvironment(config: Record<string, unknown>) {
     DATABASE_URL: databaseUrl,
     REDIS_HOST: environment.REDIS_HOST?.trim() || DEFAULT_REDIS_HOST,
     REDIS_PORT: String(redisPort),
+    WIZPAY_ARC_NETWORK: arcNetworkKey,
   };
 }

@@ -30,6 +30,7 @@ import { ActivityTypeIcon } from "@/components/dashboard/ActivityTypeIcon";
 import {
   formatTokenAmount,
   getExplorerTxUrl,
+  ARC_CHAIN_ID,
   ARC_TESTNET_CHAIN_ID,
 } from "@/lib/wizpay";
 import {
@@ -41,7 +42,7 @@ import {
  *  For bridge items, prefers step-level explorerUrls from normalizedTransfer
  *  when the primary txHash is a Solana signature (not an EVM hash). */
 function resolveExplorerUrl(item: UnifiedHistoryItem): string | null {
-  const evmUrl = getExplorerTxUrl(item.txHash);
+  const evmUrl = getExplorerTxUrl(item.txHash, item.chainId ?? ARC_CHAIN_ID);
   if (evmUrl) return evmUrl;
 
   // Bridge: walk steps for the first valid explorerUrl

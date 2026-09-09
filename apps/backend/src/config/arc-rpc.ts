@@ -1,4 +1,9 @@
-export const ARC_TESTNET_RPC_URL = 'https://rpc.testnet.arc.io';
+import {
+  getArcRpcResource,
+  parseArcNetworkKey,
+  requireAvailableArcResource,
+  type ArcNetworkKey,
+} from '@wizpay/arc-network';
 
 type ArcRpcConfiguration = {
   name: string;
@@ -6,21 +11,29 @@ type ArcRpcConfiguration = {
 };
 
 /**
- * Preserve supported configuration keys while preventing Arc Testnet RPC
- * overrides from selecting any endpoint other than WizPay's required RPC.
+ * Resolve an exact canonical Arc RPC and reject legacy active overrides.
  */
-export function resolveArcTestnetRpcUrl(
-  configurations: ArcRpcConfiguration[],
+export function resolveArcRpcUrl(
+  selector: unknown,
+  configurations: ArcRpcConfiguration[] = [],
 ): string {
-  for (const configuration of configurations) {
-    const value = configuration.value?.trim();
+  const networkKey: ArcNetworkKey = parseArcNetworkKey(selector);
+  const rpcUrl = requireAvailableArcResource(getArcRpcResource(networkKey)).url;
 
-    if (value && value !== ARC_TESTNET_RPC_URL) {
+  for (const configuration of configurations) {
+    const value = configuration.value;
+
+    if (
+      value !== undefined &&
+      value !== null &&
+      value !== '' &&
+      value !== rpcUrl
+    ) {
       throw new Error(
-        `${configuration.name} must be exactly ${ARC_TESTNET_RPC_URL}.`,
+        `${configuration.name} conflicts with WIZPAY_ARC_NETWORK.`,
       );
     }
   }
 
-  return ARC_TESTNET_RPC_URL;
+  return rpcUrl;
 }

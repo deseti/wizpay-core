@@ -23,11 +23,18 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+  CardDescription,
+} from "@/components/ui/card";
 
 import { useLiquidity } from "@/lib/use-liquidity";
 import {
   TOKEN_OPTIONS,
+  ARC_CHAIN_ID,
   formatCompactAddress,
   formatTokenAmount,
   getExplorerTxUrl,
@@ -88,7 +95,9 @@ export function LiquidityScreen() {
   } = useLiquidity(tokenAddress);
 
   const decimals = tokenRecord?.decimals || 6;
-  const amountBn = amountStr ? parseUnits(amountStr, activeTab === "deposit" ? decimals : 6) : 0n;
+  const amountBn = amountStr
+    ? parseUnits(amountStr, activeTab === "deposit" ? decimals : 6)
+    : 0n;
   const needsDepositApproval = activeTab === "deposit" && amountBn > allowance;
   const needsWithdrawApproval = false;
 
@@ -105,7 +114,8 @@ export function LiquidityScreen() {
     let txHashResult: string | null = null;
 
     try {
-      if (!walletAddress) throw new Error("Connect a wallet before adding liquidity.");
+      if (!walletAddress)
+        throw new Error("Connect a wallet before adding liquidity.");
       // Register liquidity task in backend before execution
       const plan = await initLiquidityTask({
         operation: "add",
@@ -135,7 +145,10 @@ export function LiquidityScreen() {
           status: "SUCCESS",
           txHash: isTransactionHash(txHashResult) ? txHashResult : undefined,
         }).catch((error) => {
-          console.warn("[LiquidityScreen] Failed to report add-liquidity success", error);
+          console.warn(
+            "[LiquidityScreen] Failed to report add-liquidity success",
+            error,
+          );
         });
       }
     } catch (error) {
@@ -162,7 +175,8 @@ export function LiquidityScreen() {
     let txHashResult: string | null = null;
 
     try {
-      if (!walletAddress) throw new Error("Connect a wallet before removing liquidity.");
+      if (!walletAddress)
+        throw new Error("Connect a wallet before removing liquidity.");
       // Register liquidity task in backend before execution
       const plan = await initLiquidityTask({
         operation: "remove",
@@ -192,7 +206,10 @@ export function LiquidityScreen() {
           status: "SUCCESS",
           txHash: isTransactionHash(txHashResult) ? txHashResult : undefined,
         }).catch((error) => {
-          console.warn("[LiquidityScreen] Failed to report remove-liquidity success", error);
+          console.warn(
+            "[LiquidityScreen] Failed to report remove-liquidity success",
+            error,
+          );
         });
       }
     } catch (error) {
@@ -224,7 +241,7 @@ export function LiquidityScreen() {
   };
 
   const actionWord = activeTab === "deposit" ? "deposited" : "withdrew";
-  const explorerUrl = getExplorerTxUrl(txHash);
+  const explorerUrl = getExplorerTxUrl(txHash, ARC_CHAIN_ID);
   const xShareUrl = buildXShareUrl({
     summary: `Just ${actionWord} ${amountStr} ${selectedToken} as liquidity into the WizPay StableFX Vault on Arc Testnet! 💧🚀`,
     explorerUrl,
@@ -246,7 +263,9 @@ export function LiquidityScreen() {
 
             <div className="space-y-1">
               <h2 className="text-2xl font-bold tracking-tight neon-text">
-                {activeTab === "deposit" ? "Deposit Successful!" : "Withdrawal Successful!"}
+                {activeTab === "deposit"
+                  ? "Deposit Successful!"
+                  : "Withdrawal Successful!"}
               </h2>
               <p className="text-sm text-muted-foreground/80">
                 {activeTab === "deposit"
@@ -258,13 +277,20 @@ export function LiquidityScreen() {
             <div className="w-full rounded-2xl border border-border/40 bg-background/35 p-4">
               <div className="grid grid-cols-2 gap-4 divide-x divide-border/40">
                 <div className="space-y-1">
-                  <p className="text-xs uppercase text-muted-foreground/60 font-semibold">Amount</p>
+                  <p className="text-xs uppercase text-muted-foreground/60 font-semibold">
+                    Amount
+                  </p>
                   <p className="font-mono text-lg font-bold">
-                    {amountStr} <span className="text-sm font-medium text-muted-foreground">{activeTab === "deposit" ? selectedToken : "SFX-LP"}</span>
+                    {amountStr}{" "}
+                    <span className="text-sm font-medium text-muted-foreground">
+                      {activeTab === "deposit" ? selectedToken : "SFX-LP"}
+                    </span>
                   </p>
                 </div>
                 <div className="space-y-1 pl-4">
-                  <p className="text-xs uppercase text-muted-foreground/60 font-semibold">Action</p>
+                  <p className="text-xs uppercase text-muted-foreground/60 font-semibold">
+                    Action
+                  </p>
                   <p className="font-mono text-lg font-bold capitalize">
                     {activeTab}
                   </p>
@@ -277,7 +303,7 @@ export function LiquidityScreen() {
                       {explorerUrl ? "Transaction" : "Circle Reference"}
                     </p>
                     <span className="font-mono text-muted-foreground/70 text-xs">
-                    {formatCompactAddress(txHash)}
+                      {formatCompactAddress(txHash)}
                     </span>
                   </div>
                   {explorerUrl ? (
@@ -299,7 +325,10 @@ export function LiquidityScreen() {
             </div>
 
             <div className="flex w-full flex-col gap-3">
-              <Button className="w-full gap-2 bg-[#1DA1F2] text-white hover:bg-[#1A8CD8] shadow-lg shadow-[#1DA1F2]/20" asChild>
+              <Button
+                className="w-full gap-2 bg-[#1DA1F2] text-white hover:bg-[#1A8CD8] shadow-lg shadow-[#1DA1F2]/20"
+                asChild
+              >
                 <a href={xShareUrl} target="_blank" rel="noreferrer">
                   <MessageCircle className="h-4 w-4" />
                   Share to X (Twitter)
@@ -348,16 +377,29 @@ export function LiquidityScreen() {
     );
   }
 
-  const isActionDisabled = step !== "idle" || !amountStr || parseFloat(amountStr) <= 0;
+  const isActionDisabled =
+    step !== "idle" || !amountStr || parseFloat(amountStr) <= 0;
 
   const getButtonLabel = () => {
-    if (step === "approving") return <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Approving...</>;
-    if (step === "executing") return <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Confirming...</>;
+    if (step === "approving")
+      return (
+        <>
+          <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Approving...
+        </>
+      );
+    if (step === "executing")
+      return (
+        <>
+          <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Confirming...
+        </>
+      );
 
     if (activeTab === "deposit") {
       return needsDepositApproval ? "Approve & Deposit" : "Deposit Liquidity";
     } else {
-      return needsWithdrawApproval ? "Approve & Withdraw" : "Withdraw Liquidity";
+      return needsWithdrawApproval
+        ? "Approve & Withdraw"
+        : "Withdraw Liquidity";
     }
   };
 
@@ -395,7 +437,9 @@ export function LiquidityScreen() {
 
             <div className="mt-5 space-y-4 sm:mt-6 sm:space-y-5">
               <div className="space-y-2">
-                <Label>{activeTab === "deposit" ? "Deposit Token" : "Withdraw as"}</Label>
+                <Label>
+                  {activeTab === "deposit" ? "Deposit Token" : "Withdraw as"}
+                </Label>
                 <Select
                   value={selectedToken}
                   onValueChange={(val) => {
@@ -450,7 +494,7 @@ export function LiquidityScreen() {
                       setAmountStr(
                         activeTab === "deposit"
                           ? formatUnits(tokenBalance, decimals)
-                          : formatUnits(lpBalance, 6)
+                          : formatUnits(lpBalance, 6),
                       )
                     }
                   >

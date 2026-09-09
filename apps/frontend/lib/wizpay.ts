@@ -1,6 +1,8 @@
 import { formatUnits, parseUnits, type Address } from "viem";
+import { getArcNetworkByKey } from "@wizpay/arc-network";
 
 import { EURC_ADDRESS, USDC_ADDRESS } from "@/constants/addresses";
+import { ACTIVE_ARC_NETWORK } from "@/lib/active-arc-network";
 
 export type TokenSymbol = "USDC" | "EURC";
 
@@ -18,9 +20,11 @@ export interface RecipientDraft {
   targetToken: TokenSymbol;
 }
 
-export const EXPLORER_BASE_URL = "https://testnet.arcscan.app";
-export const ARC_TESTNET_CHAIN_ID = 5_042_002;
-export const ARC_MAINNET_CHAIN_ID = 5_042;
+export const ARC_CHAIN_ID = ACTIVE_ARC_NETWORK.chainId;
+export const EXPLORER_BASE_URL = ACTIVE_ARC_NETWORK.explorerBaseUrl;
+/** Compatibility identity exports; the shared registry remains authoritative. */
+export const ARC_TESTNET_CHAIN_ID = getArcNetworkByKey("arc-testnet").chainId;
+export const ARC_MAINNET_CHAIN_ID = getArcNetworkByKey("arc-mainnet").chainId;
 export const PREVIEW_SLIPPAGE_BPS = 200n;
 export const GAS_BUFFER_BPS = 1500n;
 export const MAX_REFERENCE_ID_LENGTH = 64;
@@ -86,23 +90,15 @@ export function isTransactionHash(
   return /^0x[a-fA-F0-9]{64}$/.test(value ?? "");
 }
 
-export function getExplorerBaseUrlForChain(chainId: number): string | null {
-  if (chainId === ARC_TESTNET_CHAIN_ID) return EXPLORER_BASE_URL;
-  if (chainId !== ARC_MAINNET_CHAIN_ID) return null;
-
-  const configured = process.env.NEXT_PUBLIC_ARC_MAINNET_EXPLORER_URL?.trim();
-  if (!configured) return null;
-  try {
-    const url = new URL(configured);
-    return url.protocol === "https:" ? configured.replace(/\/+$/, "") : null;
-  } catch {
-    return null;
-  }
+export function getExplorerBaseUrlForChain(
+  chainId: number | undefined,
+): string | null {
+  return chainId === ARC_CHAIN_ID ? EXPLORER_BASE_URL : null;
 }
 
 export function getExplorerTxUrl(
   hash: string | null | undefined,
-  chainId = ARC_TESTNET_CHAIN_ID,
+  chainId: number | undefined,
 ) {
   const explorerBaseUrl = getExplorerBaseUrlForChain(chainId);
   return isTransactionHash(hash) && explorerBaseUrl

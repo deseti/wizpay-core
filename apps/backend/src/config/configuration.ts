@@ -1,3 +1,8 @@
+import {
+  loadBackendArcNetworkConfiguration,
+  type BackendArcNetworkConfiguration,
+} from './arc-network.config';
+
 export const DEFAULT_REDIS_HOST = '127.0.0.1';
 export const DEFAULT_REDIS_PORT = 6379;
 
@@ -21,6 +26,7 @@ export interface FxConfig {
 }
 
 export interface ApplicationConfig {
+  arcNetwork: BackendArcNetworkConfiguration;
   databaseUrl: string;
   redis: {
     host: string;
@@ -30,6 +36,7 @@ export interface ApplicationConfig {
 }
 
 export default (): ApplicationConfig => ({
+  arcNetwork: loadBackendArcNetworkConfiguration(),
   databaseUrl: process.env.DATABASE_URL ?? '',
   redis: {
     host: process.env.REDIS_HOST ?? DEFAULT_REDIS_HOST,

@@ -7,7 +7,10 @@ import {
 } from "viem";
 
 import { WIZPAY_BATCH_PAYMENT_ROUTED_EVENT } from "@/constants/abi";
-import { WIZPAY_ADDRESS } from "@/constants/addresses";
+import {
+  WIZPAY_ADDRESS,
+  WIZPAY_SWAP_EXECUTOR_V2_ADDRESS,
+} from "@/constants/addresses";
 import {
   validateExternalXylonetQuote,
   verifyExternalXylonetReceipt,
@@ -76,8 +79,16 @@ interface ConfirmedReceipt {
 
 export interface ExternalPayrollXylonetActions {
   assertWallet: () => void;
-  readAllowance: (token: Address, owner: Address, spender: Address) => Promise<bigint>;
-  submitApproval: (token: Address, spender: Address, amount: bigint) => Promise<Hex>;
+  readAllowance: (
+    token: Address,
+    owner: Address,
+    spender: Address,
+  ) => Promise<bigint>;
+  submitApproval: (
+    token: Address,
+    spender: Address,
+    amount: bigint,
+  ) => Promise<Hex>;
   submitSwap: (quote: ValidatedExternalXylonetQuote) => Promise<Hex>;
   waitForReceipt: (hash: Hex) => Promise<ConfirmedReceipt>;
 }
@@ -159,7 +170,11 @@ function readState(
     throw new Error("Saved External Wallet payroll recovery state is invalid.");
   }
   const state = parsed as PersistedExternalPayrollXylonetState;
-  if (state.version !== 1 || !state.binding || !sameBinding(state.binding, binding)) {
+  if (
+    state.version !== 1 ||
+    !state.binding ||
+    !sameBinding(state.binding, binding)
+  ) {
     throw new Error(
       "Saved External Wallet payroll state does not match this wallet, route, amount, or recipient set.",
     );
@@ -201,8 +216,7 @@ function assertPersistedQuoteBinding(
   quote: ValidatedExternalXylonetQuote,
   binding: ExternalPayrollXylonetBinding,
 ) {
-  const configuredExecutor =
-    process.env.NEXT_PUBLIC_WIZPAY_SWAP_EXECUTOR_V2_ADDRESS;
+  const configuredExecutor = WIZPAY_SWAP_EXECUTOR_V2_ADDRESS;
   if (
     !configuredExecutor ||
     !isAddress(configuredExecutor) ||
@@ -249,7 +263,9 @@ async function confirmPersistedSwap(
     state.verifiedActualOutput &&
     state.verifiedActualOutput !== amountOut.toString()
   ) {
-    throw new Error("Saved XyloNet output does not match the verified receipt.");
+    throw new Error(
+      "Saved XyloNet output does not match the verified receipt.",
+    );
   }
 
   const confirmed: PersistedExternalPayrollXylonetState = {
@@ -405,7 +421,9 @@ function verifyPayrollBatchReceipt(input: {
       // Ignore unrelated WizPay logs and continue to the bound payroll event.
     }
   }
-  throw new Error("Payroll receipt does not match this wallet and batch reference.");
+  throw new Error(
+    "Payroll receipt does not match this wallet and batch reference.",
+  );
 }
 
 export async function recordExternalPayrollBatchConfirmation(input: {
@@ -430,7 +448,10 @@ export async function recordExternalPayrollBatchConfirmation(input: {
   const completedBatches = state.completedBatches.filter(
     (batch) => batch.referenceId !== input.referenceId,
   );
-  completedBatches.push({ referenceId: input.referenceId, txHash: input.txHash });
+  completedBatches.push({
+    referenceId: input.referenceId,
+    txHash: input.txHash,
+  });
   writeState(input.storage, input.binding, {
     ...state,
     stage: "payroll_in_progress",

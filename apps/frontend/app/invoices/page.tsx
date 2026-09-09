@@ -20,7 +20,7 @@ import {
   type InvoiceStatus,
   type MerchantInvoice,
 } from "@/lib/invoice-api";
-import { getExplorerTxUrl } from "@/lib/wizpay";
+import { ARC_CHAIN_ID, getExplorerTxUrl } from "@/lib/wizpay";
 
 const FILTERS: Array<{ label: string; value?: InvoiceStatus }> = [
   { label: "All" },
@@ -202,7 +202,9 @@ function InvoiceRow({ invoice }: { invoice: MerchantInvoice }) {
           {invoice.transactionHash ? (
             <Button asChild size="sm" variant="outline">
               <a
-                href={getExplorerTxUrl(invoice.transactionHash) ?? "#"}
+                href={
+                  getExplorerTxUrl(invoice.transactionHash, ARC_CHAIN_ID) ?? "#"
+                }
                 target="_blank"
                 rel="noreferrer"
               >

@@ -12,7 +12,7 @@ import {
   type Hex,
   type PublicClient,
 } from 'viem';
-import { resolveArcTestnetRpcUrl } from '../config/arc-rpc';
+import type { BackendArcNetworkConfiguration } from '../config/arc-network.config';
 import {
   INVOICE_CHAIN_ID,
   INVOICE_ERROR_CODES,
@@ -63,17 +63,12 @@ export class InvoicePaymentVerifierService {
       );
     }
     this.confirmationsRequired = configuredConfirmations;
-    const rpcUrl = resolveArcTestnetRpcUrl([
-      {
-        name: 'ARC_TESTNET_RPC_URL',
-        value: config.get<string>('ARC_TESTNET_RPC_URL'),
-      },
-      { name: 'RPC_URL', value: config.get<string>('RPC_URL') },
-      {
-        name: 'NEXT_PUBLIC_ARC_TESTNET_RPC_URL',
-        value: config.get<string>('NEXT_PUBLIC_ARC_TESTNET_RPC_URL'),
-      },
-    ]);
+    const arcNetwork =
+      config.getOrThrow<BackendArcNetworkConfiguration>('arcNetwork');
+    const rpcUrl = arcNetwork.rpcUrl;
+    if (arcNetwork.chainId !== INVOICE_CHAIN_ID) {
+      throw new Error('Invoices require the selected Arc Testnet network.');
+    }
     this.publicClient = createPublicClient({
       chain: {
         id: INVOICE_CHAIN_ID,

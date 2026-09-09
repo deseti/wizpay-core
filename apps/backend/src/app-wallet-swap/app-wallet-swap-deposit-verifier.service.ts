@@ -15,7 +15,7 @@ import {
   AppWalletSwapDepositVerificationRequest,
   AppWalletSwapDepositVerificationResult,
 } from './app-wallet-swap.types';
-import { resolveArcTestnetRpcUrl } from '../config/arc-rpc';
+import { resolveArcRpcUrl } from '../config/arc-rpc';
 
 const ARC_TESTNET_CHAIN_ID = 5_042_002;
 const TRANSFER_EVENT = parseAbiItem(
@@ -42,7 +42,7 @@ const TOKEN_ADDRESS_BY_SYMBOL = {
 } as const;
 
 function readArcRpcUrl() {
-  return resolveArcTestnetRpcUrl([
+  return resolveArcRpcUrl('arc-testnet', [
     { name: 'ARC_TESTNET_RPC_URL', value: process.env.ARC_TESTNET_RPC_URL },
     {
       name: 'NEXT_PUBLIC_ARC_TESTNET_RPC_URL',
@@ -53,7 +53,9 @@ function readArcRpcUrl() {
 
 @Injectable()
 export class AppWalletSwapDepositVerifierService {
-  private readonly logger = new Logger(AppWalletSwapDepositVerifierService.name);
+  private readonly logger = new Logger(
+    AppWalletSwapDepositVerifierService.name,
+  );
 
   private readonly publicClient = createPublicClient({
     chain: {
@@ -92,15 +94,15 @@ export class AppWalletSwapDepositVerifierService {
 
     this.logger.log(
       `[deposit-verify-diag] Verifying deposit: ` +
-      `txHash=${request.depositTxHash} ` +
-      `tokenIn=${request.tokenIn} ` +
-      `tokenAddress=${tokenAddress} ` +
-      `expectedAmount=${expectedAmount.toString()} ` +
-      `userWalletAddress=${userWalletAddress} ` +
-      `treasuryAddress=${treasuryAddress} ` +
-      `receiptStatus=${receipt.status} ` +
-      `logCount=${receipt.logs.length} ` +
-      `txFrom=${receipt.from}`,
+        `txHash=${request.depositTxHash} ` +
+        `tokenIn=${request.tokenIn} ` +
+        `tokenAddress=${tokenAddress} ` +
+        `expectedAmount=${expectedAmount.toString()} ` +
+        `userWalletAddress=${userWalletAddress} ` +
+        `treasuryAddress=${treasuryAddress} ` +
+        `receiptStatus=${receipt.status} ` +
+        `logCount=${receipt.logs.length} ` +
+        `txFrom=${receipt.from}`,
     );
 
     for (const log of receipt.logs) {
@@ -123,11 +125,11 @@ export class AppWalletSwapDepositVerifierService {
 
         this.logger.log(
           `[deposit-verify-diag] ERC-20 Transfer found: ` +
-          `from=${from} to=${to} value=${value.toString()} ` +
-          `tokenAddress=${log.address} ` +
-          `fromMatch=${isAddressEqual(from, userWalletAddress)} ` +
-          `toMatch=${isAddressEqual(to, treasuryAddress)} ` +
-          `valueMatch=${value >= expectedAmount}`,
+            `from=${from} to=${to} value=${value.toString()} ` +
+            `tokenAddress=${log.address} ` +
+            `fromMatch=${isAddressEqual(from, userWalletAddress)} ` +
+            `toMatch=${isAddressEqual(to, treasuryAddress)} ` +
+            `valueMatch=${value >= expectedAmount}`,
         );
 
         if (
@@ -146,15 +148,12 @@ export class AppWalletSwapDepositVerifierService {
         // uses a proxy or the Circle SDK reports the owner address instead of
         // the MSCA address. Accept any transfer TO the treasury with sufficient
         // value in the user-initiated transaction (txHash is already verified).
-        if (
-          isAddressEqual(to, treasuryAddress) &&
-          value >= expectedAmount
-        ) {
+        if (isAddressEqual(to, treasuryAddress) && value >= expectedAmount) {
           this.logger.log(
             `[deposit-verify-diag] Accepting transfer with relaxed from check: ` +
-            `actualFrom=${from} expectedFrom=${userWalletAddress} ` +
-            `txFrom=${receipt.from} ` +
-            `to=${to} value=${value.toString()}`,
+              `actualFrom=${from} expectedFrom=${userWalletAddress} ` +
+              `txFrom=${receipt.from} ` +
+              `to=${to} value=${value.toString()}`,
           );
           return {
             confirmed: true,
@@ -172,9 +171,9 @@ export class AppWalletSwapDepositVerifierService {
 
       this.logger.log(
         `[deposit-verify-diag] Checking native USDC path: ` +
-        `expectedNativeAmount=${expectedNativeAmount.toString()} ` +
-        `nativeLogAddress=${ARC_NATIVE_USDC_LOG_ADDRESS} ` +
-        `nativeTopic=${ARC_NATIVE_USDC_TRANSFER_TOPIC}`,
+          `expectedNativeAmount=${expectedNativeAmount.toString()} ` +
+          `nativeLogAddress=${ARC_NATIVE_USDC_LOG_ADDRESS} ` +
+          `nativeTopic=${ARC_NATIVE_USDC_TRANSFER_TOPIC}`,
       );
 
       for (const log of receipt.logs) {
@@ -194,17 +193,14 @@ export class AppWalletSwapDepositVerifierService {
 
         this.logger.log(
           `[deposit-verify-diag] Native USDC Transfer found: ` +
-          `from=${from} to=${to} rawValue=${log.data} ` +
-          `parsedValue=${BigInt(log.data).toString()} ` +
-          `fromMatch=${from ? isAddressEqual(from, userWalletAddress) : false} ` +
-          `toMatch=${to ? isAddressEqual(to, treasuryAddress) : false} ` +
-          `valueMatch=${BigInt(log.data) >= expectedNativeAmount}`,
+            `from=${from} to=${to} rawValue=${log.data} ` +
+            `parsedValue=${BigInt(log.data).toString()} ` +
+            `fromMatch=${from ? isAddressEqual(from, userWalletAddress) : false} ` +
+            `toMatch=${to ? isAddressEqual(to, treasuryAddress) : false} ` +
+            `valueMatch=${BigInt(log.data) >= expectedNativeAmount}`,
         );
 
-        if (
-          !to ||
-          !isAddressEqual(to, treasuryAddress)
-        ) {
+        if (!to || !isAddressEqual(to, treasuryAddress)) {
           continue;
         }
 
@@ -213,7 +209,7 @@ export class AppWalletSwapDepositVerifierService {
           if (from && !isAddressEqual(from, userWalletAddress)) {
             this.logger.log(
               `[deposit-verify-diag] Native USDC: accepting with relaxed from check: ` +
-              `actualFrom=${from} expectedFrom=${userWalletAddress} txFrom=${receipt.from}`,
+                `actualFrom=${from} expectedFrom=${userWalletAddress} txFrom=${receipt.from}`,
             );
           }
           return {
@@ -230,14 +226,17 @@ export class AppWalletSwapDepositVerifierService {
       // and decoded against the Arc native 18-decimal scale.
       this.logger.log(
         `[deposit-verify-diag] Checking native USDC alias log path: ` +
-        `expectedNativeAmount=${expectedNativeAmount.toString()} ` +
-        `aliasLogAddress=${ARC_NATIVE_USDC_TRANSFER_LOG_ALIAS_ADDRESS} ` +
-        `erc20Topic=${ERC20_TRANSFER_TOPIC}`,
+          `expectedNativeAmount=${expectedNativeAmount.toString()} ` +
+          `aliasLogAddress=${ARC_NATIVE_USDC_TRANSFER_LOG_ALIAS_ADDRESS} ` +
+          `erc20Topic=${ERC20_TRANSFER_TOPIC}`,
       );
 
       for (const log of receipt.logs) {
         if (
-          !isAddressEqual(log.address, ARC_NATIVE_USDC_TRANSFER_LOG_ALIAS_ADDRESS)
+          !isAddressEqual(
+            log.address,
+            ARC_NATIVE_USDC_TRANSFER_LOG_ALIAS_ADDRESS,
+          )
         ) {
           continue;
         }
@@ -263,11 +262,11 @@ export class AppWalletSwapDepositVerifierService {
 
           this.logger.log(
             `[deposit-verify-diag] Native USDC alias Transfer found: ` +
-            `from=${from} to=${to} value=${value.toString()} ` +
-            `aliasAddress=${log.address} ` +
-            `fromMatch=${isAddressEqual(from, userWalletAddress)} ` +
-            `toMatch=${isAddressEqual(to, treasuryAddress)} ` +
-            `valueMatch=${value >= expectedNativeAmount}`,
+              `from=${from} to=${to} value=${value.toString()} ` +
+              `aliasAddress=${log.address} ` +
+              `fromMatch=${isAddressEqual(from, userWalletAddress)} ` +
+              `toMatch=${isAddressEqual(to, treasuryAddress)} ` +
+              `valueMatch=${value >= expectedNativeAmount}`,
           );
 
           if (!isAddressEqual(to, treasuryAddress)) {
@@ -281,7 +280,7 @@ export class AppWalletSwapDepositVerifierService {
             if (!isAddressEqual(from, userWalletAddress)) {
               this.logger.log(
                 `[deposit-verify-diag] Native USDC alias: accepting with relaxed from check: ` +
-                `actualFrom=${from} expectedFrom=${userWalletAddress} txFrom=${receipt.from}`,
+                  `actualFrom=${from} expectedFrom=${userWalletAddress} txFrom=${receipt.from}`,
               );
             }
             return {
@@ -307,8 +306,8 @@ export class AppWalletSwapDepositVerifierService {
       const log = receipt.logs[i];
       this.logger.warn(
         `[deposit-verify-diag] Log[${i}]: address=${log.address} ` +
-        `topics=[${log.topics.join(', ')}] ` +
-        `data=${log.data.slice(0, 130)}`,
+          `topics=[${log.topics.join(', ')}] ` +
+          `data=${log.data.slice(0, 130)}`,
       );
 
       // Try to decode as Transfer for any token
@@ -322,10 +321,10 @@ export class AppWalletSwapDepositVerifierService {
           const { from, to, value } = decoded.args;
           this.logger.warn(
             `[deposit-verify-diag] Log[${i}] decoded Transfer: ` +
-            `from=${from} to=${to} value=${value.toString()} ` +
-            `expectedToken=${tokenAddress} actualToken=${log.address} ` +
-            `expectedFrom=${userWalletAddress} expectedTo=${treasuryAddress} ` +
-            `expectedAmount=${expectedAmount.toString()}`,
+              `from=${from} to=${to} value=${value.toString()} ` +
+              `expectedToken=${tokenAddress} actualToken=${log.address} ` +
+              `expectedFrom=${userWalletAddress} expectedTo=${treasuryAddress} ` +
+              `expectedAmount=${expectedAmount.toString()}`,
           );
           actualTransfers.push(
             `Transfer(from=${from}, to=${to}, value=${value.toString()}, token=${log.address})`,
@@ -345,8 +344,7 @@ export class AppWalletSwapDepositVerifierService {
 
     return {
       confirmed: false,
-      error:
-        `Deposit transaction did not include a matching ${request.tokenIn} transfer to the treasury. ${mismatchDetails}`,
+      error: `Deposit transaction did not include a matching ${request.tokenIn} transfer to the treasury. ${mismatchDetails}`,
     };
   }
 

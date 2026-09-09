@@ -25,7 +25,7 @@ import {
   type Hash,
   type PublicClient,
 } from 'viem';
-import { resolveArcTestnetRpcUrl } from '../config/arc-rpc';
+import { resolveArcRpcUrl } from '../config/arc-rpc';
 import { PrismaService } from '../database/prisma.service';
 import { W3sAuthService } from '../modules/wallet/w3s-auth.service';
 import { WalletService } from '../modules/wallet/wallet.service';
@@ -1373,7 +1373,7 @@ export class AppWalletXylonetUserControlledExecutorService {
 
   private getPublicClient(): PublicClient {
     if (this.injectedPublicClient) return this.injectedPublicClient;
-    const rpcUrl = resolveArcTestnetRpcUrl([
+    const rpcUrl = resolveArcRpcUrl('arc-testnet', [
       { name: 'RPC_URL', value: process.env.RPC_URL },
       { name: 'ARC_RPC_URL', value: process.env.ARC_RPC_URL },
     ]);

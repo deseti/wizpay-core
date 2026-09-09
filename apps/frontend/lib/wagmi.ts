@@ -11,20 +11,10 @@ import { createConfig, fallback, http } from "wagmi";
 import { defineChain, type Chain } from "viem";
 import { sepolia } from "viem/chains";
 import { BRIDGE_TESTNET_BY_CODE } from "@wizpay/bridge-registry";
+import { ACTIVE_ARC_NETWORK } from "@/lib/active-arc-network";
 
-export const ARC_TESTNET_RPC_URL = "https://rpc.testnet.arc.io";
-
-const configuredArcTestnetRpcUrl =
-  process.env.NEXT_PUBLIC_ARC_TESTNET_RPC_URL?.trim();
-
-if (
-  configuredArcTestnetRpcUrl &&
-  configuredArcTestnetRpcUrl !== ARC_TESTNET_RPC_URL
-) {
-  throw new Error(
-    `NEXT_PUBLIC_ARC_TESTNET_RPC_URL must be exactly ${ARC_TESTNET_RPC_URL}.`,
-  );
-}
+/** Testnet-only compatibility name; value is selected from the shared registry. */
+export const ARC_TESTNET_RPC_URL = ACTIVE_ARC_NETWORK.rpcUrl;
 
 const DEFAULT_ETHEREUM_SEPOLIA_RPC_URLS = [
   "https://ethereum-sepolia-rpc.publicnode.com",
@@ -72,7 +62,7 @@ export const HAS_WALLETCONNECT_PROJECT_ID = WALLETCONNECT_PROJECT_ID.length > 0;
  * Arc Testnet — custom chain definition
  */
 export const arcTestnet = defineChain({
-  id: 5_042_002,
+  id: ACTIVE_ARC_NETWORK.chainId,
   name: "Arc Testnet",
   nativeCurrency: {
     name: "USDC",
@@ -90,7 +80,7 @@ export const arcTestnet = defineChain({
   blockExplorers: {
     default: {
       name: "ArcScan",
-      url: "https://testnet.arcscan.app",
+      url: ACTIVE_ARC_NETWORK.explorerBaseUrl,
     },
   },
   testnet: true,

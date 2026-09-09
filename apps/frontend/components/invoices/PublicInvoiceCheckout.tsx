@@ -22,7 +22,7 @@ import { TransactionSuccessDialog } from "@/components/dashboard/TransactionSucc
 import { useInvoicePayment } from "@/hooks/useInvoicePayment";
 import { getPublicInvoice, type PublicInvoice } from "@/lib/invoice-api";
 import { getInvoiceCheckoutUrl } from "@/lib/invoice-links";
-import { getExplorerTxUrl } from "@/lib/wizpay";
+import { ARC_CHAIN_ID, getExplorerTxUrl } from "@/lib/wizpay";
 import { InvoiceQrCode } from "./InvoiceQrCode";
 
 export function PublicInvoiceCheckout({ publicId }: { publicId: string }) {
@@ -89,7 +89,7 @@ function CheckoutLoaded({
 }) {
   const payment = useInvoicePayment(invoice, onInvoice);
   const checkoutUrl = getInvoiceCheckoutUrl(invoice.publicId);
-  const explorerUrl = getExplorerTxUrl(invoice.transactionHash);
+  const explorerUrl = getExplorerTxUrl(invoice.transactionHash, ARC_CHAIN_ID);
   const terminal =
     invoice.status === "PAID" ||
     invoice.status === "EXPIRED" ||
@@ -179,7 +179,9 @@ function CheckoutLoaded({
             <Card className="glass-card border-border/40">
               <CardContent className="space-y-4 p-5 sm:p-6">
                 <div>
-                  <h2 className="text-lg font-semibold">Choose payment method</h2>
+                  <h2 className="text-lg font-semibold">
+                    Choose payment method
+                  </h2>
                   <p className="mt-1 text-sm text-muted-foreground">
                     WizPay will request one exact ERC-20 transfer. The backend
                     marks this invoice paid only after independent receipt
@@ -212,14 +214,18 @@ function CheckoutLoaded({
                     type="button"
                     role="radio"
                     aria-checked={payment.method === "external"}
-                    variant={payment.method === "external" ? "default" : "outline"}
+                    variant={
+                      payment.method === "external" ? "default" : "outline"
+                    }
                     className="h-auto min-h-20 justify-start whitespace-normal p-4 text-left"
                     disabled={payment.locked}
                     onClick={() => payment.selectMethod("external")}
                   >
                     <Wallet className="mr-3 h-5 w-5 shrink-0" />
                     <span>
-                      <span className="block font-semibold">External Wallet</span>
+                      <span className="block font-semibold">
+                        External Wallet
+                      </span>
                       <span className="mt-1 block text-xs opacity-75">
                         Pay with a connected external wallet
                       </span>

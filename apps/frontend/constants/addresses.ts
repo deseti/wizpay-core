@@ -1,12 +1,10 @@
 import type { Address } from "viem";
+import { ACTIVE_ARC_NETWORK } from "@/lib/active-arc-network";
 
-const configuredWizPayAddress =
-  process.env.NEXT_PUBLIC_CONTRACT_ADDRESS?.trim() ||
-  process.env.NEXT_PUBLIC_WIZPAY_ADDRESS?.trim();
-
-export const WIZPAY_ADDRESS =
-  (configuredWizPayAddress ||
-    "0x87ACE45582f45cC81AC1E627E875AE84cbd75946") as Address;
+export const WIZPAY_ADDRESS = ACTIVE_ARC_NETWORK.contracts.wizpay
+  .address as Address;
+export const WIZPAY_SWAP_EXECUTOR_V2_ADDRESS = ACTIVE_ARC_NETWORK.contracts
+  .wizpaySwapExecutorV2.address as Address;
 export const LEGACY_WIZPAY_ADDRESS =
   "0xE89f7c3781Dd24baE53d6ef9Af8a6a174731b4c8" as Address;
 export const WIZPAY_HISTORY_ADDRESSES = [
@@ -15,10 +13,8 @@ export const WIZPAY_HISTORY_ADDRESSES = [
 ] as const;
 export const WIZPAY_HISTORY_FROM_BLOCK = 35_790_000n;
 
-export const USDC_ADDRESS =
-  "0x3600000000000000000000000000000000000000" as Address;
-export const EURC_ADDRESS =
-  "0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a" as Address;
+export const USDC_ADDRESS = ACTIVE_ARC_NETWORK.tokens.USDC.address as Address;
+export const EURC_ADDRESS = ACTIVE_ARC_NETWORK.tokens.EURC.address as Address;
 export const ETHEREUM_SEPOLIA_USDC_ADDRESS =
   "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238" as Address;
 export const ETHEREUM_SEPOLIA_EURC_ADDRESS =

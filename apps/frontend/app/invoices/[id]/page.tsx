@@ -20,7 +20,7 @@ import {
   getMerchantInvoice,
   type MerchantInvoice,
 } from "@/lib/invoice-api";
-import { getExplorerTxUrl } from "@/lib/wizpay";
+import { ARC_CHAIN_ID, getExplorerTxUrl } from "@/lib/wizpay";
 
 export default function InvoiceDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -179,7 +179,12 @@ export default function InvoiceDetailPage() {
                   label="Verified transaction"
                   value={
                     <a
-                      href={getExplorerTxUrl(invoice.transactionHash) ?? "#"}
+                      href={
+                        getExplorerTxUrl(
+                          invoice.transactionHash,
+                          ARC_CHAIN_ID,
+                        ) ?? "#"
+                      }
                       target="_blank"
                       rel="noreferrer"
                       className="inline-flex items-center gap-1 break-all font-mono text-xs text-primary"

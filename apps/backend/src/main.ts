@@ -1,10 +1,17 @@
 import { Logger } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
+import { loadBackendArcNetworkConfiguration } from './config/arc-network.config';
 
-async function bootstrap() {
+type CreateApplication = () => ReturnType<typeof NestFactory.create>;
+
+export async function bootstrap(
+  createApplication: CreateApplication = () => NestFactory.create(AppModule),
+  environment = process.env,
+) {
   const logger = new Logger('Bootstrap');
-  const app = await NestFactory.create(AppModule);
+  loadBackendArcNetworkConfiguration(environment);
+  const app = await createApplication();
   app.enableShutdownHooks();
 
   // ── CORS ─────────────────────────────────────────────────────────────
@@ -28,4 +35,7 @@ async function bootstrap() {
   logger.log(`Application running on port ${port}`);
   logger.log(`CORS origins: ${corsOrigins.join(', ')}`);
 }
-bootstrap();
+
+if (require.main === module) {
+  void bootstrap();
+}

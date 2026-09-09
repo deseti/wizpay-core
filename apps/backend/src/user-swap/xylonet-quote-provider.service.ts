@@ -22,13 +22,11 @@ import {
   type UserSwapNormalizedQuote,
   type UserSwapToken,
 } from './user-swap.types';
-import {
-  ARC_TESTNET_RPC_URL,
-  resolveArcTestnetRpcUrl,
-} from '../config/arc-rpc';
+import { resolveArcRpcUrl } from '../config/arc-rpc';
 
 export const USER_SWAP_ARC_TESTNET_CHAIN_ID = 5_042_002;
-export const USER_SWAP_XYLONET_DEFAULT_RPC_URL = ARC_TESTNET_RPC_URL;
+export const USER_SWAP_XYLONET_DEFAULT_RPC_URL =
+  resolveArcRpcUrl('arc-testnet');
 export const USER_SWAP_XYLONET_USDC_ADDRESS =
   '0x3600000000000000000000000000000000000000' as const;
 export const USER_SWAP_XYLONET_EURC_ADDRESS =
@@ -429,7 +427,7 @@ export class XylonetQuoteProviderService {
   }
 
   private getRpcUrl(): string {
-    return resolveArcTestnetRpcUrl([
+    return resolveArcRpcUrl('arc-testnet', [
       { name: 'ARC_TESTNET_RPC_URL', value: process.env.ARC_TESTNET_RPC_URL },
       {
         name: 'NEXT_PUBLIC_ARC_TESTNET_RPC_URL',

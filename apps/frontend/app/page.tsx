@@ -26,6 +26,7 @@ import { useDelayedLoading } from "@/hooks/useDelayedLoading";
 import {
   formatTokenAmount,
   getExplorerTxUrl,
+  ARC_CHAIN_ID,
   TOKEN_OPTIONS,
   type TokenSymbol,
   ARC_TESTNET_CHAIN_ID,
@@ -280,7 +281,7 @@ function RecentActivity({
             : item.lpAmount
               ? formatTokenAmount(item.lpAmount, 6)
               : "—");
-        const txUrl = getExplorerTxUrl(item.txHash);
+        const txUrl = getExplorerTxUrl(item.txHash, ARC_CHAIN_ID);
 
         return (
           <div

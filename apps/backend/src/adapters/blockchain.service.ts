@@ -1,8 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createHash, randomBytes } from 'crypto';
+import { getArcNetworkByKey } from '@wizpay/arc-network';
 import { SolanaService } from './solana.service';
-import { resolveArcTestnetRpcUrl } from '../config/arc-rpc';
+
+const ARC_TESTNET_CHAIN_ID = getArcNetworkByKey('arc-testnet').chainId;
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -124,21 +126,11 @@ export class BlockchainService {
   ) {}
 
   private get rpcUrl(): string {
-    return resolveArcTestnetRpcUrl([
-      { name: 'RPC_URL', value: this.configService.get<string>('RPC_URL') },
-      {
-        name: 'ARC_RPC_URL',
-        value: this.configService.get<string>('ARC_RPC_URL'),
-      },
-      {
-        name: 'NEXT_PUBLIC_ARC_TESTNET_RPC_URL',
-        value: this.configService.get<string>('NEXT_PUBLIC_ARC_TESTNET_RPC_URL'),
-      },
-    ]);
+    return this.configService.getOrThrow<string>('arcNetwork.rpcUrl');
   }
 
   private get chainId(): number {
-    return Number(this.configService.get<string>('CHAIN_ID') || '5042002');
+    return this.configService.getOrThrow<number>('arcNetwork.chainId');
   }
 
   private toHexBlockTag(blockNumber: bigint): string {
@@ -150,20 +142,25 @@ export class BlockchainService {
   /**
    * Resolve the JSON-RPC endpoint for an EVM-compatible chain.
    * Supported chains: ARC-TESTNET, ETH-SEPOLIA.
-   * Falls back to the default RPC URL for any unrecognised chain.
+   * Rejects unrecognised chains instead of falling back across networks.
    */
   getChainRpcUrl(chain: string): string {
     switch (chain.toUpperCase()) {
       case 'ARC-TESTNET':
+        if (this.chainId !== ARC_TESTNET_CHAIN_ID) {
+          throw new Error('ARC-TESTNET is not the selected Arc network.');
+        }
         return this.rpcUrl;
       case 'ETH-SEPOLIA':
         return (
           this.configService.get<string>('ETH_SEPOLIA_RPC_URL') ||
-          this.configService.get<string>('NEXT_PUBLIC_ETHEREUM_SEPOLIA_RPC_URL') ||
+          this.configService.get<string>(
+            'NEXT_PUBLIC_ETHEREUM_SEPOLIA_RPC_URL',
+          ) ||
           'https://rpc.sepolia.org'
         );
       default:
-        return this.rpcUrl;
+        throw new Error(`Unsupported EVM chain: ${chain}.`);
     }
   }
 
@@ -180,11 +177,14 @@ export class BlockchainService {
   getChainIdForChain(chain: string): number {
     switch (chain.toUpperCase()) {
       case 'ARC-TESTNET':
-        return 5042002;
+        if (this.chainId !== ARC_TESTNET_CHAIN_ID) {
+          throw new Error('ARC-TESTNET is not the selected Arc network.');
+        }
+        return this.chainId;
       case 'ETH-SEPOLIA':
         return 11155111;
       default:
-        return this.chainId;
+        throw new Error(`Unsupported EVM chain: ${chain}.`);
     }
   }
 
@@ -225,7 +225,7 @@ export class BlockchainService {
 
   /**
    * Same as rpcCall but targets a specific chain by name.
-   * Handles EVM chains (ARC-TESTNET, ETH-SEPOLIA) and falls back to default.
+   * Handles EVM chains (ARC-TESTNET, ETH-SEPOLIA) without cross-network fallback.
    */
   private async rpcCallOnChain<T = unknown>(
     chain: string,
@@ -266,9 +266,7 @@ export class BlockchainService {
     address: string,
     tokenAddress: string,
   ): Promise<BalanceResult> {
-    this.logger.debug(
-      `getBalance — address=${address} token=${tokenAddress}`,
-    );
+    this.logger.debug(`getBalance — address=${address} token=${tokenAddress}`);
 
     // balanceOf(address) selector = 0x70a08231
     const data = `0x70a08231000000000000000000000000${address.slice(2).toLowerCase()}`;
@@ -736,6 +734,11 @@ export class BlockchainService {
     amount: string,
     mintAddress?: string,
   ): Record<string, unknown> {
-    return this.solanaService.buildSolanaSplTransferIntent(from, to, amount, mintAddress);
+    return this.solanaService.buildSolanaSplTransferIntent(
+      from,
+      to,
+      amount,
+      mintAddress,
+    );
   }
 }
