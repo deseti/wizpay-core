@@ -509,29 +509,52 @@ function resolveArcCapabilities(networkKey, environment = {}) {
     capabilities[capability] = enabled;
   }
 
-  const directResourcesAvailable =
-    ARC_RPC_RESOURCES[key].status === "available" &&
-    ARC_TOKEN_RESOURCES[key].USDC.status === "available" &&
-    ARC_TOKEN_RESOURCES[key].EURC.status === "available" &&
-    ARC_CIRCLE_EXECUTION_DEFINITIONS[key].blockchain !== null &&
-    ARC_CIRCLE_EXECUTION_DEFINITIONS[key].support.transfer &&
-    ARC_CIRCLE_EXECUTION_DEFINITIONS[key].support.contractExecution;
-  for (const capability of [
-    "send",
-    "sameTokenPayroll",
-    "invoice",
-    "paymentLink",
+  const operationResources = getArcOperationResourceReadiness(key);
+  for (const [capability, resource] of [
+    ["send", "sendDirect"],
+    ["sameTokenPayroll", "payrollDirect"],
+    ["invoice", "invoiceCreation"],
+    ["paymentLink", "paymentLinkDirect"],
   ]) {
-    if (capabilities[capability] && !directResourcesAvailable) {
+    if (capabilities[capability] && !operationResources[resource]) {
       throw new ArcCapabilityConfigurationError(
         "CAPABILITY_RESOURCE_DEPENDENCY_UNAVAILABLE",
-        `${capability} requires verified Arc RPC and token resources.`,
+        `${capability} requires its operation-specific Arc resources.`,
         capability,
       );
     }
   }
 
   return deepFreeze(capabilities);
+}
+
+function getArcOperationResourceReadiness(networkKey) {
+  const key = parseArcNetworkKey(networkKey);
+  const rpc = ARC_RPC_RESOURCES[key].status === "available";
+  const explorer = ARC_EXPLORER_RESOURCES[key].status === "available";
+  const usdc = ARC_TOKEN_RESOURCES[key].USDC.status === "available";
+  const eurc = ARC_TOKEN_RESOURCES[key].EURC.status === "available";
+  const payrollContract =
+    ARC_WIZPAY_CONTRACT_RESOURCES[key].wizpay.status === "available";
+  const swapExecutor =
+    ARC_WIZPAY_CONTRACT_RESOURCES[key]["wizpay-swap-executor-v2"].status ===
+    "available";
+  const circle = ARC_CIRCLE_EXECUTION_DEFINITIONS[key];
+  return deepFreeze({
+    sendDirect: rpc && explorer && usdc,
+    sendDirectAppWallet: rpc && explorer && usdc && circle.support.transfer,
+    payrollDirect: rpc && usdc && payrollContract,
+    payrollDirectAppWallet:
+      rpc && usdc && payrollContract && circle.support.contractExecution,
+    invoiceCreation: usdc,
+    paymentLinkDirect: rpc && usdc,
+    paymentLinkDirectAppWallet:
+      rpc &&
+      usdc &&
+      (circle.support.transfer || circle.support.contractExecution),
+    crossToken:
+      rpc && usdc && eurc && swapExecutor && circle.support.contractExecution,
+  });
 }
 
 function isArcCapabilityEnabled(capabilities, capability) {
@@ -550,14 +573,26 @@ function validateArcCapabilityDependencies(capabilities, resources) {
       );
     }
   };
-  for (const capability of [
+  requireResource(
     "send",
+    resources.sendDirect === undefined ? "directPayment" : "sendDirect",
+  );
+  requireResource(
     "sameTokenPayroll",
+    resources.payrollDirect === undefined ? "directPayment" : "payrollDirect",
+  );
+  requireResource(
     "invoice",
+    resources.invoiceCreation === undefined
+      ? "directPayment"
+      : "invoiceCreation",
+  );
+  requireResource(
     "paymentLink",
-  ]) {
-    requireResource(capability, "directPayment");
-  }
+    resources.paymentLinkDirect === undefined
+      ? "directPayment"
+      : "paymentLinkDirect",
+  );
   requireResource("bridge", "bridge");
   requireResource("swap", "swap");
   requireResource("stableFx", "stableFx");
@@ -718,6 +753,7 @@ module.exports = {
   getArcCircleExecutionDefinition,
   getArcNetworkByChainId,
   getArcNetworkByKey,
+  getArcOperationResourceReadiness,
   getArcProtocolCapabilityResource,
   getArcProtocolContractResource,
   getArcRpcResource,

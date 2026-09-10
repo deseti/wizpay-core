@@ -9,6 +9,19 @@ import {
 
 const writeContractAsync = vi.fn();
 const switchChainAsync = vi.fn();
+const {
+  acquireExecutionIntent,
+  bindExecutionIntentTransactionHash,
+  bindKnownExecutionIntentHash,
+  cancelExecutionIntent,
+  prepareWalletExecutionIntent,
+} = vi.hoisted(() => ({
+  acquireExecutionIntent: vi.fn(),
+  bindExecutionIntentTransactionHash: vi.fn(),
+  bindKnownExecutionIntentHash: vi.fn(),
+  cancelExecutionIntent: vi.fn(),
+  prepareWalletExecutionIntent: vi.fn(),
+}));
 const circle = vi.hoisted(() => ({
   authenticated: true,
   authMethod: "email" as "email" | "google" | "passkey" | null,
@@ -52,6 +65,13 @@ vi.mock("@/lib/invoice-api", async (original) => ({
   ...(await original<typeof import("@/lib/invoice-api")>()),
   verifyPublicInvoicePayment: vi.fn(),
 }));
+vi.mock("@/lib/execution-intent", () => ({
+  acquireExecutionIntent,
+  bindExecutionIntentTransactionHash,
+  bindKnownExecutionIntentHash,
+  cancelExecutionIntent,
+  prepareWalletExecutionIntent,
+}));
 
 describe("useInvoicePayment", () => {
   beforeEach(() => {
@@ -60,6 +80,18 @@ describe("useInvoicePayment", () => {
     writeContractAsync.mockReset();
     switchChainAsync.mockReset();
     vi.mocked(verifyPublicInvoicePayment).mockReset();
+    acquireExecutionIntent.mockReset().mockResolvedValue({
+      id: "11111111-1111-4111-8111-111111111111",
+      idempotencyKey: "22222222-2222-4222-8222-222222222222",
+      status: "CREATED",
+      circleChallengeId: null,
+      circleTransactionId: null,
+      transactionHash: null,
+    });
+    bindExecutionIntentTransactionHash.mockReset().mockResolvedValue({});
+    bindKnownExecutionIntentHash.mockReset().mockResolvedValue({});
+    cancelExecutionIntent.mockReset().mockResolvedValue({});
+    prepareWalletExecutionIntent.mockReset().mockResolvedValue({});
     circle.authenticated = true;
     circle.authMethod = "email";
     circle.userToken = "circle-user-token";
@@ -96,6 +128,9 @@ describe("useInvoicePayment", () => {
       await Promise.all([result.current.pay(), result.current.pay()]);
     });
     expect(switchChainAsync).toHaveBeenCalledWith({ chainId: 5_042_002 });
+    expect(acquireExecutionIntent).toHaveBeenCalledWith(
+      expect.objectContaining({ operation: "INVOICE_SETTLEMENT" }),
+    );
     expect(writeContractAsync).toHaveBeenCalledTimes(1);
     expect(writeContractAsync.mock.calls[0][0]).toMatchObject({
       address: invoice().token.address,
@@ -116,9 +151,16 @@ describe("useInvoicePayment", () => {
     localStorage.setItem(
       `wizpay.invoice-payment.v1.${invoice().publicId}`,
       JSON.stringify({
+        version: 2,
+        method: "external",
         publicId: invoice().publicId,
+        executionIntentId: "11111111-1111-4111-8111-111111111111",
+        executionIntentKey: "22222222-2222-4222-8222-222222222222",
+        leaseOwner: "browser-1",
+        payerAddress: account.address,
         transactionHash: `0x${"b".repeat(64)}`,
         createdAt: new Date().toISOString(),
+        stage: "confirming_onchain",
       }),
     );
     const onInvoice = vi.fn();
@@ -184,9 +226,7 @@ describe("useInvoicePayment", () => {
         "INVOICE_WRONG_AMOUNT",
       ),
     );
-    const { result } = renderHook(() =>
-      useInvoicePayment(invoice(), vi.fn()),
-    );
+    const { result } = renderHook(() => useInvoicePayment(invoice(), vi.fn()));
 
     await act(async () => {
       await result.current.pay();
@@ -201,6 +241,35 @@ describe("useInvoicePayment", () => {
     expect(writeContractAsync).toHaveBeenCalledTimes(1);
   });
 
+  it("stops safely on a pre-hash wallet ambiguity and requires explicit recovery", async () => {
+    writeContractAsync.mockRejectedValueOnce(
+      new Error("Wallet provider disconnected after submission."),
+    );
+    const { result } = renderHook(() => useInvoicePayment(invoice(), vi.fn()));
+    await act(async () => {
+      await result.current.pay();
+    });
+    expect(prepareWalletExecutionIntent).toHaveBeenCalledTimes(1);
+    expect(result.current.externalRecoveryNeedsHash).toBe(true);
+    expect(result.current.locked).toBe(true);
+    const recovery = JSON.parse(
+      localStorage.getItem(`wizpay.invoice-payment.v1.${invoice().publicId}`)!,
+    );
+    expect(recovery).toMatchObject({
+      method: "external",
+      stage: "awaiting_wallet_signature",
+    });
+    expect(recovery).not.toHaveProperty("transactionHash");
+    await act(async () => {
+      await result.current.pay();
+    });
+    expect(writeContractAsync).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      await result.current.recoverExternalHash(`0x${"d".repeat(64)}`);
+    });
+    expect(bindKnownExecutionIntentHash).toHaveBeenCalledTimes(1);
+  });
+
   it("routes App Wallet selection through one user-controlled contract execution and the shared verifier", async () => {
     const onInvoice = vi.fn();
     vi.mocked(verifyPublicInvoicePayment).mockResolvedValue({
@@ -209,7 +278,9 @@ describe("useInvoicePayment", () => {
       paymentStatus: "VERIFIED",
       transactionHash: `0x${"c".repeat(64)}`,
     });
-    const { result } = renderHook(() => useInvoicePayment(invoice(), onInvoice));
+    const { result } = renderHook(() =>
+      useInvoicePayment(invoice(), onInvoice),
+    );
 
     act(() => result.current.selectMethod("app"));
     await act(async () => {
@@ -234,7 +305,24 @@ describe("useInvoicePayment", () => {
       invoice().publicId,
       `0x${"c".repeat(64)}`,
     );
-    expect(onInvoice).toHaveBeenCalledWith(expect.objectContaining({ status: "PAID" }));
+    expect(onInvoice).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "PAID" }),
+    );
+  });
+
+  it("keeps a Payment Link caller distinct from a normal invoice settlement", async () => {
+    const { result } = renderHook(() =>
+      useInvoicePayment(
+        { ...invoice(), settlementOperation: "PAYMENT_LINK_SETTLEMENT" },
+        vi.fn(),
+      ),
+    );
+    await act(async () => {
+      await result.current.pay();
+    });
+    expect(acquireExecutionIntent).toHaveBeenCalledWith(
+      expect.objectContaining({ operation: "PAYMENT_LINK_SETTLEMENT" }),
+    );
   });
 
   it("opens App Wallet authentication without creating a challenge when unauthenticated", async () => {
@@ -284,9 +372,16 @@ describe("useInvoicePayment", () => {
         stage: "confirming_onchain",
       }),
     );
-    renderHook(() => useInvoicePayment({ ...invoice(), status: "VERIFYING" }, vi.fn()));
+    renderHook(() =>
+      useInvoicePayment({ ...invoice(), status: "VERIFYING" }, vi.fn()),
+    );
 
-    await waitFor(() => expect(verifyPublicInvoicePayment).toHaveBeenCalledWith(invoice().publicId, `0x${"d".repeat(64)}`));
+    await waitFor(() =>
+      expect(verifyPublicInvoicePayment).toHaveBeenCalledWith(
+        invoice().publicId,
+        `0x${"d".repeat(64)}`,
+      ),
+    );
     expect(circle.createContractExecutionChallenge).not.toHaveBeenCalled();
     expect(circle.executeChallenge).not.toHaveBeenCalled();
   });
@@ -295,6 +390,7 @@ describe("useInvoicePayment", () => {
 function invoice(): PublicInvoice {
   return {
     publicId: "abcdefghijklmnopqrstuv",
+    settlementOperation: "INVOICE_SETTLEMENT",
     merchantDisplayLabel: null,
     receivingAddress: "0x32F251fc36A1174901124589EAC2d4E391816F69",
     receivingAddressShort: "0x32F2...6F69",

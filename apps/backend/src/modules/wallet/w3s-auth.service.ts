@@ -1,4 +1,9 @@
-import { Injectable, Logger } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  Optional,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createHash, randomUUID } from 'node:crypto';
 import { PrismaService } from '../../database/prisma.service';
@@ -8,6 +13,59 @@ import {
   CircleConfigurationError,
   resolveCircleConfigurationFromService,
 } from '../../config/circle-execution.config';
+import {
+  createPayrollBatchDigest,
+  ExecutionIntentService,
+} from '../../execution-intent/execution-intent.service';
+import {
+  decodeFunctionData,
+  getAddress,
+  isAddressEqual,
+  keccak256,
+  parseUnits,
+} from 'viem';
+
+const EXECUTION_ERC20_ABI = [
+  {
+    type: 'function',
+    name: 'transfer',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'recipient', type: 'address' },
+      { name: 'amount', type: 'uint256' },
+    ],
+    outputs: [{ name: '', type: 'bool' }],
+  },
+] as const;
+const EXECUTION_ERC20_APPROVE_ABI = [
+  {
+    type: 'function',
+    name: 'approve',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'spender', type: 'address' },
+      { name: 'amount', type: 'uint256' },
+    ],
+    outputs: [{ name: '', type: 'bool' }],
+  },
+] as const;
+
+const EXECUTION_PAYROLL_ABI = [
+  {
+    type: 'function',
+    name: 'batchRouteAndPay',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'tokenIn', type: 'address' },
+      { name: 'tokenOuts', type: 'address[]' },
+      { name: 'recipients', type: 'address[]' },
+      { name: 'amountsIn', type: 'uint256[]' },
+      { name: 'minAmountsOut', type: 'uint256[]' },
+      { name: 'referenceId', type: 'string' },
+    ],
+    outputs: [{ name: 'totalOut', type: 'uint256' }],
+  },
+] as const;
 
 type W3sActionResult = Record<string, unknown>;
 type W3sValidationIssue = {
@@ -81,6 +139,7 @@ export class W3sAuthService {
     private readonly configService: ConfigService,
     private readonly prisma: PrismaService,
     private readonly capabilities: CapabilityService,
+    @Optional() private readonly intents?: ExecutionIntentService,
   ) {}
 
   private get circleConfig() {
@@ -106,11 +165,7 @@ export class W3sAuthService {
       case 'refreshUserToken':
         return this.refreshUserToken(params);
       case 'createContractExecutionChallenge':
-        return this.proxyUserAction(
-          'POST',
-          '/v1/w3s/user/transactions/contractExecution',
-          params,
-        );
+        return this.createArcContractExecutionChallenge(params);
       case 'createTransferChallenge':
         return this.createArcTransferChallenge(params);
       case 'estimateTransferFee':
@@ -263,6 +318,22 @@ export class W3sAuthService {
       params,
     );
     this.validateTransferFields(normalized);
+    const wallet = await this.assertPersistedWalletNetwork(
+      String(normalized.walletId),
+    );
+    if (
+      typeof wallet.address === 'string' &&
+      typeof normalized.destinationAddress === 'string' &&
+      wallet.address.toLowerCase() ===
+        normalized.destinationAddress.toLowerCase()
+    ) {
+      this.throwValidationError([
+        {
+          field: 'destinationAddress',
+          message: 'Self-send is not allowed',
+        },
+      ]);
+    }
     const requestId = randomUUID();
     const walletRef = this.stableIdentifier(String(normalized.walletId));
     const startedAt = Date.now();
@@ -287,15 +358,43 @@ export class W3sAuthService {
         balances.tokenBalances,
         reserveUnits,
       );
+      const prepared = await this.prepareDurableChallenge(
+        normalized,
+        wallet,
+        'transfer',
+      );
+      const intent = prepared.intent;
+      if (prepared.existingChallengeId)
+        return { challengeId: prepared.existingChallengeId };
       stage = 'circle_transfer_creation';
+      const { tokenAddress: _routingTokenAddress, ...providerParams } =
+        normalized;
+      delete providerParams.executionIntentId;
+      if (intent) {
+        providerParams.idempotencyKey = intent.idempotencyKey;
+        providerParams.refId = `WIZPAY-${intent.id}`;
+      }
       const result = await this.proxyUserAction(
         'POST',
         '/v1/w3s/user/transactions/transfer',
         {
-          ...normalized,
+          ...providerParams,
           userToken,
         },
       );
+      if (intent) {
+        const challengeId = this.findString(result, 'challengeId');
+        if (!challengeId)
+          throw new ServiceUnavailableException({
+            code: 'EXECUTION_INTENT_CIRCLE_RESPONSE_AMBIGUOUS',
+            message:
+              'Circle challenge creation returned without a reconcilable challenge identity.',
+          });
+        await this.intents!.bindCircleCorrelation(intent.id, {
+          challengeId,
+          transactionId: this.findString(result, 'transactionId'),
+        });
+      }
       this.logger.log(
         `W3S lifecycle requestId=${requestId} action=createTransferChallenge stage=${stage} walletRef=${walletRef} outcome=success durationMs=${Date.now() - startedAt}`,
       );
@@ -310,6 +409,265 @@ export class W3sAuthService {
       );
       throw cause;
     }
+  }
+
+  private async createArcContractExecutionChallenge(
+    params: Record<string, unknown>,
+  ): Promise<W3sActionResult> {
+    const userToken =
+      typeof params.userToken === 'string' ? params.userToken.trim() : '';
+    const normalized = this.normalizeUserActionParams(
+      '/v1/w3s/user/transactions/contractExecution',
+      params,
+    );
+    const wallet = await this.assertPersistedWalletNetwork(
+      String(normalized.walletId),
+    );
+    const prepared = await this.prepareDurableChallenge(
+      normalized,
+      wallet,
+      'contract',
+    );
+    const intent = prepared.intent;
+    if (prepared.existingChallengeId)
+      return { challengeId: prepared.existingChallengeId };
+    const providerParams = { ...normalized };
+    delete providerParams.executionIntentId;
+    if (intent) {
+      providerParams.idempotencyKey = intent.idempotencyKey;
+      providerParams.refId = `WIZPAY-${intent.id}`;
+    }
+    const result = await this.proxyUserAction(
+      'POST',
+      '/v1/w3s/user/transactions/contractExecution',
+      { ...providerParams, userToken },
+    );
+    if (intent) {
+      const challengeId = this.findString(result, 'challengeId');
+      if (!challengeId)
+        throw new ServiceUnavailableException({
+          code: 'EXECUTION_INTENT_CIRCLE_RESPONSE_AMBIGUOUS',
+          message:
+            'Circle challenge creation returned without a reconcilable challenge identity.',
+        });
+      await this.intents!.bindCircleCorrelation(intent.id, {
+        challengeId,
+        transactionId: this.findString(result, 'transactionId'),
+      });
+    }
+    return result;
+  }
+
+  private async prepareDurableChallenge(
+    params: Record<string, unknown>,
+    wallet: { address?: string; userId?: string },
+    kind: 'transfer' | 'contract',
+  ) {
+    const id =
+      typeof params.executionIntentId === 'string'
+        ? params.executionIntentId.trim()
+        : '';
+    if (!id)
+      throw new ServiceUnavailableException({
+        code: 'EXECUTION_INTENT_REQUIRED',
+        message:
+          'A durable execution intent is required before creating an Arc transaction challenge.',
+      });
+    if (!this.intents)
+      throw new ServiceUnavailableException({
+        code: 'EXECUTION_INTENT_UNAVAILABLE',
+        message: 'Durable execution intent storage is unavailable.',
+      });
+    let intent = await this.intents.get(id);
+    if (
+      intent.network !== this.configService.getOrThrow<string>('arcNetwork.key')
+    )
+      this.throwIntentMismatch('network');
+    if (
+      !wallet.address ||
+      !isAddressEqual(
+        getAddress(wallet.address),
+        getAddress(intent.sourceWallet),
+      )
+    )
+      this.throwIntentMismatch('source wallet');
+    if (!wallet.userId) this.throwIntentMismatch('authenticated owner');
+    if (params.idempotencyKey !== intent.idempotencyKey)
+      this.throwIntentMismatch('idempotency key');
+    if (intent.route !== 'DIRECT_TRANSFER')
+      this.throwIntentMismatch('direct route');
+    this.validateIntentTransaction(intent, params, kind);
+    await this.intents.bindImmutableExecutionContext(intent.id, {
+      ownerId: wallet.userId,
+      walletId: String(params.walletId ?? ''),
+      contractAddress:
+        kind === 'contract' ? String(params.contractAddress ?? '') : null,
+      calldataHash:
+        kind === 'contract'
+          ? keccak256(String(params.callData ?? '') as `0x${string}`)
+          : null,
+    });
+    if (intent.circleChallengeId)
+      return { intent, existingChallengeId: intent.circleChallengeId };
+    if (!['CREATED', 'FAILED_RETRYABLE'].includes(intent.status))
+      throw new ServiceUnavailableException({
+        code: 'EXECUTION_INTENT_RECONCILIATION_REQUIRED',
+        message:
+          'The prior Circle challenge outcome is ambiguous and must be reconciled before retry.',
+      });
+    const leaseOwner = `circle:${randomUUID()}`;
+    await this.intents.acquireLease(intent.id, leaseOwner, 5 * 60_000);
+    intent = await this.intents.transition(
+      intent.id,
+      intent.status,
+      'AUTHORIZATION_PENDING',
+    );
+    return { intent, existingChallengeId: null };
+  }
+
+  private validateIntentTransaction(
+    intent: Awaited<ReturnType<ExecutionIntentService['get']>>,
+    params: Record<string, unknown>,
+    kind: 'transfer' | 'contract',
+  ) {
+    if (kind === 'transfer') {
+      if (intent.operation !== 'SEND' || !intent.recipient)
+        this.throwIntentMismatch('operation');
+      if (
+        !isAddressEqual(
+          getAddress(String(params.destinationAddress ?? '')),
+          getAddress(intent.recipient),
+        ) ||
+        !isAddressEqual(
+          getAddress(String(params.tokenAddress ?? '')),
+          getAddress(intent.tokenOut),
+        ) ||
+        !isAddressEqual(getAddress(intent.tokenIn), getAddress(intent.tokenOut))
+      )
+        this.throwIntentMismatch('recipient or token');
+      const amounts = Array.isArray(params.amounts) ? params.amounts : [];
+      let amountUnits: bigint;
+      try {
+        amountUnits =
+          amounts.length === 1 ? parseUnits(String(amounts[0]), 6) : 0n;
+      } catch {
+        amountUnits = 0n;
+      }
+      if (amountUnits.toString() !== intent.amountUnits)
+        this.throwIntentMismatch('amount');
+      return;
+    }
+
+    const contractAddress = getAddress(String(params.contractAddress ?? ''));
+    const callData = String(params.callData ?? '') as `0x${string}`;
+    if (intent.operation === 'TOKEN_APPROVAL') {
+      if (
+        !intent.recipient ||
+        !isAddressEqual(contractAddress, getAddress(intent.tokenIn)) ||
+        !isAddressEqual(getAddress(intent.tokenIn), getAddress(intent.tokenOut))
+      )
+        this.throwIntentMismatch('approval token contract');
+      try {
+        const decoded = decodeFunctionData({
+          abi: EXECUTION_ERC20_APPROVE_ABI,
+          data: callData,
+        });
+        if (
+          decoded.functionName !== 'approve' ||
+          !isAddressEqual(decoded.args[0], getAddress(intent.recipient)) ||
+          decoded.args[1].toString() !== intent.amountUnits
+        )
+          this.throwIntentMismatch('approval calldata');
+      } catch {
+        this.throwIntentMismatch('approval calldata');
+      }
+      return;
+    }
+    if (
+      intent.operation === 'INVOICE_SETTLEMENT' ||
+      intent.operation === 'PAYMENT_LINK_SETTLEMENT'
+    ) {
+      if (
+        !intent.recipient ||
+        !isAddressEqual(contractAddress, getAddress(intent.tokenOut))
+      )
+        this.throwIntentMismatch('invoice token contract');
+      try {
+        const decoded = decodeFunctionData({
+          abi: EXECUTION_ERC20_ABI,
+          data: callData,
+        });
+        if (
+          decoded.functionName !== 'transfer' ||
+          !isAddressEqual(decoded.args[0], getAddress(intent.recipient)) ||
+          decoded.args[1].toString() !== intent.amountUnits
+        )
+          this.throwIntentMismatch('invoice calldata');
+      } catch {
+        this.throwIntentMismatch('invoice calldata');
+      }
+      return;
+    }
+    if (intent.operation !== 'PAYROLL') this.throwIntentMismatch('operation');
+    const configured = this.configService.get<string>(
+      'arcNetwork.contracts.wizpay.address',
+    );
+    if (!configured || !isAddressEqual(contractAddress, getAddress(configured)))
+      this.throwIntentMismatch('payroll contract');
+    try {
+      const decoded = decodeFunctionData({
+        abi: EXECUTION_PAYROLL_ABI,
+        data: callData,
+      });
+      if (decoded.functionName !== 'batchRouteAndPay')
+        this.throwIntentMismatch('payroll calldata');
+      const [tokenIn, tokenOuts, recipients, amounts, minimums, referenceId] =
+        decoded.args;
+      const total = amounts.reduce((sum, value) => sum + value, 0n);
+      if (
+        !isAddressEqual(tokenIn, getAddress(intent.tokenIn)) ||
+        tokenOuts.length !== recipients.length ||
+        recipients.length !== amounts.length ||
+        amounts.length !== minimums.length ||
+        tokenOuts.some(
+          (token) => !isAddressEqual(token, getAddress(intent.tokenOut)),
+        ) ||
+        total.toString() !== intent.amountUnits ||
+        referenceId !== intent.externalReference
+      )
+        this.throwIntentMismatch('payroll calldata');
+      const batchDigest = createPayrollBatchDigest(
+        recipients.map((recipient, index) => ({
+          recipient,
+          token: tokenOuts[index],
+          amountUnits: amounts[index].toString(),
+        })),
+      );
+      if (batchDigest !== intent.batchDigest)
+        this.throwIntentMismatch('payroll batch digest');
+    } catch {
+      this.throwIntentMismatch('payroll calldata');
+    }
+  }
+
+  private throwIntentMismatch(field: string): never {
+    this.throwValidationError([
+      {
+        field: 'executionIntentId',
+        message: `Execution intent does not match ${field}`,
+      },
+    ]);
+  }
+
+  private findString(value: unknown, key: string): string | null {
+    if (!value || typeof value !== 'object') return null;
+    const record = value as Record<string, unknown>;
+    if (typeof record[key] === 'string' && record[key]) return record[key];
+    for (const child of Object.values(record)) {
+      const found = this.findString(child, key);
+      if (found) return found;
+    }
+    return null;
   }
 
   /** Read a transaction with the same authenticated user context that created it. */
@@ -1015,11 +1373,16 @@ export class W3sAuthService {
     return this.circleConfig.apiKey;
   }
 
-  private async assertPersistedWalletNetwork(walletId: string): Promise<void> {
+  private async assertPersistedWalletNetwork(walletId: string) {
     const circle = this.circleConfig;
     const wallet = await this.prisma.userWallet.findUnique({
       where: { walletId },
-      select: { blockchain: true, walletSetId: true },
+      select: {
+        address: true,
+        blockchain: true,
+        userId: true,
+        walletSetId: true,
+      },
     });
     if (!wallet || wallet.blockchain !== circle.blockchain) {
       throw new CircleConfigurationError(
@@ -1036,6 +1399,7 @@ export class W3sAuthService {
         'The Circle wallet does not belong to the selected wallet set.',
       );
     }
+    return wallet;
   }
 
   private normalizeUserActionParams(
@@ -1053,6 +1417,8 @@ export class W3sAuthService {
       ...rest,
     };
     delete normalized.wizpayChain;
+    delete normalized.route;
+    delete normalized.provider;
 
     if (typeof normalized.walletId === 'string') {
       normalized.walletId = normalized.walletId.trim();
@@ -1201,6 +1567,27 @@ export class W3sAuthService {
       });
     if (!this.isNonEmptyString(body.tokenId))
       issues.push({ field: 'tokenId', message: 'tokenId is required' });
+    if (
+      this.isNonEmptyString(body.destinationAddress) &&
+      !/^0x[0-9a-fA-F]{40}$/.test(String(body.destinationAddress))
+    )
+      issues.push({
+        field: 'destinationAddress',
+        message: 'destinationAddress must be a valid non-zero EVM address',
+      });
+    if (/^0x0{40}$/i.test(String(body.destinationAddress ?? '')))
+      issues.push({
+        field: 'destinationAddress',
+        message: 'destinationAddress must be a valid non-zero EVM address',
+      });
+    if (Array.isArray(body.amounts) && body.amounts.length === 1) {
+      const units = this.decimalUnits(body.amounts[0], 6);
+      if (units === null || units <= 0n)
+        issues.push({
+          field: 'amounts',
+          message: 'transfer amount must be positive with at most 6 decimals',
+        });
+    }
     if (issues.length) this.throwValidationError(issues);
   }
 
@@ -1266,6 +1653,29 @@ export class W3sAuthService {
         'The selected transfer token is not available in this Arc wallet.',
       );
     const inputToken = this.isRecord(input.token) ? input.token : {};
+    const requestedTokenAddress = String(
+      request.tokenAddress ?? '',
+    ).toLowerCase();
+    const configuredUsdc = String(
+      this.configService.get('arcNetwork.tokens.USDC.address') ?? '',
+    ).toLowerCase();
+    const configuredEurc = String(
+      this.configService.get('arcNetwork.tokens.EURC.address') ?? '',
+    ).toLowerCase();
+    const expectedSymbol =
+      requestedTokenAddress === configuredUsdc
+        ? 'USDC'
+        : requestedTokenAddress === configuredEurc
+          ? 'EURC'
+          : null;
+    if (
+      !expectedSymbol ||
+      String(inputToken.symbol).toUpperCase() !== expectedSymbol
+    )
+      this.throwTransferPreflightError(
+        'W3S_TRANSFER_TOKEN_MISMATCH',
+        'Circle transfer token does not match the canonical selected-network token.',
+      );
     const inputIsNativeUsdc =
       inputToken.isNative === true &&
       String(inputToken.symbol).toUpperCase() === 'USDC';

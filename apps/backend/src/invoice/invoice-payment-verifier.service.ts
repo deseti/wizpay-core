@@ -14,7 +14,6 @@ import {
 } from 'viem';
 import type { BackendArcNetworkConfiguration } from '../config/arc-network.config';
 import {
-  INVOICE_CHAIN_ID,
   INVOICE_ERROR_CODES,
   InvoiceVerificationError,
   type InvoiceVerificationCode,
@@ -48,6 +47,8 @@ export class InvoicePaymentVerifierService {
   private readonly logger = new Logger(InvoicePaymentVerifierService.name);
   private readonly confirmationsRequired: number;
   private publicClient: PublicClient;
+  private readonly chainId: number;
+  private readonly networkName: string;
 
   constructor(config: ConfigService) {
     const configuredConfirmations = Number(
@@ -65,14 +66,14 @@ export class InvoicePaymentVerifierService {
     this.confirmationsRequired = configuredConfirmations;
     const arcNetwork =
       config.getOrThrow<BackendArcNetworkConfiguration>('arcNetwork');
+    this.chainId = arcNetwork.chainId;
+    this.networkName =
+      arcNetwork.key === 'arc-mainnet' ? 'Arc Mainnet' : 'Arc Testnet';
     const rpcUrl = arcNetwork.rpcUrl;
-    if (arcNetwork.chainId !== INVOICE_CHAIN_ID) {
-      throw new Error('Invoices require the selected Arc Testnet network.');
-    }
     this.publicClient = createPublicClient({
       chain: {
-        id: INVOICE_CHAIN_ID,
-        name: 'Arc Testnet',
+        id: this.chainId,
+        name: this.networkName,
         nativeCurrency: { decimals: 18, name: 'USDC', symbol: 'USDC' },
         rpcUrls: { default: { http: [rpcUrl] } },
       },
@@ -91,10 +92,10 @@ export class InvoicePaymentVerifierService {
     let tokenLogCount = 0;
     try {
       const configuredChainId = await this.publicClient.getChainId();
-      if (configuredChainId !== INVOICE_CHAIN_ID) {
+      if (configuredChainId !== this.chainId) {
         this.reject(
           INVOICE_ERROR_CODES.WRONG_CHAIN,
-          'The verification provider is not connected to Arc Testnet.',
+          `The verification provider is not connected to ${this.networkName}.`,
         );
       }
 
@@ -108,7 +109,7 @@ export class InvoicePaymentVerifierService {
       if (!transaction)
         this.retry(
           INVOICE_ERROR_CODES.TRANSACTION_PENDING,
-          'The transaction is not available on Arc Testnet yet.',
+          `The transaction is not available on ${this.networkName} yet.`,
         );
       if (!receipt)
         this.retry(
@@ -120,10 +121,10 @@ export class InvoicePaymentVerifierService {
           INVOICE_ERROR_CODES.FAILED_RECEIPT,
           'The payment transaction reverted.',
         );
-      if (transaction.chainId !== INVOICE_CHAIN_ID)
+      if (transaction.chainId !== this.chainId)
         this.reject(
           INVOICE_ERROR_CODES.WRONG_CHAIN,
-          'The transaction is not an Arc Testnet transaction.',
+          `The transaction is not a ${this.networkName} transaction.`,
         );
       if (transaction.value !== 0n)
         this.reject(
@@ -218,7 +219,7 @@ export class InvoicePaymentVerifierService {
       if (confirmationCount < this.confirmationsRequired) {
         this.retry(
           INVOICE_ERROR_CODES.CONFIRMATIONS_PENDING,
-          `Payment needs ${this.confirmationsRequired} Arc Testnet confirmations.`,
+          `Payment needs ${this.confirmationsRequired} ${this.networkName} confirmations.`,
         );
       }
       const verified = {
@@ -247,11 +248,11 @@ export class InvoicePaymentVerifierService {
       if (/TransactionNotFound/i.test(name))
         this.retry(
           INVOICE_ERROR_CODES.TRANSACTION_PENDING,
-          'The transaction is not available on Arc Testnet yet.',
+          `The transaction is not available on ${this.networkName} yet.`,
         );
       this.retry(
         INVOICE_ERROR_CODES.RPC_UNAVAILABLE,
-        'Arc Testnet verification is temporarily unavailable. Retry this same transaction hash.',
+        `${this.networkName} verification is temporarily unavailable. Retry this same transaction hash.`,
       );
     }
   }

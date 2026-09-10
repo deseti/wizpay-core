@@ -26,6 +26,26 @@ describe('InvoiceService', () => {
       prisma as never,
       verifier as never,
       { assert: jest.fn() } as never,
+      {
+        network: 'arc-testnet',
+        chainId: 5_042_002,
+        canonicalToken: jest.fn((symbol) =>
+          symbol === 'USDC'
+            ? '0x3600000000000000000000000000000000000000'
+            : '0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a',
+        ),
+        decide: jest.fn().mockReturnValue({ kind: 'DIRECT_TRANSFER' }),
+        assertExecutable: jest.fn((decision) => decision),
+      } as never,
+      {
+        getByTransactionHash: jest.fn().mockResolvedValue({
+          id: 'intent-1',
+          operation: 'INVOICE_SETTLEMENT',
+          externalReference: 'abcdefghijklmnopqrstuv',
+        }),
+        beginVerification: jest.fn(),
+        completeWithVerifiedReceipt: jest.fn(),
+      } as never,
     );
   });
 

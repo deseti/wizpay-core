@@ -14,6 +14,10 @@ import { useActiveWalletAddress } from "@/hooks/useActiveWalletAddress";
 import { useTransactionExecutor } from "@/hooks/useTransactionExecutor";
 
 import { WIZPAY_ABI, WIZPAY_BATCH_PAYMENT_ROUTED_EVENT } from "@/constants/abi";
+import {
+  acquireExecutionIntent,
+  bindExecutionIntentTransactionHash,
+} from "@/lib/execution-intent";
 import { WIZPAY_ADDRESS } from "@/constants/addresses";
 import { ERC20_ABI } from "@/constants/erc20";
 import {
@@ -581,14 +585,41 @@ export function useWizPayContract({
     );
 
     try {
+      const approvalReference = [
+        "PAYROLL-APPROVAL",
+        walletAddress.toLowerCase(),
+        activeToken.address.toLowerCase(),
+        WIZPAY_ADDRESS.toLowerCase(),
+        amount.toString(),
+      ].join(":");
+      const approvalIntent = await acquireExecutionIntent({
+        network: "arc-testnet",
+        operation: "TOKEN_APPROVAL",
+        sourceWallet: walletAddress,
+        recipient: WIZPAY_ADDRESS,
+        tokenIn: activeToken.address,
+        tokenOut: activeToken.address,
+        amountUnits: amount.toString(),
+        externalReference: approvalReference,
+      });
       const approvalResult = await executeTransaction({
         abi: ERC20_ABI,
         args: [WIZPAY_ADDRESS, amount],
         chainId: arcTestnet.id,
         contractAddress: activeToken.address,
         functionName: "approve",
-        refId: `PAYROLL-APPROVE-${Date.now()}`,
+        executionIntentId: approvalIntent.id,
+        idempotencyKey: approvalIntent.idempotencyKey,
+        refId: approvalReference,
       });
+      if (approvalResult.txHash && approvalResult.executionLeaseOwner) {
+        await bindExecutionIntentTransactionHash(
+          approvalIntent.id,
+          approvalResult.txHash,
+          approvalIntent.idempotencyKey,
+          approvalResult.executionLeaseOwner,
+        );
+      }
 
       state.setApprovalState("confirming");
       state.setApproveTxHash(approvalResult.txHash);
@@ -625,6 +656,7 @@ export function useWizPayContract({
   const handleSubmit = async (
     batchRecipients?: RecipientDraft[],
     batchReferenceId?: string,
+    execution?: { intentId: string; idempotencyKey: string },
   ): Promise<TransactionActionResult> => {
     if (
       (!batchRecipients && !state.validate(preparedRecipients)) ||
@@ -790,14 +822,41 @@ export function useWizPayContract({
           `Approving ${batchTargetToken} for payroll payout...`,
         );
         try {
+          const approvalReference = [
+            "PAYROLL-APPROVAL",
+            walletAddress.toLowerCase(),
+            effectiveTokenIn.toLowerCase(),
+            WIZPAY_ADDRESS.toLowerCase(),
+            batchTotalAmount.toString(),
+          ].join(":");
+          const approvalIntent = await acquireExecutionIntent({
+            network: "arc-testnet",
+            operation: "TOKEN_APPROVAL",
+            sourceWallet: walletAddress,
+            recipient: WIZPAY_ADDRESS,
+            tokenIn: effectiveTokenIn,
+            tokenOut: effectiveTokenIn,
+            amountUnits: batchTotalAmount.toString(),
+            externalReference: approvalReference,
+          });
           const approvalResult = await executeTransaction({
             abi: ERC20_ABI,
             args: [WIZPAY_ADDRESS, batchTotalAmount],
             chainId: arcTestnet.id,
             contractAddress: effectiveTokenIn,
             functionName: "approve",
-            refId: `PAYROLL-APPROVE-${batchTargetToken}-${Date.now()}`,
+            executionIntentId: approvalIntent.id,
+            idempotencyKey: approvalIntent.idempotencyKey,
+            refId: approvalReference,
           });
+          if (approvalResult.txHash && approvalResult.executionLeaseOwner) {
+            await bindExecutionIntentTransactionHash(
+              approvalIntent.id,
+              approvalResult.txHash,
+              approvalIntent.idempotencyKey,
+              approvalResult.executionLeaseOwner,
+            );
+          }
           if (!approvalResult.hash && !approvalResult.txHash) {
             const message = `Approval for ${batchTargetToken} was not confirmed.`;
             state.setErrorMessage(message);
@@ -973,8 +1032,23 @@ export function useWizPayContract({
         chainId: arcTestnet.id,
         contractAddress: WIZPAY_ADDRESS,
         functionName: "batchRouteAndPay",
+        idempotencyKey: execution?.idempotencyKey,
+        executionIntentId: execution?.intentId,
         refId: `PAYROLL-${referenceId}`,
       });
+
+      if (
+        execution?.intentId &&
+        executionResult.txHash &&
+        executionResult.executionLeaseOwner
+      ) {
+        await bindExecutionIntentTransactionHash(
+          execution.intentId,
+          executionResult.txHash,
+          execution.idempotencyKey,
+          executionResult.executionLeaseOwner,
+        );
+      }
 
       state.setSubmitState("confirming");
       state.setSubmitTxHash(executionResult.txHash ?? executionResult.hash);

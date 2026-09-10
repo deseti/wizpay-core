@@ -10,6 +10,8 @@ import { TaskType } from './task/task-type.enum';
 import { TaskDetails } from './task/task.types';
 import { InvoiceAuthService } from './invoice/invoice-auth.service';
 import { CapabilityService } from './capabilities/capability.service';
+import { ExecutionIntentService } from './execution-intent/execution-intent.service';
+import { PayrollReceiptVerifierService } from './task/payroll-receipt-verifier.service';
 
 describe('TaskController', () => {
   let controller: TaskController;
@@ -76,6 +78,14 @@ describe('TaskController', () => {
         {
           provide: CapabilityService,
           useValue: { assert: jest.fn(), assertPayroll: jest.fn() },
+        },
+        {
+          provide: ExecutionIntentService,
+          useValue: {},
+        },
+        {
+          provide: PayrollReceiptVerifierService,
+          useValue: {},
         },
       ],
     }).compile();

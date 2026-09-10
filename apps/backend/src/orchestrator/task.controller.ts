@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Get,
@@ -18,6 +19,9 @@ import { TaskPayrollHistoryService } from '../task/task-payroll-history.service'
 import type { ReportTaskUnitInput } from '../task/task.types';
 import { InvoiceAuthService } from '../invoice/invoice-auth.service';
 import { CapabilityService } from '../capabilities/capability.service';
+import { ExecutionIntentService } from '../execution-intent/execution-intent.service';
+import { PayrollReceiptVerifierService } from '../task/payroll-receipt-verifier.service';
+import { parseUnits } from 'viem';
 
 @Controller('tasks')
 export class TaskController {
@@ -29,6 +33,8 @@ export class TaskController {
     private readonly payrollInitService: PayrollInitService,
     private readonly invoiceAuthService: InvoiceAuthService,
     private readonly capabilities: CapabilityService,
+    private readonly intents: ExecutionIntentService,
+    private readonly payrollReceipts: PayrollReceiptVerifierService,
   ) {}
 
   /**
@@ -60,6 +66,54 @@ export class TaskController {
     @Body() body: ReportTaskUnitInput,
   ) {
     this.capabilities.assert('sameTokenPayroll');
+    if (body.status === 'SUCCESS') {
+      const task = await this.taskService.getTaskById(taskId);
+      const unit = task.units.find((candidate) => candidate.id === unitId);
+      if (!unit || !body.txHash || !body.executionIntentId)
+        throw new BadRequestException({
+          code: 'PAYROLL_EXECUTION_INTENT_REQUIRED',
+          message:
+            'Successful payroll reporting requires its durable intent and transaction hash.',
+        });
+      const intent = await this.intents.get(body.executionIntentId);
+      const payload = unit.payload;
+      if (
+        intent.taskId !== taskId ||
+        intent.externalReference !== payload.referenceId
+      )
+        throw new BadRequestException({
+          code: 'EXECUTION_INTENT_IMMUTABLE_CONFLICT',
+          message: 'Payroll unit does not match its durable execution intent.',
+        });
+      await this.intents.bindTransactionHash(intent.id, body.txHash);
+      await this.intents.beginVerification(intent.id);
+      await this.payrollReceipts.verify({
+        transactionHash: body.txHash,
+        sourceWallet: intent.sourceWallet,
+        token: intent.tokenOut,
+        totalAmountUnits: intent.amountUnits,
+        referenceId: String(payload.referenceId ?? ''),
+        recipients: Array.isArray(payload.recipients)
+          ? (payload.recipients as Record<string, unknown>[]).map(
+              (recipient) => ({
+                address: String(recipient.address ?? ''),
+                amountUnits:
+                  typeof recipient.amountUnits === 'string'
+                    ? recipient.amountUnits
+                    : parseUnits(String(recipient.amount ?? ''), 6).toString(),
+              }),
+            )
+          : [],
+      });
+      await this.intents.completeWithVerifiedReceipt(intent.id, {
+        network: intent.network,
+        transactionHash: body.txHash as `0x${string}`,
+        sourceWallet: intent.sourceWallet,
+        token: intent.tokenOut,
+        batchDigest: intent.batchDigest,
+        amountUnits: intent.amountUnits,
+      });
+    }
     return {
       data: await this.taskService.reportUnit(taskId, unitId, body),
     };

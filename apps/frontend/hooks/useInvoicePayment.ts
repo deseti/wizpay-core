@@ -17,6 +17,7 @@ import {
   readInvoicePaymentRecovery,
   writeInvoicePaymentRecovery,
   type AppWalletInvoicePaymentRecovery,
+  type ExternalInvoicePaymentRecovery,
 } from "@/lib/invoice-payment";
 import {
   extractSingleCorrelationId,
@@ -30,6 +31,14 @@ import {
   extractCircleTransactionHash,
   extractCircleTransactionId,
 } from "@/lib/send-transaction";
+import {
+  acquireExecutionIntent,
+  bindKnownExecutionIntentHash,
+  bindExecutionIntentTransactionHash,
+  cancelExecutionIntent,
+  prepareWalletExecutionIntent,
+} from "@/lib/execution-intent";
+import { ACTIVE_ARC_NETWORK } from "@/lib/active-arc-network";
 
 export type InvoicePayerMethod = "app" | "external";
 export type InvoicePaymentStage =
@@ -77,6 +86,8 @@ export function useInvoicePayment(
   );
   const [appRecovery, setAppRecovery] =
     useState<AppWalletInvoicePaymentRecovery | null>(null);
+  const [externalRecovery, setExternalRecovery] =
+    useState<ExternalInvoicePaymentRecovery | null>(null);
   const [checking, setChecking] = useState(false);
   const [submissionLocked, setSubmissionLocked] = useState(
     invoice.status !== "OPEN",
@@ -270,6 +281,16 @@ export function useInvoicePayment(
             stage: "confirming_onchain",
           };
           persistAppRecovery(next);
+          if (!next.executionIntentId || !next.executionIntentKey) {
+            throw new TerminalInvoicePaymentError(
+              "The durable payment intent cannot be recovered safely.",
+            );
+          }
+          await bindExecutionIntentTransactionHash(
+            next.executionIntentId,
+            hash,
+            next.executionIntentKey,
+          );
           setTransactionHash(hash);
           setStage("confirming_onchain");
           resolvedHash = hash;
@@ -337,9 +358,17 @@ export function useInvoicePayment(
         signed.current = true;
         setMethod("external");
         setSubmissionLocked(true);
-        setTransactionHash(recovery.transactionHash);
-        setStage("confirming_onchain");
-        void verify(recovery.transactionHash);
+        setExternalRecovery(recovery);
+        if (recovery.transactionHash) {
+          setTransactionHash(recovery.transactionHash);
+          setStage("confirming_onchain");
+          void verify(recovery.transactionHash);
+        } else {
+          setStage("recoverable_error");
+          setError(
+            "The wallet may have broadcast this payment without returning its transaction hash. WizPay will not request another payment automatically. Bind the known hash to reconcile it, or cancel only after confirming that no transaction was broadcast.",
+          );
+        }
       } else if (recovery?.method === "app") {
         signed.current = true;
         setMethod("app");
@@ -389,6 +418,37 @@ export function useInvoicePayment(
       setStage("switching_network");
       await switchChainAsync({ chainId: invoice.chain.id });
     }
+    const intent = await acquireExecutionIntent({
+      network: ACTIVE_ARC_NETWORK.key,
+      operation: invoice.settlementOperation ?? "INVOICE_SETTLEMENT",
+      sourceWallet: address,
+      recipient: invoice.receivingAddress,
+      tokenIn: invoice.token.address,
+      tokenOut: invoice.token.address,
+      amountUnits: invoice.amountUnits,
+      externalReference: invoice.publicId,
+    });
+    const leaseOwner = crypto.randomUUID();
+    const recovery: ExternalInvoicePaymentRecovery = {
+      version: 2,
+      method: "external",
+      publicId: invoice.publicId,
+      executionIntentId: intent.id,
+      executionIntentKey: intent.idempotencyKey,
+      leaseOwner,
+      payerAddress: getAddress(address),
+      createdAt: new Date().toISOString(),
+      stage: "awaiting_wallet_signature",
+    };
+    await prepareWalletExecutionIntent(
+      intent.id,
+      intent.idempotencyKey,
+      leaseOwner,
+    );
+    signed.current = true;
+    setSubmissionLocked(true);
+    setExternalRecovery(recovery);
+    writeInvoicePaymentRecovery(recovery, window.localStorage);
     setStage("awaiting_signature");
     const hash = await writeContractAsync(
       buildInvoiceTransferRequest({
@@ -398,18 +458,23 @@ export function useInvoicePayment(
         amountUnits: invoice.amountUnits,
       }),
     );
-    signed.current = true;
+    await bindExecutionIntentTransactionHash(
+      intent.id,
+      hash,
+      intent.idempotencyKey,
+      leaseOwner,
+    );
     setSubmissionLocked(true);
     setTransactionHash(hash);
     writeInvoicePaymentRecovery(
-      {
-        method: "external",
-        publicId: invoice.publicId,
-        transactionHash: hash,
-        createdAt: new Date().toISOString(),
-      },
+      { ...recovery, transactionHash: hash, stage: "confirming_onchain" },
       window.localStorage,
     );
+    setExternalRecovery({
+      ...recovery,
+      transactionHash: hash,
+      stage: "confirming_onchain",
+    });
     setStage("transaction_submitted");
     attempts.current = 0;
     inFlight.current = false;
@@ -445,22 +510,40 @@ export function useInvoicePayment(
       recipient: invoice.receivingAddress,
       amountUnits: invoice.amountUnits,
     });
-    const challenge = await circle.createContractExecutionChallenge({
-      walletId: identity.walletId,
-      contractAddress: transfer.address,
-      callData: encodeFunctionData({
-        abi: transfer.abi,
-        functionName: transfer.functionName,
-        args: transfer.args,
-      }),
-      feeLevel: "MEDIUM",
-      idempotencyKey: crypto.randomUUID(),
-      refId: `INV-${invoice.publicId}-${crypto.randomUUID()}`,
+    const intent = await acquireExecutionIntent({
+      network: ACTIVE_ARC_NETWORK.key,
+      operation: invoice.settlementOperation ?? "INVOICE_SETTLEMENT",
+      sourceWallet: identity.address,
+      recipient: invoice.receivingAddress,
+      tokenIn: invoice.token.address,
+      tokenOut: invoice.token.address,
+      amountUnits: invoice.amountUnits,
+      externalReference: invoice.publicId,
     });
+    const challenge = intent.circleChallengeId
+      ? {
+          challengeId: intent.circleChallengeId,
+          raw: { challengeId: intent.circleChallengeId },
+        }
+      : await circle.createContractExecutionChallenge({
+          walletId: identity.walletId,
+          contractAddress: transfer.address,
+          callData: encodeFunctionData({
+            abi: transfer.abi,
+            functionName: transfer.functionName,
+            args: transfer.args,
+          }),
+          feeLevel: "MEDIUM",
+          idempotencyKey: intent.idempotencyKey,
+          refId: `INV-${invoice.publicId}`,
+          executionIntentId: intent.id,
+        });
     const recovery: AppWalletInvoicePaymentRecovery = {
       version: 2,
       method: "app",
       publicId: invoice.publicId,
+      executionIntentId: intent.id,
+      executionIntentKey: intent.idempotencyKey,
       authMethod: circle.authMethod,
       walletId: identity.walletId,
       payerAddress: identity.address,
@@ -496,6 +579,12 @@ export function useInvoicePayment(
       };
       persistAppRecovery(next);
       if (hash) {
+        if (next.executionIntentId)
+          await bindExecutionIntentTransactionHash(
+            next.executionIntentId,
+            hash,
+            next.executionIntentKey ?? "",
+          );
         setTransactionHash(hash);
         setStage("transaction_submitted");
       } else setStage("resolving_transaction");
@@ -544,6 +633,67 @@ export function useInvoicePayment(
     }
   }
 
+  async function recoverExternalHash(value: string) {
+    if (!externalRecovery || !/^0x[a-fA-F0-9]{64}$/.test(value)) {
+      setError("Enter a complete 32-byte transaction hash.");
+      return;
+    }
+    const hash = value as Hex;
+    setChecking(true);
+    try {
+      await bindKnownExecutionIntentHash(
+        externalRecovery.executionIntentId,
+        externalRecovery.executionIntentKey,
+        hash,
+      );
+      const next = {
+        ...externalRecovery,
+        transactionHash: hash,
+        stage: "confirming_onchain" as const,
+      };
+      setExternalRecovery(next);
+      setTransactionHash(hash);
+      writeInvoicePaymentRecovery(next, window.localStorage);
+      setError(null);
+      setStage("confirming_onchain");
+      await verify(hash, true);
+    } catch (cause) {
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : "The transaction hash could not be bound safely.",
+      );
+      setStage("recoverable_error");
+    } finally {
+      setChecking(false);
+    }
+  }
+
+  async function cancelExternalRecovery() {
+    if (!externalRecovery || externalRecovery.transactionHash) return;
+    setChecking(true);
+    try {
+      await cancelExecutionIntent(
+        externalRecovery.executionIntentId,
+        externalRecovery.executionIntentKey,
+      );
+      clearInvoicePaymentRecovery(invoice.publicId, window.localStorage);
+      setExternalRecovery(null);
+      signed.current = false;
+      setSubmissionLocked(false);
+      setError(null);
+      setStage("ready");
+    } catch (cause) {
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : "The unresolved payment could not be cancelled safely.",
+      );
+    } finally {
+      setChecking(false);
+    }
+  }
+
   function selectMethod(next: InvoicePayerMethod) {
     if (submissionLocked || signed.current || invoice.status !== "OPEN") return;
     setMethod(next);
@@ -566,6 +716,11 @@ export function useInvoicePayment(
     continueAppAuthorization: () => authorizeAppWallet(),
     error,
     isConnected,
+    externalRecoveryNeedsHash: Boolean(
+      externalRecovery && !externalRecovery.transactionHash,
+    ),
+    recoverExternalHash,
+    cancelExternalRecovery,
     locked: submissionLocked,
     method,
     pay,

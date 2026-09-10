@@ -7,17 +7,20 @@ import {
   assertCircleTransactionMatches,
   beginReconciliation,
   canSafelyUnlockPreChallenge,
+  clearExternalSendRecovery,
   classifySendStatusError,
   extractSingleCorrelationId,
   findMatchingCircleTransaction,
   findMatchingCircleTransactionPaginated,
   isAmbiguousChallengeCreationError,
   isSendOperationLocked,
+  readExternalSendRecovery,
   readSendOperation,
   sendExecutionState,
   sendOperationStorageKey,
   shouldPollSendOperation,
   writeSendOperation,
+  writeExternalSendRecovery,
   type AppWalletSendOperation,
   type SendOperationScope,
 } from "./send-operation";
@@ -78,6 +81,40 @@ function memoryStorage() {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("App Wallet Send recovery", () => {
+  it("persists an external-wallet intent before hash return and isolates it by sender", () => {
+    const { storage } = memoryStorage();
+    const recovery = {
+      version: 1 as const,
+      executionIntentId: "intent-1",
+      idempotencyKey: "11111111-1111-4111-8111-111111111111",
+      leaseOwner: "browser-1",
+      operationId: "SEND-1",
+      chainId: scope.chainId,
+      sender: scope.sender,
+      token: "USDC" as const,
+      tokenAddress: SUPPORTED_TOKENS.USDC.address,
+      recipient: operation.recipient,
+      amountUnits: "1000000",
+      amountDisplay: "1",
+      createdAt: new Date().toISOString(),
+      stage: "awaiting_wallet_signature" as const,
+    };
+    writeExternalSendRecovery(storage, recovery);
+    expect(
+      readExternalSendRecovery(storage, scope.sender, scope.chainId),
+    ).toEqual(recovery);
+    expect(
+      readExternalSendRecovery(
+        storage,
+        "0x1111111111111111111111111111111111111111",
+        scope.chainId,
+      ),
+    ).toBeNull();
+    clearExternalSendRecovery(storage, recovery);
+    expect(
+      readExternalSendRecovery(storage, scope.sender, scope.chainId),
+    ).toBeNull();
+  });
   it("does not require a persistent lock for a definitive pre-challenge rejection", () => {
     expect(
       isAmbiguousChallengeCreationError(
@@ -196,7 +233,10 @@ describe("App Wallet Send recovery", () => {
     const release = acquireSendReconciliation(scope);
     expect(release).not.toBeNull();
     expect(acquireSendReconciliation(scope)).toBeNull();
-    const releaseOther = acquireSendReconciliation({ ...scope, userId: "user-2" });
+    const releaseOther = acquireSendReconciliation({
+      ...scope,
+      userId: "user-2",
+    });
     expect(releaseOther).not.toBeNull();
     releaseOther?.();
     release?.();

@@ -8,6 +8,7 @@ import { CapabilityController } from './capability.controller';
 import { CapabilityService } from './capability.service';
 import { W3sAuthController } from '../modules/wallet/w3s-auth.controller';
 import { W3sAuthService } from '../modules/wallet/w3s-auth.service';
+import { PaymentRoutingService } from '../routing/payment-routing.service';
 
 const TESTNET_USDC = '0x3600000000000000000000000000000000000000';
 const TESTNET_EURC = '0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a';
@@ -43,9 +44,14 @@ function config(capabilities = resolveArcCapabilities('arc-mainnet', {})) {
   });
 }
 
+function capabilityService(value = config()) {
+  const routing = new PaymentRoutingService(value);
+  return new CapabilityService(value, routing);
+}
+
 describe('CapabilityService', () => {
   it('fails closed for unknown access and disabled capabilities', () => {
-    const service = new CapabilityService(config());
+    const service = capabilityService();
     expect(() => service.assert('Send')).toThrow('Unknown feature capability.');
     expect(() => service.assert('send')).toThrow(
       'This feature is unavailable on the selected Arc network.',
@@ -53,7 +59,7 @@ describe('CapabilityService', () => {
   });
 
   it('classifies token addresses case-insensitively and cannot route cross-token as same-token', () => {
-    const service = new CapabilityService(
+    const service = capabilityService(
       config({
         ...resolveArcCapabilities('arc-mainnet', {}),
         sameTokenPayroll: true,
@@ -61,17 +67,19 @@ describe('CapabilityService', () => {
     );
     expect(() =>
       service.assertPayroll({
-        sourceToken: TESTNET_USDC.toUpperCase().replace('0X', '0x'),
-        recipients: [{ targetToken: TESTNET_EURC.toLowerCase() }],
+        sourceTokenAddress: TESTNET_USDC.toUpperCase().replace('0X', '0x'),
+        recipients: [{ targetTokenAddress: TESTNET_EURC.toLowerCase() }],
       }),
-    ).toThrow('This feature is unavailable on the selected Arc network.');
+    ).toThrow(
+      'Cross-token payments are unavailable on the selected Arc network.',
+    );
     expect(() => service.assertPayroll({ recipients: [{}] })).toThrow(
       'Explicit token context is required for payroll.',
     );
   });
 
   it('guards generic challenge creation by stable operation context', () => {
-    const service = new CapabilityService(config());
+    const service = capabilityService();
     expect(() =>
       service.assertW3sAction('createContractExecutionChallenge', {
         refId: 'INV-operation',
@@ -87,7 +95,7 @@ describe('CapabilityService', () => {
   });
 
   it('decodes payroll challenge calldata so casing and references cannot hide cross-token execution', () => {
-    const service = new CapabilityService(
+    const service = capabilityService(
       config({
         ...resolveArcCapabilities('arc-mainnet', {}),
         sameTokenPayroll: true,
@@ -111,23 +119,24 @@ describe('CapabilityService', () => {
         contractAddress: WIZPAY.toUpperCase().replace('0X', '0x'),
         callData,
       }),
-    ).toThrow('This feature is unavailable on the selected Arc network.');
+    ).toThrow(
+      'Cross-token payments are unavailable on the selected Arc network.',
+    );
   });
 
   it('preserves validated Testnet payroll approval challenges', () => {
-    const service = new CapabilityService(
-      new ConfigService({
-        arcNetwork: {
-          key: 'arc-testnet',
-          tokens: {
-            USDC: { address: TESTNET_USDC },
-            EURC: { address: TESTNET_EURC },
-          },
-          contracts: { wizpay: { address: WIZPAY } },
+    const value = new ConfigService({
+      arcNetwork: {
+        key: 'arc-testnet',
+        tokens: {
+          USDC: { address: TESTNET_USDC },
+          EURC: { address: TESTNET_EURC },
         },
-        arcCapabilities: resolveArcCapabilities('arc-testnet', {}),
-      }),
-    );
+        contracts: { wizpay: { address: WIZPAY } },
+      },
+      arcCapabilities: resolveArcCapabilities('arc-testnet', {}),
+    });
+    const service = capabilityService(value);
     const approveAbi = [
       {
         type: 'function',
@@ -173,6 +182,7 @@ describe('capability HTTP boundary', () => {
       controllers: [CapabilityController, W3sAuthController],
       providers: [
         CapabilityService,
+        PaymentRoutingService,
         { provide: ConfigService, useValue: config() },
         { provide: W3sAuthService, useValue: { dispatch } },
       ],
@@ -201,7 +211,11 @@ describe('capability HTTP boundary', () => {
   it('rejects disabled challenge requests before Circle dispatch', async () => {
     await request(app.getHttpServer())
       .post('/w3s/action')
-      .send({ action: 'createTransferChallenge', refId: 'SEND-test' })
+      .send({
+        action: 'createTransferChallenge',
+        refId: 'SEND-test',
+        tokenAddress: TESTNET_USDC,
+      })
       .expect(503)
       .expect(({ body }) => expect(body.code).toBe('CAPABILITY_DISABLED'));
     expect(dispatch).not.toHaveBeenCalled();

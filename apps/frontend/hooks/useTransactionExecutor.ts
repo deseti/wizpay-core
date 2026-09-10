@@ -17,6 +17,7 @@ import { usePublicClient, useSwitchChain, useWalletClient } from "wagmi";
 import { useCircleWallet } from "@/components/providers/CircleWalletProvider";
 import { useHybridWallet } from "@/components/providers/HybridWalletProvider";
 import { writeContractTransaction } from "@/lib/web3-transactions";
+import { prepareWalletExecutionIntent } from "@/lib/execution-intent";
 import {
   arcTestnet,
   CHAIN_BY_ID,
@@ -33,6 +34,8 @@ export type ExecuteTransactionParams = {
   contractAddress: Address;
   functionName: string;
   idempotencyKey?: string;
+  executionIntentId?: string;
+  onWalletPrepared?: (leaseOwner: string) => void | Promise<void>;
   memo?: string;
   refId: string;
 };
@@ -44,6 +47,7 @@ export type ExecuteTransactionResult = {
   referenceId: string;
   startBlock: bigint;
   txHash: Hex | null;
+  executionLeaseOwner?: string;
 };
 
 type SignTypedDataParams = {
@@ -259,6 +263,7 @@ export function useTransactionExecutor() {
       callData,
       feeLevel: CIRCLE_FEE_LEVEL,
       idempotencyKey: params.idempotencyKey,
+      executionIntentId: params.executionIntentId,
       memo: params.memo,
       refId: params.refId,
     });
@@ -303,6 +308,18 @@ export function useTransactionExecutor() {
 
     const startBlock = await publicClient.getBlockNumber();
     const nextWalletClient = await getExternalWalletClient(chainId);
+    let executionLeaseOwner: string | undefined;
+    if (params.executionIntentId) {
+      if (!params.idempotencyKey)
+        throw new Error("Durable execution intent access key is missing.");
+      executionLeaseOwner = crypto.randomUUID();
+      await prepareWalletExecutionIntent(
+        params.executionIntentId,
+        params.idempotencyKey,
+        executionLeaseOwner,
+      );
+      await params.onWalletPrepared?.(executionLeaseOwner);
+    }
     const txHash = await writeContractTransaction({
       abi: params.abi,
       account: activeWalletAddress,
@@ -318,6 +335,7 @@ export function useTransactionExecutor() {
       referenceId: params.refId,
       startBlock,
       txHash,
+      ...(executionLeaseOwner ? { executionLeaseOwner } : {}),
     };
   };
 

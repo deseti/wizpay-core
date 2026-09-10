@@ -1,14 +1,21 @@
 /* eslint-disable @typescript-eslint/no-unsafe-assignment */
 import { ConfigService } from '@nestjs/config';
+import { encodeFunctionData } from 'viem';
 import { W3sAuthService } from './w3s-auth.service';
 
 describe('W3sAuthService User-Controlled transaction lookup', () => {
   const originalFetch = global.fetch;
   let service: W3sAuthService;
+  let intents: Record<string, jest.Mock>;
+  const sourceWallet = '0x9999999999999999999999999999999999999999';
 
   beforeEach(() => {
     const values: Record<string, unknown> = {
       'arcNetwork.key': 'arc-testnet',
+      'arcNetwork.tokens.USDC.address':
+        '0x3600000000000000000000000000000000000000',
+      'arcNetwork.tokens.EURC.address':
+        '0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a',
       CIRCLE_TESTNET_API_KEY: 'TEST_API_KEY',
       CIRCLE_TESTNET_APP_ID: 'testnet-app-id',
       CIRCLE_TESTNET_API_BASE_URL: 'https://api.circle.test',
@@ -24,15 +31,53 @@ describe('W3sAuthService User-Controlled transaction lookup', () => {
     const prisma = {
       userWallet: {
         findUnique: jest.fn().mockResolvedValue({
+          address: sourceWallet,
           blockchain: 'ARC-TESTNET',
+          userId: 'circle-user-1',
           walletSetId: null,
         }),
       },
+    };
+    intents = {
+      get: jest.fn(async (id: string) => {
+        const control = id === 'intent-control';
+        return {
+          id,
+          network: 'arc-testnet',
+          operation: 'SEND',
+          ownerId: null,
+          walletId: null,
+          sourceWallet,
+          recipient: control
+            ? '0x2222222222222222222222222222222222222222'
+            : '0x1111111111111111111111111111111111111111',
+          tokenIn: '0x3600000000000000000000000000000000000000',
+          tokenOut: '0x3600000000000000000000000000000000000000',
+          amountUnits: '1000000',
+          externalReference: control
+            ? 'SEND-control'
+            : 'SEND-established-account',
+          idempotencyKey: control
+            ? '22222222-2222-4222-8222-222222222222'
+            : '11111111-1111-4111-8111-111111111111',
+          route: 'DIRECT_TRANSFER',
+          status: 'CREATED',
+          circleChallengeId: null,
+        };
+      }),
+      bindImmutableExecutionContext: jest.fn(),
+      acquireLease: jest.fn(),
+      transition: jest.fn(async (id: string) => ({
+        ...(await intents.get(id)),
+        status: 'AUTHORIZATION_PENDING',
+      })),
+      bindCircleCorrelation: jest.fn(),
     };
     service = new W3sAuthService(
       config,
       prisma as never,
       { assertW3sAction: jest.fn() } as never,
+      intents as never,
     );
   });
 
@@ -224,6 +269,7 @@ describe('W3sAuthService User-Controlled transaction lookup', () => {
       service.dispatch('estimateTransferFee', {
         amounts: ['1'],
         destinationAddress: '0x1111111111111111111111111111111111111111',
+        tokenAddress: '0x3600000000000000000000000000000000000000',
         tokenId: 'token-usdc',
         walletId: 'wallet-id',
         userToken: 'sanitized-user-token',
@@ -275,8 +321,10 @@ describe('W3sAuthService User-Controlled transaction lookup', () => {
       service.dispatch('createTransferChallenge', {
         amounts: ['5.989093'],
         destinationAddress: '0x1111111111111111111111111111111111111111',
+        tokenAddress: '0x3600000000000000000000000000000000000000',
         feeLevel: 'MEDIUM',
         idempotencyKey: '11111111-1111-4111-8111-111111111111',
+        executionIntentId: 'intent-established',
         refId: 'SEND-1',
         tokenId: 'token-usdc',
         walletId: 'wallet-id',
@@ -347,6 +395,8 @@ describe('W3sAuthService User-Controlled transaction lookup', () => {
       service.dispatch('createTransferChallenge', {
         amounts: ['1'],
         destinationAddress: '0x1111111111111111111111111111111111111111',
+        tokenAddress: '0x3600000000000000000000000000000000000000',
+        executionIntentId: 'intent-established',
         feeLevel: 'MEDIUM',
         idempotencyKey: '11111111-1111-4111-8111-111111111111',
         refId: 'SEND-established-account',
@@ -412,11 +462,123 @@ describe('W3sAuthService User-Controlled transaction lookup', () => {
       service.dispatch('createTransferChallenge', {
         amounts: ['1'],
         destinationAddress: '0x2222222222222222222222222222222222222222',
+        tokenAddress: '0x3600000000000000000000000000000000000000',
+        executionIntentId: 'intent-control',
+        idempotencyKey: '22222222-2222-4222-8222-222222222222',
         tokenId: 'token-usdc',
         walletId: 'control-wallet',
         userToken: 'control-user-token',
         wizpayChain: 'ARC-TESTNET',
       }),
     ).resolves.toEqual({ challengeId: 'control' });
+  });
+
+  it('fails closed before Circle transaction creation when executionIntentId is missing', async () => {
+    global.fetch = jest
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ data: { medium: {} } }), { status: 200 }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            data: {
+              tokenBalances: [
+                {
+                  amount: '10',
+                  token: { id: 'token-usdc', isNative: true, symbol: 'USDC' },
+                },
+              ],
+            },
+          }),
+          { status: 200 },
+        ),
+      );
+    await expect(
+      service.dispatch('createTransferChallenge', {
+        amounts: ['1'],
+        destinationAddress: '0x2222222222222222222222222222222222222222',
+        tokenAddress: '0x3600000000000000000000000000000000000000',
+        tokenId: 'token-usdc',
+        walletId: 'control-wallet',
+        userToken: 'control-user-token',
+        wizpayChain: 'ARC-TESTNET',
+      }),
+    ).rejects.toMatchObject({
+      response: { code: 'EXECUTION_INTENT_REQUIRED' },
+    });
+    expect(global.fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('fails closed for an ERC20 approval challenge without executionIntentId', async () => {
+    global.fetch = jest.fn();
+    const callData = encodeFunctionData({
+      abi: [
+        {
+          type: 'function',
+          name: 'approve',
+          stateMutability: 'nonpayable',
+          inputs: [
+            { name: 'spender', type: 'address' },
+            { name: 'amount', type: 'uint256' },
+          ],
+          outputs: [{ name: '', type: 'bool' }],
+        },
+      ] as const,
+      functionName: 'approve',
+      args: ['0x1111111111111111111111111111111111111111', 1n],
+    });
+
+    await expect(
+      service.dispatch('createContractExecutionChallenge', {
+        callData,
+        contractAddress: '0x3600000000000000000000000000000000000000',
+        idempotencyKey: '33333333-3333-4333-8333-333333333333',
+        refId: 'PAYROLL-APPROVAL',
+        userToken: 'control-user-token',
+        walletId: 'control-wallet',
+      }),
+    ).rejects.toMatchObject({
+      response: { code: 'EXECUTION_INTENT_REQUIRED' },
+    });
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  it('rejects an immutable intent mismatch before Circle transaction creation', async () => {
+    global.fetch = jest
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ data: { medium: {} } }), { status: 200 }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            data: {
+              tokenBalances: [
+                {
+                  amount: '10',
+                  token: { id: 'token-usdc', isNative: true, symbol: 'USDC' },
+                },
+              ],
+            },
+          }),
+          { status: 200 },
+        ),
+      );
+    await expect(
+      service.dispatch('createTransferChallenge', {
+        amounts: ['2'],
+        destinationAddress: '0x2222222222222222222222222222222222222222',
+        tokenAddress: '0x3600000000000000000000000000000000000000',
+        executionIntentId: 'intent-control',
+        idempotencyKey: '22222222-2222-4222-8222-222222222222',
+        tokenId: 'token-usdc',
+        walletId: 'control-wallet',
+        userToken: 'control-user-token',
+        wizpayChain: 'ARC-TESTNET',
+      }),
+    ).rejects.toMatchObject({ status: 400 });
+    expect(intents.acquireLease).not.toHaveBeenCalled();
+    expect(global.fetch).toHaveBeenCalledTimes(2);
   });
 });

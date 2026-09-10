@@ -37,6 +37,12 @@ import {
   throwOfficialStableFxAuthRequired,
 } from '../fx/stablefx-cutover.guard';
 import { CapabilityService } from '../capabilities/capability.service';
+import {
+  createPayrollBatchDigest,
+  ExecutionIntentService,
+} from '../execution-intent/execution-intent.service';
+import { PaymentRoutingService } from '../routing/payment-routing.service';
+import { PayrollReceiptVerifierService } from './payroll-receipt-verifier.service';
 
 // ════════════════════════════════════════════════════════════════════
 //  FX-specific step identifiers for the StableFX settlement lifecycle.
@@ -91,6 +97,9 @@ export class TaskService {
     @Inject(forwardRef(() => PayrollBatchService))
     private readonly batchService: PayrollBatchService,
     private readonly capabilities: CapabilityService,
+    private readonly intents: ExecutionIntentService,
+    private readonly routing: PaymentRoutingService,
+    private readonly payrollReceipts: PayrollReceiptVerifierService,
   ) {}
 
   async createTask(type: string, payload: TaskPayload): Promise<TaskDetails> {
@@ -159,7 +168,50 @@ export class TaskService {
       .reduce((sum, r) => sum + r.amountUnits, 0n);
 
     const referenceId = this.normalizeReferenceId(payload.referenceId);
-    const units = batches.map((batch) => ({
+    const sourceTokenAddress = String(payload.sourceTokenAddress ?? '');
+    const intentPlans = await Promise.all(
+      batches.map((batch) => {
+        const batchReference = this.getBatchReferenceId(
+          referenceId,
+          batch.index,
+        );
+        return this.intents.acquire({
+          network: this.routing.network,
+          operation: 'PAYROLL',
+          sourceWallet: owner.address,
+          batchDigest: createPayrollBatchDigest(
+            batch.recipients.map((recipient) => ({
+              recipient: recipient.address,
+              token: recipient.targetTokenAddress,
+              amountUnits: recipient.amountUnits.toString(),
+            })),
+          ),
+          tokenIn: sourceTokenAddress,
+          tokenOut: batch.recipients[0].targetTokenAddress,
+          amountUnits: batch.totalAmount.toString(),
+          externalReference: batchReference,
+        });
+      }),
+    );
+    const intent = intentPlans[0];
+    const existingTask = await this.prisma.task.findUnique({
+      where: { id: intent.id },
+      include: { logs: true, units: true, transactions: true },
+    });
+    if (existingTask) {
+      await Promise.all(
+        intentPlans.map((unitIntent) =>
+          this.intents.attachTask(unitIntent.id, existingTask.id),
+        ),
+      );
+      const recoveredTask = await this.reconcilePayrollIntents(
+        existingTask as TaskWithRelations,
+        intentPlans,
+        batches,
+      );
+      return this.payrollResult(recoveredTask, intent);
+    }
+    const units = batches.map((batch, intentIndex) => ({
       type: 'batch' as const,
       index: batch.index,
       status: 'PENDING' as const,
@@ -169,83 +221,218 @@ export class TaskService {
         recipients: batch.recipients.map((recipient) => ({
           address: recipient.address,
           amount: recipient.amount,
+          amountUnits: recipient.amountUnits.toString(),
           targetToken: recipient.targetToken,
         })),
         sourceToken,
         totalAmount: batch.totalAmount.toString(),
+        executionIntentId: intentPlans[intentIndex].id,
+        idempotencyKey: intentPlans[intentIndex].idempotencyKey,
       },
     }));
 
-    const task = await this.prisma.$transaction(async (tx) => {
-      const createdTask = await tx.task.create({
-        data: {
-          type: TaskType.PAYROLL,
-          status: TaskStatus.ASSIGNED,
-          totalUnits: units.length,
-          completedUnits: 0,
-          failedUnits: 0,
-          metadata: {
-            approvalAmount: sourceTokenApprovalAmount.toString(),
-            referenceId,
-            sourceToken,
-            walletAddress: owner.address,
-            totalBatches: totals.totalBatches,
-            totalRecipients: totals.totalRecipients,
-            totalAmount: totals.totalAmount.toString(),
-          } as Prisma.InputJsonValue,
-          payload: payload as Prisma.InputJsonValue,
-        },
-      });
-
-      if (units.length > 0) {
-        await tx.taskUnit.createMany({
-          data: units.map((unit) => ({
-            taskId: createdTask.id,
-            type: unit.type,
-            index: unit.index,
-            status: unit.status,
-            payload: unit.payload as Prisma.InputJsonValue,
-          })),
-        });
-      }
-
-      await tx.taskLog.createMany({
-        data: [
-          {
-            taskId: createdTask.id,
-            level: 'INFO',
-            step: 'task.created',
-            status: TaskStatus.CREATED,
-            message: 'Task payroll created',
-            context: {
-              totalUnits: units.length,
-              sourceToken,
-            } as Prisma.InputJsonValue,
-          },
-          {
-            taskId: createdTask.id,
-            level: 'INFO',
-            step: 'task.assigned',
+    let task: TaskWithRelations;
+    try {
+      task = await this.prisma.$transaction(async (tx) => {
+        const createdTask = await tx.task.create({
+          data: {
+            id: intent.id,
+            type: TaskType.PAYROLL,
             status: TaskStatus.ASSIGNED,
-            message: `Prepared ${units.length} payroll batch unit(s)`,
-            context: {
+            totalUnits: units.length,
+            completedUnits: 0,
+            failedUnits: 0,
+            metadata: {
+              approvalAmount: sourceTokenApprovalAmount.toString(),
               referenceId,
+              sourceToken,
+              walletAddress: owner.address,
+              totalBatches: totals.totalBatches,
               totalRecipients: totals.totalRecipients,
+              totalAmount: totals.totalAmount.toString(),
             } as Prisma.InputJsonValue,
+            payload: payload as Prisma.InputJsonValue,
           },
-        ],
-      });
+        });
 
-      return tx.task.findUniqueOrThrow({
-        where: { id: createdTask.id },
+        if (units.length > 0) {
+          await tx.taskUnit.createMany({
+            data: units.map((unit) => ({
+              taskId: createdTask.id,
+              type: unit.type,
+              index: unit.index,
+              status: unit.status,
+              payload: unit.payload as Prisma.InputJsonValue,
+            })),
+          });
+        }
+
+        await tx.taskLog.createMany({
+          data: [
+            {
+              taskId: createdTask.id,
+              level: 'INFO',
+              step: 'task.created',
+              status: TaskStatus.CREATED,
+              message: 'Task payroll created',
+              context: {
+                totalUnits: units.length,
+                sourceToken,
+              } as Prisma.InputJsonValue,
+            },
+            {
+              taskId: createdTask.id,
+              level: 'INFO',
+              step: 'task.assigned',
+              status: TaskStatus.ASSIGNED,
+              message: `Prepared ${units.length} payroll batch unit(s)`,
+              context: {
+                referenceId,
+                totalRecipients: totals.totalRecipients,
+              } as Prisma.InputJsonValue,
+            },
+          ],
+        });
+
+        return tx.task.findUniqueOrThrow({
+          where: { id: createdTask.id },
+          include: { logs: true, units: true, transactions: true },
+        });
+      });
+    } catch (error) {
+      const concurrentlyCreated = await this.prisma.task.findUnique({
+        where: { id: intent.id },
         include: { logs: true, units: true, transactions: true },
       });
-    });
+      if (!concurrentlyCreated) throw error;
+      task = concurrentlyCreated as TaskWithRelations;
+    }
 
+    await Promise.all(
+      intentPlans.map((unitIntent) =>
+        this.intents.attachTask(unitIntent.id, task.id),
+      ),
+    );
+
+    return this.payrollResult(task, intent);
+  }
+
+  private async reconcilePayrollIntents(
+    task: TaskWithRelations,
+    intentPlans: Awaited<ReturnType<ExecutionIntentService['acquire']>>[],
+    batches: ReturnType<PayrollBatchService['splitIntoBatches']>,
+  ): Promise<TaskWithRelations> {
+    for (const [index, initialIntent] of intentPlans.entries()) {
+      const unit = task.units.find((candidate) => candidate.index === index);
+      const batch = batches[index];
+      if (!unit || !batch) continue;
+      let intent = await this.intents.get(initialIntent.id);
+      if (intent.status === 'COMPLETED') {
+        await this.taskUnitService.reportUnit(task.id, unit.id, {
+          status: 'SUCCESS',
+          executionIntentId: intent.id,
+          txHash: intent.transactionHash,
+        });
+        continue;
+      }
+      if (['FAILED_FINAL', 'EXPIRED', 'CANCELLED'].includes(intent.status)) {
+        await this.taskUnitService.reportUnit(task.id, unit.id, {
+          status: 'FAILED',
+          executionIntentId: intent.id,
+          error: `Execution intent is terminal: ${intent.status}.`,
+        });
+        continue;
+      }
+      if (
+        !intent.transactionHash ||
+        !['SUBMITTED', 'VERIFYING'].includes(intent.status)
+      )
+        continue;
+      const transactionHash = intent.transactionHash;
+      try {
+        if (intent.status === 'SUBMITTED')
+          intent = await this.intents.beginVerification(intent.id);
+        await this.payrollReceipts.verify({
+          transactionHash,
+          sourceWallet: intent.sourceWallet,
+          token: intent.tokenOut,
+          totalAmountUnits: intent.amountUnits,
+          referenceId: intent.externalReference,
+          recipients: batch.recipients.map((recipient) => ({
+            address: recipient.address,
+            amountUnits: recipient.amountUnits.toString(),
+          })),
+        });
+        await this.intents.completeWithVerifiedReceipt(intent.id, {
+          network: intent.network,
+          transactionHash: transactionHash as `0x${string}`,
+          sourceWallet: intent.sourceWallet,
+          token: intent.tokenOut,
+          batchDigest: intent.batchDigest,
+          amountUnits: intent.amountUnits,
+        });
+        await this.taskUnitService.reportUnit(task.id, unit.id, {
+          status: 'SUCCESS',
+          executionIntentId: intent.id,
+          txHash: intent.transactionHash,
+        });
+      } catch (error) {
+        const response =
+          error && typeof error === 'object' && 'getResponse' in error
+            ? (error as { getResponse(): unknown }).getResponse()
+            : null;
+        const retryable =
+          response &&
+          typeof response === 'object' &&
+          'retryable' in response &&
+          response.retryable === true;
+        if (retryable) continue;
+        if (intent.status === 'VERIFYING')
+          await this.intents.transition(intent.id, 'VERIFYING', 'FAILED_FINAL');
+        await this.taskUnitService.reportUnit(task.id, unit.id, {
+          status: 'FAILED',
+          executionIntentId: intent.id,
+          txHash: intent.transactionHash,
+          error:
+            error instanceof Error
+              ? error.message
+              : 'Payroll receipt verification failed permanently.',
+        });
+      }
+    }
+    await Promise.all(
+      intentPlans.map(async (intentPlan, index) => {
+        const unit = task.units.find((candidate) => candidate.index === index);
+        if (!unit) return;
+        const current = await this.intents.get(intentPlan.id);
+        await this.prisma.taskUnit.update({
+          where: { id: unit.id },
+          data: {
+            payload: {
+              ...this.mapJsonObject(unit.payload),
+              executionIntentStatus: current.status,
+            } as Prisma.InputJsonValue,
+          },
+        });
+      }),
+    );
+    return (await this.prisma.task.findUniqueOrThrow({
+      where: { id: task.id },
+      include: { logs: true, units: true, transactions: true },
+    })) as TaskWithRelations;
+  }
+
+  private payrollResult(
+    task: TaskWithRelations,
+    intent: { id: string; idempotencyKey: string },
+  ): CreatePayrollTaskResult {
+    const metadata = this.mapJsonObject(task.metadata);
     return {
       taskId: task.id,
-      approvalAmount: sourceTokenApprovalAmount.toString(),
-      referenceId,
+      executionIntentId: intent.id,
+      idempotencyKey: intent.idempotencyKey,
+      approvalAmount: String(metadata.approvalAmount ?? '0'),
+      referenceId: String(metadata.referenceId ?? ''),
       totalUnits: task.totalUnits,
       units: task.units
         .sort((left, right) => left.index - right.index)

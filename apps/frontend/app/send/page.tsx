@@ -50,6 +50,7 @@ import {
   estimateUserTransferFee,
   extractSingleCorrelationId,
   findMatchingCircleTransactionPaginated,
+  clearExternalSendRecovery,
   getUserChallengeStatus,
   getUserTransactionStatus,
   isAmbiguousChallengeCreationError,
@@ -58,13 +59,16 @@ import {
   isSendOperationLocked,
   listActiveUserChallenges,
   readSendOperation,
+  readExternalSendRecovery,
   sendExecutionState,
   shouldPollSendOperation,
   withSendMetadata,
   writeSendOperation,
+  writeExternalSendRecovery,
   type AppWalletSendOperation,
   type AppWalletSendStage,
   type SendOperationScope,
+  type ExternalWalletSendRecovery,
 } from "@/lib/send-operation";
 import { selectCircleTransferToken } from "@/services/circle-auth.service";
 import { arcTestnet } from "@/lib/wagmi";
@@ -78,6 +82,14 @@ import {
   type TokenSymbol,
 } from "@/lib/wizpay";
 import { useCapability } from "@/components/providers/CapabilityProvider";
+import {
+  acquireExecutionIntent,
+  bindKnownExecutionIntentHash,
+  bindExecutionIntentTransactionHash,
+  cancelExecutionIntent,
+  verifyDirectExecutionIntent,
+} from "@/lib/execution-intent";
+import { ACTIVE_ARC_NETWORK } from "@/lib/active-arc-network";
 
 type SendStage =
   | "idle"
@@ -217,6 +229,9 @@ function SendWorkspace() {
   const [operation, setOperation] = useState<AppWalletSendOperation | null>(
     null,
   );
+  const [externalRecovery, setExternalRecovery] =
+    useState<ExternalWalletSendRecovery | null>(null);
+  const [knownRecoveryHash, setKnownRecoveryHash] = useState("");
   const [gasReserveUnits, setGasReserveUnits] = useState(
     ARC_GAS_FALLBACK_UNITS,
   );
@@ -292,6 +307,78 @@ function SendWorkspace() {
 
   useEffect(() => () => abortRef.current?.abort(), []);
 
+  useEffect(() => {
+    if (
+      wallet.walletMode !== "external" ||
+      !wallet.activeWalletAddress ||
+      !isAddress(wallet.activeWalletAddress)
+    ) {
+      queueMicrotask(() => setExternalRecovery(null));
+      return;
+    }
+    const recovered = readExternalSendRecovery(
+      typeof window === "undefined" ? undefined : window.localStorage,
+      getAddress(wallet.activeWalletAddress),
+      arcTestnet.id,
+    );
+    queueMicrotask(() => {
+      setExternalRecovery(recovered);
+      if (!recovered) return;
+      setRecipient(recovered.recipient);
+      setTokenSymbol(recovered.token);
+      setAmount(recovered.amountDisplay);
+      setVerifiedHash(recovered.txHash ?? null);
+      setSubmissionLocked(true);
+      setStage(recovered.txHash ? "confirming" : "recoverable_error");
+      if (!recovered.txHash)
+        setError(
+          "The wallet may have broadcast this transfer without returning its hash. WizPay will not request another transfer automatically.",
+        );
+      else if (publicClient) {
+        void (async () => {
+          try {
+            await bindKnownExecutionIntentHash(
+              recovered.executionIntentId,
+              recovered.idempotencyKey,
+              recovered.txHash!,
+            );
+            setStage("verifying");
+            await verifyErc20Transfer({
+              amount: BigInt(recovered.amountUnits),
+              hash: recovered.txHash!,
+              publicClient,
+              recipient: recovered.recipient,
+              sender: recovered.sender,
+              token: recovered.tokenAddress,
+            });
+            await verifyDirectExecutionIntent(
+              recovered.executionIntentId,
+              recovered.idempotencyKey,
+            );
+            clearExternalSendRecovery(window.localStorage, recovered);
+            setExternalRecovery(null);
+            setCompleted({
+              amount: recovered.amountDisplay,
+              recipient: recovered.recipient,
+              token: recovered.token,
+              mode: "external",
+            });
+            setSubmissionLocked(false);
+            setStage("completed");
+            await refetch();
+          } catch (cause) {
+            setError(
+              cause instanceof Error
+                ? cause.message
+                : "The saved transfer could not be reconciled safely.",
+            );
+            setStage("recoverable_error");
+          }
+        })();
+      }
+    });
+  }, [publicClient, refetch, wallet.activeWalletAddress, wallet.walletMode]);
+
   function persistOperation(next: AppWalletSendOperation) {
     const updated = withSendMetadata(next, {});
     setOperation(updated);
@@ -324,6 +411,17 @@ function SendWorkspace() {
       token: current.tokenAddress,
       tokenSymbol: current.token,
     });
+    if (current.executionIntentId) {
+      await bindExecutionIntentTransactionHash(
+        current.executionIntentId,
+        hash,
+        current.idempotencyKey,
+      );
+      await verifyDirectExecutionIntent(
+        current.executionIntentId,
+        current.idempotencyKey,
+      );
+    }
     const done = { ...verifying, stage: "completed" as const };
     persistOperation(done);
     setVerifiedHash(hash);
@@ -631,6 +729,7 @@ function SendWorkspace() {
             amounts: [formatUnits(units, token.decimals)],
             destinationAddress: checkedRecipient,
             tokenId: metadata.tokenId,
+            tokenAddress: token.address,
             walletId: circle.arcWallet.id,
           },
           circle.userToken,
@@ -722,9 +821,22 @@ function SendWorkspace() {
           ? "awaiting_authorization"
           : "awaiting_signature",
       );
-      const idempotencyKey = crypto.randomUUID();
       const refId = `SEND-${crypto.randomUUID()}`;
+      const intent = await acquireExecutionIntent({
+        network: ACTIVE_ARC_NETWORK.key,
+        operation: "SEND",
+        sourceWallet: wallet.activeWalletAddress,
+        recipient: checkedRecipient,
+        tokenIn: token.address,
+        tokenOut: token.address,
+        amountUnits: units.toString(),
+        externalReference: refId,
+      });
+      const idempotencyKey = intent.idempotencyKey;
       let result: Awaited<ReturnType<typeof executeTransaction>>;
+      const externalRecoveryHolder: {
+        value?: ExternalWalletSendRecovery;
+      } = {};
       if (wallet.walletMode === "circle" && circle.authMethod !== "passkey") {
         await circle.ensureSessionReady();
         if (!circle.arcWallet?.id)
@@ -756,6 +868,7 @@ function SendWorkspace() {
           version: 3,
           operationId: refId,
           idempotencyKey,
+          executionIntentId: intent.id,
           walletMode: "circle",
           authMethod: circle.authMethod,
           userId: circleUserId,
@@ -784,7 +897,9 @@ function SendWorkspace() {
             feeLevel: "MEDIUM",
             idempotencyKey,
             refId,
+            executionIntentId: intent.id,
             tokenId: balanceMetadata.tokenId,
+            tokenAddress: token.address,
             walletId: circle.arcWallet.id,
             wizpayChain: "ARC-TESTNET",
           });
@@ -820,6 +935,12 @@ function SendWorkspace() {
           challenge.challengeId,
         );
         const directHash = extractCircleTransactionHash(circleResult);
+        if (directHash)
+          await bindExecutionIntentTransactionHash(
+            intent.id,
+            directHash,
+            intent.idempotencyKey,
+          );
         pending = {
           ...pending,
           txHash: directHash ?? undefined,
@@ -837,8 +958,35 @@ function SendWorkspace() {
           contractAddress: token.address,
           functionName: "transfer",
           idempotencyKey,
+          executionIntentId: intent.id,
           memo: `WizPay Send ${token.symbol}`,
           refId,
+          onWalletPrepared: async (leaseOwner) => {
+            const now = new Date().toISOString();
+            const preparedExternalRecovery: ExternalWalletSendRecovery = {
+              version: 1,
+              executionIntentId: intent.id,
+              idempotencyKey: intent.idempotencyKey,
+              leaseOwner,
+              operationId: refId,
+              chainId: arcTestnet.id,
+              sender: getAddress(wallet.activeWalletAddress!),
+              token: token.symbol,
+              tokenAddress: token.address,
+              recipient: checkedRecipient,
+              amountUnits: units.toString(),
+              amountDisplay: formatUnits(units, token.decimals),
+              createdAt: now,
+              stage: "awaiting_wallet_signature",
+            };
+            externalRecoveryHolder.value = preparedExternalRecovery;
+            setExternalRecovery(preparedExternalRecovery);
+            setSubmissionLocked(true);
+            writeExternalSendRecovery(
+              typeof window === "undefined" ? undefined : window.localStorage,
+              preparedExternalRecovery,
+            );
+          },
         });
       }
       submittedRef.current = true;
@@ -860,6 +1008,25 @@ function SendWorkspace() {
           "The submitted transaction did not return an on-chain hash.",
         );
       }
+      const preparedExternalRecovery = externalRecoveryHolder.value;
+      if (preparedExternalRecovery) {
+        const recoveryWithHash: ExternalWalletSendRecovery = {
+          ...preparedExternalRecovery,
+          txHash: hash,
+          stage: "confirming_onchain",
+        };
+        setExternalRecovery(recoveryWithHash);
+        writeExternalSendRecovery(
+          typeof window === "undefined" ? undefined : window.localStorage,
+          recoveryWithHash,
+        );
+      }
+      await bindExecutionIntentTransactionHash(
+        intent.id,
+        hash,
+        intent.idempotencyKey,
+        result.executionLeaseOwner,
+      );
       setStage("confirming");
       await publicClient.waitForTransactionReceipt({ hash, confirmations: 1 });
       setStage("verifying");
@@ -871,6 +1038,7 @@ function SendWorkspace() {
         sender: wallet.activeWalletAddress,
         token: token.address,
       });
+      await verifyDirectExecutionIntent(intent.id, intent.idempotencyKey);
       setVerifiedHash(hash);
       setCompleted({
         amount: formatUnits(units, token.decimals),
@@ -879,6 +1047,13 @@ function SendWorkspace() {
         mode: wallet.walletMode,
       });
       setStage("completed");
+      if (preparedExternalRecovery) {
+        clearExternalSendRecovery(
+          typeof window === "undefined" ? undefined : window.localStorage,
+          preparedExternalRecovery,
+        );
+        setExternalRecovery(null);
+      }
       await refetch();
     } catch (cause) {
       if (!(cause instanceof DOMException && cause.name === "AbortError")) {
@@ -908,6 +1083,92 @@ function SendWorkspace() {
     } finally {
       submittingRef.current = false;
       abortRef.current = null;
+    }
+  }
+
+  async function recoverExternalTransactionHash() {
+    if (
+      !externalRecovery ||
+      !/^0x[a-fA-F0-9]{64}$/.test(knownRecoveryHash.trim()) ||
+      !publicClient
+    ) {
+      setError("Enter a complete 32-byte transaction hash.");
+      return;
+    }
+    const hash = knownRecoveryHash.trim() as Hex;
+    setCheckingStatus(true);
+    try {
+      await bindKnownExecutionIntentHash(
+        externalRecovery.executionIntentId,
+        externalRecovery.idempotencyKey,
+        hash,
+      );
+      const next = {
+        ...externalRecovery,
+        txHash: hash,
+        stage: "confirming_onchain" as const,
+      };
+      setExternalRecovery(next);
+      setVerifiedHash(hash);
+      writeExternalSendRecovery(window.localStorage, next);
+      setStage("verifying");
+      await verifyErc20Transfer({
+        amount: BigInt(next.amountUnits),
+        hash,
+        publicClient,
+        recipient: next.recipient,
+        sender: next.sender,
+        token: next.tokenAddress,
+      });
+      await verifyDirectExecutionIntent(
+        next.executionIntentId,
+        next.idempotencyKey,
+      );
+      clearExternalSendRecovery(window.localStorage, next);
+      setExternalRecovery(null);
+      setCompleted({
+        amount: next.amountDisplay,
+        recipient: next.recipient,
+        token: next.token,
+        mode: "external",
+      });
+      setError(null);
+      setSubmissionLocked(false);
+      setStage("completed");
+      await refetch();
+    } catch (cause) {
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : "The transaction could not be reconciled safely.",
+      );
+      setStage("recoverable_error");
+    } finally {
+      setCheckingStatus(false);
+    }
+  }
+
+  async function cancelExternalIntent() {
+    if (!externalRecovery || externalRecovery.txHash) return;
+    setCheckingStatus(true);
+    try {
+      await cancelExecutionIntent(
+        externalRecovery.executionIntentId,
+        externalRecovery.idempotencyKey,
+      );
+      clearExternalSendRecovery(window.localStorage, externalRecovery);
+      setExternalRecovery(null);
+      setSubmissionLocked(false);
+      setError(null);
+      setStage("idle");
+    } catch (cause) {
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : "The unresolved transfer could not be cancelled safely.",
+      );
+    } finally {
+      setCheckingStatus(false);
     }
   }
 
@@ -1240,6 +1501,41 @@ function SendWorkspace() {
                       The existing recovery record blocks duplicate creation.
                       Status checks are read-only.
                     </p>
+                  ) : null}
+                  {externalRecovery && !externalRecovery.txHash ? (
+                    <div className="mt-3 space-y-3 rounded-lg border border-amber-500/30 p-3">
+                      <Input
+                        aria-label="Known transaction hash"
+                        placeholder="0x… transaction hash"
+                        value={knownRecoveryHash}
+                        onChange={(event) =>
+                          setKnownRecoveryHash(event.target.value)
+                        }
+                      />
+                      <div className="flex flex-wrap gap-2">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={checkingStatus}
+                          onClick={() => void recoverExternalTransactionHash()}
+                        >
+                          Bind and verify hash
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={checkingStatus}
+                          onClick={() => void cancelExternalIntent()}
+                        >
+                          Cancel unsubmitted intent
+                        </Button>
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        Cancel only after checking wallet activity and
+                        confirming no broadcast occurred. Browser wallets can
+                        broadcast before their provider returns a hash.
+                      </p>
+                    </div>
                   ) : null}
                   <div className="mt-3 flex flex-wrap gap-2">
                     {operation?.stage === "awaiting_user_authorization" ? (

@@ -2,8 +2,7 @@ import { backendFetch } from "@/lib/backend-api";
 
 function invoiceApiPath(path: string) {
   const prefix =
-    process.env.NEXT_PUBLIC_INVOICE_API_PREFIX?.trim().replace(/\/$/, "") ||
-    "";
+    process.env.NEXT_PUBLIC_INVOICE_API_PREFIX?.trim().replace(/\/$/, "") || "";
   return `${prefix}${path}`;
 }
 
@@ -28,6 +27,7 @@ export type InvoiceToken = {
 
 export type PublicInvoice = {
   publicId: string;
+  settlementOperation?: "INVOICE_SETTLEMENT" | "PAYMENT_LINK_SETTLEMENT";
   merchantDisplayLabel: string | null;
   receivingAddress: `0x${string}`;
   receivingAddressShort: string;
@@ -55,6 +55,7 @@ export type MerchantInvoice = PublicInvoice & {
 };
 
 export type CreateInvoiceInput = {
+  settlementKind?: "INVOICE" | "PAYMENT_LINK";
   token: "USDC" | "EURC";
   amount: string;
   title: string;
@@ -92,9 +93,12 @@ export function listInvoices(
 }
 
 export function getMerchantInvoice(id: string, userToken: string) {
-  return backendFetch<MerchantInvoice>(invoiceApiPath(`/invoices/${encodeURIComponent(id)}`), {
-    headers: authHeaders(userToken),
-  });
+  return backendFetch<MerchantInvoice>(
+    invoiceApiPath(`/invoices/${encodeURIComponent(id)}`),
+    {
+      headers: authHeaders(userToken),
+    },
+  );
 }
 
 export function cancelInvoice(id: string, userToken: string) {
@@ -117,7 +121,9 @@ export function verifyPublicInvoicePayment(
   signal?: AbortSignal,
 ) {
   return backendFetch<PublicInvoice>(
-    invoiceApiPath(`/public/invoices/${encodeURIComponent(publicId)}/payments/verify`),
+    invoiceApiPath(
+      `/public/invoices/${encodeURIComponent(publicId)}/payments/verify`,
+    ),
     {
       method: "POST",
       body: JSON.stringify({ transactionHash }),

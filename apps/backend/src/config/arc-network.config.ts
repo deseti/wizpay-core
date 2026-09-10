@@ -42,11 +42,11 @@ export type BackendArcNetworkConfiguration = Readonly<{
   explorerBaseUrl: string;
   tokens: Readonly<{
     USDC: ArcTokenResourceValue;
-    EURC: ArcTokenResourceValue;
+    EURC?: ArcTokenResourceValue;
   }>;
   contracts: Readonly<{
-    wizpay: ArcWizPayContractValue;
-    wizpaySwapExecutorV2: ArcWizPayContractValue;
+    wizpay?: ArcWizPayContractValue;
+    wizpaySwapExecutorV2?: ArcWizPayContractValue;
   }>;
 }>;
 
@@ -121,17 +121,17 @@ function validateLegacyActiveConfiguration(
   assertExactLegacyValue(
     'NEXT_PUBLIC_CONTRACT_ADDRESS',
     environment.NEXT_PUBLIC_CONTRACT_ADDRESS,
-    config.contracts.wizpay.address,
+    config.contracts.wizpay?.address ?? '',
   );
   assertExactLegacyValue(
     'NEXT_PUBLIC_WIZPAY_ADDRESS',
     environment.NEXT_PUBLIC_WIZPAY_ADDRESS,
-    config.contracts.wizpay.address,
+    config.contracts.wizpay?.address ?? '',
   );
   assertExactLegacyValue(
     'WIZPAY_SWAP_EXECUTOR_V2_ADDRESS',
     environment.WIZPAY_SWAP_EXECUTOR_V2_ADDRESS,
-    config.contracts.wizpaySwapExecutorV2.address,
+    config.contracts.wizpaySwapExecutorV2?.address ?? '',
   );
 }
 
@@ -141,9 +141,9 @@ export function requireBackendArcNetworkReadiness(
   const rpc = requireAvailableArcResource(state.rpc);
   const explorer = requireAvailableArcResource(state.explorer);
   const usdc = requireAvailableArcResource(state.tokens.USDC);
-  const eurc = requireAvailableArcResource(state.tokens.EURC);
-  const wizpay = requireAvailableArcResource(state.contracts.wizpay);
-  const wizpaySwapExecutorV2 = requireAvailableArcResource(
+  const eurc = optionalAvailable(state.tokens.EURC);
+  const wizpay = optionalAvailable(state.contracts.wizpay);
+  const wizpaySwapExecutorV2 = optionalAvailable(
     state.contracts.wizpaySwapExecutorV2,
   );
 
@@ -153,9 +153,16 @@ export function requireBackendArcNetworkReadiness(
     environment: state.network.environment,
     rpcUrl: rpc.url,
     explorerBaseUrl: explorer.baseUrl,
-    tokens: { USDC: usdc, EURC: eurc },
-    contracts: { wizpay, wizpaySwapExecutorV2 },
+    tokens: { USDC: usdc, ...(eurc ? { EURC: eurc } : {}) },
+    contracts: {
+      ...(wizpay ? { wizpay } : {}),
+      ...(wizpaySwapExecutorV2 ? { wizpaySwapExecutorV2 } : {}),
+    },
   });
+}
+
+function optionalAvailable<T>(resource: ArcResource<T>): T | undefined {
+  return resource.status === 'available' ? resource.value : undefined;
 }
 
 export function loadBackendArcNetworkConfiguration(

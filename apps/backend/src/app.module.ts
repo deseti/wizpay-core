@@ -19,6 +19,7 @@ import { UserSwapModule } from './user-swap/user-swap.module';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { CapabilityModule } from './capabilities/capability.module';
+import { ExecutionIntentModule } from './execution-intent/execution-intent.module';
 
 @Module({
   controllers: [AppController],
@@ -26,6 +27,7 @@ import { CapabilityModule } from './capabilities/capability.module';
   imports: [
     AppConfigModule,
     CapabilityModule,
+    ExecutionIntentModule,
     DatabaseModule,
     AdaptersModule,
     AgentsModule,

@@ -42,10 +42,16 @@ describe("invoice payment primitives", () => {
 
   it("preserves the minimal external-wallet refresh record", () => {
     const recovery = {
+      version: 2 as const,
       method: "external" as const,
       publicId: "abcdefghijklmnopqrstuv",
+      executionIntentId: "intent-1",
+      executionIntentKey: "11111111-1111-4111-8111-111111111111",
+      leaseOwner: "browser-1",
+      payerAddress: "0x2222222222222222222222222222222222222222" as const,
       transactionHash: HASH,
       createdAt: new Date().toISOString(),
+      stage: "confirming_onchain" as const,
     };
     writeInvoicePaymentRecovery(recovery, localStorage);
     expect(readInvoicePaymentRecovery(recovery.publicId, localStorage)).toEqual(
@@ -75,7 +81,11 @@ describe("invoice payment primitives", () => {
       stage: "awaiting_user_authorization" as const,
     };
     writeInvoicePaymentRecovery(recovery, localStorage);
-    expect(readInvoicePaymentRecovery(recovery.publicId, localStorage)).toEqual(recovery);
-    expect(localStorage.getItem(`wizpay.invoice-payment.v1.${recovery.publicId}`)).not.toContain("circle-user-token");
+    expect(readInvoicePaymentRecovery(recovery.publicId, localStorage)).toEqual(
+      recovery,
+    );
+    expect(
+      localStorage.getItem(`wizpay.invoice-payment.v1.${recovery.publicId}`),
+    ).not.toContain("circle-user-token");
   });
 });

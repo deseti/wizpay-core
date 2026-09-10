@@ -19,6 +19,7 @@ const {
   getArcExplorerResource,
   getArcNetworkByChainId,
   getArcNetworkByKey,
+  getArcOperationResourceReadiness,
   getArcProtocolCapabilityResource,
   getArcProtocolContractResource,
   getArcRpcResource,
@@ -134,6 +135,41 @@ test("rejects forbidden Mainnet enablement and unavailable direct resources", ()
         WIZPAY_ARC_MAINNET_CAPABILITY_SEND: "true",
       }),
     (error) => error.code === "CAPABILITY_RESOURCE_DEPENDENCY_UNAVAILABLE",
+  );
+});
+
+test("decouples direct-USDC readiness from EURC and swap resources", () => {
+  const readiness = getArcOperationResourceReadiness("arc-testnet");
+  assert.equal(readiness.sendDirect, true);
+  assert.equal(readiness.payrollDirect, true);
+  assert.equal(readiness.invoiceCreation, true);
+  assert.equal(readiness.paymentLinkDirect, true);
+
+  const allFalse = resolveArcCapabilities("arc-mainnet", {});
+  assert.equal(
+    validateArcCapabilityDependencies(
+      { ...allFalse, send: true, invoice: true },
+      {
+        sendDirect: true,
+        payrollDirect: false,
+        invoiceCreation: true,
+        paymentLinkDirect: false,
+        bridge: false,
+        swap: false,
+        stableFx: false,
+        nanoAgentApi: false,
+      },
+    ),
+    true,
+  );
+});
+
+test("keeps cross-token readiness independently dependent on EURC and swap executor", () => {
+  const readiness = getArcOperationResourceReadiness("arc-testnet");
+  assert.equal(readiness.crossToken, true);
+  assert.equal(
+    getArcOperationResourceReadiness("arc-mainnet").crossToken,
+    false,
   );
 });
 

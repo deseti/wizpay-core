@@ -9,6 +9,7 @@ import { TaskMapperService } from './task-mapper.service';
 import { TaskUnitService } from './task-unit.service';
 import { TaskEmployeeBreakdownService } from './task-employee-breakdown.service';
 import { TaskPayrollHistoryService } from './task-payroll-history.service';
+import { PayrollReceiptVerifierService } from './payroll-receipt-verifier.service';
 
 const TASK_SERVICES = [
   TaskService,
@@ -18,6 +19,7 @@ const TASK_SERVICES = [
   TaskUnitService,
   TaskEmployeeBreakdownService,
   TaskPayrollHistoryService,
+  PayrollReceiptVerifierService,
 ];
 
 @Module({

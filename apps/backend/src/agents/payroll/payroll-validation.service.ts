@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { getAddress, isAddress } from 'viem';
+import { getAddress, isAddress, isAddressEqual } from 'viem';
 import { BlockchainService } from '../../adapters/blockchain.service';
 
 export interface ValidatedRecipient {
@@ -7,6 +7,7 @@ export interface ValidatedRecipient {
   amount: string;
   amountUnits: bigint;
   targetToken: string;
+  targetTokenAddress: string;
 }
 
 export interface PayrollValidationResult {
@@ -58,6 +59,11 @@ export class PayrollValidationService {
 
     const decimals = TOKEN_DECIMALS[sourceToken ?? 'USDC'] ?? 6;
     const validatedRecipients: ValidatedRecipient[] = [];
+    const sender =
+      typeof payload.walletAddress === 'string' &&
+      isAddress(payload.walletAddress.trim())
+        ? getAddress(payload.walletAddress.trim())
+        : null;
     for (let i = 0; i < recipients.length; i++) {
       const recipient = recipients[i] as Record<string, unknown> | undefined;
       const prefix = `recipients[${i}]`;
@@ -75,16 +81,19 @@ export class PayrollValidationService {
         errors.push(
           `${prefix}.address: invalid Ethereum address "${addressValue}"`,
         );
+      else if (sender && isAddressEqual(sender, normalizedAddress))
+        errors.push(`${prefix}.address: self-send is not allowed`);
 
-      const amount = recipient.amount as string | number | undefined;
+      const amount = recipient.amount;
       if (amount === undefined || amount === null || amount === '')
         errors.push(`${prefix}.amount: required`);
       else if (
-        isNaN(typeof amount === 'number' ? amount : Number(amount)) ||
-        Number(amount) <= 0
+        typeof amount !== 'string' ||
+        !/^(?:0|[1-9]\d*)(?:\.\d{1,6})?$/.test(amount) ||
+        this.parseAmountToUnits(amount, 6) <= 0n
       )
         errors.push(
-          `${prefix}.amount: must be a positive number, got "${amount}"`,
+          `${prefix}.amount: must be a positive decimal with at most 6 places, got "${String(amount)}"`,
         );
 
       const targetToken =
@@ -97,6 +106,12 @@ export class PayrollValidationService {
         errors.push(
           `${prefix}.targetToken: must be one of ${SUPPORTED_TOKENS.join(', ')}. Got: "${targetToken}"`,
         );
+      const targetTokenAddress =
+        typeof recipient.targetTokenAddress === 'string'
+          ? recipient.targetTokenAddress
+          : typeof payload.sourceTokenAddress === 'string'
+            ? payload.sourceTokenAddress
+            : '';
       if (
         normalizedAddress &&
         amount !== undefined &&
@@ -104,12 +119,16 @@ export class PayrollValidationService {
         amount !== ''
       ) {
         const amountStr = String(amount);
-        if (!isNaN(Number(amountStr)) && Number(amountStr) > 0)
+        if (
+          /^(?:0|[1-9]\d*)(?:\.\d{1,6})?$/.test(amountStr) &&
+          this.parseAmountToUnits(amountStr, decimals) > 0n
+        )
           validatedRecipients.push({
             address: normalizedAddress,
             amount: amountStr,
             amountUnits: this.parseAmountToUnits(amountStr, decimals),
             targetToken,
+            targetTokenAddress,
           });
       }
     }
@@ -141,7 +160,7 @@ export class PayrollValidationService {
         `Balance check failed for ${senderAddress}: ${error instanceof Error ? error.message : String(error)}`,
       );
       return {
-        sufficient: true,
+        sufficient: false,
         balance: '0',
         required: requiredAmount.toString(),
       };

@@ -21,8 +21,13 @@ vi.mock("@/lib/backend-api", () => ({ backendFetch: vi.fn() }));
 
 const backendFetchMock = vi.mocked(backendFetch);
 const task = {
-  id: "task-1", status: "executed", logs: [], units: [],
-  totalUnits: 0, completedUnits: 0, failedUnits: 0,
+  id: "task-1",
+  status: "executed",
+  logs: [],
+  units: [],
+  totalUnits: 0,
+  completedUnits: 0,
+  failedUnits: 0,
 };
 
 function setup(sourceToken: TokenSymbol, targetToken: TokenSymbol) {
@@ -36,27 +41,39 @@ function setup(sourceToken: TokenSymbol, targetToken: TokenSymbol) {
   backendFetchMock.mockImplementation(async (path) => {
     if (path === "/tasks/payroll/init") {
       return {
-        taskId: "task-1", approvalAmount: "0", referenceId: "payroll-1",
-        totalUnits: 0, units: [],
+        taskId: "task-1",
+        executionIntentId: "11111111-1111-4111-8111-111111111111",
+        idempotencyKey: "22222222-2222-4222-8222-222222222222",
+        approvalAmount: "0",
+        referenceId: "payroll-1",
+        totalUnits: 0,
+        units: [],
       } as never;
     }
     return task as never;
   });
   const options = {
     activeToken: { symbol: sourceToken, decimals: 6 },
-    approveBatchAmount: vi.fn(), currentAllowance: 0n,
-    recipients: [{
-      id: "recipient-1",
-      address: "0x2222222222222222222222222222222222222222",
-      amount: "1",
-      targetToken,
-    }],
-    pendingBatches: [], referenceId: "payroll-1",
-    refetchAllowance: vi.fn(), setErrorMessage: vi.fn(),
-    setStatusMessage: vi.fn(), submitCurrentBatch: vi.fn(),
+    approveBatchAmount: vi.fn(),
+    currentAllowance: 0n,
+    recipients: [
+      {
+        id: "recipient-1",
+        address: "0x2222222222222222222222222222222222222222",
+        amount: "1",
+        targetToken,
+      },
+    ],
+    pendingBatches: [],
+    referenceId: "payroll-1",
+    refetchAllowance: vi.fn(),
+    setErrorMessage: vi.fn(),
+    setStatusMessage: vi.fn(),
+    submitCurrentBatch: vi.fn(),
     executePreSwap,
     getPreSwapPayoutAmounts: () => new Map([["recipient-1", "897907"]]),
-    officialQuoteRequired: true, officialQuoteReady: true,
+    officialQuoteRequired: true,
+    officialQuoteReady: true,
   };
   return { executePreSwap, options };
 }
@@ -70,23 +87,37 @@ describe("useBatchPayroll XyloNet confirmed output", () => {
   it.each([
     ["USDC", "EURC"],
     ["EURC", "USDC"],
-  ] as const)("uses verified output for 1 %s to %s", async (sourceToken, targetToken) => {
-    const { executePreSwap, options } = setup(sourceToken, targetToken);
-    const { result } = renderHook(() => useBatchPayroll(options));
-    await act(async () => result.current.execute());
+  ] as const)(
+    "uses verified output for 1 %s to %s",
+    async (sourceToken, targetToken) => {
+      const { executePreSwap, options } = setup(sourceToken, targetToken);
+      const { result } = renderHook(() => useBatchPayroll(options));
+      await act(async () => result.current.execute());
 
-    expect(executePreSwap).toHaveBeenCalledWith({
-      sourceToken, targetToken, amount: "1020000", routingAmount: "1000000",
-      minimumRequiredOutput: "897907",
-    });
-    const initCall = backendFetchMock.mock.calls.find(([path]) => path === "/tasks/payroll/init");
-    const body = JSON.parse(String(initCall?.[1]?.body));
-    expect(body.recipients).toEqual([{
-      address: "0x2222222222222222222222222222222222222222",
-      amount: "0.987654",
-      targetToken,
-    }]);
-  });
+      expect(executePreSwap).toHaveBeenCalledWith({
+        sourceToken,
+        targetToken,
+        amount: "1020000",
+        routingAmount: "1000000",
+        minimumRequiredOutput: "897907",
+      });
+      const initCall = backendFetchMock.mock.calls.find(
+        ([path]) => path === "/tasks/payroll/init",
+      );
+      const body = JSON.parse(String(initCall?.[1]?.body));
+      expect(body.recipients).toEqual([
+        {
+          address: "0x2222222222222222222222222222222222222222",
+          amount: "0.987654",
+          targetToken,
+          targetTokenAddress:
+            targetToken === "USDC"
+              ? "0x3600000000000000000000000000000000000000"
+              : "0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a",
+        },
+      ]);
+    },
+  );
 
   it("does not submit Payroll when the XyloNet swap fails", async () => {
     const { executePreSwap, options } = setup("USDC", "EURC");
@@ -99,7 +130,12 @@ describe("useBatchPayroll XyloNet confirmed output", () => {
   it("prevents duplicate Send from executing a second XyloNet swap", async () => {
     const { executePreSwap, options } = setup("USDC", "EURC");
     let release!: (value: unknown) => void;
-    executePreSwap.mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
+    executePreSwap.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = resolve;
+        }),
+    );
     const { result } = renderHook(() => useBatchPayroll(options));
     let first!: Promise<void>;
     await act(async () => {
@@ -108,20 +144,30 @@ describe("useBatchPayroll XyloNet confirmed output", () => {
     });
     expect(executePreSwap).toHaveBeenCalledTimes(1);
     release({
-      settledToken: "EURC", txHash: `0x${"a".repeat(64)}`,
-      provider: "xylonet", outputToken: "EURC", verifiedActualOutput: "987654",
+      settledToken: "EURC",
+      txHash: `0x${"a".repeat(64)}`,
+      provider: "xylonet",
+      outputToken: "EURC",
+      verifiedActualOutput: "987654",
     });
     await act(async () => first);
   });
 
   it("keeps App Wallet same-token Payroll on its direct path", async () => {
     const { executePreSwap, options } = setup("USDC", "USDC");
-    const { result } = renderHook(() => useBatchPayroll({
-      ...options, officialQuoteRequired: false, officialQuoteReady: false,
-    }));
+    const { result } = renderHook(() =>
+      useBatchPayroll({
+        ...options,
+        officialQuoteRequired: false,
+        officialQuoteReady: false,
+      }),
+    );
     await act(async () => result.current.execute());
     expect(executePreSwap).not.toHaveBeenCalled();
-    expect(backendFetchMock).toHaveBeenCalledWith("/tasks/payroll/init", expect.anything());
+    expect(backendFetchMock).toHaveBeenCalledWith(
+      "/tasks/payroll/init",
+      expect.anything(),
+    );
   });
 
   it.each([
@@ -274,10 +320,9 @@ describe("useBatchPayroll XyloNet confirmed output", () => {
       ([path]) => path === "/tasks/payroll/init",
     );
     const body = JSON.parse(String(initCall?.[1]?.body));
-    expect(body.recipients.map((recipient: { amount: string }) => recipient.amount)).toEqual([
-      "0.333333",
-      "0.666668",
-    ]);
+    expect(
+      body.recipients.map((recipient: { amount: string }) => recipient.amount),
+    ).toEqual(["0.333333", "0.666668"]);
   });
 
   it("retries payroll distribution after a confirmed swap without blocking recovery", async () => {
@@ -295,18 +340,25 @@ describe("useBatchPayroll XyloNet confirmed output", () => {
       status: "PENDING",
       payload: {
         referenceId: "payroll-1",
-        recipients: [{
-          address: "0x2222222222222222222222222222222222222222",
-          amount: "0.987654",
-          targetToken: "EURC",
-        }],
+        recipients: [
+          {
+            address: "0x2222222222222222222222222222222222222222",
+            amount: "0.987654",
+            targetToken: "EURC",
+          },
+        ],
       },
     };
     backendFetchMock.mockImplementation(async (path) => {
       if (path === "/tasks/payroll/init") {
         return {
-          taskId: "task-1", approvalAmount: "0", referenceId: "payroll-1",
-          totalUnits: 1, units: [unit],
+          taskId: "task-1",
+          executionIntentId: "11111111-1111-4111-8111-111111111111",
+          idempotencyKey: "22222222-2222-4222-8222-222222222222",
+          approvalAmount: "0",
+          referenceId: "payroll-1",
+          totalUnits: 1,
+          units: [unit],
         } as never;
       }
       if (String(path).includes("/report")) {
@@ -347,18 +399,25 @@ describe("useBatchPayroll XyloNet confirmed output", () => {
       status: "PENDING",
       payload: {
         referenceId: "payroll-1",
-        recipients: [{
-          address: "0x2222222222222222222222222222222222222222",
-          amount: "0.987654",
-          targetToken: "EURC",
-        }],
+        recipients: [
+          {
+            address: "0x2222222222222222222222222222222222222222",
+            amount: "0.987654",
+            targetToken: "EURC",
+          },
+        ],
       },
     };
     backendFetchMock.mockImplementation(async (path) => {
       if (path === "/tasks/payroll/init") {
         return {
-          taskId: "task-1", approvalAmount: "0", referenceId: "payroll-1",
-          totalUnits: 1, units: [unit],
+          taskId: "task-1",
+          executionIntentId: "11111111-1111-4111-8111-111111111111",
+          idempotencyKey: "22222222-2222-4222-8222-222222222222",
+          approvalAmount: "0",
+          referenceId: "payroll-1",
+          totalUnits: 1,
+          units: [unit],
         } as never;
       }
       if (String(path).includes("/report")) {
@@ -385,6 +444,7 @@ describe("useBatchPayroll XyloNet confirmed output", () => {
     expect(JSON.parse(String(reportCall?.[1]?.body))).toEqual({
       status: "SUCCESS",
       txHash: recoveredHash,
+      executionIntentId: "11111111-1111-4111-8111-111111111111",
     });
   });
 });

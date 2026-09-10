@@ -39,11 +39,26 @@ export type ArcCapabilityName =
 
 export type ArcCapabilities = Readonly<Record<ArcCapabilityName, boolean>>;
 export type ArcCapabilityDependencyState = Readonly<{
-  directPayment: boolean;
+  directPayment?: boolean;
+  sendDirect?: boolean;
+  payrollDirect?: boolean;
+  invoiceCreation?: boolean;
+  paymentLinkDirect?: boolean;
   bridge: boolean;
   swap: boolean;
   stableFx: boolean;
   nanoAgentApi: boolean;
+}>;
+
+export type ArcOperationResourceReadiness = Readonly<{
+  sendDirect: boolean;
+  sendDirectAppWallet: boolean;
+  payrollDirect: boolean;
+  payrollDirectAppWallet: boolean;
+  invoiceCreation: boolean;
+  paymentLinkDirect: boolean;
+  paymentLinkDirectAppWallet: boolean;
+  crossToken: boolean;
 }>;
 
 export type ArcNetworkDefinition =
@@ -292,6 +307,9 @@ export declare function isArcCapabilityEnabled(
   capabilities: ArcCapabilities,
   capability: unknown,
 ): boolean;
+export declare function getArcOperationResourceReadiness(
+  networkKey: ArcNetworkKey,
+): ArcOperationResourceReadiness;
 export declare function validateArcCapabilityDependencies(
   capabilities: ArcCapabilities,
   resources: ArcCapabilityDependencyState,

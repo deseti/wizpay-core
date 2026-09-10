@@ -10,15 +10,23 @@ import type { LoginMethod } from "@/services/circle-auth.types";
 
 export const INVOICE_PAYMENT_RECOVERY_PREFIX = "wizpay.invoice-payment.v1.";
 export type ExternalInvoicePaymentRecovery = {
+  version: 2;
   method: "external";
   publicId: string;
-  transactionHash: Hex;
+  executionIntentId: string;
+  executionIntentKey: string;
+  leaseOwner: string;
+  payerAddress: Address;
+  transactionHash?: Hex;
   createdAt: string;
+  stage: "awaiting_wallet_signature" | "confirming_onchain";
 };
 export type AppWalletInvoicePaymentRecovery = {
   version: 2;
   method: "app";
   publicId: string;
+  executionIntentId?: string;
+  executionIntentKey?: string;
   authMethod: LoginMethod;
   walletId: string;
   payerAddress: Address;
@@ -94,13 +102,26 @@ export function readInvoicePaymentRecovery(
       };
     }
 
-    // Records created before dual payer support intentionally had no method.
-    if (!isTransactionHash(value.transactionHash)) return null;
+    if (
+      value.method !== "external" ||
+      value.version !== 2 ||
+      typeof value.executionIntentId !== "string" ||
+      !value.executionIntentId ||
+      typeof value.executionIntentKey !== "string" ||
+      !value.executionIntentKey ||
+      typeof value.leaseOwner !== "string" ||
+      !value.leaseOwner ||
+      !isAddress(String(value.payerAddress ?? "")) ||
+      !["awaiting_wallet_signature", "confirming_onchain"].includes(
+        String(value.stage),
+      ) ||
+      (value.transactionHash !== undefined &&
+        !isTransactionHash(value.transactionHash))
+    )
+      return null;
     return {
-      method: "external",
-      publicId,
-      transactionHash: value.transactionHash,
-      createdAt: String(value.createdAt),
+      ...(value as unknown as ExternalInvoicePaymentRecovery),
+      payerAddress: getAddress(String(value.payerAddress)),
     };
   } catch {
     return null;
@@ -124,14 +145,11 @@ export function clearInvoicePaymentRecovery(
   storage?.removeItem(`${INVOICE_PAYMENT_RECOVERY_PREFIX}${publicId}`);
 }
 
-function validBaseRecovery(
-  value: Record<string, unknown>,
-  publicId: string,
-) {
+function validBaseRecovery(value: Record<string, unknown>, publicId: string) {
   return Boolean(
     value.publicId === publicId &&
-      typeof value.createdAt === "string" &&
-      Number.isFinite(Date.parse(value.createdAt)),
+    typeof value.createdAt === "string" &&
+    Number.isFinite(Date.parse(value.createdAt)),
   );
 }
 

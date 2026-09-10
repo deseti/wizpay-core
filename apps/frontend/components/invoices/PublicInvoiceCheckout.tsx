@@ -16,6 +16,7 @@ import {
 import { useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { PageSkeleton } from "@/components/ui/skeleton-loaders";
 import { TokenIcon } from "@/components/ui/token-icon";
 import { TransactionSuccessDialog } from "@/components/dashboard/TransactionSuccessDialog";
@@ -88,8 +89,13 @@ function CheckoutLoaded({
   successOpen: boolean;
   setSuccessOpen: (open: boolean) => void;
 }) {
-  const paymentLinkCapability = useCapability("paymentLink");
+  const settlementCapability = useCapability(
+    invoice.settlementOperation === "PAYMENT_LINK_SETTLEMENT"
+      ? "paymentLink"
+      : "invoice",
+  );
   const payment = useInvoicePayment(invoice, onInvoice);
+  const [recoveryHash, setRecoveryHash] = useState("");
   const checkoutUrl = getInvoiceCheckoutUrl(invoice.publicId);
   const explorerUrl = getExplorerTxUrl(invoice.transactionHash, ARC_CHAIN_ID);
   const terminal =
@@ -251,10 +257,10 @@ function CheckoutLoaded({
                       className="w-full"
                       size="lg"
                       disabled={
-                        !paymentLinkCapability.enabled || payment.checking
+                        !settlementCapability.enabled || payment.checking
                       }
                       onClick={() => {
-                        paymentLinkCapability.assertEnabled();
+                        settlementCapability.assertEnabled();
                         void payment.continueAppAuthorization();
                       }}
                     >
@@ -269,7 +275,7 @@ function CheckoutLoaded({
                     <PaymentButton
                       invoice={invoice}
                       payment={payment}
-                      enabled={paymentLinkCapability.enabled}
+                      enabled={settlementCapability.enabled}
                     />
                   )
                 ) : !payment.isConnected ? (
@@ -290,9 +296,50 @@ function CheckoutLoaded({
                   <PaymentButton
                     invoice={invoice}
                     payment={payment}
-                    enabled={paymentLinkCapability.enabled}
+                    enabled={settlementCapability.enabled}
                   />
                 )}
+
+                {payment.externalRecoveryNeedsHash ? (
+                  <div className="space-y-3 rounded-xl border border-amber-500/30 bg-amber-500/10 p-4">
+                    <p className="text-sm text-amber-100">
+                      Wallet result is ambiguous. WizPay will not request a
+                      second transfer automatically.
+                    </p>
+                    <Input
+                      aria-label="Known transaction hash"
+                      placeholder="0x… transaction hash"
+                      value={recoveryHash}
+                      onChange={(event) => setRecoveryHash(event.target.value)}
+                    />
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        disabled={payment.checking}
+                        onClick={() =>
+                          void payment.recoverExternalHash(recoveryHash.trim())
+                        }
+                      >
+                        Bind and verify hash
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        disabled={payment.checking}
+                        onClick={() => void payment.cancelExternalRecovery()}
+                      >
+                        Cancel unsubmitted intent
+                      </Button>
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      Cancel only after checking the wallet activity and
+                      confirming that no transaction was broadcast. A browser
+                      wallet may broadcast successfully but fail before it can
+                      return the hash to this page.
+                    </p>
+                  </div>
+                ) : null}
 
                 {(payment.transactionHash ||
                   (payment.method === "app" && payment.locked)) &&
@@ -309,9 +356,9 @@ function CheckoutLoaded({
                     Check status now
                   </Button>
                 ) : null}
-                {!paymentLinkCapability.enabled ? (
+                {!settlementCapability.enabled ? (
                   <p role="alert" className="text-sm text-amber-300">
-                    {paymentLinkCapability.unavailableMessage}
+                    {settlementCapability.unavailableMessage}
                   </p>
                 ) : null}
                 <p className="text-center text-xs text-muted-foreground">

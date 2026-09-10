@@ -36,6 +36,11 @@ export const INVOICE_TOKENS = {
   { address: Address; decimals: number; name: string; symbol: string }
 >;
 
+export const INVOICE_TOKEN_NAMES = {
+  USDC: 'USD Coin',
+  EURC: 'Euro Coin',
+} as const;
+
 export type InvoiceTokenSymbol = keyof typeof INVOICE_TOKENS;
 
 export const INVOICE_ERROR_CODES = {

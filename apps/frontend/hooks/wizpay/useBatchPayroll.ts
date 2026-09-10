@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { formatUnits } from "viem";
 
 import { backendFetch } from "@/lib/backend-api";
+import { bindExecutionIntentTransactionHash } from "@/lib/execution-intent";
 import { PayrollFxRecoveryError } from "@/lib/payroll-fx-recovery";
 import { allocateVerifiedPayrollOutput } from "@/lib/payroll-output-allocation";
 import { useActiveWalletAddress } from "@/hooks/useActiveWalletAddress";
@@ -63,6 +64,7 @@ interface UseBatchPayrollOptions {
   submitCurrentBatch: (
     batchRecipients?: RecipientDraft[],
     batchReferenceId?: string,
+    execution?: { intentId: string; idempotencyKey: string },
   ) => Promise<TransactionActionResult>;
   referenceId: string;
   /**
@@ -95,9 +97,7 @@ interface UseBatchPayrollOptions {
    */
   crossCurrencyExecutionBlocked?: boolean;
   crossCurrencyExecutionBlockedReason?: string | null;
-  getRecoveredPayrollBatch?: (
-    referenceId: string,
-  ) => Promise<string | null>;
+  getRecoveredPayrollBatch?: (referenceId: string) => Promise<string | null>;
   recordPayrollBatchConfirmation?: (
     referenceId: string,
     txHash: string,
@@ -117,6 +117,7 @@ interface PayrollInitRecipient {
   address: string;
   amount: string;
   targetToken: TokenSymbol;
+  targetTokenAddress?: `0x${string}`;
 }
 
 interface PayrollTaskUnit {
@@ -130,11 +131,16 @@ interface PayrollTaskUnit {
     sourceToken?: TokenSymbol;
     totalAmount?: string;
     recipientCount?: number;
+    executionIntentId?: string;
+    idempotencyKey?: string;
+    executionIntentStatus?: string;
   };
 }
 
 interface PayrollInitPlan {
   taskId: string;
+  executionIntentId: string;
+  idempotencyKey: string;
   approvalAmount: string;
   referenceId: string;
   totalUnits: number;
@@ -391,7 +397,9 @@ export function useBatchPayroll({
   const [taskId, setTaskId] = useState<string | null>(null);
   const [task, setTask] = useState<BackendTask | null>(null);
   const [approvalHash, setApprovalHash] = useState<string | null>(null);
-  const [fxStatus, setFxStatus] = useState<PayrollFxRecoverableStatus | null>(null);
+  const [fxStatus, setFxStatus] = useState<PayrollFxRecoverableStatus | null>(
+    null,
+  );
 
   // Ref-based execution lock to prevent duplicate submissions.
   // This survives re-renders and prevents race conditions from double-clicks.
@@ -533,7 +541,6 @@ export function useBatchPayroll({
           );
           return;
         }
-
       }
 
       // ── Build effective recipients (mixed-token aware) ───────────
@@ -588,7 +595,10 @@ export function useBatchPayroll({
           const APP_WALLET_FX_BUFFER_BPS = 200n;
           const isAppWalletMode = walletMode === "circle";
           const crossAmountWithBuffer = isAppWalletMode
-            ? (BigInt(crossAmount) * (10000n + APP_WALLET_FX_BUFFER_BPS) / 10000n).toString()
+            ? (
+                (BigInt(crossAmount) * (10000n + APP_WALLET_FX_BUFFER_BPS)) /
+                10000n
+              ).toString()
             : crossAmount;
 
           logPayrollRouteDiagnostic(
@@ -598,7 +608,9 @@ export function useBatchPayroll({
               aggregateSourceAmount: crossAmount,
               aggregateSourceAmountWithBuffer: crossAmountWithBuffer,
               bufferApplied: isAppWalletMode,
-              bufferBps: isAppWalletMode ? APP_WALLET_FX_BUFFER_BPS.toString() : "0",
+              bufferBps: isAppWalletMode
+                ? APP_WALLET_FX_BUFFER_BPS.toString()
+                : "0",
               quotedTargetAmount: quotedTargetAmount.toString(),
               recipientCount: allRecipients.filter(
                 (r) => r.targetToken === targetToken,
@@ -655,7 +667,11 @@ export function useBatchPayroll({
             setApprovalHash(swapResult.txHash);
             setFxStatus((prev) =>
               prev
-                ? { ...prev, currentStep: "payout_confirmed", payoutTxHash: swapResult.txHash }
+                ? {
+                    ...prev,
+                    currentStep: "payout_confirmed",
+                    payoutTxHash: swapResult.txHash,
+                  }
                 : prev,
             );
           }
@@ -770,7 +786,10 @@ export function useBatchPayroll({
             "External Wallet payroll recovery storage is unavailable.",
           );
         }
-        const groupedRecipients = new Map<TokenSymbol, PayrollInitRecipient[]>();
+        const groupedRecipients = new Map<
+          TokenSymbol,
+          PayrollInitRecipient[]
+        >();
         for (const recipient of effectiveRecipients) {
           const group = groupedRecipients.get(recipient.targetToken) ?? [];
           group.push(recipient);
@@ -797,9 +816,14 @@ export function useBatchPayroll({
               method: "POST",
               body: JSON.stringify({
                 sourceToken: groupToken,
+                sourceTokenAddress: SUPPORTED_TOKENS[groupToken].address,
                 referenceId: groupReferenceId,
                 walletAddress,
-                recipients: groupRecipients,
+                recipients: groupRecipients.map((recipient) => ({
+                  ...recipient,
+                  targetTokenAddress:
+                    SUPPORTED_TOKENS[recipient.targetToken].address,
+                })),
               }),
             },
           );
@@ -813,7 +837,8 @@ export function useBatchPayroll({
             groupApprovalAmount > 0n &&
             currentAllowance < groupApprovalAmount
           ) {
-            const approvalResult = await approveBatchAmount(groupApprovalAmount);
+            const approvalResult =
+              await approveBatchAmount(groupApprovalAmount);
             if (!approvalResult.ok) {
               await refreshTask(initPlan.taskId);
               return;
@@ -822,8 +847,9 @@ export function useBatchPayroll({
             await refetchAllowance();
           }
 
-          let nextUnit: PayrollTaskUnit | null = initPlan.units[0] ?? null;
+          let nextUnit: PayrollTaskUnit | null = resumablePayrollUnit(initPlan);
           while (nextUnit) {
+            const execution = executionContext(nextUnit, initPlan);
             const unitReferenceId =
               typeof nextUnit.payload.referenceId === "string"
                 ? nextUnit.payload.referenceId
@@ -839,17 +865,22 @@ export function useBatchPayroll({
               : await submitCurrentBatch(
                   toRecipientDraftBatch(nextUnit),
                   unitReferenceId,
+                  execution,
                 );
+
+            if (result.ok && result.hash) {
+              await bindExecutionIntentTransactionHash(
+                execution.intentId,
+                result.hash,
+                execution.idempotencyKey,
+              );
+            }
 
             if (!result.ok && !recoveredHash) {
               await clearPayrollBatchSubmission(unitReferenceId);
             }
 
-            if (
-              result.ok &&
-              !recoveredHash &&
-              recordPayrollBatchConfirmation
-            ) {
+            if (result.ok && !recoveredHash && recordPayrollBatchConfirmation) {
               if (!result.hash) {
                 throw new Error(
                   "Confirmed External Wallet payroll batch is missing its transaction hash.",
@@ -862,7 +893,11 @@ export function useBatchPayroll({
             }
 
             const reportPayload = result.ok
-              ? { status: "SUCCESS" as const, txHash: result.hash }
+              ? {
+                  status: "SUCCESS" as const,
+                  txHash: result.hash,
+                  executionIntentId: execution.intentId,
+                }
               : {
                   status: "FAILED" as const,
                   error:
@@ -903,9 +938,14 @@ export function useBatchPayroll({
           method: "POST",
           body: JSON.stringify({
             sourceToken: activeToken.symbol,
+            sourceTokenAddress: SUPPORTED_TOKENS[activeToken.symbol].address,
             referenceId,
             walletAddress,
-            recipients: effectiveRecipients,
+            recipients: effectiveRecipients.map((recipient) => ({
+              ...recipient,
+              targetTokenAddress:
+                SUPPORTED_TOKENS[recipient.targetToken].address,
+            })),
           }),
         },
       );
@@ -926,7 +966,8 @@ export function useBatchPayroll({
           const totalNeededForTarget = effectiveRecipients
             .filter((r) => r.targetToken === targetToken)
             .reduce(
-              (sum, r) => sum + parseAmountToUnits(r.amount, targetTokenConfig.decimals),
+              (sum, r) =>
+                sum + parseAmountToUnits(r.amount, targetTokenConfig.decimals),
               0n,
             );
 
@@ -945,8 +986,14 @@ export function useBatchPayroll({
               totalNeededForTarget: totalNeededForTarget.toString(),
               availableOutput: availableOutput.toString(),
               sufficient: true,
-              humanNeeded: formatUnits(totalNeededForTarget, targetTokenConfig.decimals),
-              humanAvailable: formatUnits(availableOutput, targetTokenConfig.decimals),
+              humanNeeded: formatUnits(
+                totalNeededForTarget,
+                targetTokenConfig.decimals,
+              ),
+              humanAvailable: formatUnits(
+                availableOutput,
+                targetTokenConfig.decimals,
+              ),
               note: "XyloNet uses receipt-verified output; other providers retain their confirmed payout allocation.",
             },
           );
@@ -954,12 +1001,18 @@ export function useBatchPayroll({
           // This should not trigger with the buffer, but guard against
           // cases where the quote itself is wildly insufficient.
           if (availableOutput > 0n && totalNeededForTarget > availableOutput) {
-            const humanNeeded = formatUnits(totalNeededForTarget, targetTokenConfig.decimals);
-            const humanAvailable = formatUnits(availableOutput, targetTokenConfig.decimals);
+            const humanNeeded = formatUnits(
+              totalNeededForTarget,
+              targetTokenConfig.decimals,
+            );
+            const humanAvailable = formatUnits(
+              availableOutput,
+              targetTokenConfig.decimals,
+            );
 
             setErrorMessage(
               `Output mismatch: need ${humanNeeded} ${targetToken} but confirmed allocation only provides ${humanAvailable} ${targetToken}. ` +
-              `This may indicate a pricing issue. Swap was completed — ${targetToken} is in your wallet.`,
+                `This may indicate a pricing issue. Swap was completed — ${targetToken} is in your wallet.`,
             );
             return;
           }
@@ -983,26 +1036,32 @@ export function useBatchPayroll({
       }
 
       // ── Execute task units ─────────────────────────────────────────
-      let nextUnit: PayrollTaskUnit | null = initPlan.units[0] ?? null;
+      let nextUnit: PayrollTaskUnit | null = resumablePayrollUnit(initPlan);
 
       while (nextUnit) {
-        logPayrollRouteDiagnostic(
-          "[official-payroll-route] executing unit",
-          {
-            unitId: nextUnit.id,
-            index: nextUnit.index,
-            sourceToken: nextUnit.payload.sourceToken,
-            recipientCount: nextUnit.payload.recipientCount,
-            totalAmount: nextUnit.payload.totalAmount,
-          },
-        );
+        const execution = executionContext(nextUnit, initPlan);
+        logPayrollRouteDiagnostic("[official-payroll-route] executing unit", {
+          unitId: nextUnit.id,
+          index: nextUnit.index,
+          sourceToken: nextUnit.payload.sourceToken,
+          recipientCount: nextUnit.payload.recipientCount,
+          totalAmount: nextUnit.payload.totalAmount,
+        });
 
         const result = await submitCurrentBatch(
           toRecipientDraftBatch(nextUnit),
           typeof nextUnit.payload.referenceId === "string"
             ? nextUnit.payload.referenceId
             : initPlan.referenceId,
+          execution,
         );
+        if (result.ok && result.hash) {
+          await bindExecutionIntentTransactionHash(
+            execution.intentId,
+            result.hash,
+            execution.idempotencyKey,
+          );
+        }
 
         logPayrollRouteDiagnostic(
           "[official-payroll-route] submitCurrentBatch result",
@@ -1015,7 +1074,11 @@ export function useBatchPayroll({
         );
 
         const reportPayload = result.ok
-          ? { status: "SUCCESS" as const, txHash: result.hash }
+          ? {
+              status: "SUCCESS" as const,
+              txHash: result.hash,
+              executionIntentId: execution.intentId,
+            }
           : {
               status: "FAILED" as const,
               error:
@@ -1072,19 +1135,20 @@ export function useBatchPayroll({
 
         if (didSwap && crossTargets && crossTargets.length > 0) {
           const targetTokens = crossTargets.join(", ");
-          const completedInfo = completedHashes.length > 0
-            ? ` Completed batches: ${completedHashes.length}/${finalTask?.totalUnits ?? "?"}.`
-            : "";
+          const completedInfo =
+            completedHashes.length > 0
+              ? ` Completed batches: ${completedHashes.length}/${finalTask?.totalUnits ?? "?"}.`
+              : "";
           setErrorMessage(
             `Swap completed; ${targetTokens} is in your wallet. ` +
-            `Payroll partially executed: ${completedUnits.length} batch(es) succeeded, ` +
-            `${failedUnits.length} failed (batch index ${failedUnits.map((u) => u.index + 1).join(", ")}).${completedInfo} ` +
-            `Check your ${targetTokens} balance — you may need to top up or retry the remaining batch.`,
+              `Payroll partially executed: ${completedUnits.length} batch(es) succeeded, ` +
+              `${failedUnits.length} failed (batch index ${failedUnits.map((u) => u.index + 1).join(", ")}).${completedInfo} ` +
+              `Check your ${targetTokens} balance — you may need to top up or retry the remaining batch.`,
           );
         } else {
           setErrorMessage(
             `Payroll partially executed: ${completedUnits.length} batch(es) succeeded, ` +
-            `${failedUnits.length} failed. Check the task status for details.`,
+              `${failedUnits.length} failed. Check the task status for details.`,
           );
         }
       }
@@ -1102,10 +1166,18 @@ export function useBatchPayroll({
           `Do not retry until this run is recovered. ` +
           [
             error.fundingTxHash ? `Funding tx: ${error.fundingTxHash}` : null,
-            error.fundingChallengeId ? `Challenge: ${error.fundingChallengeId}` : null,
-            error.fundingCircleTxId ? `Circle tx: ${error.fundingCircleTxId}` : null,
-            error.settlementTxHash ? `Settlement tx: ${error.settlementTxHash}` : null,
-          ].filter(Boolean).join(". ") +
+            error.fundingChallengeId
+              ? `Challenge: ${error.fundingChallengeId}`
+              : null,
+            error.fundingCircleTxId
+              ? `Circle tx: ${error.fundingCircleTxId}`
+              : null,
+            error.settlementTxHash
+              ? `Settlement tx: ${error.settlementTxHash}`
+              : null,
+          ]
+            .filter(Boolean)
+            .join(". ") +
           `. Error: ${message}`;
 
         setFxStatus({
@@ -1173,89 +1245,108 @@ export function useBatchPayroll({
    * Continue the payroll flow after a successful pre-swap (or recovery).
    * This handles payroll init, approval, and batch execution.
    */
-  const continuePayrollAfterSwap = useCallback(
-    async () => {
-      const allRecipients = batches.flat();
-      const getPreSwapPayoutAmountsLocal = getPreSwapPayoutAmounts;
+  const continuePayrollAfterSwap = useCallback(async () => {
+    const allRecipients = batches.flat();
+    const getPreSwapPayoutAmountsLocal = getPreSwapPayoutAmounts;
 
-      // Build effective recipients
-      const effectiveRecipients = allRecipients.map((recipient) => {
-        if (recipient.targetToken === activeToken.symbol) {
-          return {
-            address: recipient.address,
-            amount: recipient.amount,
-            targetToken: recipient.targetToken,
-          };
-        }
-
-        const payoutAmounts = getPreSwapPayoutAmountsLocal?.(recipient.targetToken);
-        const payoutAmount = payoutAmounts?.get(recipient.id);
-
+    // Build effective recipients
+    const effectiveRecipients = allRecipients.map((recipient) => {
+      if (recipient.targetToken === activeToken.symbol) {
         return {
           address: recipient.address,
-          amount: payoutAmount
-            ? formatUnits(
-                BigInt(payoutAmount),
-                SUPPORTED_TOKENS[recipient.targetToken].decimals,
-              )
-            : recipient.amount,
+          amount: recipient.amount,
           targetToken: recipient.targetToken,
         };
-      });
-
-      // Call payroll init
-      const initPlan = await backendFetch<PayrollInitPlan>(
-        "/tasks/payroll/init",
-        {
-          method: "POST",
-          body: JSON.stringify({
-            sourceToken: activeToken.symbol,
-            referenceId,
-            walletAddress,
-            recipients: effectiveRecipients,
-          }),
-        },
-      );
-
-      setTaskId(initPlan.taskId);
-      await refreshTask(initPlan.taskId);
-
-      const totalApprovalAmount = BigInt(initPlan.approvalAmount);
-
-      // Approve if needed
-      if (totalApprovalAmount > 0n && currentAllowance < totalApprovalAmount) {
-        const approvalResult = await approveBatchAmount(totalApprovalAmount);
-        if (!approvalResult.ok) {
-          await refreshTask(initPlan.taskId);
-          return;
-        }
-        if (approvalResult.hash) {
-          setApprovalHash(approvalResult.hash);
-        }
-        await refetchAllowance();
       }
 
-      // Execute task units
-      let nextUnit: PayrollTaskUnit | null = initPlan.units[0] ?? null;
+      const payoutAmounts = getPreSwapPayoutAmountsLocal?.(
+        recipient.targetToken,
+      );
+      const payoutAmount = payoutAmounts?.get(recipient.id);
 
-      while (nextUnit) {
-        const result = await submitCurrentBatch(
-          toRecipientDraftBatch(nextUnit),
-          typeof nextUnit.payload.referenceId === "string"
-            ? nextUnit.payload.referenceId
-            : initPlan.referenceId,
+      return {
+        address: recipient.address,
+        amount: payoutAmount
+          ? formatUnits(
+              BigInt(payoutAmount),
+              SUPPORTED_TOKENS[recipient.targetToken].decimals,
+            )
+          : recipient.amount,
+        targetToken: recipient.targetToken,
+      };
+    });
+
+    // Call payroll init
+    const initPlan = await backendFetch<PayrollInitPlan>(
+      "/tasks/payroll/init",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          sourceToken: activeToken.symbol,
+          sourceTokenAddress: SUPPORTED_TOKENS[activeToken.symbol].address,
+          referenceId,
+          walletAddress,
+          recipients: effectiveRecipients.map((recipient) => ({
+            ...recipient,
+            targetTokenAddress: SUPPORTED_TOKENS[recipient.targetToken].address,
+          })),
+        }),
+      },
+    );
+
+    setTaskId(initPlan.taskId);
+    await refreshTask(initPlan.taskId);
+
+    const totalApprovalAmount = BigInt(initPlan.approvalAmount);
+
+    // Approve if needed
+    if (totalApprovalAmount > 0n && currentAllowance < totalApprovalAmount) {
+      const approvalResult = await approveBatchAmount(totalApprovalAmount);
+      if (!approvalResult.ok) {
+        await refreshTask(initPlan.taskId);
+        return;
+      }
+      if (approvalResult.hash) {
+        setApprovalHash(approvalResult.hash);
+      }
+      await refetchAllowance();
+    }
+
+    // Execute task units
+    let nextUnit: PayrollTaskUnit | null = resumablePayrollUnit(initPlan);
+
+    while (nextUnit) {
+      const execution = executionContext(nextUnit, initPlan);
+      const result = await submitCurrentBatch(
+        toRecipientDraftBatch(nextUnit),
+        typeof nextUnit.payload.referenceId === "string"
+          ? nextUnit.payload.referenceId
+          : initPlan.referenceId,
+        execution,
+      );
+      if (result.ok && result.hash) {
+        await bindExecutionIntentTransactionHash(
+          execution.intentId,
+          result.hash,
+          execution.idempotencyKey,
         );
+      }
 
-        const reportPayload = result.ok
-          ? { status: "SUCCESS" as const, txHash: result.hash }
-          : {
-              status: "FAILED" as const,
-              error:
-                result.error ??
-                "Wallet batch execution did not complete successfully.",
-            };
+      const reportPayload = result.ok
+        ? {
+            status: "SUCCESS" as const,
+            txHash: result.hash,
+            executionIntentId: execution.intentId,
+          }
+        : {
+            status: "FAILED" as const,
+            error:
+              result.error ??
+              "Wallet batch execution did not complete successfully.",
+          };
 
-        const reportResult: ReportTaskUnitResponse = await backendFetch<ReportTaskUnitResponse>(
+      const reportResult: ReportTaskUnitResponse =
+        await backendFetch<ReportTaskUnitResponse>(
           `/tasks/${initPlan.taskId}/units/${nextUnit.id}/report`,
           {
             method: "POST",
@@ -1263,36 +1354,44 @@ export function useBatchPayroll({
           },
         );
 
-        setTask(reportResult.task);
-        nextUnit = reportResult.nextUnit;
-      }
+      setTask(reportResult.task);
+      nextUnit = reportResult.nextUnit;
+    }
 
-      await refreshTask(initPlan.taskId);
-    },
-    [
-      activeToken.symbol,
-      activeToken.decimals,
-      approveBatchAmount,
-      batches,
-      currentAllowance,
-      getPreSwapPayoutAmounts,
-      referenceId,
-      refetchAllowance,
-      refreshTask,
-      submitCurrentBatch,
-      walletAddress,
-    ],
-  );
+    await refreshTask(initPlan.taskId);
+  }, [
+    activeToken.symbol,
+    activeToken.decimals,
+    approveBatchAmount,
+    batches,
+    currentAllowance,
+    getPreSwapPayoutAmounts,
+    referenceId,
+    refetchAllowance,
+    refreshTask,
+    submitCurrentBatch,
+    walletAddress,
+  ]);
 
   /** Resume the persisted user-controlled XyloNet operation without re-funding. */
   const recoverFxSettlement = useCallback(async () => {
     if (!fxStatus) {
-      setErrorMessage("No recovery context available. Start a new payroll run.");
+      setErrorMessage(
+        "No recovery context available. Start a new payroll run.",
+      );
       return;
     }
     const operationId = fxStatus.xylonetOperationId;
-    const crossTargets = detectCrossCurrencyTargets(activeToken.symbol, batches);
-    if (!operationId || !resumeAppWalletXylonetSwap || !crossTargets || crossTargets.length !== 1) {
+    const crossTargets = detectCrossCurrencyTargets(
+      activeToken.symbol,
+      batches,
+    );
+    if (
+      !operationId ||
+      !resumeAppWalletXylonetSwap ||
+      !crossTargets ||
+      crossTargets.length !== 1
+    ) {
       setErrorMessage(
         "Recovery requires the persisted XyloNet operation and a single cross-token payroll group. No new funds were submitted.",
       );
@@ -1302,18 +1401,25 @@ export function useBatchPayroll({
     const targetToken = crossTargets[0];
     const payoutAmounts = getPreSwapPayoutAmounts?.(targetToken);
     if (!payoutAmounts) {
-      setErrorMessage("Recovery failed: the original XyloNet payout quote is unavailable.");
+      setErrorMessage(
+        "Recovery failed: the original XyloNet payout quote is unavailable.",
+      );
       return;
     }
 
-    const crossAmount = sumAmountsForToken(batches, targetToken, activeToken.decimals);
+    const crossAmount = sumAmountsForToken(
+      batches,
+      targetToken,
+      activeToken.decimals,
+    );
     const quotedTargetAmount = Array.from(payoutAmounts.values()).reduce(
       (sum, amount) => sum + BigInt(amount),
       0n,
     );
-    const amount = walletMode === "circle"
-      ? (BigInt(crossAmount) * 10200n / 10000n).toString()
-      : crossAmount;
+    const amount =
+      walletMode === "circle"
+        ? ((BigInt(crossAmount) * 10200n) / 10000n).toString()
+        : crossAmount;
 
     setErrorMessage(null);
     setStatusMessage("Recovering the existing XyloNet payroll swap...");
@@ -1358,7 +1464,11 @@ export function useBatchPayroll({
       const message = error instanceof Error ? error.message : String(error);
       setFxStatus((prev) =>
         prev
-          ? { ...prev, currentStep: "error", recoverableError: `Recovery failed: ${message}` }
+          ? {
+              ...prev,
+              currentStep: "error",
+              recoverableError: `Recovery failed: ${message}`,
+            }
           : prev,
       );
       setErrorMessage(`Recovery failed: ${message}`);
@@ -1394,11 +1504,11 @@ export function useBatchPayroll({
       (!officialQuoteRequired || officialQuoteReady) &&
       !crossCurrencyExecutionBlocked,
     availabilityReason: crossCurrencyExecutionBlocked
-      ? crossCurrencyExecutionBlockedReason ??
-        "Cross-currency payroll execution is not available yet."
+      ? (crossCurrencyExecutionBlockedReason ??
+        "Cross-currency payroll execution is not available yet.")
       : officialQuoteRequired && !officialQuoteReady
-        ? officialQuoteError ??
-          "Official payroll route quote unavailable. Payroll cannot proceed."
+        ? (officialQuoteError ??
+          "Official payroll route quote unavailable. Payroll cannot proceed.")
         : null,
     isRunning,
     isSuccess,
@@ -1414,4 +1524,24 @@ export function useBatchPayroll({
     recoverFxSettlement,
     reset,
   };
+}
+
+function executionContext(
+  unit: PayrollTaskUnit,
+  plan: PayrollInitPlan,
+): { intentId: string; idempotencyKey: string } {
+  const intentId = unit.payload.executionIntentId ?? plan.executionIntentId;
+  const idempotencyKey = unit.payload.idempotencyKey ?? plan.idempotencyKey;
+  if (!intentId || !idempotencyKey)
+    throw new Error("Durable payroll execution intent is unavailable.");
+  return { intentId, idempotencyKey };
+}
+
+function resumablePayrollUnit(plan: PayrollInitPlan): PayrollTaskUnit | null {
+  const firstPending = plan.units.find((unit) => unit.status === "PENDING");
+  if (!firstPending) return null;
+  const status = firstPending.payload.executionIntentStatus;
+  return !status || status === "CREATED" || status === "FAILED_RETRYABLE"
+    ? firstPending
+    : null;
 }

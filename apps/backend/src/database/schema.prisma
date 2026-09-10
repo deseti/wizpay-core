@@ -119,9 +119,14 @@ enum InvoicePaymentStatus {
   REJECTED
 }
 
+enum InvoiceSettlementKind {
+  INVOICE
+  PAYMENT_LINK
+}
+
 model Invoice {
-  id                    String          @id @default(uuid()) @db.Uuid
-  publicId              String          @unique
+  id                    String                @id @default(uuid()) @db.Uuid
+  publicId              String                @unique
   merchantUserId        String
   merchantWalletAddress String
   chainId               Int
@@ -132,12 +137,13 @@ model Invoice {
   title                 String
   description           String?
   invoiceNumber         String?
-  status                InvoiceStatus   @default(OPEN)
+  settlementKind        InvoiceSettlementKind @default(INVOICE)
+  status                InvoiceStatus         @default(OPEN)
   expiresAt             DateTime?
   paidAt                DateTime?
   cancelledAt           DateTime?
-  createdAt             DateTime        @default(now())
-  updatedAt             DateTime        @updatedAt
+  createdAt             DateTime              @default(now())
+  updatedAt             DateTime              @updatedAt
   payment               InvoicePayment?
 
   @@index([merchantUserId, createdAt])
@@ -156,6 +162,76 @@ model InvoicePayment {
   rejectionCode   String?
   createdAt       DateTime             @default(now())
   updatedAt       DateTime             @updatedAt
+}
+
+enum ExecutionIntentOperation {
+  SEND
+  PAYROLL
+  TOKEN_APPROVAL
+  INVOICE_SETTLEMENT
+  PAYMENT_LINK_SETTLEMENT
+}
+
+enum ExecutionIntentRoute {
+  DIRECT_TRANSFER
+  CROSS_TOKEN_PROVIDER
+  CROSS_TOKEN_DISABLED
+}
+
+enum ExecutionIntentStatus {
+  CREATED
+  AWAITING_WALLET_SIGNATURE
+  AUTHORIZATION_PENDING
+  SUBMISSION_PENDING
+  SUBMITTED
+  VERIFYING
+  COMPLETED
+  FAILED_RETRYABLE
+  FAILED_FINAL
+  EXPIRED
+  CANCELLED
+}
+
+/// Canonical durable boundary for every WizPay-created money-moving operation.
+/// Immutable request fields are bound by requestFingerprint; provider and chain
+/// identities are added monotonically as orchestration progresses.
+model ExecutionIntent {
+  id                  String                   @id @default(uuid()) @db.Uuid
+  network             String
+  operation           ExecutionIntentOperation
+  ownerId             String?
+  walletId            String?
+  sourceWallet        String
+  recipient           String?
+  batchDigest         String?
+  tokenIn             String
+  tokenOut            String
+  amountUnits         String
+  externalReference   String
+  logicalKey          String                   @unique
+  requestFingerprint  String                   @unique
+  idempotencyKey      String                   @unique @db.Uuid
+  route               ExecutionIntentRoute
+  provider            String?
+  contractAddress     String?
+  calldataHash        String?
+  status              ExecutionIntentStatus    @default(CREATED)
+  circleChallengeId   String?                  @unique
+  circleTransactionId String?                  @unique
+  transactionHash     String?                  @unique
+  taskId              String?                  @db.Uuid
+  leaseOwner          String?
+  leaseExpiresAt      DateTime?
+  attemptCount        Int                      @default(0)
+  failureCode         String?
+  createdAt           DateTime                 @default(now())
+  updatedAt           DateTime                 @updatedAt
+  completedAt         DateTime?
+
+  @@index([operation, externalReference])
+  @@index([taskId])
+  @@index([status, leaseExpiresAt])
+  @@index([sourceWallet, createdAt])
 }
 
 model AppWalletSwapOperation {
@@ -292,14 +368,14 @@ model BridgeTransaction {
 }
 
 model Activity {
-  id                  String   @id @default(uuid()) @db.Uuid
+  id                  String    @id @default(uuid()) @db.Uuid
   ownerUserId         String
   walletAddress       String
   type                String
   direction           String?
   status              String
   source              String
-  idempotencyKey      String   @unique
+  idempotencyKey      String    @unique
   sourceReferenceType String
   sourceReferenceId   String
   taskId              String?
@@ -319,8 +395,8 @@ model Activity {
   counterparty        String?
   metadata            Json?
   occurredAt          DateTime?
-  createdAt           DateTime @default(now())
-  updatedAt           DateTime @updatedAt
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
 
   @@unique([sourceReferenceType, sourceReferenceId])
   @@index([ownerUserId, createdAt, id])

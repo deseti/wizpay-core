@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  HttpException,
   Injectable,
   ServiceUnavailableException,
 } from '@nestjs/common';
@@ -17,6 +18,11 @@ import {
   type Address,
   type Hex,
 } from 'viem';
+import {
+  PAYMENT_ROUTE_DECISIONS,
+  type PaymentRouteDecision,
+  PaymentRoutingService,
+} from '../routing/payment-routing.service';
 
 const PAYROLL_ABI = [
   {
@@ -90,29 +96,44 @@ export class CapabilityService {
   }
 
   assertPayroll(payload: Record<string, unknown>) {
-    const source = this.tokenIdentity(payload.sourceToken);
+    const source = payload.sourceTokenAddress;
     const recipients = Array.isArray(payload.recipients)
       ? payload.recipients
       : [];
     if (!source || recipients.length === 0)
       return this.contextRequired('payroll');
-    let crossToken = false;
     for (const value of recipients) {
       if (!value || typeof value !== 'object')
         return this.contextRequired('payroll');
-      const target = this.tokenIdentity(
-        (value as Record<string, unknown>).targetToken ?? payload.sourceToken,
-      );
+      const target =
+        (value as Record<string, unknown>).targetTokenAddress ?? source;
       if (!target) return this.contextRequired('payroll');
-      if (target !== source) crossToken = true;
+      this.assertPaymentDecision(
+        this.routing.decide({
+          network: this.network,
+          operation: 'PAYROLL',
+          tokenIn: source,
+          tokenOut: target,
+        }),
+      );
     }
-    this.assert(crossToken ? 'crossTokenPayroll' : 'sameTokenPayroll');
   }
 
   assertW3sAction(action: string, params: Record<string, unknown>) {
     const refId = typeof params.refId === 'string' ? params.refId : '';
-    if (action === 'createTransferChallenge') {
-      this.assert(refId.startsWith('PAYROLL-') ? 'sameTokenPayroll' : 'send');
+    if (
+      action === 'createTransferChallenge' ||
+      action === 'estimateTransferFee'
+    ) {
+      const tokenAddress = params.tokenAddress;
+      this.assertPaymentDecision(
+        this.routing.decide({
+          network: this.network,
+          operation: refId.startsWith('PAYROLL-') ? 'PAYROLL' : 'SEND',
+          tokenIn: tokenAddress,
+          tokenOut: tokenAddress,
+        }),
+      );
     } else if (action === 'createContractExecutionChallenge') {
       if (refId.startsWith('INV-')) {
         const contractAddress = params.contractAddress;
@@ -124,7 +145,14 @@ export class CapabilityService {
         ) {
           this.contextRequired('invoice payment');
         }
-        this.assert('paymentLink');
+        this.assertPaymentDecision(
+          this.routing.decide({
+            network: this.network,
+            operation: 'PAYMENT_LINK',
+            tokenIn: contractAddress,
+            tokenOut: contractAddress,
+          }),
+        );
       } else if (refId.startsWith('PAYROLL-APPROVE-'))
         this.assertPayrollApproval(params);
       else if (refId.startsWith('PAYROLL-')) this.assertPayrollCall(params);
@@ -163,11 +191,7 @@ export class CapabilityService {
       if (isArcCapabilityEnabled(this.capabilities, 'sameTokenPayroll')) return;
       this.assert('crossTokenPayroll');
     } catch (error) {
-      if (
-        error instanceof BadRequestException ||
-        error instanceof ServiceUnavailableException
-      )
-        throw error;
+      if (error instanceof HttpException) throw error;
       return this.contextRequired('payroll approval');
     }
   }
@@ -195,16 +219,20 @@ export class CapabilityService {
         return this.contextRequired('payroll contract execution');
       }
       const [tokenIn, tokenOuts] = decoded.args;
-      const crossToken = tokenOuts.some(
-        (tokenOut) => !isAddressEqual(tokenIn, tokenOut),
-      );
-      this.assert(crossToken ? 'crossTokenPayroll' : 'sameTokenPayroll');
+      for (const tokenOut of tokenOuts) {
+        const decision = this.assertPaymentDecision(
+          this.routing.decide({
+            network: this.network,
+            operation: 'PAYROLL',
+            tokenIn,
+            tokenOut,
+          }),
+        );
+        if (decision.kind === PAYMENT_ROUTE_DECISIONS.CROSS_TOKEN_PROVIDER)
+          return this.contextRequired('payroll provider execution');
+      }
     } catch (error) {
-      if (
-        error instanceof BadRequestException ||
-        error instanceof ServiceUnavailableException
-      )
-        throw error;
+      if (error instanceof HttpException) throw error;
       return this.contextRequired('payroll contract execution');
     }
   }
@@ -219,6 +247,24 @@ export class CapabilityService {
       if (tokens.EURC === normalized) return 'EURC';
     }
     return null;
+  }
+
+  private assertPaymentDecision(
+    decision: PaymentRouteDecision,
+  ): PaymentRouteDecision {
+    this.routing.assertExecutable(decision);
+    if (decision.kind === PAYMENT_ROUTE_DECISIONS.DIRECT_TRANSFER) {
+      this.assert(
+        decision.operation === 'SEND'
+          ? 'send'
+          : decision.operation === 'PAYROLL'
+            ? 'sameTokenPayroll'
+            : decision.operation === 'INVOICE'
+              ? 'invoice'
+              : 'paymentLink',
+      );
+    }
+    return decision;
   }
 
   private configuredTokenAddresses() {
@@ -241,7 +287,10 @@ export class CapabilityService {
     });
   }
 
-  constructor(private readonly config: ConfigService) {
+  constructor(
+    private readonly config: ConfigService,
+    private readonly routing: PaymentRoutingService,
+  ) {
     this.network = config.getOrThrow<ArcNetworkKey>('arcNetwork.key');
     this.capabilities = config.getOrThrow<ArcCapabilities>('arcCapabilities');
   }

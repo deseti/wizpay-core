@@ -41,7 +41,6 @@ export class InvoiceController {
     @Headers('authorization') authorization: string | undefined,
     @Body() body: CreateInvoiceDto,
   ) {
-    this.capabilities.assert('invoice');
     const principal = await this.auth.authenticate(authorization);
     return { data: await this.invoices.create(principal, body) };
   }

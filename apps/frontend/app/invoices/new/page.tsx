@@ -28,6 +28,9 @@ export default function NewInvoicePage() {
   const invoiceCapability = useCapability("invoice");
   const session = useMerchantInvoiceSession();
   const [token, setToken] = useState<TokenSymbol>("USDC");
+  const [settlementKind, setSettlementKind] = useState<
+    "INVOICE" | "PAYMENT_LINK"
+  >("INVOICE");
   const [amount, setAmount] = useState("");
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
@@ -49,6 +52,7 @@ export default function NewInvoicePage() {
     try {
       const invoice = await createInvoice(
         {
+          settlementKind,
           token,
           amount,
           title,
@@ -126,6 +130,22 @@ export default function NewInvoicePage() {
           ) : null}
           <Card className="glass-card border-border/40">
             <CardContent className="space-y-5 p-5 sm:p-6">
+              <div className="space-y-2">
+                <Label htmlFor="settlement-kind">Payment request type</Label>
+                <select
+                  id="settlement-kind"
+                  className="h-11 w-full rounded-md border border-input bg-background px-3 text-sm"
+                  value={settlementKind}
+                  onChange={(event) =>
+                    setSettlementKind(
+                      event.target.value as "INVOICE" | "PAYMENT_LINK",
+                    )
+                  }
+                >
+                  <option value="INVOICE">Invoice settlement</option>
+                  <option value="PAYMENT_LINK">Payment link settlement</option>
+                </select>
+              </div>
               <div className="space-y-2">
                 <Label htmlFor="invoice-token">Token</Label>
                 <div className="relative">

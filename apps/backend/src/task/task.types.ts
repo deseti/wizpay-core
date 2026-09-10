@@ -65,10 +65,14 @@ export interface TaskUnitRecord {
 
 export interface CreatePayrollTaskResult {
   taskId: string;
+  executionIntentId: string;
+  idempotencyKey: string;
   approvalAmount: string;
   referenceId: string;
   totalUnits: number;
-  units: Array<Pick<TaskUnitRecord, 'id' | 'index' | 'payload' | 'status' | 'type'>>;
+  units: Array<
+    Pick<TaskUnitRecord, 'id' | 'index' | 'payload' | 'status' | 'type'>
+  >;
 }
 
 export interface CreateSwapTaskResult {
@@ -92,6 +96,7 @@ export interface CreateLiquidityTaskResult {
 
 export interface ReportTaskUnitInput {
   status: Extract<TaskUnitStatus, 'SUCCESS' | 'FAILED'>;
+  executionIntentId?: string;
   txHash?: string | null;
   error?: string | null;
 }
@@ -99,7 +104,10 @@ export interface ReportTaskUnitInput {
 export interface ReportTaskUnitResult {
   task: TaskDetails;
   unit: TaskUnitRecord;
-  nextUnit: Pick<TaskUnitRecord, 'id' | 'index' | 'payload' | 'status' | 'type'> | null;
+  nextUnit: Pick<
+    TaskUnitRecord,
+    'id' | 'index' | 'payload' | 'status' | 'type'
+  > | null;
 }
 
 // ─── Transaction tracking ─────────────────────────────────────────

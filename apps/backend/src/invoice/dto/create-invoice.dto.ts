@@ -8,6 +8,10 @@ import {
 } from 'class-validator';
 
 export class CreateInvoiceDto {
+  @IsOptional()
+  @IsEnum(['INVOICE', 'PAYMENT_LINK'])
+  settlementKind?: 'INVOICE' | 'PAYMENT_LINK';
+
   @IsEnum(['USDC', 'EURC'])
   token!: 'USDC' | 'EURC';
 

@@ -15,17 +15,17 @@ import { CreateInvoiceDto } from './dto/create-invoice.dto';
 import { ListInvoicesDto } from './dto/list-invoices.dto';
 import { InvoicePaymentVerifierService } from './invoice-payment-verifier.service';
 import {
-  INVOICE_CHAIN_ID,
-  INVOICE_CHAIN_NAME,
   INVOICE_ERROR_CODES,
   INVOICE_MAX_AMOUNT_UNITS,
   INVOICE_PUBLIC_ID_BYTES,
-  INVOICE_TOKENS,
+  INVOICE_TOKEN_NAMES,
   InvoiceVerificationError,
   type InvoiceMerchantPrincipal,
   type InvoiceTokenSymbol,
 } from './invoice.types';
 import { CapabilityService } from '../capabilities/capability.service';
+import { PaymentRoutingService } from '../routing/payment-routing.service';
+import { ExecutionIntentService } from '../execution-intent/execution-intent.service';
 
 const DEFAULT_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000;
 const MAX_EXPIRY_MS = 365 * 24 * 60 * 60 * 1000;
@@ -39,11 +39,29 @@ export class InvoiceService {
     private readonly prisma: PrismaService,
     private readonly verifier: InvoicePaymentVerifierService,
     private readonly capabilities: CapabilityService,
+    private readonly routing: PaymentRoutingService,
+    private readonly intents: ExecutionIntentService,
   ) {}
 
   async create(principal: InvoiceMerchantPrincipal, dto: CreateInvoiceDto) {
-    this.capabilities.assert('invoice');
-    const token = INVOICE_TOKENS[dto.token];
+    this.capabilities.assert(
+      dto.settlementKind === 'PAYMENT_LINK' ? 'paymentLink' : 'invoice',
+    );
+    const tokenAddress = this.routing.canonicalToken(dto.token);
+    const token = {
+      address: tokenAddress,
+      decimals: 6,
+      name: INVOICE_TOKEN_NAMES[dto.token],
+      symbol: dto.token,
+    };
+    this.routing.assertExecutable(
+      this.routing.decide({
+        network: this.routing.network,
+        operation: 'INVOICE',
+        tokenIn: token.address,
+        tokenOut: token.address,
+      }),
+    );
     let amountUnits: bigint;
     try {
       amountUnits = parseUnits(dto.amount, token.decimals);
@@ -86,7 +104,7 @@ export class InvoiceService {
         publicId: randomBytes(INVOICE_PUBLIC_ID_BYTES).toString('base64url'),
         merchantUserId: principal.merchantUserId,
         merchantWalletAddress: getAddress(principal.merchantWalletAddress),
-        chainId: INVOICE_CHAIN_ID,
+        chainId: this.routing.chainId,
         tokenAddress: token.address,
         tokenSymbol: token.symbol,
         tokenDecimals: token.decimals,
@@ -94,6 +112,7 @@ export class InvoiceService {
         title,
         description: dto.description?.trim() || null,
         invoiceNumber: dto.invoiceNumber?.trim() || null,
+        settlementKind: dto.settlementKind ?? 'INVOICE',
         expiresAt,
       },
       include: { payment: true },
@@ -182,14 +201,15 @@ export class InvoiceService {
         code: INVOICE_ERROR_CODES.NOT_FOUND,
         message: 'Payment request not found.',
       });
+    this.capabilities.assert(
+      invoice.settlementKind === 'PAYMENT_LINK' ? 'paymentLink' : 'invoice',
+    );
     return this.toPublic(invoice);
   }
 
   async verifyPublicPayment(publicId: string, submittedHash: string) {
-    this.capabilities.assert('paymentLink');
     this.assertPublicId(publicId);
     const transactionHash = submittedHash.toLowerCase();
-    await this.expireOpenInvoices({ publicId });
     let invoice = await this.prisma.invoice.findUnique({
       where: { publicId },
       include: { payment: true },
@@ -199,6 +219,31 @@ export class InvoiceService {
         code: INVOICE_ERROR_CODES.NOT_FOUND,
         message: 'Payment request not found.',
       });
+    const isPaymentLink = invoice.settlementKind === 'PAYMENT_LINK';
+    this.capabilities.assert(isPaymentLink ? 'paymentLink' : 'invoice');
+    this.routing.assertExecutable(
+      this.routing.decide({
+        network: this.routing.network,
+        operation: isPaymentLink ? 'PAYMENT_LINK' : 'INVOICE',
+        tokenIn: invoice.tokenAddress,
+        tokenOut: invoice.tokenAddress,
+      }),
+    );
+    const intent = await this.intents.getByTransactionHash(transactionHash);
+    const expectedOperation =
+      invoice.settlementKind === 'PAYMENT_LINK'
+        ? 'PAYMENT_LINK_SETTLEMENT'
+        : 'INVOICE_SETTLEMENT';
+    if (
+      intent.operation !== expectedOperation ||
+      intent.externalReference !== invoice.publicId
+    )
+      throw new ConflictException({
+        code: 'EXECUTION_INTENT_IMMUTABLE_CONFLICT',
+        message: 'The submitted transaction is bound to another operation.',
+      });
+    await this.intents.beginVerification(intent.id);
+    await this.expireOpenInvoices({ publicId });
     if (
       invoice.status === 'PAID' &&
       invoice.payment?.status === 'VERIFIED' &&
@@ -278,6 +323,14 @@ export class InvoiceService {
         transactionHash: transactionHash as Hex,
         tokenAddress: getAddress(invoice.tokenAddress),
         merchantWalletAddress: getAddress(invoice.merchantWalletAddress),
+        amountUnits: invoice.amountUnits,
+      });
+      await this.intents.completeWithVerifiedReceipt(intent.id, {
+        network: this.routing.network,
+        transactionHash: transactionHash as Hex,
+        sourceWallet: verified.payerAddress,
+        token: invoice.tokenAddress,
+        recipient: invoice.merchantWalletAddress,
         amountUnits: invoice.amountUnits,
       });
       const invoiceId = invoice.id;
@@ -384,13 +437,23 @@ export class InvoiceService {
     const address = getAddress(invoice.merchantWalletAddress);
     return {
       publicId: invoice.publicId,
+      settlementOperation:
+        invoice.settlementKind === 'PAYMENT_LINK'
+          ? 'PAYMENT_LINK_SETTLEMENT'
+          : 'INVOICE_SETTLEMENT',
       merchantDisplayLabel: null,
       receivingAddress: address,
       receivingAddressShort: `${address.slice(0, 6)}...${address.slice(-4)}`,
-      chain: { id: invoice.chainId, name: INVOICE_CHAIN_NAME },
+      chain: {
+        id: invoice.chainId,
+        name:
+          this.routing.network === 'arc-mainnet'
+            ? 'Arc Mainnet'
+            : 'Arc Testnet',
+      },
       token: {
         symbol: invoice.tokenSymbol,
-        name: INVOICE_TOKENS[invoice.tokenSymbol as InvoiceTokenSymbol].name,
+        name: INVOICE_TOKEN_NAMES[invoice.tokenSymbol as InvoiceTokenSymbol],
         address: invoice.tokenAddress,
         decimals: invoice.tokenDecimals,
       },
