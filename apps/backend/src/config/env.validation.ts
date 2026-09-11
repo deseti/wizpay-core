@@ -1,49 +1,34 @@
-import { DEFAULT_REDIS_HOST, DEFAULT_REDIS_PORT } from './configuration';
-import { normalizeRuntimeEnvironmentValues } from './runtime-env';
 import {
   parseArcNetworkKey,
   resolveArcCapabilities,
 } from '@wizpay/arc-network';
 import { validateCircleEnvironmentIsolation } from './circle-execution.config';
+import { resolveRuntimeIsolationConfiguration } from './runtime-isolation.config';
 
 type EnvironmentValues = Record<string, unknown> & {
-  DATABASE_URL?: string;
-  REDIS_HOST?: string;
-  REDIS_PORT?: string;
   WIZPAY_ARC_NETWORK?: string;
 };
 
 export function validateEnvironment(config: Record<string, unknown>) {
-  const environment = normalizeRuntimeEnvironmentValues(
-    config as EnvironmentValues & Record<string, string | undefined>,
-  ) as EnvironmentValues;
-  const databaseUrl = environment.DATABASE_URL?.trim();
-  const redisPort = Number.parseInt(
-    environment.REDIS_PORT ?? String(DEFAULT_REDIS_PORT),
-    10,
-  );
+  const environment = config as EnvironmentValues &
+    Record<string, string | undefined>;
   const arcNetworkKey = parseArcNetworkKey(environment.WIZPAY_ARC_NETWORK);
-  resolveArcCapabilities(
-    arcNetworkKey,
-    environment as Record<string, string | undefined>,
-  );
-  validateCircleEnvironmentIsolation(
-    environment as Record<string, string | undefined>,
-  );
-
-  if (!databaseUrl) {
-    throw new Error('DATABASE_URL is required');
-  }
-
-  if (!Number.isInteger(redisPort) || redisPort <= 0) {
-    throw new Error('REDIS_PORT must be a positive integer');
-  }
+  resolveArcCapabilities(arcNetworkKey, environment);
+  validateCircleEnvironmentIsolation(environment);
+  const isolation = resolveRuntimeIsolationConfiguration(environment);
 
   return {
     ...config,
-    DATABASE_URL: databaseUrl,
-    REDIS_HOST: environment.REDIS_HOST?.trim() || DEFAULT_REDIS_HOST,
-    REDIS_PORT: String(redisPort),
+    DATABASE_URL: isolation.databaseUrl,
+    REDIS_URL: isolation.redisUrl,
+    REDIS_HOST: isolation.redis.host,
+    REDIS_PORT: String(isolation.redis.port),
+    REDIS_DB: String(isolation.redis.databaseIndex),
+    REDIS_USERNAME: isolation.redis.username ?? '',
+    REDIS_PASSWORD: isolation.redis.password ?? '',
+    REDIS_TLS: isolation.redis.tls ? 'true' : 'false',
+    BULLMQ_PREFIX: isolation.queuePrefix,
+    RUNTIME_ISOLATION_DIAGNOSTIC: isolation.diagnostic,
     WIZPAY_ARC_NETWORK: arcNetworkKey,
   };
 }

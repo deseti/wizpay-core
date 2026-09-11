@@ -1,7 +1,9 @@
 import { TaskType } from '../task/task-type.enum';
 import { TaskPayload } from '../task/task.types';
+import type { ArcNetworkKey } from '@wizpay/arc-network';
 
 export interface TaskQueueJobData {
+  network: ArcNetworkKey;
   taskId: string;
   taskType: TaskType;
   agentKey: TaskType;
@@ -13,6 +15,7 @@ export interface TaskQueueJobData {
  * Each job represents one Circle transaction that needs status polling.
  */
 export interface TxPollJobData {
+  network: ArcNetworkKey;
   taskId: string;
   txId: string;
   /** Current poll attempt (0-indexed). Used to enforce max attempts. */

@@ -4,7 +4,10 @@ import { deleteCookie, getCookie, setCookie } from "cookies-next";
 import { SocialLoginProvider } from "@circle-fin/w3s-pw-web-sdk/dist/src/types";
 
 import { getCirclePasskeyConfig } from "@/lib/circle-passkey";
-import { resolveFrontendCircleApplicationId } from "@/lib/circle-network-config";
+import {
+  circleRuntimeNamespace,
+  resolveFrontendCircleApplicationId,
+} from "@/lib/circle-network-config";
 import type {
   CirclePasskeySession,
   CircleSession,
@@ -40,43 +43,47 @@ export const CIRCLE_APP_ID = resolveFrontendCircleApplicationId(
       process.env.NEXT_PUBLIC_CIRCLE_TESTNET_APP_ID,
     NEXT_PUBLIC_CIRCLE_MAINNET_APP_ID:
       process.env.NEXT_PUBLIC_CIRCLE_MAINNET_APP_ID,
-  }
+  },
+);
+const CIRCLE_RUNTIME_NAMESPACE = circleRuntimeNamespace(
+  process.env.NEXT_PUBLIC_WIZPAY_ARC_NETWORK,
 );
 export const GOOGLE_CLIENT_ID = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID ?? "";
 // Passkey is disabled when the env var is empty — controls both UI and logic.
 export const PASSKEY_ENABLED = Boolean(
-  process.env.NEXT_PUBLIC_CIRCLE_TESTNET_PASSKEY_CLIENT_KEY
+  process.env.NEXT_PUBLIC_CIRCLE_TESTNET_PASSKEY_CLIENT_KEY,
 );
 export const PASSKEY_CONFIG = getCirclePasskeyConfig();
-export const APP_ID_COOKIE_KEY = "wizpay.circle.app-id";
-export const DEVICE_ID_STORAGE_KEY = "wizpay.circle.device-id";
-export const DEVICE_ENCRYPTION_KEY_COOKIE_KEY = "deviceEncryptionKey";
-export const DEVICE_TOKEN_COOKIE_KEY = "deviceToken";
-export const GOOGLE_CLIENT_ID_COOKIE_KEY = "google.clientId";
-export const LOGIN_CONFIG_STORAGE_KEY = "wizpay.circle.login-config";
+export const APP_ID_COOKIE_KEY = `${CIRCLE_RUNTIME_NAMESPACE}.app-id`;
+export const DEVICE_ID_STORAGE_KEY = `${CIRCLE_RUNTIME_NAMESPACE}.device-id`;
+export const DEVICE_ENCRYPTION_KEY_COOKIE_KEY = `${CIRCLE_RUNTIME_NAMESPACE}.device-encryption-key`;
+export const DEVICE_TOKEN_COOKIE_KEY = `${CIRCLE_RUNTIME_NAMESPACE}.device-token`;
+export const GOOGLE_CLIENT_ID_COOKIE_KEY = `${CIRCLE_RUNTIME_NAMESPACE}.google-client-id`;
+export const LOGIN_CONFIG_STORAGE_KEY = `${CIRCLE_RUNTIME_NAMESPACE}.login-config`;
 export const LOGIN_COOKIE_OPTIONS = {
   path: "/",
   sameSite: "lax" as const,
 };
-export const OAUTH_NONCE_COOKIE_KEY = "wizpay.circle.oauth.nonce";
-export const OAUTH_NONCE_FALLBACK_STORAGE_KEY = "wizpay.circle.oauth.backup.nonce";
-export const OAUTH_PROVIDER_COOKIE_KEY = "wizpay.circle.oauth.provider";
-export const OAUTH_PROVIDER_FALLBACK_STORAGE_KEY = "wizpay.circle.oauth.backup.provider";
-export const OAUTH_STATE_COOKIE_KEY = "wizpay.circle.oauth.state";
-export const OAUTH_STATE_FALLBACK_STORAGE_KEY = "wizpay.circle.oauth.backup.state";
-export const SESSION_STORAGE_KEY = "wizpay.circle.session";
-export const SOCIAL_LOGIN_PROVIDER_STORAGE_KEY = "socialLoginProvider";
-export const SOCIAL_LOGIN_STATE_STORAGE_KEY = "state";
-export const SOCIAL_LOGIN_NONCE_STORAGE_KEY = "nonce";
-export const SUPPORTED_WALLET_CHAINS = new Set([
-  "ARC-TESTNET",
-  "ETH-SEPOLIA",
+export const OAUTH_NONCE_COOKIE_KEY = `${CIRCLE_RUNTIME_NAMESPACE}.oauth.nonce`;
+export const OAUTH_NONCE_FALLBACK_STORAGE_KEY = `${CIRCLE_RUNTIME_NAMESPACE}.oauth.backup.nonce`;
+export const OAUTH_PROVIDER_COOKIE_KEY = `${CIRCLE_RUNTIME_NAMESPACE}.oauth.provider`;
+export const OAUTH_PROVIDER_FALLBACK_STORAGE_KEY = `${CIRCLE_RUNTIME_NAMESPACE}.oauth.backup.provider`;
+export const OAUTH_STATE_COOKIE_KEY = `${CIRCLE_RUNTIME_NAMESPACE}.oauth.state`;
+export const OAUTH_STATE_FALLBACK_STORAGE_KEY = `${CIRCLE_RUNTIME_NAMESPACE}.oauth.backup.state`;
+export const SESSION_STORAGE_KEY = `${CIRCLE_RUNTIME_NAMESPACE}.session`;
+export const SOCIAL_LOGIN_PROVIDER_STORAGE_KEY = `${CIRCLE_RUNTIME_NAMESPACE}.social-login-provider`;
+export const SOCIAL_LOGIN_STATE_STORAGE_KEY = `${CIRCLE_RUNTIME_NAMESPACE}.social-login-state`;
+export const SOCIAL_LOGIN_NONCE_STORAGE_KEY = `${CIRCLE_RUNTIME_NAMESPACE}.social-login-nonce`;
+export const SUPPORTED_WALLET_CHAINS = new Set(["ARC-TESTNET", "ETH-SEPOLIA"]);
+export const INVALID_DEVICE_ERROR_CODES = new Set([
+  155113, 155137, 155143, 155144, 155145,
 ]);
-export const INVALID_DEVICE_ERROR_CODES = new Set([155113, 155137, 155143, 155144, 155145]);
 export const OAUTH_RECOVERY_ERROR_CODES = new Set([155114, 155140]);
 export const EXPIRED_SESSION_ERROR_CODES = new Set([155718, 155719]);
 
-export function getGoogleOAuthErrorMessage(diagnostics: GoogleOAuthDiagnostics | null) {
+export function getGoogleOAuthErrorMessage(
+  diagnostics: GoogleOAuthDiagnostics | null,
+) {
   if (!diagnostics) {
     return "Circle failed to validate the Google OAuth response. In Circle's Web SDK this can mean the Google Client ID does not match, the OAuth redirect URI is not allowed for http://localhost:3000, or the saved OAuth state/nonce from a previous redirect became stale. Retry after the app clears the old OAuth session.";
   }
@@ -98,9 +105,11 @@ export function getGoogleOAuthErrorMessage(diagnostics: GoogleOAuthDiagnostics |
   }
 
   if (diagnostics.clientIdMatches === false) {
-    const audienceLabel = diagnostics.audience ?? "a different Google OAuth client";
+    const audienceLabel =
+      diagnostics.audience ?? "a different Google OAuth client";
     const configuredLabel =
-      diagnostics.configuredClientId ?? "the configured NEXT_PUBLIC_GOOGLE_CLIENT_ID";
+      diagnostics.configuredClientId ??
+      "the configured NEXT_PUBLIC_GOOGLE_CLIENT_ID";
 
     return `Google returned an ID token for ${audienceLabel}, but this app is configured for ${configuredLabel}.`;
   }
@@ -110,7 +119,7 @@ export function getGoogleOAuthErrorMessage(diagnostics: GoogleOAuthDiagnostics |
 
 export function getErrorMessage(
   error: unknown,
-  googleOAuthDiagnostics: GoogleOAuthDiagnostics | null = null
+  googleOAuthDiagnostics: GoogleOAuthDiagnostics | null = null,
 ) {
   const directMessage = getCircleErrorDetail(error).message;
   const directCode = getCircleErrorDetail(error).code;
@@ -140,7 +149,9 @@ export function getErrorMessage(
   }
 
   if (directMessage) {
-    return directCode ? `Circle error ${directCode}: ${directMessage}` : directMessage;
+    return directCode
+      ? `Circle error ${directCode}: ${directMessage}`
+      : directMessage;
   }
 
   return "Circle wallet request failed.";
@@ -153,16 +164,24 @@ export function getCircleErrorDetail(error: unknown) {
       (isRecord(error) && typeof error.code === "string"
         ? Number.parseInt(error.code, 10)
         : null) ??
-      (isRecord(error) && isRecord(error.error) && typeof error.error.code === "number"
+      (isRecord(error) &&
+      isRecord(error.error) &&
+      typeof error.error.code === "number"
         ? error.error.code
         : null) ??
-      (isRecord(error) && isRecord(error.error) && typeof error.error.code === "string"
+      (isRecord(error) &&
+      isRecord(error.error) &&
+      typeof error.error.code === "string"
         ? Number.parseInt(error.error.code, 10)
         : null) ??
-      (isRecord(error) && isRecord(error.data) && typeof error.data.code === "number"
+      (isRecord(error) &&
+      isRecord(error.data) &&
+      typeof error.data.code === "number"
         ? error.data.code
         : null) ??
-      (isRecord(error) && isRecord(error.data) && typeof error.data.code === "string"
+      (isRecord(error) &&
+      isRecord(error.data) &&
+      typeof error.data.code === "string"
         ? Number.parseInt(error.data.code, 10)
         : null),
     message:
@@ -183,7 +202,8 @@ export function isCircleExpiredSessionError(error: unknown) {
 }
 
 export function isDefinitiveCircleRefreshFailure(error: unknown) {
-  const status = isRecord(error) && typeof error.status === "number" ? error.status : null;
+  const status =
+    isRecord(error) && typeof error.status === "number" ? error.status : null;
   return status === 400 || status === 401 || status === 403;
 }
 
@@ -191,14 +211,20 @@ export function mergeCircleRefreshedSession(
   current: import("./circle-auth.types").CircleW3SSession,
   payload: Record<string, unknown>,
 ) {
-  if (typeof payload.userToken !== "string" || typeof payload.encryptionKey !== "string") {
+  if (
+    typeof payload.userToken !== "string" ||
+    typeof payload.encryptionKey !== "string"
+  ) {
     throw new Error("Circle returned incomplete refreshed session material.");
   }
   return {
     ...current,
     userToken: payload.userToken,
     encryptionKey: payload.encryptionKey,
-    refreshToken: typeof payload.refreshToken === "string" ? payload.refreshToken : current.refreshToken,
+    refreshToken:
+      typeof payload.refreshToken === "string"
+        ? payload.refreshToken
+        : current.refreshToken,
   };
 }
 
@@ -207,7 +233,7 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 export function isW3SLoginCompleteResult(
-  value: unknown
+  value: unknown,
 ): value is W3SLoginCompleteResult {
   return (
     isRecord(value) &&
@@ -219,14 +245,14 @@ export function isW3SLoginCompleteResult(
 }
 
 export function isPasskeySession(
-  value: CircleSession | null | undefined
+  value: CircleSession | null | undefined,
 ): value is CirclePasskeySession {
   return value?.authMethod === "passkey";
 }
 
 export function isHexValue(
   value: unknown,
-  expectedBytes?: number
+  expectedBytes?: number,
 ): value is `0x${string}` {
   if (typeof value !== "string") {
     return false;
@@ -237,7 +263,10 @@ export function isHexValue(
 }
 
 export function createLocalChallengeId(prefix: string) {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+  if (
+    typeof crypto !== "undefined" &&
+    typeof crypto.randomUUID === "function"
+  ) {
     return `${prefix}:${crypto.randomUUID()}`;
   }
 
@@ -273,7 +302,7 @@ export function decodeJwtPayload(token: string | null) {
     const normalized = payloadSegment.replace(/-/g, "+").replace(/_/g, "/");
     const padded = normalized.padEnd(
       normalized.length + ((4 - (normalized.length % 4)) % 4),
-      "="
+      "=",
     );
 
     return JSON.parse(window.atob(padded)) as Record<string, unknown>;
@@ -284,7 +313,7 @@ export function decodeJwtPayload(token: string | null) {
 
 export function getGoogleAudienceInfo(
   audience: unknown,
-  configuredClientId: string | null
+  configuredClientId: string | null,
 ) {
   if (typeof audience === "string") {
     return {
@@ -295,12 +324,14 @@ export function getGoogleAudienceInfo(
 
   if (Array.isArray(audience)) {
     const stringAudiences = audience.filter(
-      (value): value is string => typeof value === "string" && Boolean(value)
+      (value): value is string => typeof value === "string" && Boolean(value),
     );
 
     return {
       audience: stringAudiences[0] ?? null,
-      matches: configuredClientId ? stringAudiences.includes(configuredClientId) : null,
+      matches: configuredClientId
+        ? stringAudiences.includes(configuredClientId)
+        : null,
     };
   }
 
@@ -311,9 +342,12 @@ export function getGoogleAudienceInfo(
 }
 
 export function getGoogleOAuthDiagnostics(
-  storedLoginConfig: StoredLoginConfig | null
+  storedLoginConfig: StoredLoginConfig | null,
 ): GoogleOAuthDiagnostics | null {
-  if (typeof window === "undefined" || !window.location.hash.includes("id_token=")) {
+  if (
+    typeof window === "undefined" ||
+    !window.location.hash.includes("id_token=")
+  ) {
     return null;
   }
 
@@ -322,26 +356,31 @@ export function getGoogleOAuthDiagnostics(
   const loginConfigs = isRecord(storedLoginConfig?.loginConfigs)
     ? storedLoginConfig.loginConfigs
     : null;
-  const googleConfig = loginConfigs && isRecord(loginConfigs.google) ? loginConfigs.google : null;
+  const googleConfig =
+    loginConfigs && isRecord(loginConfigs.google) ? loginConfigs.google : null;
   const configuredClientId =
     typeof googleConfig?.clientId === "string" && googleConfig.clientId
       ? googleConfig.clientId
       : GOOGLE_CLIENT_ID || null;
   const { audience, matches } = getGoogleAudienceInfo(
     tokenPayload?.aud,
-    configuredClientId
+    configuredClientId,
   );
   const oauthBackup = readCircleOAuthBackup();
   const inferredProvider =
     oauthBackup.provider ||
-    (window.location.hash.includes("id_token=") && configuredClientId ? SocialLoginProvider.GOOGLE : null);
+    (window.location.hash.includes("id_token=") && configuredClientId
+      ? SocialLoginProvider.GOOGLE
+      : null);
   const returnedState = hashParams.get("state");
   const storedState =
     readStorageString(window.localStorage, SOCIAL_LOGIN_STATE_STORAGE_KEY) ||
     oauthBackup.state ||
     null;
   const returnedNonce =
-    tokenPayload && typeof tokenPayload.nonce === "string" ? tokenPayload.nonce : null;
+    tokenPayload && typeof tokenPayload.nonce === "string"
+      ? tokenPayload.nonce
+      : null;
   const storedNonce =
     readStorageString(window.localStorage, SOCIAL_LOGIN_NONCE_STORAGE_KEY) ||
     oauthBackup.nonce ||
@@ -355,7 +394,8 @@ export function getGoogleOAuthDiagnostics(
       typeof loginConfigs?.deviceEncryptionKey === "string" &&
       Boolean(loginConfigs.deviceEncryptionKey),
     hasDeviceToken:
-      typeof loginConfigs?.deviceToken === "string" && Boolean(loginConfigs.deviceToken),
+      typeof loginConfigs?.deviceToken === "string" &&
+      Boolean(loginConfigs.deviceToken),
     nonceMatches:
       storedNonce && returnedNonce
         ? storedNonce === returnedNonce
@@ -363,7 +403,10 @@ export function getGoogleOAuthDiagnostics(
           ? false
           : null,
     provider:
-      readStorageString(window.localStorage, SOCIAL_LOGIN_PROVIDER_STORAGE_KEY) ||
+      readStorageString(
+        window.localStorage,
+        SOCIAL_LOGIN_PROVIDER_STORAGE_KEY,
+      ) ||
       inferredProvider ||
       null,
     redirectUri:
@@ -390,7 +433,7 @@ export function extractChallengeId(payload: Record<string, unknown>) {
 }
 
 export function normalizeCircleWalletTokenBalance(
-  payload: unknown
+  payload: unknown,
 ): CircleWalletTokenBalance | null {
   const record = isRecord(payload) ? payload : null;
 
@@ -507,7 +550,11 @@ export function readStorageString(storage: Storage | undefined, key: string) {
   }
 }
 
-export function writeStorageValue(storage: Storage | undefined, key: string, value: string) {
+export function writeStorageValue(
+  storage: Storage | undefined,
+  key: string,
+  value: string,
+) {
   try {
     storage?.setItem(key, value);
   } catch {
@@ -548,16 +595,34 @@ export function readCircleOAuthBackup() {
 
   return {
     nonce:
-      readStorageString(window.sessionStorage, OAUTH_NONCE_FALLBACK_STORAGE_KEY) ||
-      readStorageString(window.localStorage, OAUTH_NONCE_FALLBACK_STORAGE_KEY) ||
+      readStorageString(
+        window.sessionStorage,
+        OAUTH_NONCE_FALLBACK_STORAGE_KEY,
+      ) ||
+      readStorageString(
+        window.localStorage,
+        OAUTH_NONCE_FALLBACK_STORAGE_KEY,
+      ) ||
       readCookieString(OAUTH_NONCE_COOKIE_KEY),
     provider:
-      readStorageString(window.sessionStorage, OAUTH_PROVIDER_FALLBACK_STORAGE_KEY) ||
-      readStorageString(window.localStorage, OAUTH_PROVIDER_FALLBACK_STORAGE_KEY) ||
+      readStorageString(
+        window.sessionStorage,
+        OAUTH_PROVIDER_FALLBACK_STORAGE_KEY,
+      ) ||
+      readStorageString(
+        window.localStorage,
+        OAUTH_PROVIDER_FALLBACK_STORAGE_KEY,
+      ) ||
       readCookieString(OAUTH_PROVIDER_COOKIE_KEY),
     state:
-      readStorageString(window.sessionStorage, OAUTH_STATE_FALLBACK_STORAGE_KEY) ||
-      readStorageString(window.localStorage, OAUTH_STATE_FALLBACK_STORAGE_KEY) ||
+      readStorageString(
+        window.sessionStorage,
+        OAUTH_STATE_FALLBACK_STORAGE_KEY,
+      ) ||
+      readStorageString(
+        window.localStorage,
+        OAUTH_STATE_FALLBACK_STORAGE_KEY,
+      ) ||
       readCookieString(OAUTH_STATE_COOKIE_KEY),
   };
 }
@@ -587,7 +652,10 @@ export function buildGoogleLoginConfigs({
 }
 
 export function createOAuthRedirectValue() {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+  if (
+    typeof crypto !== "undefined" &&
+    typeof crypto.randomUUID === "function"
+  ) {
     return crypto.randomUUID();
   }
 
@@ -608,21 +676,24 @@ export function buildGoogleOAuthRedirectUrl({
   state: string;
 }) {
   const scope = encodeURIComponent(
-    "openid https://www.googleapis.com/auth/userinfo.profile https://www.googleapis.com/auth/userinfo.email"
+    "openid https://www.googleapis.com/auth/userinfo.profile https://www.googleapis.com/auth/userinfo.email",
   );
   const responseType = encodeURIComponent("id_token token");
 
   return `https://accounts.google.com/o/oauth2/v2/auth?client_id=${clientId}&redirect_uri=${encodeURIComponent(
-    redirectUri
+    redirectUri,
   )}&scope=${scope}&state=${state}&response_type=${responseType}&nonce=${nonce}&prompt=${
     selectAccountPrompt ? "select_account" : "none"
   }`;
 }
 
 export function readGoogleLoginConfigFromCookies(): StoredLoginConfig | null {
-  const googleClientId = readCookieString(GOOGLE_CLIENT_ID_COOKIE_KEY) || GOOGLE_CLIENT_ID;
+  const googleClientId =
+    readCookieString(GOOGLE_CLIENT_ID_COOKIE_KEY) || GOOGLE_CLIENT_ID;
   const deviceToken = readCookieString(DEVICE_TOKEN_COOKIE_KEY);
-  const deviceEncryptionKey = readCookieString(DEVICE_ENCRYPTION_KEY_COOKIE_KEY);
+  const deviceEncryptionKey = readCookieString(
+    DEVICE_ENCRYPTION_KEY_COOKIE_KEY,
+  );
 
   if (!googleClientId || !deviceToken || !deviceEncryptionKey) {
     return null;
@@ -659,7 +730,7 @@ export function persistGoogleLoginCookies({
   setCookie(
     DEVICE_ENCRYPTION_KEY_COOKIE_KEY,
     deviceEncryptionKey,
-    LOGIN_COOKIE_OPTIONS
+    LOGIN_COOKIE_OPTIONS,
   );
 }
 
@@ -697,32 +768,32 @@ export function persistCircleOAuthBackups({
   writeStorageValue(
     window.sessionStorage,
     OAUTH_PROVIDER_FALLBACK_STORAGE_KEY,
-    provider
+    provider,
   );
   writeStorageValue(
     window.sessionStorage,
     OAUTH_STATE_FALLBACK_STORAGE_KEY,
-    state
+    state,
   );
   writeStorageValue(
     window.sessionStorage,
     OAUTH_NONCE_FALLBACK_STORAGE_KEY,
-    nonce ?? ""
+    nonce ?? "",
   );
   writeStorageValue(
     window.localStorage,
     OAUTH_PROVIDER_FALLBACK_STORAGE_KEY,
-    provider
+    provider,
   );
   writeStorageValue(
     window.localStorage,
     OAUTH_STATE_FALLBACK_STORAGE_KEY,
-    state
+    state,
   );
   writeStorageValue(
     window.localStorage,
     OAUTH_NONCE_FALLBACK_STORAGE_KEY,
-    nonce ?? ""
+    nonce ?? "",
   );
   persistCircleOAuthCookies({ nonce, provider, state });
 }
@@ -744,14 +815,11 @@ export function clearCircleOAuthBackups() {
 
   removeStorageValue(
     window.sessionStorage,
-    OAUTH_PROVIDER_FALLBACK_STORAGE_KEY
+    OAUTH_PROVIDER_FALLBACK_STORAGE_KEY,
   );
   removeStorageValue(window.sessionStorage, OAUTH_STATE_FALLBACK_STORAGE_KEY);
   removeStorageValue(window.sessionStorage, OAUTH_NONCE_FALLBACK_STORAGE_KEY);
-  removeStorageValue(
-    window.localStorage,
-    OAUTH_PROVIDER_FALLBACK_STORAGE_KEY
-  );
+  removeStorageValue(window.localStorage, OAUTH_PROVIDER_FALLBACK_STORAGE_KEY);
   removeStorageValue(window.localStorage, OAUTH_STATE_FALLBACK_STORAGE_KEY);
   removeStorageValue(window.localStorage, OAUTH_NONCE_FALLBACK_STORAGE_KEY);
   clearCircleOAuthCookies();
@@ -793,7 +861,8 @@ export function restoreCircleOAuthStateFromCookies() {
   const { nonce, provider, state } = readCircleOAuthBackup();
   const inferredProvider =
     provider ||
-    (window.location.hash.includes("id_token=") && readGoogleLoginConfigFromCookies()
+    (window.location.hash.includes("id_token=") &&
+    readGoogleLoginConfigFromCookies()
       ? SocialLoginProvider.GOOGLE
       : "");
 
@@ -801,7 +870,10 @@ export function restoreCircleOAuthStateFromCookies() {
     return false;
   }
 
-  window.localStorage.setItem(SOCIAL_LOGIN_PROVIDER_STORAGE_KEY, inferredProvider);
+  window.localStorage.setItem(
+    SOCIAL_LOGIN_PROVIDER_STORAGE_KEY,
+    inferredProvider,
+  );
   window.localStorage.setItem(SOCIAL_LOGIN_STATE_STORAGE_KEY, state);
 
   if (window.location.hash.includes("id_token=") && nonce) {

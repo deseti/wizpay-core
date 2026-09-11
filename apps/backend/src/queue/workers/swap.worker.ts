@@ -1,14 +1,19 @@
-import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  OnModuleDestroy,
+  OnModuleInit,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Job, Worker } from 'bullmq';
-import type { RedisOptions } from 'ioredis';
-import {
-  DEFAULT_REDIS_HOST,
-  DEFAULT_REDIS_PORT,
-} from '../../config/configuration';
 import { QueueName } from '../queue.constants';
 import { TaskQueueJobData } from '../queue.types';
 import { SwapProcessor } from '../processors/swap.processor';
+import {
+  assertSelectedJobNetwork,
+  selectedQueuePrefix,
+  selectedRedisConnection,
+} from '../queue-runtime';
 
 @Injectable()
 export class SwapWorker implements OnModuleInit, OnModuleDestroy {
@@ -25,9 +30,13 @@ export class SwapWorker implements OnModuleInit, OnModuleDestroy {
 
     this.worker = new Worker<TaskQueueJobData>(
       QueueName.SWAP,
-      (job: Job<TaskQueueJobData>) => this.swapProcessor.process(job),
+      (job: Job<TaskQueueJobData>) => {
+        assertSelectedJobNetwork(this.configService, job.data);
+        return this.swapProcessor.process(job);
+      },
       {
-        connection: this.getRedisConnectionOptions(),
+        connection: selectedRedisConnection(this.configService),
+        prefix: selectedQueuePrefix(this.configService),
         concurrency: 3,
       },
     );
@@ -58,15 +67,5 @@ export class SwapWorker implements OnModuleInit, OnModuleDestroy {
       await this.worker.close();
       this.logger.log('Swap worker shut down');
     }
-  }
-
-  private getRedisConnectionOptions(): RedisOptions {
-    return {
-      host: this.configService.get<string>('REDIS_HOST') ?? DEFAULT_REDIS_HOST,
-      port: this.configService.get<number>('REDIS_PORT') ?? DEFAULT_REDIS_PORT,
-      lazyConnect: true,
-      maxRetriesPerRequest: null,
-      enableReadyCheck: false,
-    };
   }
 }

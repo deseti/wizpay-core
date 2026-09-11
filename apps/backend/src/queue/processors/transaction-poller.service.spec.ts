@@ -66,7 +66,12 @@ describe('TransactionPollerService Circle receipt boundary', () => {
       sourceAddress: SENDER,
     });
 
-    await service.poll({ taskId: 'task', txId: 'circle-tx', attempt: 3 });
+    await service.poll({
+      network: 'arc-testnet',
+      taskId: 'task',
+      txId: 'circle-tx',
+      attempt: 3,
+    });
 
     expect(verifier.verifyTransfer).not.toHaveBeenCalled();
     expect(tasks.updateTransaction).toHaveBeenCalledWith('circle-tx', {
@@ -85,14 +90,24 @@ describe('TransactionPollerService Circle receipt boundary', () => {
       new CircleReceiptVerificationError('Receipt unavailable.', true),
     );
 
-    await service.poll({ taskId: 'task', txId: 'circle-tx', attempt: 0 });
+    await service.poll({
+      network: 'arc-testnet',
+      taskId: 'task',
+      txId: 'circle-tx',
+      attempt: 0,
+    });
 
     expect(tasks.updateTransaction).not.toHaveBeenCalledWith(
       'circle-tx',
       expect.objectContaining({ status: 'completed' }),
     );
     expect(queue.enqueueTransactionPoll).toHaveBeenCalledWith(
-      { taskId: 'task', txId: 'circle-tx', attempt: 1 },
+      {
+        network: 'arc-testnet',
+        taskId: 'task',
+        txId: 'circle-tx',
+        attempt: 1,
+      },
       2000,
     );
   });
@@ -102,7 +117,12 @@ describe('TransactionPollerService Circle receipt boundary', () => {
       new CircleReceiptVerificationError('Wrong recipient.', false),
     );
 
-    await service.poll({ taskId: 'task', txId: 'circle-tx', attempt: 0 });
+    await service.poll({
+      network: 'arc-testnet',
+      taskId: 'task',
+      txId: 'circle-tx',
+      attempt: 0,
+    });
 
     expect(tasks.updateTransaction).toHaveBeenCalledWith(
       'circle-tx',
@@ -118,7 +138,12 @@ describe('TransactionPollerService Circle receipt boundary', () => {
   });
 
   it('completes only after exact receipt verification', async () => {
-    await service.poll({ taskId: 'task', txId: 'circle-tx', attempt: 1 });
+    await service.poll({
+      network: 'arc-testnet',
+      taskId: 'task',
+      txId: 'circle-tx',
+      attempt: 1,
+    });
 
     expect(verifier.verifyTransfer).toHaveBeenCalledWith({
       transactionHash: TX_HASH,

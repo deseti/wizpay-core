@@ -20,4 +20,4 @@ services:
 
 networks:
   wizpay-network:
-    name: wizpay_vps2_network
+    name: wizpay-arc-testnet-vps2

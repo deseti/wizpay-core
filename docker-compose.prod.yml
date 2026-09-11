@@ -5,7 +5,6 @@
 services:
   nginx:
     image: nginx:alpine
-    container_name: wizpay-nginx
 
     ports:
       - "80:80"

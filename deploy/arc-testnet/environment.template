@@ -1,0 +1,16 @@
+WIZPAY_ARC_NETWORK=arc-testnet
+WIZPAY_API_NETWORK=arc-testnet
+WIZPAY_WORKER_NETWORK=arc-testnet
+ARC_TESTNET_DATABASE_URL=<required-arc-testnet-postgresql-url>
+ARC_TESTNET_REDIS_URL=<required-arc-testnet-redis-url>
+ARC_TESTNET_QUEUE_PREFIX=wizpay:arc-testnet
+ARC_TESTNET_POSTGRES_USER=<required-arc-testnet-database-user>
+ARC_TESTNET_POSTGRES_PASSWORD=<required-arc-testnet-database-password>
+ARC_TESTNET_POSTGRES_DATABASE=<required-arc-testnet-database-name>
+CIRCLE_TESTNET_API_BASE_URL=<required-circle-testnet-api-origin>
+CIRCLE_TESTNET_API_KEY=<required-circle-testnet-api-key>
+CIRCLE_TESTNET_ENTITY_SECRET=<required-circle-testnet-entity-secret>
+CIRCLE_TESTNET_WALLET_SET_ID=<required-circle-testnet-wallet-set-id>
+CIRCLE_TESTNET_WALLET_ID=<required-circle-testnet-wallet-id>
+CIRCLE_TESTNET_WALLET_ADDRESS=<required-circle-testnet-wallet-address>
+CIRCLE_TESTNET_RECEIPT_CONFIRMATIONS=<required-confirmation-count>

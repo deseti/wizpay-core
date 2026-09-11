@@ -1,3 +1,5 @@
+name: wizpay-arc-testnet
+
 services:
   backend:
     build:
@@ -11,11 +13,13 @@ services:
     environment:
       PORT: 4000
       NODE_ENV: ${NODE_ENV:-production}
-      DATABASE_URL: postgresql://${POSTGRES_USER:-wizpay}:${POSTGRES_PASSWORD:-wizpay}@postgres:5432/${POSTGRES_DB:-wizpay}
-      REDIS_HOST: redis
-      REDIS_PORT: 6379
+      ARC_TESTNET_DATABASE_URL: postgresql://${POSTGRES_USER:-wizpay}:${POSTGRES_PASSWORD:-wizpay}@postgres:5432/${POSTGRES_DB:-wizpay}
+      ARC_TESTNET_REDIS_URL: redis://redis:6379/0
+      ARC_TESTNET_QUEUE_PREFIX: wizpay:arc-testnet
       DOCKER: "true"
-      WIZPAY_ARC_NETWORK: ${WIZPAY_ARC_NETWORK:?WIZPAY_ARC_NETWORK is required}
+      WIZPAY_ARC_NETWORK: arc-testnet
+      WIZPAY_API_NETWORK: arc-testnet
+      WIZPAY_WORKER_NETWORK: arc-testnet
       # ── CORS ─────────────────────────────────────────────────────────────
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://localhost:3001}
       # ── Chain / RPC config ───────────────────────────────────────────────
@@ -82,7 +86,6 @@ services:
 
   redis:
     image: redis:7-alpine
-    container_name: wizpay-redis
     ports:
       - "127.0.0.1:6379:6379"
     restart: unless-stopped
@@ -101,7 +104,7 @@ services:
       # To change a value: edit root .env, then rebuild with:
       #   docker compose down && docker compose up --build
       args:
-        WIZPAY_ARC_NETWORK: ${WIZPAY_ARC_NETWORK:?WIZPAY_ARC_NETWORK is required}
+        WIZPAY_ARC_NETWORK: arc-testnet
         NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL}
         NEXT_PUBLIC_WIZPAY_PUBLIC_APP_URL: ${NEXT_PUBLIC_WIZPAY_PUBLIC_APP_URL:-http://localhost:3000}
         NEXT_PUBLIC_BACKEND_API_BASE_URL: ${NEXT_PUBLIC_BACKEND_API_BASE_URL}
@@ -132,7 +135,7 @@ services:
         condition: service_healthy
     environment:
       PORT: 3000
-      WIZPAY_ARC_NETWORK: ${WIZPAY_ARC_NETWORK:?WIZPAY_ARC_NETWORK is required}
+      WIZPAY_ARC_NETWORK: arc-testnet
       # ── Frontend runtime vars (Next.js dev server / SSR) ───────────────────
       # Keep these sourced from the root .env so docker-compose.dev does not
       # depend on apps/frontend/.env.local.
@@ -170,7 +173,7 @@ services:
       CIRCLE_TESTNET_WALLET_ADDRESS: ${CIRCLE_TESTNET_WALLET_ADDRESS}
       CIRCLE_TESTNET_RECEIPT_CONFIRMATIONS: ${CIRCLE_TESTNET_RECEIPT_CONFIRMATIONS}
       CIRCLE_TRANSFER_FEE_LEVEL: ${CIRCLE_TRANSFER_FEE_LEVEL}
-      BRIDGE_DATABASE_URL: ${DATABASE_URL}
+      BRIDGE_DATABASE_URL: ${ARC_TESTNET_DATABASE_URL:?ARC_TESTNET_DATABASE_URL is required}
       UPSTASH_REDIS_REST_URL: ${UPSTASH_REDIS_REST_URL:-}
       UPSTASH_REDIS_REST_TOKEN: ${UPSTASH_REDIS_REST_TOKEN:-}
     ports:
@@ -210,7 +213,9 @@ services:
 
 networks:
   wizpay-network:
+    name: wizpay-arc-testnet
     driver: bridge
 
 volumes:
   postgres_data:
+    name: wizpay-arc-testnet-postgres

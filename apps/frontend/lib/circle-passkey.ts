@@ -11,7 +11,13 @@ import {
   toWebAuthnCredential,
   type WebAuthnCredential,
 } from "@circle-fin/modular-wallets-core";
-import { formatUnits, createPublicClient, http, type Address, type Hex } from "viem";
+import {
+  formatUnits,
+  createPublicClient,
+  http,
+  type Address,
+  type Hex,
+} from "viem";
 import {
   createBundlerClient,
   toWebAuthnAccount,
@@ -19,6 +25,7 @@ import {
 import type { Transport } from "viem";
 import { parsePublicKey } from "webauthn-p256";
 import { parseArcNetworkKey } from "@wizpay/arc-network";
+import { circleRuntimeNamespace } from "@/lib/circle-network-config";
 
 import { ERC20_ABI } from "@/constants/erc20";
 import {
@@ -36,10 +43,12 @@ import {
 
 const DEFAULT_CIRCLE_PASSKEY_CLIENT_URL =
   "https://modular-sdk.circle.com/v1/rpc/w3s/buidl";
+const PASSKEY_RUNTIME_NAMESPACE = `${circleRuntimeNamespace(
+  process.env.NEXT_PUBLIC_WIZPAY_ARC_NETWORK,
+)}.passkey`;
 
-export const PASSKEY_CREDENTIAL_STORAGE_KEY =
-  "wizpay.circle.passkey.credential";
-export const PASSKEY_USERNAME_STORAGE_KEY = "wizpay.circle.passkey.username";
+export const PASSKEY_CREDENTIAL_STORAGE_KEY = `${PASSKEY_RUNTIME_NAMESPACE}.credential`;
+export const PASSKEY_USERNAME_STORAGE_KEY = `${PASSKEY_RUNTIME_NAMESPACE}.username`;
 export const PASSKEY_ARC_WALLET_ID = "circle-passkey-arc-testnet";
 export const PASSKEY_SEPOLIA_WALLET_ID = "circle-passkey-eth-sepolia";
 
@@ -185,14 +194,14 @@ function isBundlerRpcUnavailableError(error: unknown) {
 
 export function getCirclePasskeyConfig(): CirclePasskeyConfig {
   const network = parseArcNetworkKey(
-    process.env.NEXT_PUBLIC_WIZPAY_ARC_NETWORK
+    process.env.NEXT_PUBLIC_WIZPAY_ARC_NETWORK,
   );
   if (
     process.env.NEXT_PUBLIC_CIRCLE_PASSKEY_CLIENT_KEY !== undefined ||
     process.env.NEXT_PUBLIC_CIRCLE_PASSKEY_CLIENT_URL !== undefined
   ) {
     throw new Error(
-      "Generic Circle passkey client configuration is ambiguous and is not accepted."
+      "Generic Circle passkey client configuration is ambiguous and is not accepted.",
     );
   }
   if (network === "arc-mainnet") {
@@ -206,14 +215,13 @@ export function getCirclePasskeyConfig(): CirclePasskeyConfig {
   }
   const clientKey = exactOptional(
     process.env.NEXT_PUBLIC_CIRCLE_TESTNET_PASSKEY_CLIENT_KEY,
-    "NEXT_PUBLIC_CIRCLE_TESTNET_PASSKEY_CLIENT_KEY"
+    "NEXT_PUBLIC_CIRCLE_TESTNET_PASSKEY_CLIENT_KEY",
   );
   const clientUrl =
     exactOptional(
       process.env.NEXT_PUBLIC_CIRCLE_TESTNET_PASSKEY_CLIENT_URL,
-      "NEXT_PUBLIC_CIRCLE_TESTNET_PASSKEY_CLIENT_URL"
-    ) ||
-    DEFAULT_CIRCLE_PASSKEY_CLIENT_URL;
+      "NEXT_PUBLIC_CIRCLE_TESTNET_PASSKEY_CLIENT_URL",
+    ) || DEFAULT_CIRCLE_PASSKEY_CLIENT_URL;
   const defaultArcModularUrl = `${clientUrl}/arcTestnet`;
   // NOTE: Ethereum Sepolia is NOT supported by Circle's modular wallets SDK.
   // The SDK only supports Arc Testnet (and Monad Testnet). There is no valid
@@ -225,14 +233,14 @@ export function getCirclePasskeyConfig(): CirclePasskeyConfig {
   return {
     arcModularUrl:
       normalizeOptionalUrl(
-        process.env.NEXT_PUBLIC_CIRCLE_PASSKEY_MODULAR_RPC_URL_ARC_TESTNET
+        process.env.NEXT_PUBLIC_CIRCLE_PASSKEY_MODULAR_RPC_URL_ARC_TESTNET,
       ) ?? defaultArcModularUrl,
     clientKey,
     clientUrl,
     rpId:
       process.env.NEXT_PUBLIC_CIRCLE_PASSKEY_RP_ID?.trim() || "app.wizpay.xyz",
     sepoliaModularUrl: normalizeOptionalUrl(
-      process.env.NEXT_PUBLIC_CIRCLE_PASSKEY_MODULAR_RPC_URL_ETH_SEPOLIA
+      process.env.NEXT_PUBLIC_CIRCLE_PASSKEY_MODULAR_RPC_URL_ETH_SEPOLIA,
     ),
   };
 }
@@ -246,7 +254,7 @@ function exactOptional(value: string | undefined, key: string) {
 }
 
 export function getPasskeySupportError(
-  config: CirclePasskeyConfig = getCirclePasskeyConfig()
+  config: CirclePasskeyConfig = getCirclePasskeyConfig(),
 ) {
   if (!config.clientKey) {
     return "NEXT_PUBLIC_CIRCLE_TESTNET_PASSKEY_CLIENT_KEY is missing. Add the Circle modular-wallet client key first.";
@@ -303,7 +311,7 @@ export function storePasskeyCredential(credential: WebAuthnCredential) {
 
   window.localStorage.setItem(
     PASSKEY_CREDENTIAL_STORAGE_KEY,
-    JSON.stringify(credential)
+    JSON.stringify(credential),
   );
 }
 
@@ -356,10 +364,7 @@ function getPasskeyChains(config: CirclePasskeyConfig): PasskeyChainConfig[] {
   ];
 }
 
-function createPasskeyOwner(
-  credential: WebAuthnCredential,
-  rpId: string
-) {
+function createPasskeyOwner(credential: WebAuthnCredential, rpId: string) {
   return toWebAuthnAccount({
     credential: {
       id: credential.id,
@@ -373,7 +378,7 @@ async function createPasskeyRuntime(
   chainConfig: PasskeyChainConfig,
   config: CirclePasskeyConfig,
   credential: WebAuthnCredential,
-  username: string | null
+  username: string | null,
 ): Promise<PasskeyChainRuntime> {
   const readPublicClient = createPublicClient({
     chain: chainConfig.chain,
@@ -425,7 +430,7 @@ async function createPasskeyRuntime(
     try {
       const modularTransport = toModularTransport(
         chainConfig.modularUrl,
-        config.clientKey
+        config.clientKey,
       );
 
       return await buildRuntime({
@@ -456,8 +461,8 @@ export async function createPasskeyRuntimeSet({
 }): Promise<PasskeyRuntimeSet> {
   const runtimes = await Promise.all(
     getPasskeyChains(config).map((chainConfig) =>
-      createPasskeyRuntime(chainConfig, config, credential, username)
-    )
+      createPasskeyRuntime(chainConfig, config, credential, username),
+    ),
   );
 
   const byWalletId = new Map<string, PasskeyChainRuntime>();
@@ -467,18 +472,21 @@ export async function createPasskeyRuntimeSet({
   });
 
   return {
-    arc: runtimes.find((runtime) => runtime.wallet.id === PASSKEY_ARC_WALLET_ID) ?? null,
+    arc:
+      runtimes.find((runtime) => runtime.wallet.id === PASSKEY_ARC_WALLET_ID) ??
+      null,
     byWalletId,
     sepolia:
-      runtimes.find((runtime) => runtime.wallet.id === PASSKEY_SEPOLIA_WALLET_ID) ??
-      null,
+      runtimes.find(
+        (runtime) => runtime.wallet.id === PASSKEY_SEPOLIA_WALLET_ID,
+      ) ?? null,
     wallets: runtimes.map((runtime) => runtime.wallet),
   };
 }
 
 export async function registerWithPasskey(
   username: string,
-  config: CirclePasskeyConfig = getCirclePasskeyConfig()
+  config: CirclePasskeyConfig = getCirclePasskeyConfig(),
 ) {
   const credential = await toWebAuthnCredential({
     mode: WebAuthnMode.Register,
@@ -493,7 +501,7 @@ export async function registerWithPasskey(
 }
 
 export async function loginWithPasskey(
-  config: CirclePasskeyConfig = getCirclePasskeyConfig()
+  config: CirclePasskeyConfig = getCirclePasskeyConfig(),
 ) {
   return toWebAuthnCredential({
     mode: WebAuthnMode.Login,
@@ -502,7 +510,7 @@ export async function loginWithPasskey(
 }
 
 export async function getPasskeyTokenBalances(
-  runtime: PasskeyChainRuntime
+  runtime: PasskeyChainRuntime,
 ): Promise<PasskeyTokenBalance[]> {
   const updatedAt = new Date().toISOString();
   const balanceClient =
@@ -547,7 +555,10 @@ export async function getPasskeyTokenBalances(
 }
 
 async function ensurePasskeyAddressMapping(runtime: PasskeyChainRuntime) {
-  if (runtime.transportMode !== "circle-modular" || runtime.addressMappingReady) {
+  if (
+    runtime.transportMode !== "circle-modular" ||
+    runtime.addressMappingReady
+  ) {
     return;
   }
 
@@ -591,7 +602,7 @@ async function getPasskeyUserOperationFees(runtime: PasskeyChainRuntime) {
 
   if (!preferredLevel?.maxFeePerGas || !preferredLevel?.maxPriorityFeePerGas) {
     throw new Error(
-      `Circle did not return user-operation gas fees for ${runtime.wallet.blockchain}.`
+      `Circle did not return user-operation gas fees for ${runtime.wallet.blockchain}.`,
     );
   }
 
@@ -634,7 +645,7 @@ export async function sendPasskeyUserOperation({
       isBundlerRpcUnavailableError(error)
     ) {
       throw new Error(
-        `Passkey transactions on ${runtime.wallet.blockchain} require a chain-specific Circle modular RPC URL. Configure the corresponding NEXT_PUBLIC_CIRCLE_PASSKEY_MODULAR_RPC_URL_* value for this chain.`
+        `Passkey transactions on ${runtime.wallet.blockchain} require a chain-specific Circle modular RPC URL. Configure the corresponding NEXT_PUBLIC_CIRCLE_PASSKEY_MODULAR_RPC_URL_* value for this chain.`,
       );
     }
 
@@ -649,9 +660,9 @@ export async function signPasskeyTypedData({
   runtime: PasskeyChainRuntime;
   typedDataJson: string;
 }): Promise<Hex> {
-  const typedData = JSON.parse(
-    typedDataJson
-  ) as Parameters<PasskeyChainRuntime["account"]["signTypedData"]>[0];
+  const typedData = JSON.parse(typedDataJson) as Parameters<
+    PasskeyChainRuntime["account"]["signTypedData"]
+  >[0];
 
   return runtime.account.signTypedData(typedData);
 }

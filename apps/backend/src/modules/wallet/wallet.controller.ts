@@ -100,7 +100,7 @@ function mapWalletControllerError(error: unknown) {
         'Circle wallet sync reached the backend, but the backend could not reach Postgres to persist wallet state.',
       code: 'DATABASE_UNREACHABLE',
       details:
-        'If you are running apps/backend directly on the host, start Docker Compose Postgres or point DATABASE_URL at 127.0.0.1:15432 instead of the docker-only postgres hostname.',
+        'If you are running apps/backend directly on the host, configure the selected network database URL with a host-reachable PostgreSQL target.',
     });
   }
 

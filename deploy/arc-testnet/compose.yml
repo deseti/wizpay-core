@@ -1,0 +1,66 @@
+name: wizpay-arc-testnet
+
+services:
+  backend:
+    build:
+      context: ../..
+      dockerfile: apps/backend/Dockerfile
+    environment:
+      WIZPAY_ARC_NETWORK: arc-testnet
+      WIZPAY_API_NETWORK: arc-testnet
+      WIZPAY_WORKER_NETWORK: arc-testnet
+      ARC_TESTNET_DATABASE_URL: ${ARC_TESTNET_DATABASE_URL:?required}
+      ARC_TESTNET_REDIS_URL: ${ARC_TESTNET_REDIS_URL:?required}
+      ARC_TESTNET_QUEUE_PREFIX: ${ARC_TESTNET_QUEUE_PREFIX:?required}
+      CIRCLE_TESTNET_API_BASE_URL: ${CIRCLE_TESTNET_API_BASE_URL:?required}
+      CIRCLE_TESTNET_API_KEY: ${CIRCLE_TESTNET_API_KEY:?required}
+      CIRCLE_TESTNET_ENTITY_SECRET: ${CIRCLE_TESTNET_ENTITY_SECRET:?required}
+      CIRCLE_TESTNET_WALLET_SET_ID: ${CIRCLE_TESTNET_WALLET_SET_ID:?required}
+      CIRCLE_TESTNET_WALLET_ID: ${CIRCLE_TESTNET_WALLET_ID:?required}
+      CIRCLE_TESTNET_WALLET_ADDRESS: ${CIRCLE_TESTNET_WALLET_ADDRESS:?required}
+      CIRCLE_TESTNET_RECEIPT_CONFIRMATIONS: ${CIRCLE_TESTNET_RECEIPT_CONFIRMATIONS:?required}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    networks: [arc-testnet]
+
+  migrate:
+    profiles: [migration]
+    build:
+      context: ../..
+      dockerfile: apps/backend/Dockerfile
+    command: npm run prisma:migrate:arc-testnet -w backend
+    environment:
+      ARC_TESTNET_DATABASE_URL: ${ARC_TESTNET_DATABASE_URL:?required}
+    networks: [arc-testnet]
+
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: ${ARC_TESTNET_POSTGRES_USER:?required}
+      POSTGRES_PASSWORD: ${ARC_TESTNET_POSTGRES_PASSWORD:?required}
+      POSTGRES_DB: ${ARC_TESTNET_POSTGRES_DATABASE:?required}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes: [arc-testnet-postgres:/var/lib/postgresql/data]
+    networks: [arc-testnet]
+
+  redis:
+    image: redis:7-alpine
+    volumes: [arc-testnet-redis:/data]
+    networks: [arc-testnet]
+
+networks:
+  arc-testnet:
+    name: wizpay-arc-testnet
+
+volumes:
+  arc-testnet-postgres:
+    name: wizpay-arc-testnet-postgres
+  arc-testnet-redis:
+    name: wizpay-arc-testnet-redis

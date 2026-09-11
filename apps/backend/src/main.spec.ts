@@ -26,6 +26,10 @@ describe('backend startup Arc readiness order', () => {
 
     await bootstrap(createApplication, {
       WIZPAY_ARC_NETWORK: 'arc-testnet',
+      ARC_TESTNET_DATABASE_URL:
+        'postgresql://wizpay_testnet:secret@127.0.0.1:15432/wizpay_arc_testnet',
+      ARC_TESTNET_REDIS_URL: 'redis://127.0.0.1:6379/1',
+      ARC_TESTNET_QUEUE_PREFIX: 'wizpay:arc-testnet',
       PORT: '0',
     });
     expect(events[0]).toBe('create');

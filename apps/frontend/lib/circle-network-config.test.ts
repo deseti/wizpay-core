@@ -1,7 +1,19 @@
 import { describe, expect, it } from "vitest";
-import { resolveFrontendCircleApplicationId } from "./circle-network-config";
+import {
+  circleRuntimeNamespace,
+  resolveFrontendCircleApplicationId,
+} from "./circle-network-config";
 
 describe("frontend Circle network isolation", () => {
+  it("uses distinct runtime namespaces for Circle sessions and credentials", () => {
+    expect(circleRuntimeNamespace("arc-testnet")).toBe(
+      "wizpay.arc-testnet.circle",
+    );
+    expect(circleRuntimeNamespace("arc-mainnet")).toBe(
+      "wizpay.arc-mainnet.circle",
+    );
+  });
+
   it("uses only the exact selected Testnet App ID", () => {
     expect(
       resolveFrontendCircleApplicationId("arc-testnet", {

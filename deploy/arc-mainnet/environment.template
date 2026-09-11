@@ -1,0 +1,16 @@
+WIZPAY_ARC_NETWORK=arc-mainnet
+WIZPAY_API_NETWORK=arc-mainnet
+WIZPAY_WORKER_NETWORK=arc-mainnet
+ARC_MAINNET_DATABASE_URL=<unavailable-until-authorized>
+ARC_MAINNET_REDIS_URL=<unavailable-until-authorized>
+ARC_MAINNET_QUEUE_PREFIX=wizpay:arc-mainnet
+ARC_MAINNET_POSTGRES_USER=<unavailable-until-authorized>
+ARC_MAINNET_POSTGRES_PASSWORD=<unavailable-until-authorized>
+ARC_MAINNET_POSTGRES_DATABASE=<unavailable-until-authorized>
+CIRCLE_MAINNET_API_BASE_URL=<unavailable-until-authorized>
+CIRCLE_MAINNET_API_KEY=<unavailable-until-authorized>
+CIRCLE_MAINNET_ENTITY_SECRET=<unavailable-until-authorized>
+CIRCLE_MAINNET_WALLET_SET_ID=<unavailable-until-authorized>
+CIRCLE_MAINNET_WALLET_ID=<unavailable-until-authorized>
+CIRCLE_MAINNET_WALLET_ADDRESS=<unavailable-until-authorized>
+CIRCLE_MAINNET_RECEIPT_CONFIRMATIONS=<unavailable-until-authorized>

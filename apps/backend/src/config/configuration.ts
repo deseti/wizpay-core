@@ -7,9 +7,6 @@ import {
   type ArcCapabilities,
 } from '@wizpay/arc-network';
 
-export const DEFAULT_REDIS_HOST = '127.0.0.1';
-export const DEFAULT_REDIS_PORT = 6379;
-
 export interface FxConfig {
   /** FX routing mode: 'legacy' routes to StableFXAdapter_V2, 'new' routes to Circle StableFX RFQ. */
   routingMode: string;
@@ -32,11 +29,6 @@ export interface FxConfig {
 export interface ApplicationConfig {
   arcNetwork: BackendArcNetworkConfiguration;
   arcCapabilities: ArcCapabilities;
-  databaseUrl: string;
-  redis: {
-    host: string;
-    port: number;
-  };
   fx: FxConfig;
 }
 
@@ -46,14 +38,6 @@ export default (): ApplicationConfig => ({
     process.env.WIZPAY_ARC_NETWORK as 'arc-testnet' | 'arc-mainnet',
     process.env,
   ),
-  databaseUrl: process.env.DATABASE_URL ?? '',
-  redis: {
-    host: process.env.REDIS_HOST ?? DEFAULT_REDIS_HOST,
-    port: Number.parseInt(
-      process.env.REDIS_PORT ?? String(DEFAULT_REDIS_PORT),
-      10,
-    ),
-  },
   fx: {
     routingMode: process.env.FX_ROUTING_MODE ?? 'new',
     pollIntervalMs: Number.parseInt(

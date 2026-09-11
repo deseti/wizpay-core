@@ -6,14 +6,14 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Job, Worker } from 'bullmq';
-import type { RedisOptions } from 'ioredis';
-import {
-  DEFAULT_REDIS_HOST,
-  DEFAULT_REDIS_PORT,
-} from '../../config/configuration';
 import { QueueName } from '../queue.constants';
 import { TxPollJobData } from '../queue.types';
 import { TxPollProcessor } from '../processors/tx-poll.processor';
+import {
+  assertSelectedJobNetwork,
+  selectedQueuePrefix,
+  selectedRedisConnection,
+} from '../queue-runtime';
 
 /**
  * TxPollWorker bootstraps and manages the BullMQ Worker for the "tx_poll" queue.
@@ -42,18 +42,19 @@ export class TxPollWorker implements OnModuleInit, OnModuleDestroy {
 
     this.worker = new Worker<TxPollJobData>(
       QueueName.TX_POLL,
-      (job: Job<TxPollJobData>) => this.txPollProcessor.process(job),
+      (job: Job<TxPollJobData>) => {
+        assertSelectedJobNetwork(this.configService, job.data);
+        return this.txPollProcessor.process(job);
+      },
       {
-        connection: this.getRedisConnectionOptions(),
+        connection: selectedRedisConnection(this.configService),
+        prefix: selectedQueuePrefix(this.configService),
         concurrency: 10,
       },
     );
 
     this.worker.on('error', (error: Error) => {
-      this.logger.error(
-        `TX poll worker error: ${error.message}`,
-        error.stack,
-      );
+      this.logger.error(`TX poll worker error: ${error.message}`, error.stack);
     });
 
     this.worker.on('failed', (job, error: Error) => {
@@ -72,15 +73,5 @@ export class TxPollWorker implements OnModuleInit, OnModuleDestroy {
       await this.worker.close();
       this.logger.log('TX poll worker shut down');
     }
-  }
-
-  private getRedisConnectionOptions(): RedisOptions {
-    return {
-      host: this.configService.get<string>('REDIS_HOST') ?? DEFAULT_REDIS_HOST,
-      port: this.configService.get<number>('REDIS_PORT') ?? DEFAULT_REDIS_PORT,
-      lazyConnect: true,
-      maxRetriesPerRequest: null,
-      enableReadyCheck: false,
-    };
   }
 }

@@ -67,7 +67,7 @@ export class TransactionPollerService {
    * Called by TransactionPollerProcessor for each job on the TX_POLL queue.
    */
   async poll(jobData: TxPollJobData): Promise<void> {
-    const { taskId, txId, attempt } = jobData;
+    const { network, taskId, txId, attempt } = jobData;
 
     this.logger.debug(
       `Polling tx — taskId=${taskId} txId=${txId} attempt=${attempt}/${MAX_POLL_ATTEMPTS}`,
@@ -110,7 +110,7 @@ export class TransactionPollerService {
 
       // Transient error — re-enqueue with incremented attempt
       await this.queueService.enqueueTransactionPoll(
-        { taskId, txId, attempt: attempt + 1 },
+        { network, taskId, txId, attempt: attempt + 1 },
         POLL_DELAY_MS,
       );
 
@@ -233,7 +233,7 @@ export class TransactionPollerService {
     });
 
     await this.queueService.enqueueTransactionPoll(
-      { taskId, txId, attempt: attempt + 1 },
+      { network, taskId, txId, attempt: attempt + 1 },
       POLL_DELAY_MS,
     );
   }

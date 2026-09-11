@@ -198,6 +198,7 @@ export class ExecutionIntentService {
       }
     }
     if (!intent) throw new Error('Execution intent acquisition failed.');
+    this.assertSelectedNetwork(intent);
     if (intent.requestFingerprint !== canonical.requestFingerprint) {
       this.conflict(
         EXECUTION_INTENT_ERROR_CODES.IMMUTABLE_CONFLICT,
@@ -216,6 +217,7 @@ export class ExecutionIntentService {
         code: EXECUTION_INTENT_ERROR_CODES.NOT_FOUND,
         message: 'Execution intent not found.',
       });
+    this.assertSelectedNetwork(intent);
     return intent;
   }
 
@@ -230,6 +232,7 @@ export class ExecutionIntentService {
         message:
           'A durable execution intent must be created before submission.',
       });
+    this.assertSelectedNetwork(intent);
     return intent;
   }
 
@@ -752,6 +755,15 @@ export class ExecutionIntentService {
     return ['COMPLETED', 'FAILED_FINAL', 'EXPIRED', 'CANCELLED'].includes(
       status,
     );
+  }
+
+  private assertSelectedNetwork(intent: Pick<ExecutionIntent, 'network'>) {
+    if (intent.network !== this.routing.network) {
+      this.conflict(
+        EXECUTION_INTENT_ERROR_CODES.IMMUTABLE_CONFLICT,
+        'Execution intent belongs to a different runtime network.',
+      );
+    }
   }
 
   private conflict(code: string, message: string): never {

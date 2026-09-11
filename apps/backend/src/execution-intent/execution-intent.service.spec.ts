@@ -60,6 +60,27 @@ describe('ExecutionIntentService', () => {
     expect(restarted.circleIdempotencyKey(retry)).toBe(first.idempotencyKey);
   });
 
+  it('prevents another network from reading, leasing, reconciling, or verifying an intent', async () => {
+    const intent = await service.acquire(sendInput());
+    const otherNetwork = new ExecutionIntentService(
+      store as never,
+      {
+        ...routing,
+        network: 'arc-mainnet',
+      } as never,
+    );
+    for (const action of [
+      () => otherNetwork.get(intent.id),
+      () => otherNetwork.acquireLease(intent.id, 'mainnet-worker', 5_000),
+      () => otherNetwork.beginVerification(intent.id),
+      () => otherNetwork.completeWithVerifiedReceipt(intent.id, receipt()),
+    ]) {
+      await expect(action()).rejects.toMatchObject({
+        response: { code: EXECUTION_INTENT_ERROR_CODES.IMMUTABLE_CONFLICT },
+      });
+    }
+  });
+
   it('rejects conflicting immutable data for the same logical operation', async () => {
     await service.acquire(sendInput());
     await expect(
@@ -228,7 +249,7 @@ describe('ExecutionIntentService', () => {
     store.invoices.push({
       publicId: 'invoice-1',
       status: 'OPEN',
-      expiresAt: new Date('2026-09-11T00:00:00.000Z'),
+      expiresAt: new Date('2099-09-11T00:00:00.000Z'),
       chainId: 5_042_002,
       merchantWalletAddress: RECIPIENT,
       tokenAddress: USDC,

@@ -2,6 +2,7 @@ import { Logger } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { loadBackendArcNetworkConfiguration } from './config/arc-network.config';
+import { validateEnvironment } from './config/env.validation';
 
 type CreateApplication = () => ReturnType<typeof NestFactory.create>;
 
@@ -11,6 +12,10 @@ export async function bootstrap(
 ) {
   const logger = new Logger('Bootstrap');
   loadBackendArcNetworkConfiguration(environment);
+  const validated = validateEnvironment(environment);
+  logger.log(
+    `Runtime isolation: ${JSON.stringify(validated.RUNTIME_ISOLATION_DIAGNOSTIC)}`,
+  );
   const app = await createApplication();
   app.enableShutdownHooks();
 

@@ -6,7 +6,7 @@ import * as fs from 'fs';
 // Try loading .env from two locations (local vs docker)
 const envPaths = [
   path.resolve(process.cwd(), '../../.env'), // Local
-  path.resolve(process.cwd(), '.env'),       // Docker (if mounted, or fallback)
+  path.resolve(process.cwd(), '.env'), // Docker (if mounted, or fallback)
 ];
 
 for (const p of envPaths) {
@@ -16,12 +16,30 @@ for (const p of envPaths) {
   }
 }
 
-// When building Docker image, DATABASE_URL might not be present.
-// We only enforce it if we are actually running migrations or the server.
-const isGenerating = process.argv.join(' ').includes('generate');
+const command = process.argv.join(' ');
+const needsDatabase = /\bmigrate\b|\bdb\s+(push|pull|execute)\b/.test(command);
+const selectedNetwork = process.env.WIZPAY_ARC_NETWORK;
+const migrationNetwork = process.env.WIZPAY_MIGRATION_NETWORK;
+const databaseKey =
+  selectedNetwork === 'arc-testnet'
+    ? 'ARC_TESTNET_DATABASE_URL'
+    : selectedNetwork === 'arc-mainnet'
+      ? 'ARC_MAINNET_DATABASE_URL'
+      : null;
 
-if (!process.env.DATABASE_URL && !isGenerating) {
-  throw new Error('DATABASE_URL environment variable is not defined.');
+if (needsDatabase) {
+  if (
+    !databaseKey ||
+    migrationNetwork !== selectedNetwork ||
+    process.env.DATABASE_URL !== undefined
+  ) {
+    throw new Error(
+      'Prisma migration requires matching explicit Arc runtime and migration networks and rejects DATABASE_URL.',
+    );
+  }
+  if (!process.env[databaseKey]?.trim()) {
+    throw new Error(`Prisma migration requires ${databaseKey}.`);
+  }
 }
 
 export default defineConfig({
@@ -30,6 +48,6 @@ export default defineConfig({
     path: 'src/database/migrations',
   },
   datasource: {
-    url: process.env.DATABASE_URL ?? '',
+    url: databaseKey ? (process.env[databaseKey] ?? '') : '',
   },
 });

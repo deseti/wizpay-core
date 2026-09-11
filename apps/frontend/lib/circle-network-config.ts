@@ -2,6 +2,10 @@ import { parseArcNetworkKey } from "@wizpay/arc-network";
 
 export type FrontendCircleEnvironment = Record<string, string | undefined>;
 
+export function circleRuntimeNamespace(selector: unknown) {
+  return `wizpay.${parseArcNetworkKey(selector)}.circle`;
+}
+
 export function resolveFrontendCircleApplicationId(
   selector: unknown,
   environment: FrontendCircleEnvironment,

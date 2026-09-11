@@ -1,17 +1,23 @@
 import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Queue } from 'bullmq';
-import type { RedisOptions } from 'ioredis';
-import {
-  DEFAULT_REDIS_HOST,
-  DEFAULT_REDIS_PORT,
-} from '../config/configuration';
 import { TelegramService } from '../integrations/telegram.service';
 import { TaskService } from '../task/task.service';
 import { TaskStatus } from '../task/task-status.enum';
 import { QueueName, QueueRoutingDefinition } from './queue.constants';
 import { TaskQueueJobData, TxPollJobData } from './queue.types';
 import { CapabilityService } from '../capabilities/capability.service';
+import {
+  assertSelectedJobNetwork,
+  selectedQueueNetwork,
+  selectedQueuePrefix,
+  selectedRedisConnection,
+} from './queue-runtime';
+
+type NewTaskQueueJobData = Omit<TaskQueueJobData, 'network'> &
+  Partial<Pick<TaskQueueJobData, 'network'>>;
+type NewTxPollJobData = Omit<TxPollJobData, 'network'> &
+  Partial<Pick<TxPollJobData, 'network'>>;
 
 /**
  * QueueService is responsible ONLY for enqueuing jobs.
@@ -40,8 +46,9 @@ export class QueueService implements OnModuleDestroy {
 
   async enqueueTask(
     route: QueueRoutingDefinition,
-    jobData: TaskQueueJobData,
+    input: NewTaskQueueJobData,
   ): Promise<void> {
+    const jobData = this.bindSelectedNetwork(input);
     if (jobData.taskType === 'payroll')
       this.capabilities.assertPayroll(jobData.payload);
     else if (jobData.taskType === 'swap') this.capabilities.assert('swap');
@@ -49,15 +56,20 @@ export class QueueService implements OnModuleDestroy {
     else if (jobData.taskType === 'fx') this.capabilities.assert('stableFx');
     const queue = this.getOrCreateQueue(route.queueName);
 
-    await queue.add(`${jobData.taskType}:${jobData.taskId}`, jobData, {
-      attempts: 3,
-      backoff: {
-        type: 'exponential',
-        delay: 1000,
+    await queue.add(
+      `${jobData.network}:${jobData.taskType}:${jobData.taskId}`,
+      jobData,
+      {
+        jobId: `${jobData.network}--${jobData.taskType}--${jobData.taskId}`,
+        attempts: 3,
+        backoff: {
+          type: 'exponential',
+          delay: 1000,
+        },
+        removeOnComplete: 100,
+        removeOnFail: 500,
       },
-      removeOnComplete: 100,
-      removeOnFail: 500,
-    });
+    );
 
     this.logger.log(
       `Task enqueued — taskId=${jobData.taskId} queue=${route.queueName} attempts=3 backoff=exponential`,
@@ -94,19 +106,25 @@ export class QueueService implements OnModuleDestroy {
    * @param delayMs - Optional delay before the job is processed (default: 2000ms for initial poll)
    */
   async enqueueTransactionPoll(
-    jobData: TxPollJobData,
+    input: NewTxPollJobData,
     delayMs = 2000,
   ): Promise<void> {
+    const jobData = this.bindSelectedNetwork(input);
     const queue = this.getOrCreateQueue(QueueName.TX_POLL);
 
-    await queue.add(`tx_poll:${jobData.taskId}:${jobData.txId}`, jobData, {
-      delay: delayMs,
-      // No BullMQ-level retries — the poller service manages its own
-      // re-enqueue logic with attempt tracking
-      attempts: 1,
-      removeOnComplete: 200,
-      removeOnFail: 500,
-    });
+    await queue.add(
+      `${jobData.network}:tx_poll:${jobData.taskId}:${jobData.txId}`,
+      jobData,
+      {
+        jobId: `${jobData.network}--tx-poll--${jobData.taskId}--${jobData.txId}--${jobData.attempt}`,
+        delay: delayMs,
+        // No BullMQ-level retries — the poller service manages its own
+        // re-enqueue logic with attempt tracking
+        attempts: 1,
+        removeOnComplete: 200,
+        removeOnFail: 500,
+      },
+    );
 
     this.logger.debug(
       `TX poll enqueued — taskId=${jobData.taskId} txId=${jobData.txId} attempt=${jobData.attempt} delay=${delayMs}ms`,
@@ -135,7 +153,8 @@ export class QueueService implements OnModuleDestroy {
     }
 
     const queue = new Queue(queueName, {
-      connection: this.getRedisConnectionOptions(),
+      connection: selectedRedisConnection(this.configService),
+      prefix: selectedQueuePrefix(this.configService),
     });
 
     this.queues.set(queueName, queue);
@@ -145,13 +164,16 @@ export class QueueService implements OnModuleDestroy {
     return queue;
   }
 
-  private getRedisConnectionOptions(): RedisOptions {
-    return {
-      host: this.configService.get<string>('REDIS_HOST') ?? DEFAULT_REDIS_HOST,
-      port: this.configService.get<number>('REDIS_PORT') ?? DEFAULT_REDIS_PORT,
-      lazyConnect: true,
-      maxRetriesPerRequest: null,
-      enableReadyCheck: false,
-    };
+  private bindSelectedNetwork<
+    T extends { network?: TaskQueueJobData['network'] },
+  >(input: T): T & { network: TaskQueueJobData['network'] } {
+    const network = selectedQueueNetwork(this.configService);
+    if (input.network !== undefined) {
+      assertSelectedJobNetwork(
+        this.configService,
+        input as { network: TaskQueueJobData['network'] },
+      );
+    }
+    return { ...input, network };
   }
 }

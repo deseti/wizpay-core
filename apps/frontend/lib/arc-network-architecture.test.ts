@@ -8,19 +8,21 @@ const read = (path: string) =>
 
 describe("Arc network configuration architecture", () => {
   const compose = read("docker-compose.yml");
+  const testnetCompose = read("deploy/arc-testnet/compose.yml");
+  const mainnetCompose = read("deploy/arc-mainnet/compose.yml");
   const frontendDockerfile = read("apps/frontend/Dockerfile");
   const backendDockerfile = read("apps/backend/Dockerfile");
   const nextConfig = read("apps/frontend/next.config.ts");
 
-  it("uses one required operator selector for backend runtime and frontend build", () => {
-    const requiredSelector =
-      "${WIZPAY_ARC_NETWORK:?WIZPAY_ARC_NETWORK is required}";
+  it("uses explicit isolated selectors for backend runtime and frontend build", () => {
     expect(compose.match(/^\s+WIZPAY_ARC_NETWORK:/gm)).toHaveLength(3);
-    expect(
-      compose.match(
-        new RegExp(requiredSelector.replace(/[${}:?]/g, "\\$&"), "g"),
-      ),
-    ).toHaveLength(3);
+    expect(compose).not.toContain("${WIZPAY_ARC_NETWORK:");
+    expect(testnetCompose).toContain("name: wizpay-arc-testnet");
+    expect(testnetCompose).toContain("WIZPAY_ARC_NETWORK: arc-testnet");
+    expect(mainnetCompose).toContain("name: wizpay-arc-mainnet");
+    expect(mainnetCompose).toContain("WIZPAY_ARC_NETWORK: arc-mainnet");
+    expect(testnetCompose).not.toContain("ARC_MAINNET_");
+    expect(mainnetCompose).not.toContain("ARC_TESTNET_");
     expect(frontendDockerfile).toContain("ARG WIZPAY_ARC_NETWORK");
     expect(frontendDockerfile).toContain(
       "ENV WIZPAY_ARC_NETWORK=$WIZPAY_ARC_NETWORK",
