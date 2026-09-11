@@ -1,6 +1,31 @@
 {
+  "schemaVersion": 1,
   "network": "arc-mainnet",
+  "chainId": 5042,
   "status": "unavailable",
-  "contracts": {},
-  "receipts": []
+  "contract": "WizPayMainnetV2",
+  "compiler": {
+    "version": "0.8.24",
+    "optimizer": true,
+    "optimizerRuns": 200,
+    "viaIR": true
+  },
+  "deploymentInput": {
+    "canonicalUsdc": null,
+    "initialOwner": null,
+    "feeRecipient": null,
+    "feeBps": null,
+    "deployer": null,
+    "sourceCommit": null,
+    "constructorArguments": null,
+    "constructorDigest": null,
+    "planDigest": null
+  },
+  "deploymentResult": {
+    "transactionHash": null,
+    "blockNumber": null,
+    "deployedAddress": null,
+    "runtimeBytecodeHash": null,
+    "verificationStatus": "unavailable"
+  }
 }

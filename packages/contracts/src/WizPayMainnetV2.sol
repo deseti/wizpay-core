@@ -7,11 +7,15 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
-/// @notice Future Arc Mainnet direct-USDC payroll contract.
-/// @dev It deliberately has no FX engine or cross-token execution entry point.
+/// @notice Arc Mainnet direct-USDC payroll contract.
+/// @dev This contract is deliberately non-upgradeable and has no FX, router,
+/// bridge, delegatecall, arbitrary-token, or arbitrary-call surface.
 contract WizPayMainnetV2 is Ownable, Pausable, ReentrancyGuard {
     using SafeERC20 for IERC20;
+
     error CanonicalUsdcZeroAddress();
+    error CanonicalUsdcHasNoCode(address canonicalUsdc);
+    error InitialOwnerHasNoCode(address initialOwner);
     error FeeCollectorZeroAddress();
     error FeeExceedsMaximum(uint256 feeBps, uint256 maxFeeBps);
     error TokenMustBeCanonicalUsdc(address token);
@@ -22,9 +26,11 @@ contract WizPayMainnetV2 is Ownable, Pausable, ReentrancyGuard {
     error ReferenceIdTooLong(uint256 provided, uint256 maxAllowed);
     error ReferenceAlreadyUsed(bytes32 referenceHash);
     error RecipientZeroAddress();
+    error SelfPaymentNotAllowed();
     error AmountMustBeGreaterThanZero();
     error DirectTransferBelowMinimum(uint256 amountOut, uint256 minAmountOut);
     error InsufficientTokenBalance(uint256 balance, uint256 amount);
+    error UnexpectedUsdcBalance(uint256 expected, uint256 actual);
 
     uint256 public constant MAX_FEE_BPS = 100;
     uint256 public constant MAX_BATCH_SIZE = 50;
@@ -35,12 +41,34 @@ contract WizPayMainnetV2 is Ownable, Pausable, ReentrancyGuard {
     address public feeCollector;
     mapping(bytes32 => bool) public usedReferenceHashes;
 
+    event DirectUsdcPayment(
+        bytes32 indexed referenceHash,
+        address indexed payer,
+        address indexed recipient,
+        uint256 paymentIndex,
+        uint256 grossAmount,
+        uint256 netAmount,
+        uint256 feeAmount
+    );
     event PayrollReferenceConsumed(
         bytes32 indexed referenceHash,
         address indexed payer,
         address indexed token,
         bytes32 batchDigest,
         uint256 totalAmount,
+        uint256 totalOut,
+        uint256 totalFees,
+        uint256 recipientCount,
+        string referenceId
+    );
+    // Retained for existing payroll history consumers. Mainnet receipt
+    // reconciliation additionally requires the two domain-bound events above.
+    event BatchPaymentRouted(
+        address indexed sender,
+        address tokenIn,
+        address tokenOut,
+        uint256 totalAmountIn,
+        uint256 totalAmountOut,
         uint256 totalFees,
         uint256 recipientCount,
         string referenceId
@@ -50,8 +78,12 @@ contract WizPayMainnetV2 is Ownable, Pausable, ReentrancyGuard {
     event FeeCollected(address indexed token, uint256 amount);
     event EmergencyWithdraw(address indexed token, uint256 amount, address indexed to);
 
-    constructor(address _canonicalUsdc, address _feeCollector, uint256 _feeBps) Ownable(msg.sender) {
+    constructor(address _canonicalUsdc, address initialOwner, address _feeCollector, uint256 _feeBps)
+        Ownable(initialOwner)
+    {
         if (_canonicalUsdc == address(0)) revert CanonicalUsdcZeroAddress();
+        if (_canonicalUsdc.code.length == 0) revert CanonicalUsdcHasNoCode(_canonicalUsdc);
+        if (initialOwner.code.length == 0) revert InitialOwnerHasNoCode(initialOwner);
         if (_feeCollector == address(0)) revert FeeCollectorZeroAddress();
         if (_feeBps > MAX_FEE_BPS) revert FeeExceedsMaximum(_feeBps, MAX_FEE_BPS);
         canonicalUsdc = IERC20(_canonicalUsdc);
@@ -63,17 +95,39 @@ contract WizPayMainnetV2 is Ownable, Pausable, ReentrancyGuard {
         return keccak256(abi.encode(block.chainid, address(this), payer, address(canonicalUsdc), referenceId));
     }
 
-    function canonicalBatchDigest(address[] calldata recipients, uint256[] calldata amounts)
+    function canonicalBatchDigest(address payer, address[] calldata recipients, uint256[] calldata amounts)
         public
         view
         returns (bytes32)
     {
-        return keccak256(abi.encode(address(canonicalUsdc), recipients, amounts));
+        return keccak256(abi.encode(block.chainid, address(this), payer, address(canonicalUsdc), recipients, amounts));
+    }
+
+    /// @notice Returns the exact direct-USDC net amounts and fees.
+    function getBatchEstimatedOutputs(address tokenIn, address[] calldata tokenOuts, uint256[] calldata amountsIn)
+        external
+        view
+        returns (uint256[] memory estimatedAmountsOut, uint256 totalEstimatedOut, uint256 totalFees)
+    {
+        if (tokenIn != address(canonicalUsdc)) revert TokenMustBeCanonicalUsdc(tokenIn);
+        if (amountsIn.length == 0) revert EmptyBatch();
+        if (amountsIn.length != tokenOuts.length) revert ArrayLengthMismatch();
+        if (amountsIn.length > MAX_BATCH_SIZE) revert BatchTooLarge(amountsIn.length, MAX_BATCH_SIZE);
+        estimatedAmountsOut = new uint256[](amountsIn.length);
+        for (uint256 i; i < amountsIn.length; ++i) {
+            if (tokenOuts[i] != address(canonicalUsdc)) revert TokenMustBeCanonicalUsdc(tokenOuts[i]);
+            if (amountsIn[i] == 0) revert AmountMustBeGreaterThanZero();
+            uint256 fee = _fee(amountsIn[i]);
+            uint256 net = amountsIn[i] - fee;
+            estimatedAmountsOut[i] = net;
+            totalEstimatedOut += net;
+            totalFees += fee;
+        }
     }
 
     /// @notice Executes one atomic, same-token direct-USDC payroll batch.
-    /// @dev The reference is marked before token calls. Any later revert rolls
-    /// back the mapping write under EVM transaction atomicity.
+    /// @dev The reference is consumed before token calls. Any later revert
+    /// rolls the mapping write back under EVM transaction atomicity.
     function batchRouteAndPay(
         address tokenIn,
         address[] calldata tokenOuts,
@@ -93,62 +147,89 @@ contract WizPayMainnetV2 is Ownable, Pausable, ReentrancyGuard {
         for (uint256 i; i < recipients.length; ++i) {
             if (tokenOuts[i] != address(canonicalUsdc)) revert TokenMustBeCanonicalUsdc(tokenOuts[i]);
             if (recipients[i] == address(0)) revert RecipientZeroAddress();
+            if (recipients[i] == msg.sender) revert SelfPaymentNotAllowed();
             if (amountsIn[i] == 0) revert AmountMustBeGreaterThanZero();
             totalAmount += amountsIn[i];
         }
 
+        uint256 balanceBefore = canonicalUsdc.balanceOf(address(this));
         canonicalUsdc.safeTransferFrom(msg.sender, address(this), totalAmount);
+        uint256 balanceAfterFunding = canonicalUsdc.balanceOf(address(this));
+        uint256 expectedAfterFunding = balanceBefore + totalAmount;
+        if (balanceAfterFunding != expectedAfterFunding) {
+            revert UnexpectedUsdcBalance(expectedAfterFunding, balanceAfterFunding);
+        }
+
         uint256 totalFees;
         for (uint256 i; i < recipients.length; ++i) {
-            address recipient = recipients[i];
             uint256 amount = amountsIn[i];
             uint256 fee = _fee(amount);
             uint256 net = amount - fee;
-            if (net < minAmountsOut[i]) {
-                revert DirectTransferBelowMinimum(net, minAmountsOut[i]);
-            }
+            if (net < minAmountsOut[i]) revert DirectTransferBelowMinimum(net, minAmountsOut[i]);
             if (fee != 0) {
                 canonicalUsdc.safeTransfer(feeCollector, fee);
                 emit FeeCollected(address(canonicalUsdc), fee);
             }
-            canonicalUsdc.safeTransfer(recipient, net);
+            canonicalUsdc.safeTransfer(recipients[i], net);
             totalFees += fee;
             totalOut += net;
+            emit DirectUsdcPayment(referenceHash, msg.sender, recipients[i], i, amount, net, fee);
         }
 
+        uint256 balanceAfterPayment = canonicalUsdc.balanceOf(address(this));
+        if (balanceAfterPayment != balanceBefore) {
+            revert UnexpectedUsdcBalance(balanceBefore, balanceAfterPayment);
+        }
+
+        bytes32 batchDigest = canonicalBatchDigest(msg.sender, recipients, amountsIn);
         emit PayrollReferenceConsumed(
             referenceHash,
             msg.sender,
             address(canonicalUsdc),
-            canonicalBatchDigest(recipients, amountsIn),
+            batchDigest,
             totalAmount,
+            totalOut,
+            totalFees,
+            recipients.length,
+            referenceId
+        );
+        emit BatchPaymentRouted(
+            msg.sender,
+            address(canonicalUsdc),
+            address(canonicalUsdc),
+            totalAmount,
+            totalOut,
             totalFees,
             recipients.length,
             referenceId
         );
     }
 
-    function updateFee(uint256 nextFeeBps) external onlyOwner {
+    /// @dev Fee changes are pause-gated so a successful payment cannot execute
+    /// concurrently with a governance fee change.
+    function updateFee(uint256 nextFeeBps) external onlyOwner whenPaused {
         if (nextFeeBps > MAX_FEE_BPS) revert FeeExceedsMaximum(nextFeeBps, MAX_FEE_BPS);
         uint256 old = feeBps;
         feeBps = nextFeeBps;
         emit FeeUpdated(old, nextFeeBps);
     }
 
-    function updateFeeCollector(address nextCollector) external onlyOwner {
+    function updateFeeCollector(address nextCollector) external onlyOwner whenPaused {
         if (nextCollector == address(0)) revert FeeCollectorZeroAddress();
         address old = feeCollector;
         feeCollector = nextCollector;
         emit FeeCollectorUpdated(old, nextCollector);
     }
 
-    function emergencyWithdraw(address token, uint256 amount) external onlyOwner {
-        if (token != address(canonicalUsdc)) revert TokenMustBeCanonicalUsdc(token);
+    /// @notice Recovers only canonical USDC actually held by the contract.
+    /// @dev The owner is the authorized Safe and recovery is possible only while
+    /// payment execution is paused. The Safe remains a residual trust boundary.
+    function emergencyWithdraw(uint256 amount) external onlyOwner whenPaused nonReentrant {
         if (amount == 0) revert AmountMustBeGreaterThanZero();
-        uint256 balance = IERC20(token).balanceOf(address(this));
+        uint256 balance = canonicalUsdc.balanceOf(address(this));
         if (balance < amount) revert InsufficientTokenBalance(balance, amount);
-        IERC20(token).safeTransfer(owner(), amount);
-        emit EmergencyWithdraw(token, amount, owner());
+        canonicalUsdc.safeTransfer(owner(), amount);
+        emit EmergencyWithdraw(address(canonicalUsdc), amount, owner());
     }
 
     function pause() external onlyOwner {
@@ -170,20 +251,14 @@ contract WizPayMainnetV2 is Ownable, Pausable, ReentrancyGuard {
         if (
             recipients.length != tokenOuts.length || recipients.length != amounts.length
                 || recipients.length != minimums.length
-        ) {
-            revert ArrayLengthMismatch();
-        }
-        if (recipients.length > MAX_BATCH_SIZE) {
-            revert BatchTooLarge(recipients.length, MAX_BATCH_SIZE);
-        }
+        ) revert ArrayLengthMismatch();
+        if (recipients.length > MAX_BATCH_SIZE) revert BatchTooLarge(recipients.length, MAX_BATCH_SIZE);
         uint256 length = bytes(referenceId).length;
         if (length == 0) revert ReferenceIdRequired();
-        if (length > MAX_REFERENCE_ID_LENGTH) {
-            revert ReferenceIdTooLong(length, MAX_REFERENCE_ID_LENGTH);
-        }
+        if (length > MAX_REFERENCE_ID_LENGTH) revert ReferenceIdTooLong(length, MAX_REFERENCE_ID_LENGTH);
     }
 
     function _fee(uint256 amount) private view returns (uint256) {
-        return feeBps == 0 || feeCollector == address(0) ? 0 : amount * feeBps / 10_000;
+        return feeBps == 0 ? 0 : amount * feeBps / 10_000;
     }
 }

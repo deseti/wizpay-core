@@ -2,20 +2,154 @@ export const WIZPAY_BATCH_PAYMENT_ROUTED_EVENT = {
   anonymous: false,
   inputs: [
     { indexed: true, internalType: "address", name: "sender", type: "address" },
-    { indexed: false, internalType: "address", name: "tokenIn", type: "address" },
-    { indexed: false, internalType: "address", name: "tokenOut", type: "address" },
-    { indexed: false, internalType: "uint256", name: "totalAmountIn", type: "uint256" },
-    { indexed: false, internalType: "uint256", name: "totalAmountOut", type: "uint256" },
-    { indexed: false, internalType: "uint256", name: "totalFees", type: "uint256" },
-    { indexed: false, internalType: "uint256", name: "recipientCount", type: "uint256" },
-    { indexed: false, internalType: "string", name: "referenceId", type: "string" },
+    {
+      indexed: false,
+      internalType: "address",
+      name: "tokenIn",
+      type: "address",
+    },
+    {
+      indexed: false,
+      internalType: "address",
+      name: "tokenOut",
+      type: "address",
+    },
+    {
+      indexed: false,
+      internalType: "uint256",
+      name: "totalAmountIn",
+      type: "uint256",
+    },
+    {
+      indexed: false,
+      internalType: "uint256",
+      name: "totalAmountOut",
+      type: "uint256",
+    },
+    {
+      indexed: false,
+      internalType: "uint256",
+      name: "totalFees",
+      type: "uint256",
+    },
+    {
+      indexed: false,
+      internalType: "uint256",
+      name: "recipientCount",
+      type: "uint256",
+    },
+    {
+      indexed: false,
+      internalType: "string",
+      name: "referenceId",
+      type: "string",
+    },
   ],
   name: "BatchPaymentRouted",
   type: "event",
 } as const;
 
+export const WIZPAY_DIRECT_USDC_PAYMENT_EVENT = {
+  anonymous: false,
+  inputs: [
+    {
+      indexed: true,
+      internalType: "bytes32",
+      name: "referenceHash",
+      type: "bytes32",
+    },
+    { indexed: true, internalType: "address", name: "payer", type: "address" },
+    {
+      indexed: true,
+      internalType: "address",
+      name: "recipient",
+      type: "address",
+    },
+    {
+      indexed: false,
+      internalType: "uint256",
+      name: "paymentIndex",
+      type: "uint256",
+    },
+    {
+      indexed: false,
+      internalType: "uint256",
+      name: "grossAmount",
+      type: "uint256",
+    },
+    {
+      indexed: false,
+      internalType: "uint256",
+      name: "netAmount",
+      type: "uint256",
+    },
+    {
+      indexed: false,
+      internalType: "uint256",
+      name: "feeAmount",
+      type: "uint256",
+    },
+  ],
+  name: "DirectUsdcPayment",
+  type: "event",
+} as const;
+
+export const WIZPAY_PAYROLL_REFERENCE_CONSUMED_EVENT = {
+  anonymous: false,
+  inputs: [
+    {
+      indexed: true,
+      internalType: "bytes32",
+      name: "referenceHash",
+      type: "bytes32",
+    },
+    { indexed: true, internalType: "address", name: "payer", type: "address" },
+    { indexed: true, internalType: "address", name: "token", type: "address" },
+    {
+      indexed: false,
+      internalType: "bytes32",
+      name: "batchDigest",
+      type: "bytes32",
+    },
+    {
+      indexed: false,
+      internalType: "uint256",
+      name: "totalAmount",
+      type: "uint256",
+    },
+    {
+      indexed: false,
+      internalType: "uint256",
+      name: "totalOut",
+      type: "uint256",
+    },
+    {
+      indexed: false,
+      internalType: "uint256",
+      name: "totalFees",
+      type: "uint256",
+    },
+    {
+      indexed: false,
+      internalType: "uint256",
+      name: "recipientCount",
+      type: "uint256",
+    },
+    {
+      indexed: false,
+      internalType: "string",
+      name: "referenceId",
+      type: "string",
+    },
+  ],
+  name: "PayrollReferenceConsumed",
+  type: "event",
+} as const;
+
 export const WIZPAY_ABI = [
   WIZPAY_BATCH_PAYMENT_ROUTED_EVENT,
+  WIZPAY_DIRECT_USDC_PAYMENT_EVENT,
+  WIZPAY_PAYROLL_REFERENCE_CONSUMED_EVENT,
   {
     inputs: [],
     name: "feeBps",
@@ -26,7 +160,9 @@ export const WIZPAY_ABI = [
   {
     inputs: [],
     name: "fxEngine",
-    outputs: [{ internalType: "contract IFXEngine", name: "", type: "address" }],
+    outputs: [
+      { internalType: "contract IFXEngine", name: "", type: "address" },
+    ],
     stateMutability: "view",
     type: "function",
   },
@@ -37,7 +173,9 @@ export const WIZPAY_ABI = [
       { internalType: "uint256", name: "amountIn", type: "uint256" },
     ],
     name: "getEstimatedOutput",
-    outputs: [{ internalType: "uint256", name: "estimatedAmountOut", type: "uint256" }],
+    outputs: [
+      { internalType: "uint256", name: "estimatedAmountOut", type: "uint256" },
+    ],
     stateMutability: "view",
     type: "function",
   },
@@ -49,7 +187,11 @@ export const WIZPAY_ABI = [
     ],
     name: "getBatchEstimatedOutputs",
     outputs: [
-      { internalType: "uint256[]", name: "estimatedAmountsOut", type: "uint256[]" },
+      {
+        internalType: "uint256[]",
+        name: "estimatedAmountsOut",
+        type: "uint256[]",
+      },
       { internalType: "uint256", name: "totalEstimatedOut", type: "uint256" },
       { internalType: "uint256", name: "totalFees", type: "uint256" },
     ],
@@ -77,8 +219,18 @@ export const LIQUIDITY_ADDED_EVENT = {
   anonymous: false,
   inputs: [
     { indexed: true, internalType: "address", name: "token", type: "address" },
-    { indexed: false, internalType: "uint256", name: "amountIn", type: "uint256" },
-    { indexed: false, internalType: "uint256", name: "sharesMinted", type: "uint256" },
+    {
+      indexed: false,
+      internalType: "uint256",
+      name: "amountIn",
+      type: "uint256",
+    },
+    {
+      indexed: false,
+      internalType: "uint256",
+      name: "sharesMinted",
+      type: "uint256",
+    },
   ],
   name: "LiquidityAdded",
   type: "event",
@@ -88,8 +240,18 @@ export const LIQUIDITY_REMOVED_EVENT = {
   anonymous: false,
   inputs: [
     { indexed: true, internalType: "address", name: "token", type: "address" },
-    { indexed: false, internalType: "uint256", name: "amountOut", type: "uint256" },
-    { indexed: false, internalType: "uint256", name: "sharesBurned", type: "uint256" },
+    {
+      indexed: false,
+      internalType: "uint256",
+      name: "amountOut",
+      type: "uint256",
+    },
+    {
+      indexed: false,
+      internalType: "uint256",
+      name: "sharesBurned",
+      type: "uint256",
+    },
   ],
   name: "LiquidityRemoved",
   type: "event",

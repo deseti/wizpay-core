@@ -8,6 +8,8 @@
   "scripts": {
     "build": "forge build",
     "test": "forge test",
+    "test:mainnet-plan": "node --test scripts/mainnet-deployment-plan.test.mjs",
+    "validate:mainnet-manifest": "node scripts/mainnet-deployment-plan.mjs validate-manifest deployments/arc-mainnet-wizpay-v2.json",
     "deploy": "forge script script/Deploy.s.sol:Deploy --rpc-url https://rpc.testnet.arc.io --broadcast",
     "anvil": "anvil"
   },

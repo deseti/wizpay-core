@@ -141,11 +141,15 @@ export function requireBackendArcNetworkReadiness(
   const rpc = requireAvailableArcResource(state.rpc);
   const explorer = requireAvailableArcResource(state.explorer);
   const usdc = requireAvailableArcResource(state.tokens.USDC);
-  const eurc = optionalAvailable(state.tokens.EURC);
+  const eurc =
+    state.key === 'arc-testnet'
+      ? optionalAvailable(state.tokens.EURC)
+      : undefined;
   const wizpay = optionalAvailable(state.contracts.wizpay);
-  const wizpaySwapExecutorV2 = optionalAvailable(
-    state.contracts.wizpaySwapExecutorV2,
-  );
+  const wizpaySwapExecutorV2 =
+    state.key === 'arc-testnet'
+      ? optionalAvailable(state.contracts.wizpaySwapExecutorV2)
+      : undefined;
 
   return deepFreeze({
     key: state.key,

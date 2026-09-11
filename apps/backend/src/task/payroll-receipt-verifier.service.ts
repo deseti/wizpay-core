@@ -8,10 +8,13 @@ import {
   createPublicClient,
   decodeFunctionData,
   decodeEventLog,
+  encodeAbiParameters,
   getAddress,
   http,
   isAddressEqual,
+  keccak256,
   parseAbiItem,
+  parseAbiParameters,
   type Hash,
   type PublicClient,
 } from 'viem';
@@ -22,6 +25,12 @@ const BATCH_EVENT = parseAbiItem(
 );
 const TRANSFER_EVENT = parseAbiItem(
   'event Transfer(address indexed from, address indexed to, uint256 value)',
+);
+const MAINNET_PAYMENT_EVENT = parseAbiItem(
+  'event DirectUsdcPayment(bytes32 indexed referenceHash, address indexed payer, address indexed recipient, uint256 paymentIndex, uint256 grossAmount, uint256 netAmount, uint256 feeAmount)',
+);
+const MAINNET_REFERENCE_EVENT = parseAbiItem(
+  'event PayrollReferenceConsumed(bytes32 indexed referenceHash, address indexed payer, address indexed token, bytes32 batchDigest, uint256 totalAmount, uint256 totalOut, uint256 totalFees, uint256 recipientCount, string referenceId)',
 );
 const PAYROLL_ABI = [
   {
@@ -127,7 +136,7 @@ export class PayrollReceiptVerifierService {
       callTokenOuts,
       callRecipients,
       callAmounts,
-      ,
+      callMinimums,
       callReference,
     ] = decodedCall.args;
     if (
@@ -166,13 +175,30 @@ export class PayrollReceiptVerifierService {
         message: `Payroll receipt needs ${this.confirmationsRequired} confirmations.`,
         retryable: true,
       });
+    if (this.network.key === 'arc-mainnet') {
+      if (
+        !verifyMainnetReceiptEvidence({
+          logs: receipt.logs,
+          chainId: this.network.chainId,
+          contract: contractAddress,
+          payer: sourceWallet,
+          token,
+          referenceId: input.referenceId,
+          recipients: callRecipients.map((recipient) => getAddress(recipient)),
+          amounts: [...callAmounts],
+          minimums: [...callMinimums],
+        })
+      )
+        this.reject();
+      return true;
+    }
     const batchMatches = receipt.logs.filter((log) => {
       if (!isAddressEqual(log.address, contractAddress)) return false;
       try {
         const decoded = decodeEventLog({
           abi: [BATCH_EVENT],
           data: log.data,
-          topics: log.topics,
+          topics: [...log.topics] as [`0x${string}`, ...`0x${string}`[]],
         });
         return (
           decoded.eventName === 'BatchPaymentRouted' &&
@@ -195,7 +221,7 @@ export class PayrollReceiptVerifierService {
         const decoded = decodeEventLog({
           abi: [TRANSFER_EVENT],
           data: log.data,
-          topics: log.topics,
+          topics: [...log.topics] as [`0x${string}`, ...`0x${string}`[]],
         });
         if (
           decoded.eventName === 'Transfer' &&
@@ -236,4 +262,149 @@ export class PayrollReceiptVerifierService {
       retryable: false,
     });
   }
+}
+
+function verifyMainnetReceiptEvidence(input: {
+  logs: readonly {
+    address: `0x${string}`;
+    data: `0x${string}`;
+    topics: readonly `0x${string}`[];
+  }[];
+  chainId: number;
+  contract: `0x${string}`;
+  payer: `0x${string}`;
+  token: `0x${string}`;
+  referenceId: string;
+  recipients: readonly `0x${string}`[];
+  amounts: readonly bigint[];
+  minimums: readonly bigint[];
+}) {
+  const referenceHash = keccak256(
+    encodeAbiParameters(
+      parseAbiParameters('uint256, address, address, address, string'),
+      [
+        BigInt(input.chainId),
+        input.contract,
+        input.payer,
+        input.token,
+        input.referenceId,
+      ],
+    ),
+  );
+  const batchDigest = keccak256(
+    encodeAbiParameters(
+      parseAbiParameters(
+        'uint256, address, address, address, address[], uint256[]',
+      ),
+      [
+        BigInt(input.chainId),
+        input.contract,
+        input.payer,
+        input.token,
+        input.recipients,
+        input.amounts,
+      ],
+    ),
+  );
+  const payments = new Map<number, { net: bigint; fee: bigint }>();
+  let summaryCount = 0;
+  let summaryOut = 0n;
+  let summaryFees = 0n;
+  let incoming = 0n;
+  let outgoing = 0n;
+  for (const log of input.logs) {
+    if (isAddressEqual(log.address, input.contract)) {
+      try {
+        const decoded = decodeEventLog({
+          abi: [MAINNET_PAYMENT_EVENT],
+          data: log.data,
+          topics: [...log.topics] as [`0x${string}`, ...`0x${string}`[]],
+        });
+        const index = Number(decoded.args.paymentIndex);
+        if (
+          decoded.eventName !== 'DirectUsdcPayment' ||
+          decoded.args.referenceHash !== referenceHash ||
+          !isAddressEqual(decoded.args.payer, input.payer) ||
+          index >= input.recipients.length ||
+          payments.has(index) ||
+          !isAddressEqual(decoded.args.recipient, input.recipients[index]) ||
+          decoded.args.grossAmount !== input.amounts[index] ||
+          decoded.args.netAmount + decoded.args.feeAmount !==
+            decoded.args.grossAmount ||
+          decoded.args.netAmount < input.minimums[index]
+        )
+          return false;
+        payments.set(index, {
+          net: decoded.args.netAmount,
+          fee: decoded.args.feeAmount,
+        });
+        continue;
+      } catch {
+        // Try the summary event next.
+      }
+      try {
+        const decoded = decodeEventLog({
+          abi: [MAINNET_REFERENCE_EVENT],
+          data: log.data,
+          topics: [...log.topics] as [`0x${string}`, ...`0x${string}`[]],
+        });
+        const totalAmount = input.amounts.reduce(
+          (sum, amount) => sum + amount,
+          0n,
+        );
+        if (
+          decoded.eventName !== 'PayrollReferenceConsumed' ||
+          decoded.args.referenceHash !== referenceHash ||
+          !isAddressEqual(decoded.args.payer, input.payer) ||
+          !isAddressEqual(decoded.args.token, input.token) ||
+          decoded.args.batchDigest !== batchDigest ||
+          decoded.args.totalAmount !== totalAmount ||
+          decoded.args.recipientCount !== BigInt(input.recipients.length) ||
+          decoded.args.referenceId !== input.referenceId
+        )
+          return false;
+        summaryCount += 1;
+        summaryOut = decoded.args.totalOut;
+        summaryFees = decoded.args.totalFees;
+      } catch {
+        // Ignore the legacy compatibility event and unrelated contract logs.
+      }
+    }
+    if (!isAddressEqual(log.address, input.token)) continue;
+    try {
+      const decoded = decodeEventLog({
+        abi: [TRANSFER_EVENT],
+        data: log.data,
+        topics: [...log.topics] as [`0x${string}`, ...`0x${string}`[]],
+      });
+      if (decoded.eventName !== 'Transfer') continue;
+      if (
+        isAddressEqual(decoded.args.from, input.payer) &&
+        isAddressEqual(decoded.args.to, input.contract)
+      )
+        incoming += decoded.args.value;
+      if (isAddressEqual(decoded.args.from, input.contract))
+        outgoing += decoded.args.value;
+    } catch {
+      // Ignore unrelated canonical-token logs.
+    }
+  }
+  const totalAmount = input.amounts.reduce((sum, amount) => sum + amount, 0n);
+  const paymentOut = [...payments.values()].reduce(
+    (sum, payment) => sum + payment.net,
+    0n,
+  );
+  const paymentFees = [...payments.values()].reduce(
+    (sum, payment) => sum + payment.fee,
+    0n,
+  );
+  return (
+    payments.size === input.recipients.length &&
+    summaryCount === 1 &&
+    incoming === totalAmount &&
+    outgoing === totalAmount &&
+    paymentOut === summaryOut &&
+    paymentFees === summaryFees &&
+    summaryOut + summaryFees === totalAmount
+  );
 }

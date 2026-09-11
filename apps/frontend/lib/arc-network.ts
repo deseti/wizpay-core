@@ -41,11 +41,11 @@ export type FrontendArcNetworkConfiguration = Readonly<{
   explorerBaseUrl: string;
   tokens: Readonly<{
     USDC: ArcTokenResourceValue;
-    EURC: ArcTokenResourceValue;
+    EURC?: ArcTokenResourceValue;
   }>;
   contracts: Readonly<{
     wizpay: ArcWizPayContractValue;
-    wizpaySwapExecutorV2: ArcWizPayContractValue;
+    wizpaySwapExecutorV2?: ArcWizPayContractValue;
   }>;
 }>;
 
@@ -93,11 +93,15 @@ export function requireFrontendTransactionalArcNetworkConfiguration(
   const rpc = requireAvailableArcResource(state.rpc);
   const explorer = requireAvailableArcResource(state.explorer);
   const usdc = requireAvailableArcResource(state.tokens.USDC);
-  const eurc = requireAvailableArcResource(state.tokens.EURC);
+  const eurc =
+    state.key === "arc-testnet"
+      ? requireAvailableArcResource(state.tokens.EURC)
+      : undefined;
   const wizpay = requireAvailableArcResource(state.contracts.wizpay);
-  const wizpaySwapExecutorV2 = requireAvailableArcResource(
-    state.contracts.wizpaySwapExecutorV2,
-  );
+  const wizpaySwapExecutorV2 =
+    state.key === "arc-testnet"
+      ? requireAvailableArcResource(state.contracts.wizpaySwapExecutorV2)
+      : undefined;
 
   return deepFreeze({
     key: state.key,
@@ -105,8 +109,11 @@ export function requireFrontendTransactionalArcNetworkConfiguration(
     environment: state.network.environment,
     rpcUrl: rpc.url,
     explorerBaseUrl: explorer.baseUrl,
-    tokens: { USDC: usdc, EURC: eurc },
-    contracts: { wizpay, wizpaySwapExecutorV2 },
+    tokens: { USDC: usdc, ...(eurc ? { EURC: eurc } : {}) },
+    contracts: {
+      wizpay,
+      ...(wizpaySwapExecutorV2 ? { wizpaySwapExecutorV2 } : {}),
+    },
   });
 }
 
@@ -157,12 +164,19 @@ export function validateFrontendArcNetworkOverrides(
     config.tokens.USDC.address,
     true,
   );
-  assertExactOverride(
-    "NEXT_PUBLIC_WIZPAY_SWAP_EXECUTOR_V2_ADDRESS",
-    environment.NEXT_PUBLIC_WIZPAY_SWAP_EXECUTOR_V2_ADDRESS,
-    config.contracts.wizpaySwapExecutorV2.address,
-    true,
-  );
+  const swapOverride = environment.NEXT_PUBLIC_WIZPAY_SWAP_EXECUTOR_V2_ADDRESS;
+  if (config.contracts.wizpaySwapExecutorV2) {
+    assertExactOverride(
+      "NEXT_PUBLIC_WIZPAY_SWAP_EXECUTOR_V2_ADDRESS",
+      swapOverride,
+      config.contracts.wizpaySwapExecutorV2.address,
+      true,
+    );
+  } else if (swapOverride !== undefined && swapOverride !== "") {
+    throw new Error(
+      "NEXT_PUBLIC_WIZPAY_SWAP_EXECUTOR_V2_ADDRESS is unavailable for the selected network.",
+    );
+  }
 }
 
 export function getExplorerTxUrlForNetwork(

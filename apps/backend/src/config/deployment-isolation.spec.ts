@@ -46,11 +46,30 @@ describe('Arc deployment isolation files', () => {
     const manifest: unknown = JSON.parse(
       read('packages/contracts/deployments/arc-mainnet-wizpay-v2.json'),
     );
-    expect(manifest).toEqual({
+    expect(manifest).toMatchObject({
+      schemaVersion: 1,
       network: 'arc-mainnet',
+      chainId: 5042,
       status: 'unavailable',
-      contracts: {},
-      receipts: [],
+      contract: 'WizPayMainnetV2',
+      deploymentInput: {
+        canonicalUsdc: null,
+        initialOwner: null,
+        feeRecipient: null,
+        feeBps: null,
+        deployer: null,
+        sourceCommit: null,
+        constructorArguments: null,
+        constructorDigest: null,
+        planDigest: null,
+      },
+      deploymentResult: {
+        transactionHash: null,
+        blockNumber: null,
+        deployedAddress: null,
+        runtimeBytecodeHash: null,
+        verificationStatus: 'unavailable',
+      },
     });
     expect(JSON.stringify(manifest)).not.toMatch(/0x[0-9a-f]{40}/i);
   });

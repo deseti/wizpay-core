@@ -72,6 +72,48 @@ describe('backend Arc network configuration', () => {
     );
   });
 
+  it('builds a future Mainnet direct configuration with only the required contract', () => {
+    const state = resolveBackendArcNetworkResourceState('arc-mainnet');
+    const available = <T>(value: T) => ({
+      status: 'available' as const,
+      value,
+    });
+    const config = requireBackendArcNetworkReadiness({
+      ...state,
+      rpc: available({ url: 'https://mainnet.invalid' }),
+      explorer: available({ baseUrl: 'https://explorer.invalid' }),
+      tokens: {
+        USDC: available({
+          symbol: 'USDC',
+          address: '0x123456789012345678901234567890123456789a',
+          decimals: 6,
+        }),
+        EURC: available({
+          symbol: 'EURC',
+          address: '0x12345678901234567890123456789012345689ab',
+          decimals: 6,
+        }),
+      },
+      contracts: {
+        wizpay: available({
+          contract: 'WizPayMainnetV2',
+          address: '0x1234567890123456789012345678901234569abc',
+          deploymentSource:
+            'packages/contracts/deployments/arc-mainnet-wizpay-v2.json',
+        }),
+        wizpaySwapExecutorV2: available({
+          contract: 'WizPaySwapExecutorV2',
+          address: '0x123456789012345678901234567890123456abcd',
+          deploymentSource: 'forbidden-mainnet-swap.json',
+        }),
+      },
+    });
+    expect(config.tokens).not.toHaveProperty('EURC');
+    expect(config.contracts).toEqual({
+      wizpay: expect.objectContaining({ contract: 'WizPayMainnetV2' }),
+    });
+  });
+
   it.each([
     ['RPC_URL', 'https://alternate.invalid'],
     ['ARC_RPC_URL', ` ${TESTNET_RPC} `],

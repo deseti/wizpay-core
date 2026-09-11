@@ -122,7 +122,7 @@ export type ArcTokenResourceValue = {
 export type ArcWizPayContractKey = "wizpay" | "wizpay-swap-executor-v2";
 
 export type ArcWizPayContractValue = {
-  readonly contract: "WizPay" | "WizPaySwapExecutorV2";
+  readonly contract: "WizPay" | "WizPayMainnetV2" | "WizPaySwapExecutorV2";
   readonly address: `0x${string}`;
   readonly deploymentSource: string;
 };

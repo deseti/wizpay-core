@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "network": "arc-mainnet",
+  "chainId": 5042,
+  "contract": "WizPayMainnetV2",
+  "canonicalUsdc": "UNAVAILABLE",
+  "safeOwner": "UNAVAILABLE",
+  "safeOwnerAuthorization": "PROJECT_OWNER_APPROVED_MAINNET_SAFE",
+  "feeRecipient": "UNAVAILABLE",
+  "feeBps": null,
+  "feeConfigurationAuthorization": "PROJECT_OWNER_APPROVED_FEE_CONFIGURATION",
+  "deployer": "UNAVAILABLE",
+  "sourceCommit": "UNAVAILABLE",
+  "compiler": {
+    "version": "0.8.24",
+    "optimizer": true,
+    "optimizerRuns": 200,
+    "viaIR": true
+  }
+}

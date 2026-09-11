@@ -82,6 +82,54 @@ describe("frontend Arc network configuration", () => {
     );
   });
 
+  it("builds a future Mainnet direct configuration with only the required contract", () => {
+    const state = resolveFrontendArcNetworkResourceState("arc-mainnet");
+    const available = <T>(value: T) => ({
+      status: "available" as const,
+      value,
+    });
+    const config = requireFrontendTransactionalArcNetworkConfiguration({
+      ...state,
+      rpc: available({ url: "https://mainnet.invalid" }),
+      explorer: available({ baseUrl: "https://explorer.invalid" }),
+      tokens: {
+        USDC: available({
+          symbol: "USDC",
+          address: "0x123456789012345678901234567890123456789a",
+          decimals: 6,
+        }),
+        EURC: available({
+          symbol: "EURC",
+          address: "0x12345678901234567890123456789012345689ab",
+          decimals: 6,
+        }),
+      },
+      contracts: {
+        wizpay: available({
+          contract: "WizPayMainnetV2",
+          address: "0x1234567890123456789012345678901234569abc",
+          deploymentSource:
+            "packages/contracts/deployments/arc-mainnet-wizpay-v2.json",
+        }),
+        wizpaySwapExecutorV2: available({
+          contract: "WizPaySwapExecutorV2",
+          address: "0x123456789012345678901234567890123456abcd",
+          deploymentSource: "forbidden-mainnet-swap.json",
+        }),
+      },
+    });
+    expect(config.tokens).not.toHaveProperty("EURC");
+    expect(config.contracts).toEqual({
+      wizpay: expect.objectContaining({ contract: "WizPayMainnetV2" }),
+    });
+    expect(() =>
+      validateFrontendArcNetworkOverrides(config, {
+        NEXT_PUBLIC_WIZPAY_SWAP_EXECUTOR_V2_ADDRESS:
+          "0x123456789012345678901234567890123456abcd",
+      }),
+    ).toThrow("unavailable for the selected network");
+  });
+
   it("creates only the selected Testnet explorer URL with an explicit chain", () => {
     const testnet = resolveFrontendArcNetworkResourceState("arc-testnet");
     const mainnet = resolveFrontendArcNetworkResourceState("arc-mainnet");
