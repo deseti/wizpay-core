@@ -473,6 +473,84 @@ describe('W3sAuthService User-Controlled transaction lookup', () => {
     ).resolves.toEqual({ challengeId: 'control' });
   });
 
+  it('recovers the same durable Circle challenge without creating another challenge', async () => {
+    let challengeId: string | null = null;
+    intents.get.mockImplementation(() => ({
+      id: 'intent-control',
+      network: 'arc-testnet',
+      operation: 'SEND',
+      ownerId: null,
+      walletId: null,
+      sourceWallet,
+      recipient: '0x2222222222222222222222222222222222222222',
+      tokenIn: '0x3600000000000000000000000000000000000000',
+      tokenOut: '0x3600000000000000000000000000000000000000',
+      amountUnits: '1000000',
+      externalReference: 'SEND-control',
+      idempotencyKey: '22222222-2222-4222-8222-222222222222',
+      route: 'DIRECT_TRANSFER',
+      status: challengeId ? 'AUTHORIZATION_PENDING' : 'CREATED',
+      circleChallengeId: challengeId,
+    }));
+    intents.bindCircleCorrelation.mockImplementation(
+      (_id: string, correlation: { challengeId: string }) => {
+        challengeId = correlation.challengeId;
+      },
+    );
+    const estimate = () =>
+      new Response(JSON.stringify({ data: { medium: {} } }), { status: 200 });
+    const balances = () =>
+      new Response(
+        JSON.stringify({
+          data: {
+            tokenBalances: [
+              {
+                amount: '10',
+                token: { id: 'token-usdc', isNative: true, symbol: 'USDC' },
+              },
+            ],
+          },
+        }),
+        { status: 200 },
+      );
+    global.fetch = jest
+      .fn()
+      .mockImplementationOnce(() => estimate())
+      .mockImplementationOnce(() => balances())
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ data: { challengeId: 'recovered' } }), {
+          status: 200,
+        }),
+      )
+      .mockImplementationOnce(() => estimate())
+      .mockImplementationOnce(() => balances());
+    const params = {
+      amounts: ['1'],
+      destinationAddress: '0x2222222222222222222222222222222222222222',
+      tokenAddress: '0x3600000000000000000000000000000000000000',
+      executionIntentId: 'intent-control',
+      idempotencyKey: '22222222-2222-4222-8222-222222222222',
+      tokenId: 'token-usdc',
+      walletId: 'control-wallet',
+      userToken: 'sensitive-user-token',
+      wizpayChain: 'ARC-TESTNET',
+    };
+
+    await expect(
+      service.dispatch('createTransferChallenge', params),
+    ).resolves.toEqual({ challengeId: 'recovered' });
+    await expect(
+      service.dispatch('createTransferChallenge', params),
+    ).resolves.toEqual({ challengeId: 'recovered' });
+    expect(global.fetch).toHaveBeenCalledTimes(5);
+    expect(
+      (global.fetch as jest.Mock).mock.calls.filter(([url]) =>
+        String(url).endsWith('/v1/w3s/user/transactions/transfer'),
+      ),
+    ).toHaveLength(1);
+    expect(intents.bindCircleCorrelation).toHaveBeenCalledTimes(1);
+  });
+
   it('fails closed before Circle transaction creation when executionIntentId is missing', async () => {
     global.fetch = jest
       .fn()

@@ -184,6 +184,7 @@ describePostgres('ExecutionIntentService PostgreSQL integration', () => {
 
 function createService(prisma: PrismaClient) {
   const routing = {
+    network: 'arc-testnet',
     chainId: 1,
     decide: (input: { tokenIn: string; tokenOut: string }) => ({
       kind: 'DIRECT_TRANSFER',

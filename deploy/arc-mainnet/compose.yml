@@ -9,6 +9,7 @@ services:
       WIZPAY_ARC_NETWORK: arc-mainnet
       WIZPAY_API_NETWORK: arc-mainnet
       WIZPAY_WORKER_NETWORK: arc-mainnet
+      WIZPAY_MIGRATION_NETWORK: arc-mainnet
       ARC_MAINNET_DATABASE_URL: ${ARC_MAINNET_DATABASE_URL:?required}
       ARC_MAINNET_REDIS_URL: ${ARC_MAINNET_REDIS_URL:?required}
       ARC_MAINNET_QUEUE_PREFIX: ${ARC_MAINNET_QUEUE_PREFIX:?required}
@@ -33,6 +34,8 @@ services:
       dockerfile: apps/backend/Dockerfile
     command: npm run prisma:migrate:arc-mainnet -w backend
     environment:
+      WIZPAY_ARC_NETWORK: arc-mainnet
+      WIZPAY_MIGRATION_NETWORK: arc-mainnet
       ARC_MAINNET_DATABASE_URL: ${ARC_MAINNET_DATABASE_URL:?required}
     networks: [arc-mainnet]
 

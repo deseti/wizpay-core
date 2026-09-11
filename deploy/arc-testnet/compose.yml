@@ -9,6 +9,7 @@ services:
       WIZPAY_ARC_NETWORK: arc-testnet
       WIZPAY_API_NETWORK: arc-testnet
       WIZPAY_WORKER_NETWORK: arc-testnet
+      WIZPAY_MIGRATION_NETWORK: arc-testnet
       ARC_TESTNET_DATABASE_URL: ${ARC_TESTNET_DATABASE_URL:?required}
       ARC_TESTNET_REDIS_URL: ${ARC_TESTNET_REDIS_URL:?required}
       ARC_TESTNET_QUEUE_PREFIX: ${ARC_TESTNET_QUEUE_PREFIX:?required}
@@ -33,6 +34,8 @@ services:
       dockerfile: apps/backend/Dockerfile
     command: npm run prisma:migrate:arc-testnet -w backend
     environment:
+      WIZPAY_ARC_NETWORK: arc-testnet
+      WIZPAY_MIGRATION_NETWORK: arc-testnet
       ARC_TESTNET_DATABASE_URL: ${ARC_TESTNET_DATABASE_URL:?required}
     networks: [arc-testnet]
 

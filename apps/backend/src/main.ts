@@ -1,13 +1,12 @@
 import { Logger } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
-import { AppModule } from './app.module';
 import { loadBackendArcNetworkConfiguration } from './config/arc-network.config';
 import { validateEnvironment } from './config/env.validation';
 
 type CreateApplication = () => ReturnType<typeof NestFactory.create>;
 
 export async function bootstrap(
-  createApplication: CreateApplication = () => NestFactory.create(AppModule),
+  createApplication: CreateApplication | undefined = undefined,
   environment = process.env,
 ) {
   const logger = new Logger('Bootstrap');
@@ -16,7 +15,11 @@ export async function bootstrap(
   logger.log(
     `Runtime isolation: ${JSON.stringify(validated.RUNTIME_ISOLATION_DIAGNOSTIC)}`,
   );
-  const app = await createApplication();
+  const app = await (createApplication
+    ? createApplication()
+    : import('./app.module.js').then(({ AppModule }) =>
+        NestFactory.create(AppModule),
+      ));
   app.enableShutdownHooks();
 
   // ── CORS ─────────────────────────────────────────────────────────────

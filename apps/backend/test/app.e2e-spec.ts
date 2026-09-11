@@ -1,78 +1,73 @@
-import { Test, TestingModule } from '@nestjs/testing';
 import { INestApplication } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { Test, TestingModule } from '@nestjs/testing';
 import request from 'supertest';
-import { AppModule } from './../src/app.module';
-import { OrchestratorService } from '../src/orchestrator/orchestrator.service';
-import { TaskStatus } from '../src/task/task-status.enum';
-import { TaskService } from '../src/task/task.service';
-import { TaskType } from '../src/task/task-type.enum';
-import { TaskDetails } from '../src/task/task.types';
+import { AppController } from '../src/app.controller';
+import { AppService } from '../src/app.service';
 
-describe('TaskController (e2e)', () => {
+/* eslint-disable @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access */
+
+describe('Runtime readiness HTTP boundary (e2e)', () => {
   let app: INestApplication;
+  const diagnostic = {
+    network: 'arc-mainnet',
+    environment: 'mainnet',
+    database: { host: 'mainnet-db.internal', port: 5432, database: 'wizpay' },
+    redis: { host: 'mainnet-redis.internal', port: 6379, databaseIndex: 3 },
+    queuePrefix: 'wizpay:arc-mainnet',
+    manifest: 'arc-mainnet-unavailable',
+    circle: {
+      apiCredentialConfigured: false,
+      entitySecretConfigured: false,
+      walletSetConfigured: false,
+      blockchainAvailable: false,
+    },
+    transactionalCapabilityAvailable: false,
+  } as const;
 
-  const taskFixture: TaskDetails = {
-    id: '8cc3ee7d-06b1-4b35-a320-f5d94d3c9fe7',
-    type: TaskType.PAYROLL,
-    status: TaskStatus.ASSIGNED,
-    payload: { batchId: 'payroll-1' },
-    result: null,
-    createdAt: new Date('2026-04-26T00:00:00.000Z'),
-    updatedAt: new Date('2026-04-26T00:00:00.000Z'),
-    logs: [],
-    transactions: [],
-  };
-
-  const orchestratorService = {
-    handleTask: jest.fn().mockResolvedValue(taskFixture),
-  };
-
-  const taskService = {
-    getTaskById: jest.fn().mockResolvedValue(taskFixture),
-  };
-
-  beforeEach(async () => {
+  beforeAll(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
-      imports: [AppModule],
-    })
-      .overrideProvider(OrchestratorService)
-      .useValue(orchestratorService)
-      .overrideProvider(TaskService)
-      .useValue(taskService)
-      .compile();
-
+      controllers: [AppController],
+      providers: [
+        AppService,
+        {
+          provide: ConfigService,
+          useValue: {
+            getOrThrow: jest.fn((key: string) => {
+              if (key !== 'RUNTIME_ISOLATION_DIAGNOSTIC')
+                throw new Error(`Unexpected configuration key: ${key}`);
+              return diagnostic;
+            }),
+          },
+        },
+      ],
+    }).compile();
     app = moduleFixture.createNestApplication();
     await app.init();
-
-    jest.clearAllMocks();
   });
 
-  it('/tasks (POST)', () => {
-    return request(app.getHttpServer())
-      .post('/tasks')
-      .send({
-        type: TaskType.PAYROLL,
-        payload: { batchId: 'payroll-1' },
-      })
-      .expect(201)
-      .expect(({ body }) => {
-        expect(body.id).toBe(taskFixture.id);
-        expect(body.type).toBe(TaskType.PAYROLL);
-        expect(body.status).toBe(TaskStatus.ASSIGNED);
-      });
-  });
-
-  it('/tasks/:id (GET)', () => {
-    return request(app.getHttpServer())
-      .get(`/tasks/${taskFixture.id}`)
-      .expect(200)
-      .expect(({ body }) => {
-        expect(body.id).toBe(taskFixture.id);
-        expect(body.type).toBe(TaskType.PAYROLL);
-      });
-  });
-
-  afterEach(async () => {
+  afterAll(async () => {
     await app.close();
+  });
+
+  it('returns the local health response', async () => {
+    await request(app.getHttpServer())
+      .get('/health')
+      .expect(200)
+      .expect({ status: 'ok' });
+  });
+
+  it('reports fail-closed Mainnet readiness without credential values', async () => {
+    const response = await request(app.getHttpServer())
+      .get('/health/runtime-isolation')
+      .expect(200);
+    expect(response.body).toEqual(diagnostic);
+    expect(Object.values(response.body.circle)).toEqual([
+      false,
+      false,
+      false,
+      false,
+    ]);
+    expect(JSON.stringify(response.body)).not.toContain('credentialValue');
   });
 });

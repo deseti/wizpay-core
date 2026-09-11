@@ -68,13 +68,11 @@ export class DirectTransferReceiptVerifierService {
     amountUnits: string;
   }) {
     const hash = input.transactionHash as Hash;
-    let transaction;
-    let receipt;
+    let providerChainId: number;
+    let transaction: Awaited<ReturnType<PublicClient['getTransaction']>>;
+    let receipt: Awaited<ReturnType<PublicClient['getTransactionReceipt']>>;
     try {
-      if ((await this.publicClient.getChainId()) !== this.network.chainId)
-        return this.reject(
-          'Receipt provider is connected to the wrong Arc network.',
-        );
+      providerChainId = await this.publicClient.getChainId();
       [transaction, receipt] = await Promise.all([
         this.publicClient.getTransaction({ hash }),
         this.publicClient.getTransactionReceipt({ hash }),
@@ -86,6 +84,13 @@ export class DirectTransferReceiptVerifierService {
         retryable: true,
       });
     }
+    if (providerChainId !== this.network.chainId)
+      this.reject('Receipt provider is connected to the wrong Arc network.');
+    if (
+      transaction.hash.toLowerCase() !== hash.toLowerCase() ||
+      receipt.transactionHash.toLowerCase() !== hash.toLowerCase()
+    )
+      this.reject('The returned transaction hash does not match the intent.');
     if (receipt.status !== 'success')
       this.reject('The transaction receipt failed.');
     if (transaction.chainId !== this.network.chainId)

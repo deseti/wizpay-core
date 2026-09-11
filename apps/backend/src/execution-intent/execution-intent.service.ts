@@ -614,8 +614,10 @@ export class ExecutionIntentService {
   ): Promise<ExecutionIntent> {
     const intent = await this.get(id);
     const hash = this.transactionHash(receipt.transactionHash);
+    const verifiableStatus =
+      intent.status === 'VERIFYING' || intent.status === 'COMPLETED';
     const matches =
-      intent.status === 'VERIFYING' &&
+      verifiableStatus &&
       intent.transactionHash === hash &&
       intent.network === receipt.network &&
       isAddressEqual(
@@ -638,6 +640,7 @@ export class ExecutionIntentService {
         EXECUTION_INTENT_ERROR_CODES.RECEIPT_MISMATCH,
         'Verified receipt data does not match the immutable execution intent.',
       );
+    if (intent.status === 'COMPLETED') return intent;
     return this.transition(id, 'VERIFYING', 'COMPLETED');
   }
 

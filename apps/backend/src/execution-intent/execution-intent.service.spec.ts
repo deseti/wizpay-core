@@ -189,6 +189,29 @@ describe('ExecutionIntentService', () => {
     });
   });
 
+  it('reconciles the same verified receipt idempotently after completion', async () => {
+    const intent = await service.acquire(sendInput());
+    await service.transition(intent.id, 'CREATED', 'SUBMISSION_PENDING');
+    await service.bindTransactionHash(intent.id, HASH);
+    await service.beginVerification(intent.id);
+    const completed = await service.completeWithVerifiedReceipt(
+      intent.id,
+      receipt(),
+    );
+
+    await expect(
+      service.completeWithVerifiedReceipt(intent.id, receipt()),
+    ).resolves.toEqual(completed);
+    await expect(
+      service.completeWithVerifiedReceipt(intent.id, {
+        ...receipt(),
+        amountUnits: '2',
+      }),
+    ).rejects.toMatchObject({
+      response: { code: EXECUTION_INTENT_ERROR_CODES.RECEIPT_MISMATCH },
+    });
+  });
+
   it('binds the same transaction hash idempotently and rejects replacement', async () => {
     const intent = await service.acquire(sendInput());
     const first = await service.bindTransactionHash(intent.id, HASH);

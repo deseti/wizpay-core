@@ -1,5 +1,4 @@
 import type { Metadata, Viewport } from "next";
-import { Geist_Mono, Manrope } from "next/font/google";
 import { Toaster } from "@/components/ui/toaster";
 import {
   WIZPAY_APP_URL,
@@ -12,18 +11,6 @@ import "./globals.css";
 import { Providers } from "./providers";
 
 /** Circle Web SDK requires client-side initialization — skip static prerendering */
-
-const manrope = Manrope({
-  variable: "--font-sans",
-  subsets: ["latin"],
-  display: "swap",
-  weight: ["400", "500", "600", "700", "800"],
-});
-
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
-});
 
 export const metadata: Metadata = {
   metadataBase: new URL(WIZPAY_APP_URL),
@@ -80,10 +67,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html
-      lang="en"
-      className={`${manrope.variable} ${geistMono.variable} dark h-full antialiased`}
-    >
+    <html lang="en" className="dark h-full antialiased">
       <body className="flex min-h-full flex-col overscroll-none">
         <Providers>{children}</Providers>
         <Toaster />
