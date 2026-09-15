@@ -1,5 +1,5 @@
 import { ConfigService } from '@nestjs/config';
-import { encodeEventTopics, encodeFunctionData, parseAbiItem } from 'viem';
+import { encodeEventTopics, encodeFunctionData, parseAbiItem, type Address, type Hash } from 'viem';
 import { DirectTransferReceiptVerifierService } from './direct-transfer-receipt-verifier.service';
 
 /* eslint-disable @typescript-eslint/no-unsafe-assignment */
@@ -61,7 +61,7 @@ describe('DirectTransferReceiptVerifierService', () => {
   it.each([
     ['provider chain', { providerChainId: 5_042 }],
     ['transaction chain', { transactionChainId: 5_042 }],
-    ['transaction hash', { returnedHash: `0x${'b'.repeat(64)}` }],
+    ['transaction hash', { returnedHash: `0x${'b'.repeat(64)}` as Hash }],
     ['transaction status', { status: 'reverted' as const }],
     ['token target', { transactionTo: sender }],
     ['payer', { transactionFrom: recipient }],
@@ -73,7 +73,9 @@ describe('DirectTransferReceiptVerifierService', () => {
     ['log amount', { logAmount: 999_999n }],
     ['duplicate transfer', { duplicateLog: true }],
   ])('rejects a wrong %s', async (_label, options) => {
-    const verifier = createVerifier(options);
+    const verifier = createVerifier(
+      options as Parameters<typeof createVerifier>[0],
+    );
     await expect(
       verifier.verify({
         transactionHash: hash,

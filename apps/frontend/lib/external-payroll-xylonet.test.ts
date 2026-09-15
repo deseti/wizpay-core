@@ -29,6 +29,13 @@ const approvalHash = `0x${"a".repeat(64)}` as Hex;
 const swapHash = `0x${"b".repeat(64)}` as Hex;
 const payrollHash = `0x${"c".repeat(64)}` as Hex;
 
+function requireFixtureWizPayAddress(): Address {
+  if (!WIZPAY_ADDRESS) {
+    throw new Error("The Arc Testnet WizPay fixture address is required.");
+  }
+  return WIZPAY_ADDRESS;
+}
+
 function binding(
   tokenIn: "USDC" | "EURC" = "USDC",
   tokenOut: "USDC" | "EURC" = "EURC",
@@ -106,7 +113,7 @@ function payrollReceipt(referenceId: string) {
     status: "success" as const,
     logs: [
       {
-        address: WIZPAY_ADDRESS,
+        address: requireFixtureWizPayAddress(),
         topics: encodeEventTopics({
           abi: [WIZPAY_BATCH_PAYMENT_ROUTED_EVENT],
           eventName: "BatchPaymentRouted",

@@ -54,6 +54,7 @@ export class TaskController {
 
   @Post('liquidity/init')
   async initLiquidity(@Body() payload: Record<string, unknown>) {
+    this.capabilities.assert('liquidity');
     return {
       data: await this.taskService.createLiquidityTask(payload ?? {}),
     };
@@ -87,11 +88,17 @@ export class TaskController {
         });
       await this.intents.bindTransactionHash(intent.id, body.txHash);
       await this.intents.beginVerification(intent.id);
-      await this.payrollReceipts.verify({
+      if (!intent.batchDigest)
+        throw new BadRequestException({
+          code: 'PAYROLL_EXECUTION_INTENT_REQUIRED',
+          message: 'Payroll intent is missing its immutable batch digest.',
+        });
+      const verified = await this.payrollReceipts.verify({
         transactionHash: body.txHash,
         sourceWallet: intent.sourceWallet,
         token: intent.tokenOut,
         totalAmountUnits: intent.amountUnits,
+        expectedBatchDigest: intent.batchDigest,
         referenceId: String(payload.referenceId ?? ''),
         recipients: Array.isArray(payload.recipients)
           ? (payload.recipients as Record<string, unknown>[]).map(
@@ -105,14 +112,7 @@ export class TaskController {
             )
           : [],
       });
-      await this.intents.completeWithVerifiedReceipt(intent.id, {
-        network: intent.network,
-        transactionHash: body.txHash as `0x${string}`,
-        sourceWallet: intent.sourceWallet,
-        token: intent.tokenOut,
-        batchDigest: intent.batchDigest,
-        amountUnits: intent.amountUnits,
-      });
+      await this.intents.completeWithVerifiedReceipt(intent.id, verified);
     }
     return {
       data: await this.taskService.reportUnit(taskId, unitId, body),

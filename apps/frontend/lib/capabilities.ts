@@ -25,6 +25,7 @@ export async function fetchEffectiveCapabilities(): Promise<CapabilityResponse> 
     "sameTokenPayroll",
     "invoice",
     "paymentLink",
+    "liquidity",
     "bridge",
     "swap",
     "crossTokenPayroll",

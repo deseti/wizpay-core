@@ -5,6 +5,7 @@ import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from '@prisma/client';
 import { ConfigService } from '@nestjs/config';
 import { Client } from 'pg';
+import type { Hex } from 'viem';
 import {
   getArcOperationResourceReadiness,
   resolveArcCapabilities,
@@ -33,7 +34,7 @@ const RECIPIENT_A = '0x2000000000000000000000000000000000000002';
 const RECIPIENT_B = '0x2000000000000000000000000000000000000003';
 const hashes = Array.from(
   { length: 8 },
-  (_, index) => `0x${(index + 1).toString(16).repeat(64)}`,
+  (_, index) => `0x${(index + 1).toString(16).repeat(64)}` as Hex,
 );
 
 describePostgres('Phase 7 deterministic offline Mainnet rehearsal', () => {
@@ -340,7 +341,7 @@ describePostgres('Phase 7 deterministic offline Mainnet rehearsal', () => {
       walletAddress: EXTERNAL_WALLET,
       type: 'send' as const,
       direction: 'outgoing' as const,
-      status: 'completed',
+      status: 'completed' as const,
       source: 'phase7_offline',
       idempotencyKey: 'phase7:same-identifier',
       sourceReferenceType: 'execution_intent',

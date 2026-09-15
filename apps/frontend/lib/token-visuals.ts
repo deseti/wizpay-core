@@ -11,24 +11,16 @@ export type TokenVisual = {
   iconPath: string;
 };
 
-const visuals = Object.freeze([
-  {
+const visuals = Object.freeze(
+  Object.values(SUPPORTED_TOKENS).map((token) => ({
     chainId: ARC_TESTNET_CHAIN_ID,
-    canonicalAddress: SUPPORTED_TOKENS.USDC.address,
-    symbol: "USDC",
-    displayName: SUPPORTED_TOKENS.USDC.name,
-    decimals: 6,
-    iconPath: "/tokens/usdc.png",
-  },
-  {
-    chainId: ARC_TESTNET_CHAIN_ID,
-    canonicalAddress: SUPPORTED_TOKENS.EURC.address,
-    symbol: "EURC",
-    displayName: SUPPORTED_TOKENS.EURC.name,
-    decimals: 6,
-    iconPath: "/tokens/eurc.png",
-  },
-] satisfies TokenVisual[]);
+    canonicalAddress: token.address,
+    symbol: token.symbol,
+    displayName: token.name,
+    decimals: token.decimals,
+    iconPath: token.symbol === "USDC" ? "/tokens/usdc.png" : "/tokens/eurc.png",
+  })) satisfies TokenVisual[],
+);
 
 const byIdentity = new Map(visuals.map((visual) => [`${visual.chainId}:${visual.canonicalAddress.toLowerCase()}`, visual]));
 
@@ -39,7 +31,7 @@ export function getTokenVisual(chainId: number, address: string): TokenVisual | 
 
 export function getTokenVisualForSymbol(symbol: TokenSymbol, chainId = ARC_TESTNET_CHAIN_ID) {
   const token = SUPPORTED_TOKENS[symbol];
-  return getTokenVisual(chainId, token.address);
+  return token ? getTokenVisual(chainId, token.address) : null;
 }
 
 export { visuals as TOKEN_VISUALS };

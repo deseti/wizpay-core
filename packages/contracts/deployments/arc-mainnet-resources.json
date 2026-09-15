@@ -1,0 +1,71 @@
+{
+  "schemaVersion": 1,
+  "network": "arc-mainnet",
+  "resources": {
+    "chainId": {
+      "state": "candidate",
+      "value": 5042,
+      "evidence": "Observed from the candidate third-party RPC; official source record is not committed."
+    },
+    "rpcEndpoints": [
+      {
+        "state": "candidate",
+        "url": "https://rpc.arc-scan.org",
+        "operator": "Arcscan (independent third party)",
+        "evidence": "Read-only candidate endpoint; not represented as Circle-operated or authoritative."
+      },
+      {
+        "state": "unavailable",
+        "reason": "SECOND_INDEPENDENT_ARC_MAINNET_RPC_UNAVAILABLE"
+      }
+    ],
+    "explorerUrl": {
+      "state": "unavailable",
+      "reason": "OFFICIAL_ARC_MAINNET_EXPLORER_UNAVAILABLE"
+    },
+    "canonicalUsdc": {
+      "state": "candidate",
+      "address": "0x3600000000000000000000000000000000000000",
+      "name": "USD Coin",
+      "symbol": "USDC",
+      "decimals": 6,
+      "codeHash": null,
+      "proxyImplementationCodeHash": null,
+      "evidence": "Candidate ERC-20 interface observed at the selected Mainnet chain; address form alone is not network identity."
+    },
+    "nativeGas": {
+      "state": "candidate",
+      "symbol": "USDC",
+      "decimals": 18,
+      "evidence": "Native gas accounting parameters require an official committed source record."
+    },
+    "erc20UsdcDecimals": {
+      "state": "candidate",
+      "value": 6,
+      "evidence": "Observed candidate ERC-20 metadata; not yet authoritative."
+    },
+    "circleBlockchainIdentifier": {
+      "state": "unavailable",
+      "reason": "CIRCLE_ARC_MAINNET_BLOCKCHAIN_IDENTIFIER_UNAVAILABLE"
+    },
+    "deploymentStatus": {
+      "state": "unavailable",
+      "reason": "WIZPAY_MAINNET_CONTRACT_NOT_DEPLOYED"
+    }
+  },
+  "capabilities": {
+    "directSend": false,
+    "sameTokenUsdcPayroll": false,
+    "invoice": false,
+    "paymentLink": false,
+    "receiptVerification": false,
+    "executionIntentDurability": false,
+    "uniswapSwap": false,
+    "crossTokenPayroll": false,
+    "stableFx": false,
+    "xyloNet": false,
+    "cctp": false,
+    "gateway": false,
+    "bridge": false
+  }
+}

@@ -127,6 +127,11 @@ function getPasskeyTokenOptionsForBlockchain(
   }
 
   // ARC-TESTNET default
+  if (!USDC_ADDRESS || !EURC_ADDRESS) {
+    throw new Error(
+      "Arc Testnet passkey token resources are unavailable on the selected network.",
+    );
+  }
   return [
     {
       symbol: "USDC",
@@ -346,14 +351,17 @@ export function storePasskeyUsername(username: string | null) {
 }
 
 function getPasskeyChains(config: CirclePasskeyConfig): PasskeyChainConfig[] {
-  return [
-    {
+  const arc = ARC_TESTNET_RPC_URL
+    ? [{
       blockchain: "ARC-TESTNET",
       chain: arcTestnet,
       modularUrl: config.arcModularUrl,
       readRpcUrl: ARC_TESTNET_RPC_URL,
       walletId: PASSKEY_ARC_WALLET_ID,
-    },
+    }]
+    : [];
+  return [
+    ...arc,
     {
       blockchain: "ETH-SEPOLIA",
       chain: ethereumSepolia,

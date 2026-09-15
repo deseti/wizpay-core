@@ -139,6 +139,34 @@ describe('QueueService', () => {
     expect(telegramService.notifyTaskUpdate).not.toHaveBeenCalled();
   });
 
+  it('rejects a Mainnet liquidity job before queue side effects', async () => {
+    runtimeConfig['arcNetwork.key'] = 'arc-mainnet';
+    const capabilityAssert = jest.fn((capability: unknown) => {
+      if (capability === 'liquidity') throw new Error('CAPABILITY_DISABLED');
+    });
+    queueService = new QueueService(
+      configService,
+      taskService as unknown as TaskService,
+      telegramService as unknown as TelegramService,
+      { assert: capabilityAssert, assertPayroll: jest.fn() } as never,
+    );
+
+    await expect(
+      queueService.enqueueTask(
+        { queueName: QueueName.SWAP, agentKey: TaskType.LIQUIDITY },
+        {
+          ...jobData,
+          network: 'arc-mainnet',
+          taskType: TaskType.LIQUIDITY,
+          agentKey: TaskType.LIQUIDITY,
+        },
+      ),
+    ).rejects.toThrow('CAPABILITY_DISABLED');
+    expect(capabilityAssert).toHaveBeenCalledWith('liquidity');
+    expect(Queue).not.toHaveBeenCalled();
+    runtimeConfig['arcNetwork.key'] = 'arc-testnet';
+  });
+
   it('rejects a job carrying another network before queue side effects', async () => {
     await expect(
       queueService.enqueueTask(route, {

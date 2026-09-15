@@ -33,9 +33,14 @@ describe('PayrollAgent', () => {
       ],
     },
     result: null,
+    totalUnits: 0,
+    completedUnits: 0,
+    failedUnits: 0,
+    metadata: null,
     createdAt: new Date('2026-04-26T00:00:00.000Z'),
     updatedAt: new Date('2026-04-26T00:00:00.000Z'),
     logs: [],
+    units: [],
     transactions: [],
   };
 
@@ -95,11 +100,11 @@ describe('PayrollAgent', () => {
   });
 
   it('submits transfers non-blocking and enqueues poll jobs', async () => {
-    validationService.validate.mockResolvedValue({
+    (validationService.validate as jest.Mock).mockResolvedValue({
       valid: true,
       recipients: [
-        { address: '0x1234567890abcdef1234567890abcdef12345678', amount: '100', amountUnits: 100000000n, targetToken: 'USDC' },
-        { address: '0xabcdefabcdefabcdefabcdefabcdefabcdefabcd', amount: '50', amountUnits: 50000000n, targetToken: 'USDC' },
+        { address: '0x1234567890abcdef1234567890abcdef12345678', amount: '100', amountUnits: 100000000n, targetToken: 'USDC', targetTokenAddress: '0x3600000000000000000000000000000000000000' },
+        { address: '0xabcdefabcdefabcdefabcdefabcdefabcdefabcd', amount: '50', amountUnits: 50000000n, targetToken: 'USDC', targetTokenAddress: '0x3600000000000000000000000000000000000000' },
       ],
       errors: [],
     });
@@ -108,8 +113,8 @@ describe('PayrollAgent', () => {
       {
         index: 0,
         recipients: [
-          { address: '0x1234567890abcdef1234567890abcdef12345678', amount: '100', amountUnits: 100000000n, targetToken: 'USDC' },
-          { address: '0xabcdefabcdefabcdefabcdefabcdefabcdefabcd', amount: '50', amountUnits: 50000000n, targetToken: 'USDC' },
+          { address: '0x1234567890abcdef1234567890abcdef12345678', amount: '100', amountUnits: 100000000n, targetToken: 'USDC', targetTokenAddress: '0x3600000000000000000000000000000000000000' },
+          { address: '0xabcdefabcdefabcdefabcdefabcdefabcdefabcd', amount: '50', amountUnits: 50000000n, targetToken: 'USDC', targetTokenAddress: '0x3600000000000000000000000000000000000000' },
         ],
         totalAmount: 150000000n,
       },
@@ -218,7 +223,7 @@ describe('PayrollAgent', () => {
   });
 
   it('throws when validation fails', async () => {
-    validationService.validate.mockResolvedValue({
+    (validationService.validate as jest.Mock).mockResolvedValue({
       valid: false,
       recipients: [],
       errors: ['recipients must be a non-empty array'],
@@ -232,11 +237,11 @@ describe('PayrollAgent', () => {
   });
 
   it('handles submission failures gracefully', async () => {
-    validationService.validate.mockResolvedValue({
+    (validationService.validate as jest.Mock).mockResolvedValue({
       valid: true,
       recipients: [
-        { address: '0x1234567890abcdef1234567890abcdef12345678', amount: '100', amountUnits: 100000000n, targetToken: 'USDC' },
-        { address: '0xabcdefabcdefabcdefabcdefabcdefabcdefabcd', amount: '50', amountUnits: 50000000n, targetToken: 'USDC' },
+        { address: '0x1234567890abcdef1234567890abcdef12345678', amount: '100', amountUnits: 100000000n, targetToken: 'USDC', targetTokenAddress: '0x3600000000000000000000000000000000000000' },
+        { address: '0xabcdefabcdefabcdefabcdefabcdefabcdefabcd', amount: '50', amountUnits: 50000000n, targetToken: 'USDC', targetTokenAddress: '0x3600000000000000000000000000000000000000' },
       ],
       errors: [],
     });
@@ -245,8 +250,8 @@ describe('PayrollAgent', () => {
       {
         index: 0,
         recipients: [
-          { address: '0x1234567890abcdef1234567890abcdef12345678', amount: '100', amountUnits: 100000000n, targetToken: 'USDC' },
-          { address: '0xabcdefabcdefabcdefabcdefabcdefabcdefabcd', amount: '50', amountUnits: 50000000n, targetToken: 'USDC' },
+          { address: '0x1234567890abcdef1234567890abcdef12345678', amount: '100', amountUnits: 100000000n, targetToken: 'USDC', targetTokenAddress: '0x3600000000000000000000000000000000000000' },
+          { address: '0xabcdefabcdefabcdefabcdefabcdefabcdefabcd', amount: '50', amountUnits: 50000000n, targetToken: 'USDC', targetTokenAddress: '0x3600000000000000000000000000000000000000' },
         ],
         totalAmount: 150000000n,
       },
@@ -302,10 +307,10 @@ describe('PayrollAgent', () => {
   });
 
   it('throws when all submissions fail', async () => {
-    validationService.validate.mockResolvedValue({
+    (validationService.validate as jest.Mock).mockResolvedValue({
       valid: true,
       recipients: [
-        { address: '0x1234567890abcdef1234567890abcdef12345678', amount: '100', amountUnits: 100000000n, targetToken: 'USDC' },
+        { address: '0x1234567890abcdef1234567890abcdef12345678', amount: '100', amountUnits: 100000000n, targetToken: 'USDC', targetTokenAddress: '0x3600000000000000000000000000000000000000' },
       ],
       errors: [],
     });
@@ -314,7 +319,7 @@ describe('PayrollAgent', () => {
       {
         index: 0,
         recipients: [
-          { address: '0x1234567890abcdef1234567890abcdef12345678', amount: '100', amountUnits: 100000000n, targetToken: 'USDC' },
+          { address: '0x1234567890abcdef1234567890abcdef12345678', amount: '100', amountUnits: 100000000n, targetToken: 'USDC', targetTokenAddress: '0x3600000000000000000000000000000000000000' },
         ],
         totalAmount: 100000000n,
       },
@@ -351,7 +356,7 @@ describe('PayrollAgent', () => {
   });
 
   it('passes the requested network through to Circle transfers', async () => {
-    validationService.validate.mockResolvedValue({
+    (validationService.validate as jest.Mock).mockResolvedValue({
       valid: true,
       recipients: [
         {
@@ -359,6 +364,7 @@ describe('PayrollAgent', () => {
           amount: '100',
           amountUnits: 100000000n,
           targetToken: 'USDC',
+          targetTokenAddress: '0x3600000000000000000000000000000000000000',
         },
       ],
       errors: [],
@@ -373,6 +379,7 @@ describe('PayrollAgent', () => {
             amount: '100',
             amountUnits: 100000000n,
             targetToken: 'USDC',
+            targetTokenAddress: '0x3600000000000000000000000000000000000000',
           },
         ],
         totalAmount: 100000000n,

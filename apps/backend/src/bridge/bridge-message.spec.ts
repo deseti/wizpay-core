@@ -98,7 +98,7 @@ describe('CCTP V2 source event ABI', () => {
     const topics = encodeEventTopics({
       abi: CCTP_V2_DEPOSIT_EVENT,
       eventName: 'DepositForBurn',
-      args: [burnToken, depositor, 2000],
+      args: { burnToken, depositor, minFinalityThreshold: 2000 },
     });
     const data = encodeAbiParameters(
       [
@@ -124,7 +124,7 @@ describe('CCTP V2 source event ABI', () => {
       abi: CCTP_V2_DEPOSIT_EVENT,
       eventName: 'DepositForBurn',
       data,
-      topics,
+      topics: topics as [`0x${string}`, ...`0x${string}`[]],
     });
 
     expect(decoded.args).toMatchObject({
@@ -146,7 +146,7 @@ describe('CCTP V2 MessageReceived event ABI', () => {
   const topics = encodeEventTopics({
     abi: CCTP_V2_MESSAGE_RECEIVED_EVENT,
     eventName: 'MessageReceived',
-    args: [caller, nonce, 2000],
+    args: { caller, nonce, finalityThresholdExecuted: 2000 },
   });
   const data = encodeAbiParameters(
     [{ type: 'uint32' }, { type: 'bytes32' }, { type: 'bytes' }],
@@ -156,7 +156,7 @@ describe('CCTP V2 MessageReceived event ABI', () => {
     abi: CCTP_V2_MESSAGE_RECEIVED_EVENT,
     eventName: 'MessageReceived',
     data,
-    topics,
+    topics: topics as [`0x${string}`, ...`0x${string}`[]],
   });
   const expected = {
     caller,

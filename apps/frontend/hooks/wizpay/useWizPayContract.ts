@@ -53,6 +53,13 @@ const POST_SETTLEMENT_VERIFICATION_INITIAL_DELAY_MS = 750;
 const POST_SETTLEMENT_VERIFICATION_RETRY_DELAY_MS = 750;
 const POST_SETTLEMENT_VERIFICATION_MAX_ATTEMPTS = 4;
 
+function requireWizPayAddress(): Address {
+  if (!WIZPAY_ADDRESS) {
+    throw new Error("WizPay is unavailable on the selected Arc network.");
+  }
+  return WIZPAY_ADDRESS;
+}
+
 type PostSettlementTokenState = {
   allowance: bigint;
   balance: bigint;
@@ -266,9 +273,12 @@ export function useWizPayContract({
     abi: ERC20_ABI,
     chainId: arcTestnet.id,
     functionName: "allowance",
-    args: walletAddress ? [walletAddress, allowanceSpender] : undefined,
+    args:
+      walletAddress && allowanceSpender
+        ? [walletAddress, allowanceSpender]
+        : undefined,
     query: {
-      enabled: !!walletAddress,
+      enabled: Boolean(walletAddress && allowanceSpender),
       staleTime: 10_000,
       placeholderData: keepPreviousData,
     },
@@ -297,6 +307,7 @@ export function useWizPayContract({
     chainId: arcTestnet.id,
     functionName: "feeBps",
     query: {
+      enabled: Boolean(WIZPAY_ADDRESS),
       staleTime: 60_000,
       placeholderData: keepPreviousData,
     },
@@ -337,7 +348,7 @@ export function useWizPayContract({
       preparedRecipients.map((r) => r.amountUnits),
     ],
     query: {
-      enabled: rawQuoteEnabled && !isStableFxMode,
+      enabled: Boolean(WIZPAY_ADDRESS) && rawQuoteEnabled && !isStableFxMode,
       refetchInterval: 20_000,
       refetchIntervalInBackground: false,
       refetchOnWindowFocus: false,
@@ -467,7 +478,7 @@ export function useWizPayContract({
 
     for (let attempt = 0; attempt < MAX_CONFIRMATION_POLLS; attempt += 1) {
       const logs = (await publicClient.getLogs({
-        address: WIZPAY_ADDRESS,
+        address: requireWizPayAddress(),
         event: WIZPAY_BATCH_PAYMENT_ROUTED_EVENT,
         args: { sender: walletAddress },
         fromBlock: startBlock,
@@ -521,7 +532,7 @@ export function useWizPayContract({
     }
 
     const quote = (await publicClient.readContract({
-      address: WIZPAY_ADDRESS,
+      address: requireWizPayAddress(),
       abi: WIZPAY_ABI,
       functionName: "getBatchEstimatedOutputs",
       args: [
@@ -589,14 +600,14 @@ export function useWizPayContract({
         "PAYROLL-APPROVAL",
         walletAddress.toLowerCase(),
         activeToken.address.toLowerCase(),
-        WIZPAY_ADDRESS.toLowerCase(),
+        requireWizPayAddress().toLowerCase(),
         amount.toString(),
       ].join(":");
       const approvalIntent = await acquireExecutionIntent({
         network: "arc-testnet",
         operation: "TOKEN_APPROVAL",
         sourceWallet: walletAddress,
-        recipient: WIZPAY_ADDRESS,
+        recipient: requireWizPayAddress(),
         tokenIn: activeToken.address,
         tokenOut: activeToken.address,
         amountUnits: amount.toString(),
@@ -604,7 +615,7 @@ export function useWizPayContract({
       });
       const approvalResult = await executeTransaction({
         abi: ERC20_ABI,
-        args: [WIZPAY_ADDRESS, amount],
+        args: [requireWizPayAddress(), amount],
         chainId: arcTestnet.id,
         contractAddress: activeToken.address,
         functionName: "approve",
@@ -677,6 +688,8 @@ export function useWizPayContract({
       return { ok: false, hash: null };
     }
 
+    const spenderAddress = requireWizPayAddress();
+
     const batchPreparedRecipients = prepareBatchRecipients(batchRecipients);
 
     const batchTotalAmount = batchPreparedRecipients.reduce(
@@ -735,7 +748,7 @@ export function useWizPayContract({
         methods: ["allowance", "balanceOf"],
         multicallAddress: ARC_MULTICALL3_ADDRESS,
         rpcEndpoint: ARC_TESTNET_RPC_URL,
-        spender: allowanceSpender,
+        spender: spenderAddress,
         token: effectiveTokenInSymbol,
         tokenAddress: effectiveTokenIn,
         walletAddress,
@@ -751,7 +764,7 @@ export function useWizPayContract({
           publicClient,
           tokenAddress: effectiveTokenIn,
           walletAddress,
-          spenderAddress: allowanceSpender,
+          spenderAddress,
         });
         latestAllowance = verifiedState.allowance;
         latestBalance = verifiedState.balance;
@@ -815,7 +828,7 @@ export function useWizPayContract({
           {
             token: batchTargetToken,
             amount: batchTotalAmount.toString(),
-            spender: WIZPAY_ADDRESS,
+            spender: requireWizPayAddress(),
           },
         );
         state.setStatusMessage(
@@ -826,14 +839,14 @@ export function useWizPayContract({
             "PAYROLL-APPROVAL",
             walletAddress.toLowerCase(),
             effectiveTokenIn.toLowerCase(),
-            WIZPAY_ADDRESS.toLowerCase(),
+            requireWizPayAddress().toLowerCase(),
             batchTotalAmount.toString(),
           ].join(":");
           const approvalIntent = await acquireExecutionIntent({
             network: "arc-testnet",
             operation: "TOKEN_APPROVAL",
             sourceWallet: walletAddress,
-            recipient: WIZPAY_ADDRESS,
+            recipient: requireWizPayAddress(),
             tokenIn: effectiveTokenIn,
             tokenOut: effectiveTokenIn,
             amountUnits: batchTotalAmount.toString(),
@@ -841,7 +854,7 @@ export function useWizPayContract({
           });
           const approvalResult = await executeTransaction({
             abi: ERC20_ABI,
-            args: [WIZPAY_ADDRESS, batchTotalAmount],
+            args: [requireWizPayAddress(), batchTotalAmount],
             chainId: arcTestnet.id,
             contractAddress: effectiveTokenIn,
             functionName: "approve",
@@ -909,7 +922,7 @@ export function useWizPayContract({
               address: effectiveTokenIn,
               abi: ERC20_ABI,
               functionName: "allowance",
-              args: [walletAddress, allowanceSpender],
+              args: [walletAddress, spenderAddress],
             })) as bigint;
 
             if (nextAllowance >= batchTotalAmount) {
@@ -1001,7 +1014,7 @@ export function useWizPayContract({
 
       if (walletMode !== "circle") {
         await publicClient.estimateContractGas({
-          address: WIZPAY_ADDRESS,
+          address: requireWizPayAddress(),
           abi: WIZPAY_ABI,
           account: walletAddress,
           functionName: "batchRouteAndPay",
@@ -1030,7 +1043,7 @@ export function useWizPayContract({
           referenceId,
         ],
         chainId: arcTestnet.id,
-        contractAddress: WIZPAY_ADDRESS,
+        contractAddress: requireWizPayAddress(),
         functionName: "batchRouteAndPay",
         idempotencyKey: execution?.idempotencyKey,
         executionIntentId: execution?.intentId,

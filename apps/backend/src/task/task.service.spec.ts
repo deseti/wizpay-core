@@ -80,6 +80,7 @@ describe('TaskService', () => {
       { assert: jest.fn(), assertPayroll: jest.fn() } as never,
       {} as never,
       {} as never,
+      {} as never,
     );
   });
 

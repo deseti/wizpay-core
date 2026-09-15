@@ -56,6 +56,7 @@ test("defines explicit Arc Testnet capabilities and all-false Arc Mainnet defaul
     sameTokenPayroll: true,
     invoice: true,
     paymentLink: true,
+    liquidity: true,
     bridge: true,
     swap: true,
     crossTokenPayroll: true,
@@ -206,9 +207,9 @@ test("rejects dependency-invalid capability combinations", () => {
 });
 
 test("defines the exact Arc Testnet and Mainnet identities", () => {
-  assert.deepEqual(ARC_NETWORK_DEFINITIONS, [
-    { key: "arc-testnet", chainId: 5_042_002, environment: "testnet" },
-    { key: "arc-mainnet", chainId: 5_042, environment: "mainnet" },
+  assert.deepEqual(ARC_NETWORK_DEFINITIONS.map(({ key, name, chainId, environment, nativeCurrency, testnet }) => ({ key, name, chainId, environment, nativeCurrency, testnet })), [
+    { key: "arc-testnet", name: "Arc Testnet", chainId: 5_042_002, environment: "testnet", nativeCurrency: { name: "USDC", symbol: "USDC", decimals: 18 }, testnet: true },
+    { key: "arc-mainnet", name: "Arc Mainnet", chainId: 5_042, environment: "mainnet", nativeCurrency: { name: "USDC", symbol: "USDC", decimals: 18 }, testnet: false },
   ]);
   assert.notEqual(
     ARC_NETWORK_DEFINITIONS[0].chainId,

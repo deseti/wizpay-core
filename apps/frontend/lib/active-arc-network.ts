@@ -1,10 +1,10 @@
 import {
-  createFrontendTransactionalArcNetworkConfiguration,
+  createFrontendBuildSafeArcNetworkConfiguration,
   validateFrontendArcNetworkOverrides,
 } from "@/lib/arc-network";
 
 export const ACTIVE_ARC_NETWORK =
-  createFrontendTransactionalArcNetworkConfiguration(
+  createFrontendBuildSafeArcNetworkConfiguration(
     process.env.NEXT_PUBLIC_WIZPAY_ARC_NETWORK,
   );
 

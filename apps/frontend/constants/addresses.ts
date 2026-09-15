@@ -1,20 +1,19 @@
 import type { Address } from "viem";
 import { ACTIVE_ARC_NETWORK } from "@/lib/active-arc-network";
 
-export const WIZPAY_ADDRESS = ACTIVE_ARC_NETWORK.contracts.wizpay
-  .address as Address;
-export const WIZPAY_SWAP_EXECUTOR_V2_ADDRESS = ACTIVE_ARC_NETWORK.contracts
-  .wizpaySwapExecutorV2?.address as Address;
+export const WIZPAY_ADDRESS = ACTIVE_ARC_NETWORK.contracts.wizpay?.address;
+export const WIZPAY_SWAP_EXECUTOR_V2_ADDRESS =
+  ACTIVE_ARC_NETWORK.contracts.wizpaySwapExecutorV2?.address;
 export const LEGACY_WIZPAY_ADDRESS =
   "0xE89f7c3781Dd24baE53d6ef9Af8a6a174731b4c8" as Address;
 export const WIZPAY_HISTORY_ADDRESSES = [
   WIZPAY_ADDRESS,
-  LEGACY_WIZPAY_ADDRESS,
+  ...(ACTIVE_ARC_NETWORK.key === "arc-testnet" ? [LEGACY_WIZPAY_ADDRESS] : []),
 ] as const;
 export const WIZPAY_HISTORY_FROM_BLOCK = 35_790_000n;
 
-export const USDC_ADDRESS = ACTIVE_ARC_NETWORK.tokens.USDC.address as Address;
-export const EURC_ADDRESS = ACTIVE_ARC_NETWORK.tokens.EURC?.address as Address;
+export const USDC_ADDRESS = ACTIVE_ARC_NETWORK.tokens.USDC?.address;
+export const EURC_ADDRESS = ACTIVE_ARC_NETWORK.tokens.EURC?.address;
 export const ETHEREUM_SEPOLIA_USDC_ADDRESS =
   "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238" as Address;
 export const ETHEREUM_SEPOLIA_EURC_ADDRESS =
@@ -22,10 +21,14 @@ export const ETHEREUM_SEPOLIA_EURC_ADDRESS =
 
 // ── V2 FX (custom StableFXAdapter_V2 vault) ──
 export const STABLE_FX_ADAPTER_V2_ADDRESS =
-  "0x400d3935B904cbdB6B5eb2Fd50E6843f1b0AD8d6" as Address;
+  (ACTIVE_ARC_NETWORK.key === "arc-testnet"
+    ? "0x400d3935B904cbdB6B5eb2Fd50E6843f1b0AD8d6"
+    : "0x0000000000000000000000000000000000000000") as Address;
 
 // ── Official Arc + Circle StableFX settlement ──
 export const FX_ESCROW_ADDRESS =
-  "0x867650F5eAe8df91445971f14d89fd84F0C9a9f8" as Address;
+  (ACTIVE_ARC_NETWORK.key === "arc-testnet"
+    ? "0x867650F5eAe8df91445971f14d89fd84F0C9a9f8"
+    : "0x0000000000000000000000000000000000000000") as Address;
 export const PERMIT2_ADDRESS =
   "0x000000000022D473030F116dDEE9F6B43aC78BA3" as Address;

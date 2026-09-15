@@ -54,6 +54,8 @@ export class QueueService implements OnModuleDestroy {
     else if (jobData.taskType === 'swap') this.capabilities.assert('swap');
     else if (jobData.taskType === 'bridge') this.capabilities.assert('bridge');
     else if (jobData.taskType === 'fx') this.capabilities.assert('stableFx');
+    else if (jobData.taskType === 'liquidity')
+      this.capabilities.assert('liquidity');
     const queue = this.getOrCreateQueue(route.queueName);
 
     await queue.add(

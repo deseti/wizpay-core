@@ -22,9 +22,14 @@ describe('TaskController', () => {
     status: TaskStatus.ASSIGNED,
     payload: { batchId: 'payroll-1' },
     result: null,
+    totalUnits: 0,
+    completedUnits: 0,
+    failedUnits: 0,
+    metadata: null,
     createdAt: new Date('2026-04-26T00:00:00.000Z'),
     updatedAt: new Date('2026-04-26T00:00:00.000Z'),
     logs: [],
+    units: [],
     transactions: [],
   };
 

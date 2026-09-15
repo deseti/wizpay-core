@@ -352,25 +352,24 @@ export class TaskService {
       try {
         if (intent.status === 'SUBMITTED')
           intent = await this.intents.beginVerification(intent.id);
-        await this.payrollReceipts.verify({
+        if (!intent.batchDigest)
+          throw new BadRequestException({
+            code: 'PAYROLL_EXECUTION_INTENT_REQUIRED',
+            message: 'Payroll intent is missing its immutable batch digest.',
+          });
+        const verified = await this.payrollReceipts.verify({
           transactionHash,
           sourceWallet: intent.sourceWallet,
           token: intent.tokenOut,
           totalAmountUnits: intent.amountUnits,
+          expectedBatchDigest: intent.batchDigest,
           referenceId: intent.externalReference,
           recipients: batch.recipients.map((recipient) => ({
             address: recipient.address,
             amountUnits: recipient.amountUnits.toString(),
           })),
         });
-        await this.intents.completeWithVerifiedReceipt(intent.id, {
-          network: intent.network,
-          transactionHash: transactionHash as `0x${string}`,
-          sourceWallet: intent.sourceWallet,
-          token: intent.tokenOut,
-          batchDigest: intent.batchDigest,
-          amountUnits: intent.amountUnits,
-        });
+        await this.intents.completeWithVerifiedReceipt(intent.id, verified);
         await this.taskUnitService.reportUnit(task.id, unit.id, {
           status: 'SUCCESS',
           executionIntentId: intent.id,
@@ -458,7 +457,8 @@ export class TaskService {
   async createLiquidityTask(
     payload: TaskPayload,
   ): Promise<CreateLiquidityTaskResult> {
-    assertLegacyLiquidityEnabled();
+    this.capabilities.assert('liquidity');
+    assertLegacyLiquidityEnabled(this.capabilities.network);
     const owner = this.normalizeTaskOwner(payload);
 
     const operation =
@@ -535,6 +535,8 @@ export class TaskService {
     else if (type === TaskType.SWAP) this.capabilities.assert('swap');
     else if (type === TaskType.BRIDGE) this.capabilities.assert('bridge');
     else if (type === TaskType.FX) this.capabilities.assert('stableFx');
+    else if (type === TaskType.LIQUIDITY)
+      this.capabilities.assert('liquidity');
   }
 
   async updateStatus(

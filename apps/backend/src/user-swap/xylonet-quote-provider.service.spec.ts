@@ -89,11 +89,11 @@ describe('XylonetQuoteProviderService', () => {
 
   it('propagates provider failure without invoking another provider', async () => {
     readContract.mockImplementationOnce(
-      async (input: { functionName: string }) => {
+      (async (input: { functionName: string }) => {
         if (input.functionName === 'getAmountOut')
           throw new Error('provider unavailable');
         return 0n;
-      },
+      }) as never,
     );
     await expect(service().quote(request)).rejects.toBeDefined();
   });

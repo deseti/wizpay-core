@@ -17,7 +17,7 @@ export interface SwapSuccessResult {
   walletMode: "External Wallet" | "App Wallet";
   network: string;
   transactionHash: string;
-  explorerUrl: string;
+  explorerUrl?: string;
 }
 
 export function SwapSuccessDialog({

@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "recordType": "arc-mainnet-authoritative-resource",
+  "fixtureOnly": true,
+  "authority": "Arc",
+  "network": { "name": "Circle Arc Mainnet", "key": "arc-mainnet", "chainId": "5042" },
+  "resource": { "type": "chainId", "value": { "value": 5042 } },
+  "publication": { "reference": "TEST_FIXTURE_ONLY", "publishedAt": "2026-01-01T00:00:00.000Z", "releaseId": null }
+}

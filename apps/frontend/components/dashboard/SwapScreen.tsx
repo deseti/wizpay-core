@@ -608,7 +608,9 @@ function SwapWorkspace({
         walletMode: isCircle ? "App Wallet" : "External Wallet",
         network: arcTestnet.name,
         transactionHash: completed.hash,
-        explorerUrl: `${arcTestnet.blockExplorers.default.url}/tx/${completed.hash}`,
+        explorerUrl: arcTestnet.blockExplorers
+          ? `${arcTestnet.blockExplorers.default.url}/tx/${completed.hash}`
+          : undefined,
       });
       setProgressOpen(false);
       setSuccessOpen(true);

@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   WIZPAY_ABI,
   WIZPAY_DIRECT_USDC_PAYMENT_EVENT,
+  WIZPAY_MAINNET_ABI,
   WIZPAY_PAYROLL_REFERENCE_CONSUMED_EVENT,
+  WIZPAY_TESTNET_LEGACY_ABI,
 } from "./abi";
 
 describe("WizPay Mainnet V2 receipt ABI", () => {
@@ -33,5 +35,13 @@ describe("WizPay Mainnet V2 receipt ABI", () => {
       "recipientCount",
       "referenceId",
     ]);
+  });
+
+  it("keeps legacy FX reads Testnet-only and removes them from the generated Mainnet ABI", () => {
+    const functionNames = (abi: readonly { type: string; name?: string }[]) =>
+      abi.filter((entry) => entry.type === "function").map((entry) => entry.name);
+    expect(functionNames(WIZPAY_MAINNET_ABI)).not.toContain("fxEngine");
+    expect(functionNames(WIZPAY_MAINNET_ABI)).not.toContain("getEstimatedOutput");
+    expect(functionNames(WIZPAY_TESTNET_LEGACY_ABI)).toContain("fxEngine");
   });
 });

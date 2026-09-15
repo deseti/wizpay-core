@@ -11,6 +11,7 @@ const allFalse = {
   sameTokenPayroll: false,
   invoice: false,
   paymentLink: false,
+  liquidity: false,
   bridge: false,
   swap: false,
   crossTokenPayroll: false,

@@ -128,8 +128,13 @@ function assertValidDefinitionShape(entries) {
     if (
       (entry.environment !== "testnet" && entry.environment !== "mainnet") ||
       entry.key !== `arc-${entry.environment}` ||
+      entry.name !== `Arc ${entry.environment === "testnet" ? "Testnet" : "Mainnet"}` ||
       !Number.isSafeInteger(entry.chainId) ||
-      entry.chainId <= 0
+      entry.chainId <= 0 ||
+      entry.testnet !== (entry.environment === "testnet") ||
+      entry.nativeCurrency?.name !== "USDC" ||
+      entry.nativeCurrency?.symbol !== "USDC" ||
+      entry.nativeCurrency?.decimals !== 18
     ) {
       throw new ArcNetworkInvariantError(
         `Invalid Arc network definition: ${String(entry.key)}.`,
@@ -144,8 +149,22 @@ function assertValidDefinitionShape(entries) {
 }
 
 const definitions = [
-  { key: "arc-testnet", chainId: 5_042_002, environment: "testnet" },
-  { key: "arc-mainnet", chainId: 5_042, environment: "mainnet" },
+  {
+    key: "arc-testnet",
+    name: "Arc Testnet",
+    chainId: 5_042_002,
+    environment: "testnet",
+    nativeCurrency: { name: "USDC", symbol: "USDC", decimals: 18 },
+    testnet: true,
+  },
+  {
+    key: "arc-mainnet",
+    name: "Arc Mainnet",
+    chainId: 5_042,
+    environment: "mainnet",
+    nativeCurrency: { name: "USDC", symbol: "USDC", decimals: 18 },
+    testnet: false,
+  },
 ];
 
 assertValidDefinitionShape(definitions);
@@ -391,6 +410,7 @@ const ARC_CAPABILITY_NAMES = Object.freeze([
   "sameTokenPayroll",
   "invoice",
   "paymentLink",
+  "liquidity",
   "bridge",
   "swap",
   "crossTokenPayroll",
@@ -404,6 +424,7 @@ const ARC_TESTNET_CAPABILITIES = deepFreeze({
   sameTokenPayroll: true,
   invoice: true,
   paymentLink: true,
+  liquidity: true,
   bridge: true,
   swap: true,
   crossTokenPayroll: true,
@@ -426,6 +447,7 @@ const ARC_MAINNET_CAPABILITY_ENV_KEYS = deepFreeze({
   sameTokenPayroll: "WIZPAY_ARC_MAINNET_CAPABILITY_SAME_TOKEN_PAYROLL",
   invoice: "WIZPAY_ARC_MAINNET_CAPABILITY_INVOICE",
   paymentLink: "WIZPAY_ARC_MAINNET_CAPABILITY_PAYMENT_LINK",
+  liquidity: "WIZPAY_ARC_MAINNET_CAPABILITY_LIQUIDITY",
   bridge: "WIZPAY_ARC_MAINNET_CAPABILITY_BRIDGE",
   swap: "WIZPAY_ARC_MAINNET_CAPABILITY_SWAP",
   crossTokenPayroll: "WIZPAY_ARC_MAINNET_CAPABILITY_CROSS_TOKEN_PAYROLL",

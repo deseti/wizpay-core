@@ -17,8 +17,25 @@ import {
   parseAbiParameters,
   type Hash,
   type PublicClient,
+  type Transaction,
+  type TransactionReceipt,
 } from 'viem';
 import type { BackendArcNetworkConfiguration } from '../config/arc-network.config';
+import { WIZPAY_MAINNET_V2_ABI } from '../contracts/generated/wizpay-mainnet-v2.abi';
+import { createPayrollBatchDigest } from '../execution-intent/execution-intent.service';
+import type { VerifiedExecutionReceipt } from '../execution-intent/execution-intent.service';
+
+export type VerifiedPayrollReceipt = VerifiedExecutionReceipt &
+  Readonly<{
+    contract: `0x${string}`;
+    referenceId: string;
+    recipients: readonly Readonly<{
+      address: `0x${string}`;
+      amountUnits: string;
+    }>[];
+    blockNumber: string;
+    confirmations: number;
+  }>;
 
 const BATCH_EVENT = parseAbiItem(
   'event BatchPaymentRouted(address indexed sender, address tokenIn, address tokenOut, uint256 totalAmountIn, uint256 totalAmountOut, uint256 totalFees, uint256 recipientCount, string referenceId)',
@@ -79,19 +96,44 @@ export class PayrollReceiptVerifierService {
     sourceWallet: string;
     token: string;
     totalAmountUnits: string;
+    expectedBatchDigest: string;
     referenceId: string;
     recipients: readonly { address: string; amountUnits: string }[];
-  }) {
+  }): Promise<VerifiedPayrollReceipt> {
     const contract = this.network.contracts.wizpay?.address;
     if (!contract)
       throw new ServiceUnavailableException({
         code: 'PAYROLL_CONTRACT_UNAVAILABLE',
         message: 'Verified payroll contract is unavailable.',
       });
-    let transaction;
-    let receipt;
+    if (!isTransactionHash(input.transactionHash)) this.reject();
+    if (
+      !input.referenceId.trim() ||
+      input.recipients.length === 0 ||
+      !isCanonicalUint(input.totalAmountUnits) ||
+      !/^[0-9a-fA-F]{64}$/.test(input.expectedBatchDigest) ||
+      input.recipients.some(
+        (recipient) =>
+          !isCanonicalUint(recipient.amountUnits) ||
+          recipient.amountUnits === '0',
+      )
+    )
+      this.reject();
+    let sourceWallet: `0x${string}`;
+    let token: `0x${string}`;
+    let contractAddress: `0x${string}`;
     try {
-      const hash = input.transactionHash as Hash;
+      sourceWallet = getAddress(input.sourceWallet);
+      token = getAddress(input.token);
+      contractAddress = getAddress(contract);
+      for (const recipient of input.recipients) getAddress(recipient.address);
+    } catch {
+      this.reject();
+    }
+    let transaction: Transaction;
+    let receipt: TransactionReceipt;
+    try {
+      const hash: Hash = input.transactionHash;
       if ((await this.client.getChainId()) !== this.network.chainId)
         this.reject();
       [transaction, receipt] = await Promise.all([
@@ -108,29 +150,32 @@ export class PayrollReceiptVerifierService {
     }
     if (
       receipt.status !== 'success' ||
+      transaction.hash.toLowerCase() !== input.transactionHash.toLowerCase() ||
+      receipt.transactionHash.toLowerCase() !==
+        input.transactionHash.toLowerCase() ||
       transaction.chainId !== this.network.chainId ||
       transaction.value !== 0n
     )
       this.reject();
-    const sourceWallet = getAddress(input.sourceWallet);
-    const token = getAddress(input.token);
-    const contractAddress = getAddress(contract);
     if (
       !transaction.to ||
       !isAddressEqual(getAddress(transaction.to), contractAddress) ||
       !isAddressEqual(getAddress(transaction.from), sourceWallet)
     )
       this.reject();
-    let decodedCall;
+    let decodedCall: ReturnType<typeof decodeFunctionData>;
     try {
       decodedCall = decodeFunctionData({
-        abi: PAYROLL_ABI,
+        abi:
+          this.network.key === 'arc-mainnet'
+            ? WIZPAY_MAINNET_V2_ABI
+            : PAYROLL_ABI,
         data: transaction.input,
       });
     } catch {
       this.reject();
     }
-    if (decodedCall.functionName !== 'batchRouteAndPay') this.reject();
+    if (!isPayrollBatchCall(decodedCall)) this.reject();
     const [
       callTokenIn,
       callTokenOuts,
@@ -158,6 +203,26 @@ export class PayrollReceiptVerifierService {
       )
     )
       this.reject();
+    const verifiedRecipients = callRecipients.map((recipient, index) => ({
+      address: getAddress(recipient),
+      amountUnits: callAmounts[index].toString(),
+    }));
+    const verifiedTotal = callAmounts.reduce((sum, amount) => sum + amount, 0n);
+    const verifiedBatchDigest = createPayrollBatchDigest(
+      verifiedRecipients.map((recipient) => ({
+        recipient: recipient.address,
+        token,
+        amountUnits: recipient.amountUnits,
+      })),
+    );
+    if (
+      verifiedTotal.toString() !== input.totalAmountUnits ||
+      verifiedBatchDigest !== input.expectedBatchDigest.toLowerCase() ||
+      (this.network.key === 'arc-mainnet' &&
+        new Set(verifiedRecipients.map((entry) => entry.address.toLowerCase()))
+          .size !== verifiedRecipients.length)
+    )
+      this.reject();
     let latestBlock: bigint;
     try {
       latestBlock = await this.client.getBlockNumber();
@@ -168,6 +233,7 @@ export class PayrollReceiptVerifierService {
         retryable: true,
       });
     }
+    if (latestBlock < receipt.blockNumber) this.reject();
     const confirmations = Number(latestBlock - receipt.blockNumber + 1n);
     if (confirmations < this.confirmationsRequired)
       throw new ServiceUnavailableException({
@@ -190,7 +256,18 @@ export class PayrollReceiptVerifierService {
         })
       )
         this.reject();
-      return true;
+      return this.evidence({
+        transactionHash: transaction.hash,
+        sourceWallet,
+        token,
+        contractAddress,
+        referenceId: input.referenceId,
+        recipients: verifiedRecipients,
+        batchDigest: verifiedBatchDigest,
+        totalAmountUnits: verifiedTotal.toString(),
+        blockNumber: receipt.blockNumber,
+        confirmations,
+      });
     }
     const batchMatches = receipt.logs.filter((log) => {
       if (!isAddressEqual(log.address, contractAddress)) return false;
@@ -252,7 +329,47 @@ export class PayrollReceiptVerifierService {
       )
     )
       this.reject();
-    return true;
+    return this.evidence({
+      transactionHash: transaction.hash,
+      sourceWallet,
+      token,
+      contractAddress,
+      referenceId: input.referenceId,
+      recipients: verifiedRecipients,
+      batchDigest: verifiedBatchDigest,
+      totalAmountUnits: verifiedTotal.toString(),
+      blockNumber: receipt.blockNumber,
+      confirmations,
+    });
+  }
+
+  private evidence(input: {
+    transactionHash: Hash;
+    sourceWallet: `0x${string}`;
+    token: `0x${string}`;
+    contractAddress: `0x${string}`;
+    referenceId: string;
+    recipients: readonly { address: `0x${string}`; amountUnits: string }[];
+    batchDigest: string;
+    totalAmountUnits: string;
+    blockNumber: bigint;
+    confirmations: number;
+  }): VerifiedPayrollReceipt {
+    return Object.freeze({
+      network: this.network.key,
+      transactionHash: input.transactionHash,
+      sourceWallet: input.sourceWallet,
+      token: input.token,
+      batchDigest: input.batchDigest,
+      amountUnits: input.totalAmountUnits,
+      contract: input.contractAddress,
+      referenceId: input.referenceId,
+      recipients: Object.freeze(
+        input.recipients.map((entry) => Object.freeze(entry)),
+      ),
+      blockNumber: input.blockNumber.toString(),
+      confirmations: input.confirmations,
+    });
   }
 
   private reject(): never {
@@ -262,6 +379,36 @@ export class PayrollReceiptVerifierService {
       retryable: false,
     });
   }
+}
+
+type PayrollBatchCall = {
+  functionName: 'batchRouteAndPay';
+  args: readonly [
+    `0x${string}`,
+    readonly `0x${string}`[],
+    readonly `0x${string}`[],
+    readonly bigint[],
+    readonly bigint[],
+    string,
+  ];
+};
+
+function isPayrollBatchCall(
+  value: ReturnType<typeof decodeFunctionData>,
+): value is PayrollBatchCall {
+  return (
+    value.functionName === 'batchRouteAndPay' &&
+    Array.isArray(value.args) &&
+    value.args.length === 6
+  );
+}
+
+function isCanonicalUint(value: string): boolean {
+  return /^(0|[1-9][0-9]*)$/.test(value);
+}
+
+function isTransactionHash(value: string): value is Hash {
+  return /^0x[0-9a-fA-F]{64}$/.test(value);
 }
 
 function verifyMainnetReceiptEvidence(input: {

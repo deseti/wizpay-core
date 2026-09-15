@@ -29,20 +29,20 @@ export const PREVIEW_SLIPPAGE_BPS = 200n;
 export const GAS_BUFFER_BPS = 1500n;
 export const MAX_REFERENCE_ID_LENGTH = 64;
 
-export const SUPPORTED_TOKENS: Record<TokenSymbol, TokenConfig> = {
-  USDC: {
+export const SUPPORTED_TOKENS: Readonly<Record<string, TokenConfig>> = Object.freeze({
+  ...(USDC_ADDRESS ? { USDC: {
     symbol: "USDC",
     name: "USD Coin",
     address: USDC_ADDRESS,
     decimals: 6,
-  },
-  EURC: {
+  } } : {}),
+  ...(EURC_ADDRESS ? { EURC: {
     symbol: "EURC",
     name: "Euro Coin",
     address: EURC_ADDRESS,
     decimals: 6,
-  },
-};
+  } } : {}),
+});
 
 export const TOKEN_OPTIONS = Object.values(SUPPORTED_TOKENS);
 
@@ -93,7 +93,7 @@ export function isTransactionHash(
 export function getExplorerBaseUrlForChain(
   chainId: number | undefined,
 ): string | null {
-  return chainId === ARC_CHAIN_ID ? EXPLORER_BASE_URL : null;
+  return chainId === ARC_CHAIN_ID ? (EXPLORER_BASE_URL ?? null) : null;
 }
 
 export function getExplorerTxUrl(

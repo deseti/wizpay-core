@@ -1,9 +1,11 @@
 import { INestApplication } from '@nestjs/common';
+import type { Server } from 'node:http';
 import { ConfigService } from '@nestjs/config';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
 import { resolveArcCapabilities } from '@wizpay/arc-network';
 import { encodeFunctionData } from 'viem';
+import { HttpExceptionCompatibilityFilter } from '../common/http-exception.compatibility-filter';
 import { CapabilityController } from './capability.controller';
 import { CapabilityService } from './capability.service';
 import { W3sAuthController } from '../modules/wallet/w3s-auth.controller';
@@ -47,6 +49,23 @@ function config(capabilities = resolveArcCapabilities('arc-mainnet', {})) {
 function capabilityService(value = config()) {
   const routing = new PaymentRoutingService(value);
   return new CapabilityService(value, routing);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function httpServer(app: INestApplication): Server {
+  const server: unknown = app.getHttpServer();
+  if (typeof server !== 'object' || server === null) {
+    throw new Error('HTTP server is unavailable.');
+  }
+  return server as Server;
+}
+
+function responseRecord(body: unknown): Record<string, unknown> {
+  if (!isRecord(body)) throw new Error('HTTP body is not an object.');
+  return body;
 }
 
 describe('CapabilityService', () => {
@@ -106,7 +125,7 @@ describe('CapabilityService', () => {
       functionName: 'batchRouteAndPay',
       args: [
         TESTNET_USDC,
-        [TESTNET_EURC.toLowerCase()],
+        [TESTNET_EURC.toLowerCase() as `0x${string}`],
         ['0x2222222222222222222222222222222222222222'],
         [1n],
         [1n],
@@ -188,20 +207,23 @@ describe('capability HTTP boundary', () => {
       ],
     }).compile();
     app = module.createNestApplication();
+    app.useGlobalFilters(new HttpExceptionCompatibilityFilter());
     await app.init();
   });
 
   afterAll(async () => app.close());
 
   it('returns only the selected network and effective booleans', async () => {
-    const response = await request(app.getHttpServer())
+    const response = await request(httpServer(app))
       .get('/capabilities')
       .expect(200);
-    expect(response.body.data.network).toBe('arc-mainnet');
+    const payload = responseRecord(response.body).data;
+    if (!isRecord(payload) || !isRecord(payload.capabilities)) {
+      throw new Error('Capability payload is malformed.');
+    }
+    expect(payload.network).toBe('arc-mainnet');
     expect(
-      Object.values(response.body.data.capabilities).every(
-        (value) => value === false,
-      ),
+      Object.values(payload.capabilities).every((value) => value === false),
     ).toBe(true);
     expect(JSON.stringify(response.body)).not.toMatch(
       /secret|environment|WIZPAY_/i,
@@ -209,15 +231,15 @@ describe('capability HTTP boundary', () => {
   });
 
   it('rejects disabled challenge requests before Circle dispatch', async () => {
-    await request(app.getHttpServer())
+    const response = await request(httpServer(app))
       .post('/w3s/action')
       .send({
         action: 'createTransferChallenge',
         refId: 'SEND-test',
         tokenAddress: TESTNET_USDC,
       })
-      .expect(503)
-      .expect(({ body }) => expect(body.code).toBe('CAPABILITY_DISABLED'));
+      .expect(503);
+    expect(responseRecord(response.body).code).toBe('CAPABILITY_DISABLED');
     expect(dispatch).not.toHaveBeenCalled();
   });
 });

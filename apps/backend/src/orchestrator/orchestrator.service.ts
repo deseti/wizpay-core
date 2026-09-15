@@ -50,7 +50,7 @@ export class OrchestratorService {
     }
 
     if (type === TaskType.LIQUIDITY) {
-      assertLegacyLiquidityEnabled();
+      assertLegacyLiquidityEnabled(this.capabilities.network);
     }
 
     const route = TASK_QUEUE_MAP[type];
@@ -451,6 +451,8 @@ export class OrchestratorService {
     else if (type === TaskType.SWAP) this.capabilities.assert('swap');
     else if (type === TaskType.BRIDGE) this.capabilities.assert('bridge');
     else if (type === TaskType.FX) this.capabilities.assert('stableFx');
+    else if (type === TaskType.LIQUIDITY)
+      this.capabilities.assert('liquidity');
   }
 
   async updateTaskState(taskId: string, state: string, result?: any) {

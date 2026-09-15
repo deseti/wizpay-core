@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { APP_FILTER } from '@nestjs/core';
 import { AppWalletSwapModule } from './app-wallet-swap/app-wallet-swap.module';
 import { BridgeModule } from './bridge/bridge.module';
 import { AdaptersModule } from './adapters/adapters.module';
@@ -19,11 +20,15 @@ import { UserSwapModule } from './user-swap/user-swap.module';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { CapabilityModule } from './capabilities/capability.module';
+import { HttpExceptionCompatibilityFilter } from './common/http-exception.compatibility-filter';
 import { ExecutionIntentModule } from './execution-intent/execution-intent.module';
 
 @Module({
   controllers: [AppController],
-  providers: [AppService],
+  providers: [
+    AppService,
+    { provide: APP_FILTER, useClass: HttpExceptionCompatibilityFilter },
+  ],
   imports: [
     AppConfigModule,
     CapabilityModule,

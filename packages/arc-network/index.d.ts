@@ -30,6 +30,7 @@ export type ArcCapabilityName =
   | "sameTokenPayroll"
   | "invoice"
   | "paymentLink"
+  | "liquidity"
   | "bridge"
   | "swap"
   | "crossTokenPayroll"
@@ -64,13 +65,19 @@ export type ArcOperationResourceReadiness = Readonly<{
 export type ArcNetworkDefinition =
   | {
       readonly key: "arc-testnet";
+      readonly name: "Arc Testnet";
       readonly chainId: 5_042_002;
       readonly environment: "testnet";
+      readonly nativeCurrency: Readonly<{ name: "USDC"; symbol: "USDC"; decimals: 18 }>;
+      readonly testnet: true;
     }
   | {
       readonly key: "arc-mainnet";
+      readonly name: "Arc Mainnet";
       readonly chainId: 5_042;
       readonly environment: "mainnet";
+      readonly nativeCurrency: Readonly<{ name: "USDC"; symbol: "USDC"; decimals: 18 }>;
+      readonly testnet: false;
     };
 
 export type UnsupportedArcNetworkCode =

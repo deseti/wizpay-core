@@ -2,6 +2,7 @@ import path from "node:path";
 
 import type { NextConfig } from "next";
 import { parseArcNetworkKey } from "@wizpay/arc-network";
+import { frontendSecurityHeaderRules } from "./lib/security-headers";
 
 const arcNetworkKey = parseArcNetworkKey(process.env.WIZPAY_ARC_NETWORK);
 const publicArcNetworkKey = process.env.NEXT_PUBLIC_WIZPAY_ARC_NETWORK;
@@ -22,9 +23,7 @@ const nextConfig: NextConfig = {
   env: {
     NEXT_PUBLIC_WIZPAY_ARC_NETWORK: arcNetworkKey,
   },
-  eslint: {
-    ignoreDuringBuilds: true,
-  },
+  headers: async () => frontendSecurityHeaderRules(process.env),
   output: "standalone",
   images: {
     remotePatterns: [
@@ -34,14 +33,15 @@ const nextConfig: NextConfig = {
       },
     ],
   },
-  typescript: {
-    ignoreBuildErrors: true,
-  },
   turbopack: {
     root: __dirname,
     resolveAlias: {
       "@react-native-async-storage/async-storage": emptyModuleShimImport,
       "pino-pretty": emptyModuleShimImport,
+      "@x402/core/client": emptyModuleShimImport,
+      "@x402/evm": emptyModuleShimImport,
+      "@x402/evm/exact/client": emptyModuleShimImport,
+      "@x402/svm/exact/client": emptyModuleShimImport,
     },
   },
   webpack: (config, { webpack }) => {
@@ -50,6 +50,16 @@ const nextConfig: NextConfig = {
     config.resolve.alias["@react-native-async-storage/async-storage"] =
       emptyModuleShim;
     config.resolve.alias["pino-pretty"] = emptyModuleShim;
+    // RainbowKit's Coinbase connector pulls optional @x402 payment protocol
+    // modules through @coinbase/cdp-sdk. WizPay does not use x402; stub them
+    // so a Mainnet production build does not require those packages.
+    config.resolve.alias["@x402/core/client"] = emptyModuleShim;
+    config.resolve.alias["@x402/evm"] = emptyModuleShim;
+    config.resolve.alias["@x402/evm/exact/client"] = emptyModuleShim;
+    config.resolve.alias["@x402/svm/exact/client"] = emptyModuleShim;
+    config.plugins.push(
+      new webpack.NormalModuleReplacementPlugin(/^@x402(?:\/|$)/, emptyModuleShim),
+    );
     // viem bundles the Tempo chain whose virtualMasterPool.js uses a dynamic
     // require() that webpack cannot statically analyse, producing a TDZ circular
     // dependency crash at runtime.  WizPay never uses the Tempo chain, so we

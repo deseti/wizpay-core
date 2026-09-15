@@ -42,14 +42,8 @@ import {
   type TokenSymbol,
 } from "@/lib/wizpay";
 import { buildXShareUrl } from "@/lib/social";
-import { USDC_ADDRESS, EURC_ADDRESS } from "@/constants/addresses";
 import { initLiquidityTask, reportLiquidityResult } from "@/lib/swap-service";
 import { useActiveWalletAddress } from "@/hooks/useActiveWalletAddress";
-
-const TOKEN_ADDRESSES: Record<TokenSymbol, `0x${string}`> = {
-  USDC: USDC_ADDRESS,
-  EURC: EURC_ADDRESS,
-};
 
 type LPStep = "idle" | "approving" | "executing" | "success" | "error";
 
@@ -79,7 +73,7 @@ export function LiquidityScreen() {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   const tokenRecord = TOKEN_OPTIONS.find((t) => t.symbol === selectedToken);
-  const tokenAddress = TOKEN_ADDRESSES[selectedToken];
+  const tokenAddress = tokenRecord?.address;
 
   const {
     lpBalance,
@@ -116,6 +110,8 @@ export function LiquidityScreen() {
     try {
       if (!walletAddress)
         throw new Error("Connect a wallet before adding liquidity.");
+      if (!tokenAddress)
+        throw new Error("The selected token is unavailable on this Arc network.");
       // Register liquidity task in backend before execution
       const plan = await initLiquidityTask({
         operation: "add",
@@ -177,6 +173,8 @@ export function LiquidityScreen() {
     try {
       if (!walletAddress)
         throw new Error("Connect a wallet before removing liquidity.");
+      if (!tokenAddress)
+        throw new Error("The selected token is unavailable on this Arc network.");
       // Register liquidity task in backend before execution
       const plan = await initLiquidityTask({
         operation: "remove",

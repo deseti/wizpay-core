@@ -16,6 +16,7 @@ describe('ExecutionIntentService', () => {
   let store: IntentStore;
   let routing: {
     network: string;
+    chainId: number;
     decide: jest.Mock;
     assertExecutable: jest.Mock;
   };

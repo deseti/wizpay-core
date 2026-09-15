@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  assertFrontendTransactionsAvailable,
+  createFrontendBuildSafeArcNetworkConfiguration,
   createFrontendTransactionalArcNetworkConfiguration,
   getExplorerTxUrlForNetwork,
   requireFrontendTransactionalArcNetworkConfiguration,
@@ -58,6 +60,16 @@ describe("frontend Arc network configuration", () => {
     expect(() =>
       requireFrontendTransactionalArcNetworkConfiguration(state),
     ).toThrow("OFFICIAL_ARC_MAINNET_RPC_UNAVAILABLE");
+  });
+
+  it("permits a fail-closed Mainnet build without constructing transaction resources", () => {
+    const config = createFrontendBuildSafeArcNetworkConfiguration("arc-mainnet");
+    expect(config).toMatchObject({ key: "arc-mainnet", name: "Arc Mainnet", chainId: 5_042, environment: "mainnet", nativeCurrency: { symbol: "USDC", decimals: 18 }, testnet: false, transactionalAvailable: false });
+    expect(config).not.toHaveProperty("rpcUrl");
+    expect(config.tokens).toEqual({});
+    expect(config.contracts).toEqual({});
+    expect(() => assertFrontendTransactionsAvailable(config)).toThrow("OFFICIAL_ARC_MAINNET_RPC_UNAVAILABLE");
+    expect(() => validateFrontendArcNetworkOverrides(config, { NEXT_PUBLIC_RPC_URL: TESTNET_RPC })).toThrow("cannot override unavailable Arc Mainnet resources");
   });
 
   it("never imports Testnet active resources into Arc Mainnet", () => {

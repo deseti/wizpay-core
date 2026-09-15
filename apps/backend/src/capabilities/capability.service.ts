@@ -23,6 +23,7 @@ import {
   type PaymentRouteDecision,
   PaymentRoutingService,
 } from '../routing/payment-routing.service';
+import { WIZPAY_MAINNET_V2_ABI } from '../contracts/generated/wizpay-mainnet-v2.abi';
 
 const PAYROLL_ABI = [
   {
@@ -212,7 +213,8 @@ export class CapabilityService {
       return this.contextRequired('payroll contract execution');
     try {
       const decoded = decodeFunctionData({
-        abi: PAYROLL_ABI,
+        abi:
+          this.network === 'arc-mainnet' ? WIZPAY_MAINNET_V2_ABI : PAYROLL_ABI,
         data: callData as Hex,
       });
       if (decoded.functionName !== 'batchRouteAndPay' || !decoded.args) {
@@ -275,8 +277,8 @@ export class CapabilityService {
   }
 
   private getTokenAddress(symbol: 'USDC' | 'EURC') {
-    const value = (this.config.get(`arcNetwork.tokens.${symbol}.address`) ??
-      '') as string;
+    const value =
+      this.config.get<string>(`arcNetwork.tokens.${symbol}.address`) ?? '';
     return value.toLowerCase();
   }
 

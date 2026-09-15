@@ -24,6 +24,7 @@ import {
   keccak256,
   parseUnits,
 } from 'viem';
+import { WIZPAY_MAINNET_V2_ABI } from '../../contracts/generated/wizpay-mainnet-v2.abi';
 
 const EXECUTION_ERC20_ABI = [
   {
@@ -616,7 +617,10 @@ export class W3sAuthService {
       this.throwIntentMismatch('payroll contract');
     try {
       const decoded = decodeFunctionData({
-        abi: EXECUTION_PAYROLL_ABI,
+        abi:
+          this.capabilities.network === 'arc-mainnet'
+            ? WIZPAY_MAINNET_V2_ABI
+            : EXECUTION_PAYROLL_ABI,
         data: callData,
       });
       if (decoded.functionName !== 'batchRouteAndPay')

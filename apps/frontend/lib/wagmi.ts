@@ -7,14 +7,17 @@ import {
   rainbowWallet,
   walletConnectWallet,
 } from "@rainbow-me/rainbowkit/wallets";
-import { createConfig, fallback, http } from "wagmi";
+import { createConfig, custom, fallback, http } from "wagmi";
 import { defineChain, type Chain } from "viem";
 import { sepolia } from "viem/chains";
 import { BRIDGE_TESTNET_BY_CODE } from "@wizpay/bridge-registry";
 import { ACTIVE_ARC_NETWORK } from "@/lib/active-arc-network";
 
 /** Testnet-only compatibility name; value is selected from the shared registry. */
-export const ARC_TESTNET_RPC_URL = ACTIVE_ARC_NETWORK.rpcUrl;
+export const ACTIVE_ARC_RPC_URL = ACTIVE_ARC_NETWORK.rpcUrl;
+/** Testnet-only compatibility export. It is absent on Arc Mainnet. */
+export const ARC_TESTNET_RPC_URL =
+  ACTIVE_ARC_NETWORK.key === "arc-testnet" ? ACTIVE_ARC_RPC_URL : undefined;
 
 const DEFAULT_ETHEREUM_SEPOLIA_RPC_URLS = [
   "https://ethereum-sepolia-rpc.publicnode.com",
@@ -61,30 +64,29 @@ export const HAS_WALLETCONNECT_PROJECT_ID = WALLETCONNECT_PROJECT_ID.length > 0;
 /**
  * Arc Testnet — custom chain definition
  */
-export const arcTestnet = defineChain({
+export const activeArcChain = defineChain({
   id: ACTIVE_ARC_NETWORK.chainId,
-  name: "Arc Testnet",
-  nativeCurrency: {
-    name: "USDC",
-    symbol: "USDC",
-    decimals: 18,
-  },
+  name: ACTIVE_ARC_NETWORK.name,
+  nativeCurrency: ACTIVE_ARC_NETWORK.nativeCurrency,
   rpcUrls: {
     default: {
-      http: [ARC_TESTNET_RPC_URL],
+      http: ACTIVE_ARC_RPC_URL ? [ACTIVE_ARC_RPC_URL] : [],
     },
     public: {
-      http: [ARC_TESTNET_RPC_URL],
+      http: ACTIVE_ARC_RPC_URL ? [ACTIVE_ARC_RPC_URL] : [],
     },
   },
-  blockExplorers: {
+  ...(ACTIVE_ARC_NETWORK.explorerBaseUrl ? { blockExplorers: {
     default: {
       name: "ArcScan",
       url: ACTIVE_ARC_NETWORK.explorerBaseUrl,
     },
-  },
-  testnet: true,
+  } } : {}),
+  testnet: ACTIVE_ARC_NETWORK.testnet,
 });
+
+/** @deprecated Use activeArcChain. Retained while Testnet-only flows migrate. */
+export const arcTestnet = activeArcChain;
 
 export const ethereumSepolia = defineChain({
   ...sepolia,
@@ -150,7 +152,7 @@ export const monadTestnet = defineBridgeTestnet(
 );
 
 export const SUPPORTED_CHAINS = [
-  arcTestnet,
+  activeArcChain,
   ethereumSepolia,
   baseSepolia,
   arbitrumSepolia,
@@ -158,7 +160,7 @@ export const SUPPORTED_CHAINS = [
   monadTestnet,
 ] as const;
 export const CHAIN_BY_ID: Record<number, Chain> = {
-  [arcTestnet.id]: arcTestnet,
+  [activeArcChain.id]: activeArcChain,
   [ethereumSepolia.id]: ethereumSepolia,
   [baseSepolia.id]: baseSepolia,
   [arbitrumSepolia.id]: arbitrumSepolia,
@@ -166,7 +168,7 @@ export const CHAIN_BY_ID: Record<number, Chain> = {
   [monadTestnet.id]: monadTestnet,
 };
 export const CHAIN_NAME_BY_ID: Record<number, string> = {
-  [arcTestnet.id]: arcTestnet.name,
+  [activeArcChain.id]: activeArcChain.name,
   [ethereumSepolia.id]: ethereumSepolia.name,
   [baseSepolia.id]: baseSepolia.name,
   [arbitrumSepolia.id]: arbitrumSepolia.name,
@@ -210,10 +212,15 @@ export const config = createConfig({
   connectors,
   ssr: true,
   transports: {
-    [arcTestnet.id]: http(ARC_TESTNET_RPC_URL, {
-      retryCount: 1,
-      timeout: 10_000,
-    }),
+    [activeArcChain.id]: ACTIVE_ARC_RPC_URL
+      ? http(ACTIVE_ARC_RPC_URL, { retryCount: 1, timeout: 10_000 })
+      : custom({
+          request: async () => {
+            throw new Error(
+              "Arc Mainnet RPC is unavailable; transactions remain disabled.",
+            );
+          },
+        }),
     [ethereumSepolia.id]: createFallbackTransport(ETHEREUM_SEPOLIA_RPC_URLS),
     [baseSepolia.id]: http(baseSepolia.rpcUrls.default.http[0], {
       retryCount: 1,

@@ -623,7 +623,9 @@ describe('CCTP V2 destination completion', () => {
     ['wrong USDC emitter', { transferEmitter: OTHER }],
     ['wrong mint recipient', { transferRecipient: OTHER }],
   ])('fails closed for %s', async (_case, override) => {
-    const { service, operation } = destinationHarness(override);
+    const { service, operation } = destinationHarness(
+      override as Parameters<typeof destinationHarness>[0],
+    );
     await expect(
       (service as any).verifyAndComplete(operation, DESTINATION_HASH),
     ).rejects.toBeDefined();

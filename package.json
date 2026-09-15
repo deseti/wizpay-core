@@ -27,5 +27,25 @@
   "devDependencies": {
     "react": "19.2.4",
     "react-dom": "19.2.4"
+  },
+  "overrides": {
+    "@coinbase/cdp-sdk": "1.48.2",
+    "axios": "1.20.0",
+    "firebase": "12.19.0",
+    "multer": "2.4.0",
+    "next": "15.5.25",
+    "deepmerge-ts": "8.0.0",
+    "mysql2": "3.22.0",
+    "postcss": "8.5.28",
+    "protobufjs": "7.6.5",
+    "sharp": "0.35.4",
+    "toml": "4.2.0",
+    "undici": "6.28.1",
+    "viem": "2.45.3",
+    "websocket-driver": "0.7.5",
+    "ws": "8.21.3",
+    "jsdom": {
+      "undici": "7.24.5"
+    }
   }
 }

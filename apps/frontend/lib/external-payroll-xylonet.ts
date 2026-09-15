@@ -398,6 +398,9 @@ function verifyPayrollBatchReceipt(input: {
   referenceId: string;
   receipt: ConfirmedReceipt;
 }) {
+  if (!WIZPAY_ADDRESS) {
+    throw new Error("WizPay payroll contract is unavailable on this Arc network.");
+  }
   if (input.receipt.status !== "success") {
     throw new Error("Payroll transaction did not confirm successfully.");
   }

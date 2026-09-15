@@ -1,3 +1,5 @@
+import { WIZPAY_MAINNET_V2_ABI } from "@/constants/generated/wizpay-mainnet-v2.abi";
+
 export const WIZPAY_BATCH_PAYMENT_ROUTED_EVENT = {
   anonymous: false,
   inputs: [
@@ -146,7 +148,8 @@ export const WIZPAY_PAYROLL_REFERENCE_CONSUMED_EVENT = {
   type: "event",
 } as const;
 
-export const WIZPAY_ABI = [
+/** Arc Testnet legacy ABI. It intentionally retains the legacy FX read surface. */
+export const WIZPAY_TESTNET_LEGACY_ABI = [
   WIZPAY_BATCH_PAYMENT_ROUTED_EVENT,
   WIZPAY_DIRECT_USDC_PAYMENT_EVENT,
   WIZPAY_PAYROLL_REFERENCE_CONSUMED_EVENT,
@@ -213,6 +216,15 @@ export const WIZPAY_ABI = [
     type: "function",
   },
 ] as const;
+
+/** Exact generated ABI for the isolated WizPayMainnetV2 contract. */
+export const WIZPAY_MAINNET_ABI = WIZPAY_MAINNET_V2_ABI;
+
+/** Network-routed compatibility export; never shares a Mainnet/Testnet ABI. */
+export const WIZPAY_ABI =
+  process.env.NEXT_PUBLIC_WIZPAY_ARC_NETWORK === "arc-mainnet"
+    ? WIZPAY_MAINNET_ABI
+    : WIZPAY_TESTNET_LEGACY_ABI;
 
 // ── StableFXAdapter LP Events ──
 export const LIQUIDITY_ADDED_EVENT = {

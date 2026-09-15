@@ -37,10 +37,19 @@ type LiquidityRemovedLog = {
   };
 };
 
-export function useLiquidity(tokenAddress: Address) {
+export function useLiquidity(tokenAddress: Address | undefined) {
   const publicClient = usePublicClient({ chainId: arcTestnet.id });
   const { walletAddress } = useActiveWalletAddress();
   const { executeTransaction } = useTransactionExecutor();
+
+  const requireTokenAddress = (): Address => {
+    if (!tokenAddress) {
+      throw new Error(
+        "Liquidity is unavailable because the selected token is not configured for this Arc network.",
+      );
+    }
+    return tokenAddress;
+  };
 
   // Liquidity Vault total supply
   const { data: totalSupply, refetch: refetchTotalSupply } = useReadContract({
@@ -66,7 +75,7 @@ export function useLiquidity(tokenAddress: Address) {
     functionName: "balanceOf",
     args: walletAddress ? [walletAddress] : undefined,
     query: {
-      enabled: !!walletAddress,
+      enabled: Boolean(walletAddress && tokenAddress),
       staleTime: 10_000,
       placeholderData: keepPreviousData,
     },
@@ -82,7 +91,7 @@ export function useLiquidity(tokenAddress: Address) {
       ? [walletAddress, STABLE_FX_ADAPTER_V2_ADDRESS]
       : undefined,
     query: {
-      enabled: !!walletAddress,
+      enabled: Boolean(walletAddress && tokenAddress),
       staleTime: 10_000,
       placeholderData: keepPreviousData,
     },
@@ -100,7 +109,7 @@ export function useLiquidity(tokenAddress: Address) {
       ? [walletAddress, STABLE_FX_ADAPTER_V2_ADDRESS]
       : undefined,
     query: {
-      enabled: !!walletAddress,
+      enabled: Boolean(walletAddress && tokenAddress),
       staleTime: 10_000,
       placeholderData: keepPreviousData,
     },
@@ -192,7 +201,7 @@ export function useLiquidity(tokenAddress: Address) {
         const logs = (await publicClient.getLogs({
           address: STABLE_FX_ADAPTER_V2_ADDRESS,
           event: LIQUIDITY_ADDED_EVENT,
-          args: { token: tokenAddress },
+          args: { token: requireTokenAddress() },
           fromBlock: startBlock,
         })) as LiquidityAddedLog[];
 
@@ -209,7 +218,7 @@ export function useLiquidity(tokenAddress: Address) {
         const logs = (await publicClient.getLogs({
           address: STABLE_FX_ADAPTER_V2_ADDRESS,
           event: LIQUIDITY_REMOVED_EVENT,
-          args: { token: tokenAddress },
+          args: { token: requireTokenAddress() },
           fromBlock: startBlock,
         })) as LiquidityRemovedLog[];
 
@@ -257,7 +266,7 @@ export function useLiquidity(tokenAddress: Address) {
     const txRef = await executeManagedWrite({
       abi: ERC20_ABI,
       args: [STABLE_FX_ADAPTER_V2_ADDRESS, amount],
-      contractAddress: tokenAddress,
+      contractAddress: requireTokenAddress(),
       functionName: "approve",
       refId: `liquidity-approve-${Date.now()}`,
     });
@@ -280,7 +289,7 @@ export function useLiquidity(tokenAddress: Address) {
   const addLiquidity = async (amount: bigint) => {
     return await executeManagedWrite({
       abi: STABLE_FX_ADAPTER_V2_ABI,
-      args: [tokenAddress, amount],
+      args: [requireTokenAddress(), amount],
       contractAddress: STABLE_FX_ADAPTER_V2_ADDRESS,
       functionName: "addLiquidity",
       recoverTxHash: (startBlock) =>
@@ -296,7 +305,7 @@ export function useLiquidity(tokenAddress: Address) {
   const removeLiquidity = async (shares: bigint) => {
     return await executeManagedWrite({
       abi: STABLE_FX_ADAPTER_V2_ABI,
-      args: [tokenAddress, shares],
+      args: [requireTokenAddress(), shares],
       contractAddress: STABLE_FX_ADAPTER_V2_ADDRESS,
       functionName: "removeLiquidity",
       recoverTxHash: (startBlock) =>

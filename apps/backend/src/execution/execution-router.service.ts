@@ -8,6 +8,7 @@ import {
   assertLegacyFxEnabled,
   assertLegacyLiquidityEnabled,
 } from '../fx/stablefx-cutover.guard';
+import { CapabilityService } from '../capabilities/capability.service';
 
 // ─── Service ─────────────────────────────────────────────────────────────────
 
@@ -43,6 +44,7 @@ export class ExecutionRouterService {
   constructor(
     private readonly agentRouter: AgentRouterService,
     private readonly passkeyEngine: PasskeyEngineService,
+    private readonly capabilities: CapabilityService,
   ) {}
 
   /**
@@ -63,7 +65,8 @@ export class ExecutionRouterService {
     }
 
     if (String(task.type) === 'liquidity') {
-      assertLegacyLiquidityEnabled();
+      this.capabilities.assert('liquidity');
+      assertLegacyLiquidityEnabled(this.capabilities.network);
     }
 
     const walletMode = this.resolveWalletMode(task);

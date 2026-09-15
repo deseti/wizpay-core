@@ -35,18 +35,23 @@ export type FrontendArcNetworkResourceState = Readonly<{
 
 export type FrontendArcNetworkConfiguration = Readonly<{
   key: ArcNetworkKey;
+  name: "Arc Testnet" | "Arc Mainnet";
   chainId: number;
   environment: "testnet" | "mainnet";
-  rpcUrl: string;
-  explorerBaseUrl: string;
+  nativeCurrency: Readonly<{ name: "USDC"; symbol: "USDC"; decimals: 18 }>;
+  testnet: boolean;
+  rpcUrl?: string;
+  explorerBaseUrl?: string;
   tokens: Readonly<{
-    USDC: ArcTokenResourceValue;
+    USDC?: ArcTokenResourceValue;
     EURC?: ArcTokenResourceValue;
   }>;
   contracts: Readonly<{
-    wizpay: ArcWizPayContractValue;
+    wizpay?: ArcWizPayContractValue;
     wizpaySwapExecutorV2?: ArcWizPayContractValue;
   }>;
+  transactionalAvailable: boolean;
+  unavailableReason?: string;
 }>;
 
 export type FrontendArcEnvironment = Record<string, string | undefined>;
@@ -105,8 +110,11 @@ export function requireFrontendTransactionalArcNetworkConfiguration(
 
   return deepFreeze({
     key: state.key,
+    name: state.network.name,
     chainId: state.network.chainId,
     environment: state.network.environment,
+    nativeCurrency: state.network.nativeCurrency,
+    testnet: state.network.testnet,
     rpcUrl: rpc.url,
     explorerBaseUrl: explorer.baseUrl,
     tokens: { USDC: usdc, ...(eurc ? { EURC: eurc } : {}) },
@@ -114,7 +122,36 @@ export function requireFrontendTransactionalArcNetworkConfiguration(
       wizpay,
       ...(wizpaySwapExecutorV2 ? { wizpaySwapExecutorV2 } : {}),
     },
+    transactionalAvailable: true,
   });
+}
+
+export function createFrontendBuildSafeArcNetworkConfiguration(
+  selector: unknown,
+): FrontendArcNetworkConfiguration {
+  const state = resolveFrontendArcNetworkResourceState(selector);
+  try {
+    return requireFrontendTransactionalArcNetworkConfiguration(state);
+  } catch (error) {
+    if (state.key !== "arc-mainnet") throw error;
+    return deepFreeze<FrontendArcNetworkConfiguration>({
+      key: state.key,
+      name: state.network.name,
+      chainId: state.network.chainId,
+      environment: state.network.environment,
+      nativeCurrency: state.network.nativeCurrency,
+      testnet: state.network.testnet,
+      tokens: {},
+      contracts: {},
+      transactionalAvailable: false,
+      unavailableReason: error instanceof Error ? error.message : "Arc Mainnet execution resources are unavailable.",
+    });
+  }
+}
+
+export function assertFrontendTransactionsAvailable(config: FrontendArcNetworkConfiguration) {
+  if (!config.transactionalAvailable) throw new Error(config.unavailableReason ?? "Transactions are unavailable on the selected Arc network.");
+  return true;
 }
 
 export function createFrontendTransactionalArcNetworkConfiguration(
@@ -142,6 +179,15 @@ export function validateFrontendArcNetworkOverrides(
   config: FrontendArcNetworkConfiguration,
   environment: FrontendArcEnvironment,
 ) {
+  if (!config.transactionalAvailable) {
+    for (const name of ["NEXT_PUBLIC_RPC_URL", "NEXT_PUBLIC_CONTRACT_ADDRESS", "NEXT_PUBLIC_WIZPAY_ADDRESS", "NEXT_PUBLIC_ARC_USDC", "NEXT_PUBLIC_WIZPAY_SWAP_EXECUTOR_V2_ADDRESS"]) {
+      if (environment[name] !== undefined && environment[name] !== "") throw new Error(`${name} cannot override unavailable Arc Mainnet resources.`);
+    }
+    return;
+  }
+  if (!config.rpcUrl || !config.tokens.USDC || !config.contracts.wizpay) {
+    throw new Error("Transactional Arc configuration is incomplete.");
+  }
   assertExactOverride(
     "NEXT_PUBLIC_RPC_URL",
     environment.NEXT_PUBLIC_RPC_URL,

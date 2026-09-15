@@ -15,8 +15,11 @@ export function isLegacyFxEnabled(): boolean {
   return isEnabledFlag(process.env[ENABLE_LEGACY_FX_ENV]);
 }
 
-export function isLegacyLiquidityEnabled(): boolean {
-  return isEnabledFlag(process.env[ENABLE_LEGACY_LIQUIDITY_ENV]);
+export function isLegacyLiquidityEnabled(network?: string): boolean {
+  return (
+    network !== 'arc-mainnet' &&
+    isEnabledFlag(process.env[ENABLE_LEGACY_LIQUIDITY_ENV])
+  );
 }
 
 export function legacyFxDisabledMessage(): string {
@@ -42,11 +45,17 @@ export function assertLegacyFxEnabled(): void {
   }
 }
 
-export function assertLegacyLiquidityEnabled(): void {
-  if (!isLegacyLiquidityEnabled()) {
+export function assertLegacyLiquidityEnabled(network?: string): void {
+  if (!isLegacyLiquidityEnabled(network)) {
     throw new BadRequestException({
-      code: 'LEGACY_LIQUIDITY_DISABLED',
-      error: legacyLiquidityDisabledMessage(),
+      code:
+        network === 'arc-mainnet'
+          ? 'MAINNET_LIQUIDITY_FORBIDDEN'
+          : 'LEGACY_LIQUIDITY_DISABLED',
+      error:
+        network === 'arc-mainnet'
+          ? 'Liquidity execution is categorically unavailable on Arc Mainnet.'
+          : legacyLiquidityDisabledMessage(),
     });
   }
 }

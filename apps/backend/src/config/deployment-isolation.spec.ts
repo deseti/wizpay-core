@@ -47,22 +47,13 @@ describe('Arc deployment isolation files', () => {
       read('packages/contracts/deployments/arc-mainnet-wizpay-v2.json'),
     );
     expect(manifest).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       network: 'arc-mainnet',
       chainId: 5042,
       status: 'unavailable',
       contract: 'WizPayMainnetV2',
-      deploymentInput: {
-        canonicalUsdc: null,
-        initialOwner: null,
-        feeRecipient: null,
-        feeBps: null,
-        deployer: null,
-        sourceCommit: null,
-        constructorArguments: null,
-        constructorDigest: null,
-        planDigest: null,
-      },
+      resourceManifestDigest: null,
+      deploymentPlanDigest: null,
       deploymentResult: {
         transactionHash: null,
         blockNumber: null,
