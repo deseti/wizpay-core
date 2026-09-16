@@ -368,8 +368,8 @@ export class W3sAuthService {
       if (prepared.existingChallengeId)
         return { challengeId: prepared.existingChallengeId };
       stage = 'circle_transfer_creation';
-      const { tokenAddress: _routingTokenAddress, ...providerParams } =
-        normalized;
+      const providerParams = { ...normalized };
+      delete providerParams.tokenAddress;
       delete providerParams.executionIntentId;
       if (intent) {
         providerParams.idempotencyKey = intent.idempotencyKey;
@@ -500,12 +500,14 @@ export class W3sAuthService {
     this.validateIntentTransaction(intent, params, kind);
     await this.intents.bindImmutableExecutionContext(intent.id, {
       ownerId: wallet.userId,
-      walletId: String(params.walletId ?? ''),
+      walletId: this.optionalString(params.walletId),
       contractAddress:
-        kind === 'contract' ? String(params.contractAddress ?? '') : null,
+        kind === 'contract'
+          ? this.optionalString(params.contractAddress)
+          : null,
       calldataHash:
         kind === 'contract'
-          ? keccak256(String(params.callData ?? '') as `0x${string}`)
+          ? keccak256(this.optionalString(params.callData) as `0x${string}`)
           : null,
     });
     if (intent.circleChallengeId)
@@ -536,11 +538,11 @@ export class W3sAuthService {
         this.throwIntentMismatch('operation');
       if (
         !isAddressEqual(
-          getAddress(String(params.destinationAddress ?? '')),
+          getAddress(this.optionalString(params.destinationAddress)),
           getAddress(intent.recipient),
         ) ||
         !isAddressEqual(
-          getAddress(String(params.tokenAddress ?? '')),
+          getAddress(this.optionalString(params.tokenAddress)),
           getAddress(intent.tokenOut),
         ) ||
         !isAddressEqual(getAddress(intent.tokenIn), getAddress(intent.tokenOut))
@@ -559,8 +561,10 @@ export class W3sAuthService {
       return;
     }
 
-    const contractAddress = getAddress(String(params.contractAddress ?? ''));
-    const callData = String(params.callData ?? '') as `0x${string}`;
+    const contractAddress = getAddress(
+      this.optionalString(params.contractAddress),
+    );
+    const callData = this.optionalString(params.callData) as `0x${string}`;
     if (intent.operation === 'TOKEN_APPROVAL') {
       if (
         !intent.recipient ||
@@ -1579,7 +1583,7 @@ export class W3sAuthService {
         field: 'destinationAddress',
         message: 'destinationAddress must be a valid non-zero EVM address',
       });
-    if (/^0x0{40}$/i.test(String(body.destinationAddress ?? '')))
+    if (/^0x0{40}$/i.test(this.optionalString(body.destinationAddress)))
       issues.push({
         field: 'destinationAddress',
         message: 'destinationAddress must be a valid non-zero EVM address',
@@ -1657,8 +1661,8 @@ export class W3sAuthService {
         'The selected transfer token is not available in this Arc wallet.',
       );
     const inputToken = this.isRecord(input.token) ? input.token : {};
-    const requestedTokenAddress = String(
-      request.tokenAddress ?? '',
+    const requestedTokenAddress = this.optionalString(
+      request.tokenAddress,
     ).toLowerCase();
     const configuredUsdc = String(
       this.configService.get('arcNetwork.tokens.USDC.address') ?? '',
@@ -1768,6 +1772,10 @@ export class W3sAuthService {
 
   private isNonEmptyString(value: unknown): value is string {
     return typeof value === 'string' && value.trim().length > 0;
+  }
+
+  private optionalString(value: unknown): string {
+    return typeof value === 'string' ? value : '';
   }
 
   private isRecord(value: unknown): value is Record<string, unknown> {

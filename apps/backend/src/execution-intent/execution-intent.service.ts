@@ -721,7 +721,7 @@ export class ExecutionIntentService {
       logicalKey,
       requestFingerprint,
       idempotencyKey: uuidFromHash(sha256(`wizpay:${requestFingerprint}`)),
-      route: decision.kind as ExecutionIntentRoute,
+      route: decision.kind,
       provider: decision.provider,
       taskId: input.taskId ?? null,
     };
@@ -800,15 +800,18 @@ export function createPayrollBatchDigest(
 }
 
 function stableJson(value: unknown): string {
-  return JSON.stringify(value, (_key, child) =>
-    child && typeof child === 'object' && !Array.isArray(child)
-      ? Object.fromEntries(
-          Object.entries(child as Record<string, unknown>).sort(([a], [b]) =>
-            a.localeCompare(b),
-          ),
-        )
-      : child,
+  const serialized = JSON.stringify(
+    value,
+    (_key: string, child: unknown): unknown =>
+      child && typeof child === 'object' && !Array.isArray(child)
+        ? Object.fromEntries(
+            Object.entries(child).sort(([a], [b]) => a.localeCompare(b)),
+          )
+        : child,
   );
+  if (serialized === undefined)
+    throw new Error('Execution intent payload is not serializable.');
+  return serialized;
 }
 
 function sha256(value: string): string {

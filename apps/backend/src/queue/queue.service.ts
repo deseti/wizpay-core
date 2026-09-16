@@ -4,6 +4,7 @@ import { Queue } from 'bullmq';
 import { TelegramService } from '../integrations/telegram.service';
 import { TaskService } from '../task/task.service';
 import { TaskStatus } from '../task/task-status.enum';
+import { TaskType } from '../task/task-type.enum';
 import { QueueName, QueueRoutingDefinition } from './queue.constants';
 import { TaskQueueJobData, TxPollJobData } from './queue.types';
 import { CapabilityService } from '../capabilities/capability.service';
@@ -49,12 +50,15 @@ export class QueueService implements OnModuleDestroy {
     input: NewTaskQueueJobData,
   ): Promise<void> {
     const jobData = this.bindSelectedNetwork(input);
-    if (jobData.taskType === 'payroll')
+    if (jobData.taskType === TaskType.PAYROLL)
       this.capabilities.assertPayroll(jobData.payload);
-    else if (jobData.taskType === 'swap') this.capabilities.assert('swap');
-    else if (jobData.taskType === 'bridge') this.capabilities.assert('bridge');
-    else if (jobData.taskType === 'fx') this.capabilities.assert('stableFx');
-    else if (jobData.taskType === 'liquidity')
+    else if (jobData.taskType === TaskType.SWAP)
+      this.capabilities.assert('swap');
+    else if (jobData.taskType === TaskType.BRIDGE)
+      this.capabilities.assert('bridge');
+    else if (jobData.taskType === TaskType.FX)
+      this.capabilities.assert('stableFx');
+    else if (jobData.taskType === TaskType.LIQUIDITY)
       this.capabilities.assert('liquidity');
     const queue = this.getOrCreateQueue(route.queueName);
 

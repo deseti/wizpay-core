@@ -103,11 +103,19 @@ export class TaskController {
         recipients: Array.isArray(payload.recipients)
           ? (payload.recipients as Record<string, unknown>[]).map(
               (recipient) => ({
-                address: String(recipient.address ?? ''),
+                address:
+                  typeof recipient.address === 'string'
+                    ? recipient.address
+                    : '',
                 amountUnits:
                   typeof recipient.amountUnits === 'string'
                     ? recipient.amountUnits
-                    : parseUnits(String(recipient.amount ?? ''), 6).toString(),
+                    : parseUnits(
+                        typeof recipient.amount === 'string'
+                          ? recipient.amount
+                          : '',
+                        6,
+                      ).toString(),
               }),
             )
           : [],

@@ -1,5 +1,4 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
 import { normalizeChainTxId } from '../common/multichain';
 import {
@@ -97,9 +96,7 @@ export class TaskUnitService {
             ? task.completedUnits + 1
             : task.completedUnits,
         failedUnits:
-          result.status === 'FAILED'
-            ? task.failedUnits + 1
-            : task.failedUnits,
+          result.status === 'FAILED' ? task.failedUnits + 1 : task.failedUnits,
       });
 
       await tx.task.update({
@@ -123,7 +120,7 @@ export class TaskUnitService {
             unitId: updatedUnit.id,
             unitIndex: updatedUnit.index,
             unitStatus: result.status,
-          } as Prisma.InputJsonValue,
+          },
         },
       });
 

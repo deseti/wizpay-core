@@ -1,5 +1,4 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
 import {
   AppendTransactionInput,
@@ -77,9 +76,7 @@ export class TaskTransactionService {
   /**
    * Get all transactions for a task, ordered by batchIndex then createdAt.
    */
-  async getTaskTransactions(
-    taskId: string,
-  ): Promise<TaskTransactionRecord[]> {
+  async getTaskTransactions(taskId: string): Promise<TaskTransactionRecord[]> {
     const txs = await this.prisma.taskTransaction.findMany({
       where: { taskId },
       orderBy: [{ batchIndex: 'asc' }, { createdAt: 'asc' }],

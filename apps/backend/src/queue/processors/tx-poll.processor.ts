@@ -33,8 +33,7 @@ export class TxPollProcessor {
         `[job:${job.id}] TX poll job completed — taskId=${taskId} txId=${txId}`,
       );
     } catch (error) {
-      const message =
-        error instanceof Error ? error.message : 'Unknown error';
+      const message = error instanceof Error ? error.message : 'Unknown error';
 
       this.logger.error(
         `[job:${job.id}] TX poll job failed — taskId=${taskId} txId=${txId} error="${message}"`,

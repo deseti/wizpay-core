@@ -16,9 +16,15 @@ export class ExecutionIntentController {
     private readonly receipts: DirectTransferReceiptVerifierService,
   ) {}
 
+  private stringField(value: unknown): string {
+    return typeof value === 'string' ? value : '';
+  }
+
   @Post('acquire')
   async acquire(@Body() body: Record<string, unknown>) {
-    const operation = String(body.operation ?? '') as ExecutionIntentOperation;
+    const operation = this.stringField(
+      body.operation,
+    ) as ExecutionIntentOperation;
     if (!Object.values(ExecutionIntentOperation).includes(operation))
       throw new BadRequestException({
         code: 'EXECUTION_INTENT_INVALID_OPERATION',
@@ -29,14 +35,14 @@ export class ExecutionIntentController {
         network: body.network as 'arc-testnet' | 'arc-mainnet',
         operation,
         ownerId: null,
-        sourceWallet: String(body.sourceWallet ?? ''),
+        sourceWallet: this.stringField(body.sourceWallet),
         recipient: typeof body.recipient === 'string' ? body.recipient : null,
         batchDigest:
           typeof body.batchDigest === 'string' ? body.batchDigest : null,
-        tokenIn: String(body.tokenIn ?? ''),
-        tokenOut: String(body.tokenOut ?? ''),
-        amountUnits: String(body.amountUnits ?? ''),
-        externalReference: String(body.externalReference ?? ''),
+        tokenIn: this.stringField(body.tokenIn),
+        tokenOut: this.stringField(body.tokenOut),
+        amountUnits: this.stringField(body.amountUnits),
+        externalReference: this.stringField(body.externalReference),
       }),
     };
   }
@@ -46,12 +52,12 @@ export class ExecutionIntentController {
     @Param('id') id: string,
     @Body() body: Record<string, unknown>,
   ) {
-    await this.intents.assertAccess(id, String(body.idempotencyKey ?? ''));
+    await this.intents.assertAccess(id, this.stringField(body.idempotencyKey));
     return {
       data: await this.intents.bindTransactionHash(
         id,
-        String(body.transactionHash ?? ''),
-        String(body.leaseOwner ?? ''),
+        this.stringField(body.transactionHash),
+        this.stringField(body.leaseOwner),
       ),
     };
   }
@@ -64,8 +70,8 @@ export class ExecutionIntentController {
     return {
       data: await this.intents.prepareWalletSignature(
         id,
-        String(body.idempotencyKey ?? ''),
-        String(body.leaseOwner ?? ''),
+        this.stringField(body.idempotencyKey),
+        this.stringField(body.leaseOwner),
       ),
     };
   }
@@ -78,7 +84,7 @@ export class ExecutionIntentController {
     return {
       data: await this.intents.assertAccess(
         id,
-        String(body.idempotencyKey ?? ''),
+        this.stringField(body.idempotencyKey),
       ),
     };
   }
@@ -91,8 +97,8 @@ export class ExecutionIntentController {
     return {
       data: await this.intents.bindKnownTransactionHash(
         id,
-        String(body.idempotencyKey ?? ''),
-        String(body.transactionHash ?? ''),
+        this.stringField(body.idempotencyKey),
+        this.stringField(body.transactionHash),
       ),
     };
   }
@@ -102,14 +108,14 @@ export class ExecutionIntentController {
     return {
       data: await this.intents.cancelUnsubmitted(
         id,
-        String(body.idempotencyKey ?? ''),
+        this.stringField(body.idempotencyKey),
       ),
     };
   }
 
   @Post(':id/verify')
   async verify(@Param('id') id: string, @Body() body: Record<string, unknown>) {
-    await this.intents.assertAccess(id, String(body.idempotencyKey ?? ''));
+    await this.intents.assertAccess(id, this.stringField(body.idempotencyKey));
     const intent = await this.intents.beginVerification(id);
     if (!intent.transactionHash || !intent.recipient)
       throw new BadRequestException({

@@ -12,7 +12,6 @@ import {
 import { Type } from 'class-transformer';
 
 const SUPPORTED_TOKENS = ['USDC', 'EURC'] as const;
-type TokenSymbol = (typeof SUPPORTED_TOKENS)[number];
 
 export class PayrollRecipientDto {
   @IsString({ message: 'address is required' })

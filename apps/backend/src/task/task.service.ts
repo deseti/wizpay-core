@@ -9,7 +9,7 @@ import {
 import { PayrollBatchService } from '../agents/payroll/payroll-batch.service';
 import { PayrollValidationService } from '../agents/payroll/payroll-validation.service';
 import { TaskType } from './task-type.enum';
-import { Prisma, Task } from '@prisma/client';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
 import { TaskStatus } from './task-status.enum';
 import {
@@ -136,7 +136,7 @@ export class TaskService {
   ): Promise<CreatePayrollTaskResult> {
     this.capabilities.assertPayroll(payload);
     const owner = this.normalizeTaskOwner(payload, ['walletAddress']);
-    const validation = await this.validationService.validate(payload);
+    const validation = this.validationService.validate(payload);
 
     if (!validation.valid) {
       throw new BadRequestException({
@@ -168,7 +168,7 @@ export class TaskService {
       .reduce((sum, r) => sum + r.amountUnits, 0n);
 
     const referenceId = this.normalizeReferenceId(payload.referenceId);
-    const sourceTokenAddress = String(payload.sourceTokenAddress ?? '');
+    const sourceTokenAddress = this.stringField(payload.sourceTokenAddress);
     const intentPlans = await Promise.all(
       batches.map((batch) => {
         const batchReference = this.getBatchReferenceId(
@@ -205,7 +205,7 @@ export class TaskService {
         ),
       );
       const recoveredTask = await this.reconcilePayrollIntents(
-        existingTask as TaskWithRelations,
+        existingTask,
         intentPlans,
         batches,
       );
@@ -250,7 +250,7 @@ export class TaskService {
               totalBatches: totals.totalBatches,
               totalRecipients: totals.totalRecipients,
               totalAmount: totals.totalAmount.toString(),
-            } as Prisma.InputJsonValue,
+            },
             payload: payload as Prisma.InputJsonValue,
           },
         });
@@ -262,7 +262,7 @@ export class TaskService {
               type: unit.type,
               index: unit.index,
               status: unit.status,
-              payload: unit.payload as Prisma.InputJsonValue,
+              payload: unit.payload,
             })),
           });
         }
@@ -278,7 +278,7 @@ export class TaskService {
               context: {
                 totalUnits: units.length,
                 sourceToken,
-              } as Prisma.InputJsonValue,
+              },
             },
             {
               taskId: createdTask.id,
@@ -289,7 +289,7 @@ export class TaskService {
               context: {
                 referenceId,
                 totalRecipients: totals.totalRecipients,
-              } as Prisma.InputJsonValue,
+              },
             },
           ],
         });
@@ -305,7 +305,7 @@ export class TaskService {
         include: { logs: true, units: true, transactions: true },
       });
       if (!concurrentlyCreated) throw error;
-      task = concurrentlyCreated as TaskWithRelations;
+      task = concurrentlyCreated;
     }
 
     await Promise.all(
@@ -410,15 +410,15 @@ export class TaskService {
             payload: {
               ...this.mapJsonObject(unit.payload),
               executionIntentStatus: current.status,
-            } as Prisma.InputJsonValue,
+            },
           },
         });
       }),
     );
-    return (await this.prisma.task.findUniqueOrThrow({
+    return await this.prisma.task.findUniqueOrThrow({
       where: { id: task.id },
       include: { logs: true, units: true, transactions: true },
-    })) as TaskWithRelations;
+    });
   }
 
   private payrollResult(
@@ -430,8 +430,8 @@ export class TaskService {
       taskId: task.id,
       executionIntentId: intent.id,
       idempotencyKey: intent.idempotencyKey,
-      approvalAmount: String(metadata.approvalAmount ?? '0'),
-      referenceId: String(metadata.referenceId ?? ''),
+      approvalAmount: this.stringField(metadata.approvalAmount, '0'),
+      referenceId: this.stringField(metadata.referenceId),
       totalUnits: task.totalUnits,
       units: task.units
         .sort((left, right) => left.index - right.index)
@@ -445,13 +445,14 @@ export class TaskService {
     };
   }
 
-  async createSwapTask(payload: TaskPayload): Promise<CreateSwapTaskResult> {
+  createSwapTask(payload: TaskPayload): Promise<CreateSwapTaskResult> {
     this.capabilities.assert('swap');
+    void payload;
     // Swap is the same FX capability as cross-currency Send.
     // Block with official RFQ auth required until Circle StableFX entitlement is available.
     // When official Circle StableFX RFQ is implemented, replace this guard with
     // actual RFQ quote + execution logic.
-    throwOfficialStableFxAuthRequired();
+    return Promise.resolve().then(() => throwOfficialStableFxAuthRequired());
   }
 
   async createLiquidityTask(
@@ -487,7 +488,7 @@ export class TaskService {
             token,
             amount,
             [owner.field]: owner.address,
-          } as Prisma.InputJsonValue,
+          },
           payload: payload as Prisma.InputJsonValue,
         },
       });
@@ -498,7 +499,7 @@ export class TaskService {
           type: 'step',
           index: 0,
           status: 'PENDING',
-          payload: { operation, token, amount } as Prisma.InputJsonValue,
+          payload: { operation, token, amount },
         },
       });
 
@@ -509,7 +510,7 @@ export class TaskService {
           step: 'task.assigned',
           status: TaskStatus.ASSIGNED,
           message: `Liquidity task created: ${operation} ${amount} of ${token}`,
-          context: { operation, token, amount } as Prisma.InputJsonValue,
+          context: { operation, token, amount },
         },
       });
 
@@ -531,12 +532,11 @@ export class TaskService {
   }
 
   private assertTaskCapability(type: string, payload: TaskPayload) {
-    if (type === TaskType.PAYROLL) this.capabilities.assertPayroll(payload);
-    else if (type === TaskType.SWAP) this.capabilities.assert('swap');
-    else if (type === TaskType.BRIDGE) this.capabilities.assert('bridge');
-    else if (type === TaskType.FX) this.capabilities.assert('stableFx');
-    else if (type === TaskType.LIQUIDITY)
-      this.capabilities.assert('liquidity');
+    if (type === 'payroll') this.capabilities.assertPayroll(payload);
+    else if (type === 'swap') this.capabilities.assert('swap');
+    else if (type === 'bridge') this.capabilities.assert('bridge');
+    else if (type === 'fx') this.capabilities.assert('stableFx');
+    else if (type === 'liquidity') this.capabilities.assert('liquidity');
   }
 
   async updateStatus(
@@ -985,5 +985,9 @@ export class TaskService {
 
   private mapJsonObject(value: Prisma.JsonValue): TaskPayload {
     return this.taskMapper.mapJsonObject(value);
+  }
+
+  private stringField(value: unknown, fallback = ''): string {
+    return typeof value === 'string' ? value : fallback;
   }
 }

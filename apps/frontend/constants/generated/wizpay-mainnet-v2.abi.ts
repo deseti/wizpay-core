@@ -1,5 +1,5 @@
 // Generated from a clean temporary Foundry build. Do not edit manually.
-// Source commit: 2ce70d17d9e5ecd142122b0fec6e01506d92b08a; compiler digest: 0x4752c1e6ebfe900ea66129b469fdf156585bd8ed26c25cc7d018dc79412246d5.
+// Source commit: e0793a886cd4d772b703a025aa20b40a2607b853; compiler digest: 0x4752c1e6ebfe900ea66129b469fdf156585bd8ed26c25cc7d018dc79412246d5.
 // Mainnet ABI only; legacy and Testnet ABIs remain separate.
 export const WIZPAY_MAINNET_V2_ABI = [
   {

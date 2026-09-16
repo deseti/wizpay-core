@@ -1,5 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { CircleService } from '../../adapters/circle.service';
+import {
+  CircleService,
+  type CircleTransactionStatusResult,
+} from '../../adapters/circle.service';
 import { TaskService } from '../../task/task.service';
 import { TaskStatus } from '../../task/task-status.enum';
 import { QueueService } from '../../queue/queue.service';
@@ -97,7 +100,7 @@ export class TransactionPollerService {
     }
 
     // ── Poll Circle ────────────────────────────────────────────────
-    let circleStatus;
+    let circleStatus: CircleTransactionStatusResult;
     try {
       circleStatus = await this.circleService.getTransactionStatus(txId);
     } catch (error) {
@@ -185,7 +188,7 @@ export class TransactionPollerService {
             error &&
             typeof error === 'object' &&
             'retryable' in error &&
-            error.retryable === true
+            (error as Record<string, unknown>).retryable === true
           ) {
             await this.requeueUnverified(jobData);
           } else {

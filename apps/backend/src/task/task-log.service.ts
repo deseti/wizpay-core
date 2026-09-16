@@ -73,7 +73,7 @@ export class TaskLogService {
 
   private mapJsonValue(value: Prisma.JsonValue): TaskPayload {
     if (value && typeof value === 'object' && !Array.isArray(value)) {
-      return value as TaskPayload;
+      return value;
     }
     return { value };
   }

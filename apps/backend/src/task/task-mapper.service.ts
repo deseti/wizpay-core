@@ -1,12 +1,17 @@
 import { Injectable } from '@nestjs/common';
-import { Prisma, Task, TaskLog, TaskTransaction, TaskUnit } from '@prisma/client';
+import {
+  Prisma,
+  Task,
+  TaskLog,
+  TaskTransaction,
+  TaskUnit,
+} from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
 import { TaskTransactionService } from './task-transaction.service';
 import {
   TaskDetails,
   TaskLogLevel,
   TaskPayload,
-  TaskTransactionRecord,
   TaskUnitRecord,
   TaskUnitStatus,
 } from './task.types';
@@ -57,7 +62,7 @@ export class TaskMapperService {
       })),
       units: task.units.map((unit) => this.mapUnit(unit)),
       transactions: task.transactions.map((tx) =>
-        this.taskTransactionService.mapTransaction(tx as TaskTransaction),
+        this.taskTransactionService.mapTransaction(tx),
       ),
     };
   }
@@ -79,7 +84,7 @@ export class TaskMapperService {
 
   mapJsonObject(value: Prisma.JsonValue): TaskPayload {
     if (value && typeof value === 'object' && !Array.isArray(value)) {
-      return value as TaskPayload;
+      return value;
     }
     return { value };
   }

@@ -25,8 +25,7 @@ export class SwapProcessor {
 
       return result;
     } catch (error) {
-      const message =
-        error instanceof Error ? error.message : 'Unknown error';
+      const message = error instanceof Error ? error.message : 'Unknown error';
 
       this.logger.error(
         `[job:${job.id}] ${taskType} job failed — taskId=${taskId} error="${message}"`,

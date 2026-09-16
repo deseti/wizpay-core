@@ -31,7 +31,10 @@ export class TaskPayrollHistoryService {
     const { decodeEventLog, encodeEventTopics, getAddress, parseAbiItem } =
       await import('viem');
 
-    const normalizedWallet = this.normalizeWalletAddress(walletAddress, getAddress);
+    const normalizedWallet = this.normalizeWalletAddress(
+      walletAddress,
+      getAddress,
+    );
     const batchPaymentRoutedEvent = parseAbiItem(
       'event BatchPaymentRouted(address indexed sender, address tokenIn, address tokenOut, uint256 totalAmountIn, uint256 totalAmountOut, uint256 totalFees, uint256 recipientCount, string referenceId)',
     );
@@ -45,10 +48,13 @@ export class TaskPayrollHistoryService {
       args: { sender: normalizedWallet as `0x${string}` },
     });
 
-    const currentBlock = await this.blockchainService.getBlockNumberOnChain(
-      PAYROLL_CHAIN,
+    const currentBlock =
+      await this.blockchainService.getBlockNumberOnChain(PAYROLL_CHAIN);
+    const rawLogs = await this.fetchPayrollLogs(
+      historyAddresses,
+      eventTopics,
+      currentBlock,
     );
-    const rawLogs = await this.fetchPayrollLogs(historyAddresses, eventTopics, currentBlock);
     const blockTimestamps = await this.resolveBlockTimestamps(rawLogs);
 
     const events: TaskPayrollHistoryEvent[] = [];
@@ -105,7 +111,11 @@ export class TaskPayrollHistoryService {
     return {
       walletAddress: normalizedWallet,
       events: events.sort((left, right) =>
-        BigInt(right.blockNumber) > BigInt(left.blockNumber) ? 1 : BigInt(right.blockNumber) < BigInt(left.blockNumber) ? -1 : 0,
+        BigInt(right.blockNumber) > BigInt(left.blockNumber)
+          ? 1
+          : BigInt(right.blockNumber) < BigInt(left.blockNumber)
+            ? -1
+            : 0,
       ),
       employeePayments: employeePayments.sort(
         (left, right) => right.date - left.date,
@@ -252,14 +262,20 @@ export class TaskPayrollHistoryService {
     ];
   }
 
-  private getHistoryAddresses(getAddress: (address: string) => string): string[] {
+  private getHistoryAddresses(
+    getAddress: (address: string) => string,
+  ): string[] {
     const configuredAddress =
       this.configService.get<string>('NEXT_PUBLIC_CONTRACT_ADDRESS')?.trim() ||
       this.configService.get<string>('NEXT_PUBLIC_WIZPAY_ADDRESS')?.trim() ||
       DEFAULT_WIZPAY_ADDRESS;
 
     return Array.from(
-      new Set([configuredAddress, LEGACY_WIZPAY_ADDRESS].map((address) => getAddress(address))),
+      new Set(
+        [configuredAddress, LEGACY_WIZPAY_ADDRESS].map((address) =>
+          getAddress(address),
+        ),
+      ),
     );
   }
 
@@ -274,7 +290,9 @@ export class TaskPayrollHistoryService {
     try {
       return getAddress(walletAddress.trim());
     } catch {
-      throw new BadRequestException('Query parameter wallet must be a valid EVM address.');
+      throw new BadRequestException(
+        'Query parameter wallet must be a valid EVM address.',
+      );
     }
   }
 
