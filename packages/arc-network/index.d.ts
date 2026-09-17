@@ -68,7 +68,11 @@ export type ArcNetworkDefinition =
       readonly name: "Arc Testnet";
       readonly chainId: 5_042_002;
       readonly environment: "testnet";
-      readonly nativeCurrency: Readonly<{ name: "USDC"; symbol: "USDC"; decimals: 18 }>;
+      readonly nativeCurrency: Readonly<{
+        name: "USDC";
+        symbol: "USDC";
+        decimals: 18;
+      }>;
       readonly testnet: true;
     }
   | {
@@ -76,7 +80,11 @@ export type ArcNetworkDefinition =
       readonly name: "Arc Mainnet";
       readonly chainId: 5_042;
       readonly environment: "mainnet";
-      readonly nativeCurrency: Readonly<{ name: "USDC"; symbol: "USDC"; decimals: 18 }>;
+      readonly nativeCurrency: Readonly<{
+        name: "USDC";
+        symbol: "USDC";
+        decimals: 18;
+      }>;
       readonly testnet: false;
     };
 
@@ -92,7 +100,13 @@ export type ArcUnavailableReason =
   | "WIZPAY_MAINNET_CONTRACT_NOT_DEPLOYED"
   | "EXTERNAL_PROTOCOL_CONTRACT_NOT_RECORDED_FOR_ARC_TESTNET"
   | "UNISWAP_USDC_EURC_POOL_NOT_VERIFIED"
-  | "UNISWAP_USDC_EURC_LIQUIDITY_NOT_VERIFIED";
+  | "UNISWAP_USDC_EURC_POOL_KEY_NOT_VERIFIED"
+  | "UNISWAP_USDC_EURC_POOL_ID_NOT_VERIFIED"
+  | "UNISWAP_USDC_EURC_POOL_UNIQUENESS_NOT_VERIFIED"
+  | "UNISWAP_USDC_EURC_LIQUIDITY_NOT_VERIFIED"
+  | "ARC_MAINNET_RPC_QUORUM_UNAVAILABLE"
+  | "ARC_MAINNET_UNISWAP_RESOURCE_EVIDENCE_UNAVAILABLE"
+  | "ARC_MAINNET_UNISWAP_EXECUTION_AUTHORIZATION_UNAVAILABLE";
 
 export type AvailableArcResource<T> = {
   readonly status: "available";
@@ -106,6 +120,20 @@ export type PublishedArcResource<T> = {
   readonly executable: false;
 };
 
+export type VerifiedNonExecutableArcResource<T> = {
+  readonly status: "verified";
+  readonly value: T;
+  readonly evidence: string;
+  readonly executable: false;
+};
+
+export type CandidateArcResource<T> = {
+  readonly status: "candidate";
+  readonly value: T;
+  readonly evidence: string;
+  readonly executable: false;
+};
+
 export type UnavailableArcResource<
   R extends ArcUnavailableReason = ArcUnavailableReason,
 > = {
@@ -116,6 +144,8 @@ export type UnavailableArcResource<
 export type ArcResource<T> =
   | AvailableArcResource<T>
   | PublishedArcResource<T>
+  | CandidateArcResource<T>
+  | VerifiedNonExecutableArcResource<T>
   | UnavailableArcResource;
 
 export type ArcTokenSymbol = "USDC" | "EURC";
@@ -124,6 +154,7 @@ export type ArcTokenResourceValue = {
   readonly symbol: ArcTokenSymbol;
   readonly address: `0x${string}`;
   readonly decimals: 6;
+  readonly authoritativeSource?: string;
 };
 
 export type ArcWizPayContractKey = "wizpay" | "wizpay-swap-executor-v2";
@@ -150,7 +181,7 @@ export type ArcUniswapV4ContractKey =
   | "stateView"
   | "quoter";
 
-export type ArcUniversalRouterContractKey = "universalRouter";
+export type ArcUniversalRouterContractKey = "universalRouter" | "permit2";
 
 export type ArcProtocolContractKey =
   | ArcUniswapV3ContractKey
@@ -163,7 +194,58 @@ export type ArcProtocolContractValue = {
   readonly creationBlock?: 1_950_059;
 };
 
-export type ArcProtocolCapability = "usdc-eurc-pool" | "usdc-eurc-liquidity";
+export type ArcProtocolCapability =
+  | "usdc-eurc-pool"
+  | "usdc-eurc-pool-key"
+  | "usdc-eurc-pool-id"
+  | "usdc-eurc-pool-uniqueness"
+  | "usdc-eurc-liquidity"
+  | "rpc-quorum"
+  | "official-resource-evidence"
+  | "execution-authorization";
+
+export type ArcMainnetUniswapV4Readiness = Readonly<{
+  network: "arc-mainnet";
+  chainId: 5_042;
+  pair: readonly ["USDC", "EURC"];
+  walletControl: readonly ["external-wallet"];
+  custody: "user-controlled-only";
+  protocol: "uniswap-v4";
+  deploymentSource: string;
+  universalRouterSource: string;
+  tokens: Readonly<
+    Record<"USDC" | "EURC", PublishedArcResource<ArcTokenResourceValue>>
+  >;
+  contracts: Readonly<
+    Record<
+      "poolManager" | "stateView" | "quoter" | "universalRouter" | "permit2",
+      PublishedArcResource<ArcProtocolContractValue>
+    >
+  >;
+  poolKey: CandidateArcResource<
+    Readonly<{
+      currency0: "0x3600000000000000000000000000000000000000";
+      currency1: "0xbEf5f6d51CB62b58e6A8f77868681825C6fe21c1";
+      fee: 500;
+      tickSpacing: 10;
+      hooks: "0x0000000000000000000000000000000000000000";
+    }>
+  >;
+  poolId: CandidateArcResource<"0xeb0fd02fb8044d5514fb6e165ee134fd547eff0378bb33b76f4b81d8b03bd1ae">;
+  poolUniqueness: UnavailableArcResource<"UNISWAP_USDC_EURC_POOL_UNIQUENESS_NOT_VERIFIED">;
+  liquidity: UnavailableArcResource<"UNISWAP_USDC_EURC_LIQUIDITY_NOT_VERIFIED">;
+  rpcQuorum: UnavailableArcResource<"ARC_MAINNET_RPC_QUORUM_UNAVAILABLE">;
+  officialResourceEvidence: VerifiedNonExecutableArcResource<
+    Readonly<{
+      usdcToEurcTransaction: string;
+      eurcToUsdcTransaction: string;
+    }>
+  >;
+  executionAuthorization: UnavailableArcResource<"ARC_MAINNET_UNISWAP_EXECUTION_AUTHORIZATION_UNAVAILABLE">;
+  capabilityEnabled: false;
+  executable: false;
+  blockers: readonly ArcUnavailableReason[];
+}>;
 
 export declare class ArcNetworkInvariantError extends Error {
   readonly name: "ArcNetworkInvariantError";
@@ -194,6 +276,16 @@ export declare const ARC_CAPABILITY_DEFINITIONS: Readonly<
 export declare const ARC_MAINNET_CAPABILITY_ENV_KEYS: Readonly<
   Record<ArcCapabilityName, string>
 >;
+export declare const ARC_MAINNET_UNISWAP_V4_PUBLICATION: Readonly<{
+  network: "arc-mainnet";
+  chainId: 5_042;
+  pair: readonly ["USDC", "EURC"];
+  walletControl: readonly ["external-wallet"];
+  custody: "user-controlled-only";
+  protocol: "uniswap-v4";
+  deploymentSource: string;
+  universalRouterSource: string;
+}>;
 
 export declare class UnsupportedArcNetworkError extends Error {
   readonly name: "UnsupportedArcNetworkError";
@@ -368,7 +460,9 @@ export declare function getArcProtocolCapabilityResource(
   networkKey: ArcNetworkKey,
   protocol: "uniswap",
   capabilityKey: ArcProtocolCapability,
-): UnavailableArcResource;
+): ArcResource<unknown>;
+
+export declare function getArcMainnetUniswapV4Readiness(): ArcMainnetUniswapV4Readiness;
 
 export declare function requireAvailableArcResource<T>(
   resource: ArcResource<T>,

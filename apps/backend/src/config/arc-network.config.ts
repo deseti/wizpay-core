@@ -1,5 +1,6 @@
 import {
   getArcExplorerResource,
+  getArcMainnetUniswapV4Readiness,
   getArcNetworkByKey,
   getArcProtocolContractResource,
   getArcRpcResource,
@@ -32,6 +33,7 @@ export type BackendArcNetworkResourceState = Readonly<{
     wizpaySwapExecutorV2: ArcResource<ArcWizPayContractValue>;
   }>;
   uniswapSwapRouter02: ReturnType<typeof getArcProtocolContractResource>;
+  mainnetUniswapV4: ReturnType<typeof getArcMainnetUniswapV4Readiness> | null;
 }>;
 
 export type BackendArcNetworkConfiguration = Readonly<{
@@ -85,6 +87,8 @@ export function resolveBackendArcNetworkResourceState(
       'uniswap-v3',
       'swapRouter02',
     ),
+    mainnetUniswapV4:
+      key === 'arc-mainnet' ? getArcMainnetUniswapV4Readiness() : null,
   });
 }
 

@@ -77,6 +77,8 @@ import {
   type TokenSymbol,
 } from "@/lib/wizpay";
 import { useCapability } from "@/components/providers/CapabilityProvider";
+import { ACTIVE_ARC_NETWORK } from "@/lib/active-arc-network";
+import { ARC_MAINNET_UNISWAP_V4_UNAVAILABLE_MESSAGE } from "@/lib/mainnet-uniswap-v4";
 
 type QuoteState = AppWalletSwapQuoteResponse | UserSwapQuoteResponse;
 type RequestStatus =
@@ -134,6 +136,13 @@ function assertAppWalletQuote(input: {
 export function SwapScreen() {
   const swapCapability = useCapability("swap");
   const bridgeCapability = useCapability("bridge");
+  if (ACTIVE_ARC_NETWORK.key === "arc-mainnet") {
+    return (
+      <p role="alert" className="text-sm text-amber-300">
+        {ARC_MAINNET_UNISWAP_V4_UNAVAILABLE_MESSAGE}
+      </p>
+    );
+  }
   if (!swapCapability.enabled && !bridgeCapability.enabled) {
     return (
       <p role="alert" className="text-sm text-amber-300">

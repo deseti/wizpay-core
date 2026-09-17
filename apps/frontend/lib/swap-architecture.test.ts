@@ -7,6 +7,14 @@ const screen = readFileSync(
   resolve(root, "components/dashboard/SwapScreen.tsx"),
   "utf8",
 );
+const walletProvider = readFileSync(
+  resolve(process.cwd(), "components/providers/HybridWalletProvider.tsx"),
+  "utf8",
+);
+const walletToggle = readFileSync(
+  resolve(process.cwd(), "components/wallet/WalletModeToggle.tsx"),
+  "utf8",
+);
 const appLifecycle = readFileSync(
   resolve(root, "lib/app-wallet-xylonet-lifecycle.ts"),
   "utf8",
@@ -32,5 +40,21 @@ describe("canonical swap signing boundaries", () => {
     expect(screen.toLowerCase()).not.toContain("swapkit");
     expect(screen.toLowerCase()).not.toContain("treasury");
     expect(screen).not.toContain("circle-swap-kit");
+  });
+
+  it("keeps Arc Mainnet visibly fail-closed without changing Testnet routing", () => {
+    expect(screen).toContain('ACTIVE_ARC_NETWORK.key === "arc-mainnet"');
+    expect(screen).toContain("ARC_MAINNET_UNISWAP_V4_UNAVAILABLE_MESSAGE");
+    expect(screen).toContain("arcTestnet.id");
+    expect(screen).toContain("quoteUserSwap");
+  });
+
+  it("removes Circle App Wallet from Arc Mainnet wallet controls", () => {
+    expect(walletProvider).toContain(
+      'ACTIVE_ARC_NETWORK.key === "arc-mainnet" ? "external"',
+    );
+    expect(walletProvider).toContain('mode !== "external"');
+    expect(walletToggle).toContain("mainnetExternalOnly");
+    expect(walletToggle).toContain("!mainnetExternalOnly");
   });
 });

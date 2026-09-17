@@ -12,6 +12,7 @@ const TESTNET_EXECUTOR = '0x7B5573759576AD3AD9F9E3b4425ad68FD2b525ed';
 
 describe('backend Arc network configuration', () => {
   it('creates the exact immutable Arc Testnet configuration', () => {
+    const state = resolveBackendArcNetworkResourceState('arc-testnet');
     const config = loadBackendArcNetworkConfiguration({
       WIZPAY_ARC_NETWORK: 'arc-testnet',
     });
@@ -31,6 +32,7 @@ describe('backend Arc network configuration', () => {
     });
     expect(Object.isFrozen(config)).toBe(true);
     expect(Object.isFrozen(config.tokens)).toBe(true);
+    expect(state.mainnetUniswapV4).toBeNull();
   });
 
   it.each([undefined, '', ' arc-testnet ', 'ARC-TESTNET', 'unknown'])(
@@ -51,9 +53,11 @@ describe('backend Arc network configuration', () => {
     expect(state.rpc).not.toEqual(
       expect.objectContaining({ value: { url: TESTNET_RPC } }),
     );
-    expect(state.tokens.USDC).not.toEqual(
-      expect.objectContaining({ value: { address: TESTNET_USDC } }),
-    );
+    expect(state.tokens.USDC).toMatchObject({
+      status: 'published',
+      value: { address: TESTNET_USDC },
+      executable: false,
+    });
     expect(state.tokens.EURC).not.toEqual(
       expect.objectContaining({ value: { address: TESTNET_EURC } }),
     );
@@ -66,6 +70,14 @@ describe('backend Arc network configuration', () => {
     expect(state.uniswapSwapRouter02).toMatchObject({
       status: 'published',
       executable: false,
+    });
+    expect(state.mainnetUniswapV4).toMatchObject({
+      chainId: 5_042,
+      capabilityEnabled: false,
+      executable: false,
+      poolKey: { status: 'candidate', executable: false },
+      poolId: { status: 'candidate', executable: false },
+      poolUniqueness: { status: 'unavailable' },
     });
     expect(() => requireBackendArcNetworkReadiness(state)).toThrow(
       'OFFICIAL_ARC_MAINNET_RPC_UNAVAILABLE',
@@ -109,9 +121,8 @@ describe('backend Arc network configuration', () => {
       },
     });
     expect(config.tokens).not.toHaveProperty('EURC');
-    expect(config.contracts).toEqual({
-      wizpay: expect.objectContaining({ contract: 'WizPayMainnetV2' }),
-    });
+    expect(config.contracts.wizpay?.contract).toBe('WizPayMainnetV2');
+    expect(config.contracts).not.toHaveProperty('wizpaySwapExecutorV2');
   });
 
   it.each([

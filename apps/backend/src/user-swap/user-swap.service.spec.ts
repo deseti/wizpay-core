@@ -13,11 +13,13 @@ const baseRequest = {
 
 describe('UserSwapService', () => {
   const xylonet = {
-    quote: jest.fn(async (request) => ({
-      ...request,
-      provider: 'xylonet',
-      raw: {},
-    })),
+    quote: jest.fn((request) =>
+      Promise.resolve({
+        ...request,
+        provider: 'xylonet',
+        raw: {},
+      }),
+    ),
   };
   const service = new UserSwapService(
     xylonet as never,
@@ -54,6 +56,15 @@ describe('UserSwapService', () => {
     await expect(
       service.quote({ ...baseRequest, tokenOut: 'USDC' }),
     ).rejects.toBeDefined();
+    expect(xylonet.quote).not.toHaveBeenCalled();
+  });
+
+  it('does not route Arc Mainnet requests into XyloNet', async () => {
+    await expect(
+      service.quote({ ...baseRequest, chain: 'ARC-MAINNET' }),
+    ).rejects.toMatchObject({
+      response: { code: 'USER_SWAP_INVALID_REQUEST' },
+    });
     expect(xylonet.quote).not.toHaveBeenCalled();
   });
 });

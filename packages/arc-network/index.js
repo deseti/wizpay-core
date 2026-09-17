@@ -34,7 +34,11 @@ class UnavailableArcResourceError extends Error {
     const reason =
       resource.status === "published"
         ? "PUBLISHED_RESOURCE_ONCHAIN_VERIFICATION_PENDING"
-        : resource.reason;
+        : resource.status === "verified"
+          ? "VERIFIED_RESOURCE_EXECUTION_DISABLED"
+          : resource.status === "candidate"
+            ? "CANDIDATE_RESOURCE_NOT_VERIFIED"
+            : resource.reason;
     super(`Arc resource is not available: ${reason}.`);
     this.name = "UnavailableArcResourceError";
     this.code = "ARC_RESOURCE_NOT_AVAILABLE";
@@ -77,6 +81,24 @@ function published(value) {
     status: "published",
     value,
     verification: "onchain-pending",
+    executable: false,
+  });
+}
+
+function verifiedNonExecutable(value, evidence) {
+  return deepFreeze({
+    status: "verified",
+    value,
+    evidence,
+    executable: false,
+  });
+}
+
+function candidate(value, evidence) {
+  return deepFreeze({
+    status: "candidate",
+    value,
+    evidence,
     executable: false,
   });
 }
@@ -128,7 +150,8 @@ function assertValidDefinitionShape(entries) {
     if (
       (entry.environment !== "testnet" && entry.environment !== "mainnet") ||
       entry.key !== `arc-${entry.environment}` ||
-      entry.name !== `Arc ${entry.environment === "testnet" ? "Testnet" : "Mainnet"}` ||
+      entry.name !==
+        `Arc ${entry.environment === "testnet" ? "Testnet" : "Mainnet"}` ||
       !Number.isSafeInteger(entry.chainId) ||
       entry.chainId <= 0 ||
       entry.testnet !== (entry.environment === "testnet") ||
@@ -207,8 +230,24 @@ const ARC_TOKEN_RESOURCES = deepFreeze({
     }),
   },
   "arc-mainnet": {
-    USDC: unavailable("CIRCLE_ARC_MAINNET_USDC_NOT_YET_CONFIRMED"),
-    EURC: unavailable("CIRCLE_ARC_MAINNET_EURC_NOT_YET_CONFIRMED"),
+    USDC: published({
+      symbol: "USDC",
+      address: assertContractAddress(
+        "0x3600000000000000000000000000000000000000",
+      ),
+      decimals: 6,
+      authoritativeSource:
+        "https://docs.arc.io/arc/references/contract-addresses",
+    }),
+    EURC: published({
+      symbol: "EURC",
+      address: assertContractAddress(
+        "0xbEf5f6d51CB62b58e6A8f77868681825C6fe21c1",
+      ),
+      decimals: 6,
+      authoritativeSource:
+        "https://docs.arc.io/arc/references/contract-addresses",
+    }),
   },
 });
 
@@ -262,6 +301,7 @@ const ARC_PROTOCOL_CONTRACT_RESOURCES = deepFreeze({
     },
     "universal-router": {
       universalRouter: TESTNET_EXTERNAL_PROTOCOL_CONTRACT_UNAVAILABLE,
+      permit2: TESTNET_EXTERNAL_PROTOCOL_CONTRACT_UNAVAILABLE,
     },
   },
   "arc-mainnet": {
@@ -327,6 +367,11 @@ const ARC_PROTOCOL_CONTRACT_RESOURCES = deepFreeze({
         version: "2.1.1",
         creationBlock: 1_950_059,
       }),
+      permit2: published({
+        address: assertContractAddress(
+          "0x000000000022D473030F116dDEE9F6B43aC78BA3",
+        ),
+      }),
     },
   },
 });
@@ -336,11 +381,54 @@ const ARC_PROTOCOL_CAPABILITY_RESOURCES = deepFreeze({
   "arc-mainnet": {
     uniswap: {
       "usdc-eurc-pool": unavailable("UNISWAP_USDC_EURC_POOL_NOT_VERIFIED"),
+      "usdc-eurc-pool-key": candidate(
+        {
+          currency0: "0x3600000000000000000000000000000000000000",
+          currency1: "0xbEf5f6d51CB62b58e6A8f77868681825C6fe21c1",
+          fee: 500,
+          tickSpacing: 10,
+          hooks: "0x0000000000000000000000000000000000000000",
+        },
+        "packages/contracts/deployments/resource-evidence/arc-mainnet-uniswap-v4-usdc-eurc.candidate.json",
+      ),
+      "usdc-eurc-pool-id": candidate(
+        "0xeb0fd02fb8044d5514fb6e165ee134fd547eff0378bb33b76f4b81d8b03bd1ae",
+        "packages/contracts/deployments/resource-evidence/arc-mainnet-uniswap-v4-usdc-eurc.candidate.json",
+      ),
+      "usdc-eurc-pool-uniqueness": unavailable(
+        "UNISWAP_USDC_EURC_POOL_UNIQUENESS_NOT_VERIFIED",
+      ),
       "usdc-eurc-liquidity": unavailable(
         "UNISWAP_USDC_EURC_LIQUIDITY_NOT_VERIFIED",
       ),
+      "rpc-quorum": unavailable("ARC_MAINNET_RPC_QUORUM_UNAVAILABLE"),
+      "official-resource-evidence": verifiedNonExecutable(
+        {
+          usdcToEurcTransaction:
+            "0xf06b3035ca97902897906d7d89eeaecba7a9de484db031f1a51f8a914f0dfd07",
+          eurcToUsdcTransaction:
+            "0x8b080d9a77d033ec7a5da8a7b555012064481b1f7ce85b9f419e32d81543215a",
+        },
+        "read-only Arc Mainnet receipts",
+      ),
+      "execution-authorization": unavailable(
+        "ARC_MAINNET_UNISWAP_EXECUTION_AUTHORIZATION_UNAVAILABLE",
+      ),
     },
   },
+});
+
+const ARC_MAINNET_UNISWAP_V4_PUBLICATION = deepFreeze({
+  network: "arc-mainnet",
+  chainId: 5_042,
+  pair: ["USDC", "EURC"],
+  walletControl: ["external-wallet"],
+  custody: "user-controlled-only",
+  protocol: "uniswap-v4",
+  deploymentSource:
+    "https://github.com/Uniswap/contracts/blob/main/deployments/json/5042.json",
+  universalRouterSource:
+    "https://github.com/Uniswap/sdks/blob/main/sdks/universal-router-sdk/src/utils/constants.ts",
 });
 
 // Circle Wallets supported-blockchain documentation checked 2026-09-10:
@@ -739,12 +827,107 @@ function getArcProtocolCapabilityResource(networkKey, protocol, capabilityKey) {
   return protocols[protocol][capabilityKey];
 }
 
+function getArcMainnetUniswapV4Readiness() {
+  const capabilityKeys = [
+    "usdc-eurc-pool-key",
+    "usdc-eurc-pool-id",
+    "usdc-eurc-pool-uniqueness",
+    "usdc-eurc-liquidity",
+    "rpc-quorum",
+    "official-resource-evidence",
+    "execution-authorization",
+  ];
+  const blockers = capabilityKeys
+    .map((key) =>
+      getArcProtocolCapabilityResource("arc-mainnet", "uniswap", key),
+    )
+    .filter((resource) => resource.status === "unavailable")
+    .map((resource) => resource.reason);
+  return deepFreeze({
+    ...ARC_MAINNET_UNISWAP_V4_PUBLICATION,
+    tokens: {
+      USDC: getArcTokenResource("arc-mainnet", "USDC"),
+      EURC: getArcTokenResource("arc-mainnet", "EURC"),
+    },
+    contracts: {
+      poolManager: getArcProtocolContractResource(
+        "arc-mainnet",
+        "uniswap-v4",
+        "poolManager",
+      ),
+      stateView: getArcProtocolContractResource(
+        "arc-mainnet",
+        "uniswap-v4",
+        "stateView",
+      ),
+      quoter: getArcProtocolContractResource(
+        "arc-mainnet",
+        "uniswap-v4",
+        "quoter",
+      ),
+      universalRouter: getArcProtocolContractResource(
+        "arc-mainnet",
+        "universal-router",
+        "universalRouter",
+      ),
+      permit2: getArcProtocolContractResource(
+        "arc-mainnet",
+        "universal-router",
+        "permit2",
+      ),
+    },
+    poolKey: getArcProtocolCapabilityResource(
+      "arc-mainnet",
+      "uniswap",
+      "usdc-eurc-pool-key",
+    ),
+    poolId: getArcProtocolCapabilityResource(
+      "arc-mainnet",
+      "uniswap",
+      "usdc-eurc-pool-id",
+    ),
+    poolUniqueness: getArcProtocolCapabilityResource(
+      "arc-mainnet",
+      "uniswap",
+      "usdc-eurc-pool-uniqueness",
+    ),
+    liquidity: getArcProtocolCapabilityResource(
+      "arc-mainnet",
+      "uniswap",
+      "usdc-eurc-liquidity",
+    ),
+    rpcQuorum: getArcProtocolCapabilityResource(
+      "arc-mainnet",
+      "uniswap",
+      "rpc-quorum",
+    ),
+    officialResourceEvidence: getArcProtocolCapabilityResource(
+      "arc-mainnet",
+      "uniswap",
+      "official-resource-evidence",
+    ),
+    executionAuthorization: getArcProtocolCapabilityResource(
+      "arc-mainnet",
+      "uniswap",
+      "execution-authorization",
+    ),
+    capabilityEnabled: false,
+    executable: false,
+    blockers,
+  });
+}
+
 function requireAvailableArcResource(resource) {
   if (!resource || typeof resource !== "object") {
     throw new UnknownArcResourceError("availability", resource);
   }
   if (resource.status !== "available") {
-    if (resource.status === "published" || resource.status === "unavailable") {
+    if (
+      resource.status === "published" ||
+      resource.status === "candidate" ||
+      resource.status === "verified" ||
+      resource.status === "unavailable"
+    ) {
       throw new UnavailableArcResourceError(resource);
     }
     throw new UnknownArcResourceError("availability", resource.status);
@@ -758,6 +941,7 @@ module.exports = {
   ARC_CAPABILITY_DEFINITIONS,
   ARC_CAPABILITY_NAMES,
   ARC_MAINNET_CAPABILITY_ENV_KEYS,
+  ARC_MAINNET_UNISWAP_V4_PUBLICATION,
   ARC_NETWORK_DEFINITIONS,
   ARC_PROTOCOL_CAPABILITY_RESOURCES,
   ARC_PROTOCOL_CONTRACT_RESOURCES,
@@ -775,6 +959,7 @@ module.exports = {
   getArcCircleExecutionDefinition,
   getArcNetworkByChainId,
   getArcNetworkByKey,
+  getArcMainnetUniswapV4Readiness,
   getArcOperationResourceReadiness,
   getArcProtocolCapabilityResource,
   getArcProtocolContractResource,

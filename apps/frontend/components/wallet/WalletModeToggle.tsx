@@ -3,9 +3,11 @@
 import { Globe2, ShieldCheck } from "lucide-react";
 
 import { useHybridWallet } from "@/components/providers/HybridWalletProvider";
+import { ACTIVE_ARC_NETWORK } from "@/lib/active-arc-network";
 
 export function WalletModeToggle({ className = "" }: { className?: string }) {
   const { setWalletMode, walletMode } = useHybridWallet();
+  const mainnetExternalOnly = ACTIVE_ARC_NETWORK.key === "arc-mainnet";
 
   return (
     <div
@@ -13,20 +15,22 @@ export function WalletModeToggle({ className = "" }: { className?: string }) {
       role="tablist"
       aria-label="Wallet mode"
     >
-      <button
-        type="button"
-        role="tab"
-        aria-selected={walletMode === "circle"}
-        onClick={() => setWalletMode("circle")}
-        className={`flex items-center gap-1.5 rounded-xl px-2.5 py-2 text-xs font-semibold transition-all sm:gap-2 sm:px-3 sm:text-sm ${
-          walletMode === "circle"
-            ? "bg-primary/15 text-primary ring-1 ring-primary/20"
-            : "text-muted-foreground hover:bg-background/60 hover:text-foreground"
-        }`}
-      >
-        <ShieldCheck className="h-3.5 w-3.5 shrink-0" />
-        <span className="hidden sm:inline">App Wallet</span>
-      </button>
+      {!mainnetExternalOnly ? (
+        <button
+          type="button"
+          role="tab"
+          aria-selected={walletMode === "circle"}
+          onClick={() => setWalletMode("circle")}
+          className={`flex items-center gap-1.5 rounded-xl px-2.5 py-2 text-xs font-semibold transition-all sm:gap-2 sm:px-3 sm:text-sm ${
+            walletMode === "circle"
+              ? "bg-primary/15 text-primary ring-1 ring-primary/20"
+              : "text-muted-foreground hover:bg-background/60 hover:text-foreground"
+          }`}
+        >
+          <ShieldCheck className="h-3.5 w-3.5 shrink-0" />
+          <span className="hidden sm:inline">App Wallet</span>
+        </button>
+      ) : null}
       <button
         type="button"
         role="tab"

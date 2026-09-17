@@ -1,5 +1,6 @@
 import {
   getArcExplorerResource,
+  getArcMainnetUniswapV4Readiness,
   getArcNetworkByKey,
   getArcProtocolContractResource,
   getArcRpcResource,
@@ -31,6 +32,7 @@ export type FrontendArcNetworkResourceState = Readonly<{
     wizpaySwapExecutorV2: ArcResource<ArcWizPayContractValue>;
   }>;
   uniswapSwapRouter02: ReturnType<typeof getArcProtocolContractResource>;
+  mainnetUniswapV4: ReturnType<typeof getArcMainnetUniswapV4Readiness> | null;
 }>;
 
 export type FrontendArcNetworkConfiguration = Readonly<{
@@ -89,6 +91,8 @@ export function resolveFrontendArcNetworkResourceState(
       "uniswap-v3",
       "swapRouter02",
     ),
+    mainnetUniswapV4:
+      key === "arc-mainnet" ? getArcMainnetUniswapV4Readiness() : null,
   });
 }
 
@@ -144,13 +148,22 @@ export function createFrontendBuildSafeArcNetworkConfiguration(
       tokens: {},
       contracts: {},
       transactionalAvailable: false,
-      unavailableReason: error instanceof Error ? error.message : "Arc Mainnet execution resources are unavailable.",
+      unavailableReason:
+        error instanceof Error
+          ? error.message
+          : "Arc Mainnet execution resources are unavailable.",
     });
   }
 }
 
-export function assertFrontendTransactionsAvailable(config: FrontendArcNetworkConfiguration) {
-  if (!config.transactionalAvailable) throw new Error(config.unavailableReason ?? "Transactions are unavailable on the selected Arc network.");
+export function assertFrontendTransactionsAvailable(
+  config: FrontendArcNetworkConfiguration,
+) {
+  if (!config.transactionalAvailable)
+    throw new Error(
+      config.unavailableReason ??
+        "Transactions are unavailable on the selected Arc network.",
+    );
   return true;
 }
 
@@ -180,8 +193,17 @@ export function validateFrontendArcNetworkOverrides(
   environment: FrontendArcEnvironment,
 ) {
   if (!config.transactionalAvailable) {
-    for (const name of ["NEXT_PUBLIC_RPC_URL", "NEXT_PUBLIC_CONTRACT_ADDRESS", "NEXT_PUBLIC_WIZPAY_ADDRESS", "NEXT_PUBLIC_ARC_USDC", "NEXT_PUBLIC_WIZPAY_SWAP_EXECUTOR_V2_ADDRESS"]) {
-      if (environment[name] !== undefined && environment[name] !== "") throw new Error(`${name} cannot override unavailable Arc Mainnet resources.`);
+    for (const name of [
+      "NEXT_PUBLIC_RPC_URL",
+      "NEXT_PUBLIC_CONTRACT_ADDRESS",
+      "NEXT_PUBLIC_WIZPAY_ADDRESS",
+      "NEXT_PUBLIC_ARC_USDC",
+      "NEXT_PUBLIC_WIZPAY_SWAP_EXECUTOR_V2_ADDRESS",
+    ]) {
+      if (environment[name] !== undefined && environment[name] !== "")
+        throw new Error(
+          `${name} cannot override unavailable Arc Mainnet resources.`,
+        );
     }
     return;
   }

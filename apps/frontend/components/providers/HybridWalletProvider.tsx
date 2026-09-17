@@ -18,6 +18,7 @@ import {
 } from "wagmi";
 
 import { useCircleWallet } from "@/components/providers/CircleWalletProvider";
+import { ACTIVE_ARC_NETWORK } from "@/lib/active-arc-network";
 import { formatCompactAddress } from "@/lib/wizpay";
 import {
   DEFAULT_WALLET_MODE,
@@ -58,7 +59,9 @@ type HybridWalletContextValue = {
   walletMode: WalletMode;
 };
 
-const HybridWalletContext = createContext<HybridWalletContextValue | null>(null);
+const HybridWalletContext = createContext<HybridWalletContextValue | null>(
+  null,
+);
 const walletModeListeners = new Set<() => void>();
 
 function notifyWalletModeListeners() {
@@ -108,7 +111,9 @@ function readWalletMode() {
   }
 
   try {
-    return parseWalletMode(window.localStorage.getItem(WALLET_MODE_STORAGE_KEY));
+    return parseWalletMode(
+      window.localStorage.getItem(WALLET_MODE_STORAGE_KEY),
+    );
   } catch {
     return DEFAULT_WALLET_MODE;
   }
@@ -119,13 +124,8 @@ export function HybridWalletProvider({
 }: {
   children: React.ReactNode;
 }) {
-  const {
-    arcWallet,
-    authenticated,
-    primaryWallet,
-    ready,
-    sepoliaWallet,
-  } = useCircleWallet();
+  const { arcWallet, authenticated, primaryWallet, ready, sepoliaWallet } =
+    useCircleWallet();
   const {
     address: externalAddress,
     connector,
@@ -143,18 +143,24 @@ export function HybridWalletProvider({
     },
   });
 
-  const walletMode = useSyncExternalStore(
+  const storedWalletMode = useSyncExternalStore(
     subscribeWalletMode,
     readWalletMode,
-    () => DEFAULT_WALLET_MODE
+    () => DEFAULT_WALLET_MODE,
   );
+  const walletMode =
+    ACTIVE_ARC_NETWORK.key === "arc-mainnet" ? "external" : storedWalletMode;
 
   const setWalletMode = useCallback((mode: WalletMode) => {
+    if (ACTIVE_ARC_NETWORK.key === "arc-mainnet" && mode !== "external") {
+      return;
+    }
     writeWalletMode(mode);
   }, []);
 
-  const circleWalletAddress = (arcWallet?.address ??
-    primaryWallet?.address) as Address | undefined;
+  const circleWalletAddress = (arcWallet?.address ?? primaryWallet?.address) as
+    | Address
+    | undefined;
   const circleChainId = arcWallet?.address
     ? arcTestnet.id
     : sepoliaWallet?.address
@@ -252,7 +258,7 @@ export function HybridWalletProvider({
       sessionKey,
       setWalletMode,
       walletMode,
-    ]
+    ],
   );
 
   return (
@@ -266,7 +272,9 @@ export function useHybridWallet() {
   const context = useContext(HybridWalletContext);
 
   if (!context) {
-    throw new Error("useHybridWallet must be used within HybridWalletProvider.");
+    throw new Error(
+      "useHybridWallet must be used within HybridWalletProvider.",
+    );
   }
 
   return context;

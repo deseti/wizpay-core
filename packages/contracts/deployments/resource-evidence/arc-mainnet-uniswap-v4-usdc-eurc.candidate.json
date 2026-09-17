@@ -1,0 +1,184 @@
+{
+  "schemaVersion": 1,
+  "evidenceType": "arc-mainnet-uniswap-v4-pool-candidate",
+  "status": "candidate-non-executable",
+  "observedAt": "2026-09-17T00:00:00.000Z",
+  "authoritativeSources": [
+    "https://github.com/Uniswap/contracts/blob/main/deployments/json/5042.json",
+    "https://raw.githubusercontent.com/Uniswap/contracts/main/deployments/json/5042.json",
+    "https://github.com/Uniswap/sdks/blob/main/sdks/universal-router-sdk/src/utils/constants.ts",
+    "https://docs.arc.io/arc/references/contract-addresses",
+    "https://docs.arc.io/arc/concepts/stablecoin-native-model",
+    "https://github.com/Uniswap/contracts"
+  ],
+  "network": {
+    "key": "arc-mainnet",
+    "chainId": 5042,
+    "name": "Arc Mainnet"
+  },
+  "tokens": {
+    "USDC": {
+      "address": "0x3600000000000000000000000000000000000000",
+      "decimals": 6,
+      "publication": "official-arc-docs"
+    },
+    "EURC": {
+      "address": "0xbEf5f6d51CB62b58e6A8f77868681825C6fe21c1",
+      "decimals": 6,
+      "publication": "official-arc-docs"
+    }
+  },
+  "contracts": {
+    "poolManager": {
+      "address": "0x8366a39CC670B4001A1121B8F6A443A643e40951",
+      "deploymentBlock": 1948056,
+      "publication": "official-uniswap-5042-json"
+    },
+    "stateView": {
+      "address": "0xf3334192d15450cdd385c8b70e03f9a6bd9e673b",
+      "publication": "official-uniswap-5042-json"
+    },
+    "quoter": {
+      "address": "0x8dc178efb8111bb0973dd9d722ebeff267c98f94",
+      "publication": "official-uniswap-5042-json"
+    },
+    "universalRouter": {
+      "address": "0x4fca4a51ab4f23a7447b3284fbd7d73289a89fb1",
+      "deploymentBlock": 1950059,
+      "publication": "official-uniswap-5042-json-and-sdk"
+    },
+    "permit2": {
+      "address": "0x000000000022D473030F116dDEE9F6B43aC78BA3",
+      "publication": "official-arc-docs-and-uniswap-constructor"
+    }
+  },
+  "pinnedBlock": {
+    "number": 21190503,
+    "hash": "0x961560bcd845879b502896f7f7a6ff444ca7cc1aa622e65955c75172a329912b"
+  },
+  "rpcEvidence": [
+    {
+      "endpointIdentity": "rpc.mainnet.arc.io",
+      "chainId": 5042,
+      "pinnedBlockNumber": 21190503,
+      "pinnedBlockHash": "0x961560bcd845879b502896f7f7a6ff444ca7cc1aa622e65955c75172a329912b"
+    },
+    {
+      "endpointIdentity": "rpc.quicknode.mainnet.arc.io",
+      "chainId": 5042,
+      "pinnedBlockNumber": 21190503,
+      "pinnedBlockHash": "0x961560bcd845879b502896f7f7a6ff444ca7cc1aa622e65955c75172a329912b"
+    }
+  ],
+  "eventScan": {
+    "fromBlock": 1948056,
+    "toBlock": 21190503,
+    "failedRangeCount": 0,
+    "independentlyScannedBy": [
+      "rpc.mainnet.arc.io",
+      "rpc.quicknode.mainnet.arc.io"
+    ],
+    "candidateCount": 1,
+    "uniquenessResolved": false,
+    "configuredRangeCount": 1925,
+    "completedRangeCount": {
+      "rpc.mainnet.arc.io": 894,
+      "rpc.quicknode.mainnet.arc.io": 899
+    },
+    "independentScanDigest": "0x05a5104f62c44909451773532ed8b0b21aac56b2a32990cbeb9ee53fd7500c4f"
+  },
+  "candidates": [
+    {
+      "initializationBlock": 2571955,
+      "initializationBlockHash": "0xe4e75a3dda24ac3f1657e168354d8b67401c74fc373a5e857094737b43c46332",
+      "transactionHash": "0x32fad7e3e7fc130f46b3b34ba4ccb008ab9f2cc8860f25f98055853de554d1d6",
+      "logIndex": 0,
+      "poolKey": {
+        "currency0": "0x3600000000000000000000000000000000000000",
+        "currency1": "0xbEf5f6d51CB62b58e6A8f77868681825C6fe21c1",
+        "fee": 500,
+        "tickSpacing": 10,
+        "hooks": "0x0000000000000000000000000000000000000000"
+      },
+      "emittedPoolId": "0xeb0fd02fb8044d5514fb6e165ee134fd547eff0378bb33b76f4b81d8b03bd1ae",
+      "recomputedPoolId": "0xeb0fd02fb8044d5514fb6e165ee134fd547eff0378bb33b76f4b81d8b03bd1ae",
+      "poolIdMatches": true,
+      "initialize": {
+        "sqrtPriceX96": "73372273027490883413027114925",
+        "tick": -1536
+      },
+      "stateView": {
+        "initialized": true,
+        "sqrtPriceX96": "73693658104938574910243605186",
+        "tick": -1449,
+        "protocolFee": 0,
+        "lpFee": 500,
+        "liquidity": "32106868734691"
+      },
+      "quotes": {
+        "USDC_TO_EURC": {
+          "status": "success",
+          "amountIn": "1000000",
+          "amountOut": "864736",
+          "gasEstimate": "37217"
+        },
+        "EURC_TO_USDC": {
+          "status": "success",
+          "amountIn": "1000000",
+          "amountOut": "1155265",
+          "gasEstimate": "36933"
+        }
+      }
+    }
+  ],
+  "directSwapEvidence": [
+    {
+      "direction": "USDC_TO_EURC",
+      "transactionHash": "0xf06b3035ca97902897906d7d89eeaecba7a9de484db031f1a51f8a914f0dfd07",
+      "blockNumber": 21246758,
+      "status": "success",
+      "wallet": "0x32f251fc36a1174901124589eac2d4e391816f69",
+      "recipient": "0x32f251fc36a1174901124589eac2d4e391816f69",
+      "router": "0x4fca4a51ab4f23a7447b3284fbd7d73289a89fb1",
+      "poolManager": "0x8366a39cc670b4001a1121b8f6a443a643e40951",
+      "poolId": "0xeb0fd02fb8044d5514fb6e165ee134fd547eff0378bb33b76f4b81d8b03bd1ae",
+      "commands": "0x10",
+      "actions": "0x070b0e",
+      "amountIn": "100000",
+      "amountOut": "87169",
+      "nativeValue": "100000000000000000"
+    },
+    {
+      "direction": "EURC_TO_USDC",
+      "transactionHash": "0x8b080d9a77d033ec7a5da8a7b555012064481b1f7ce85b9f419e32d81543215a",
+      "blockNumber": 21246855,
+      "status": "success",
+      "wallet": "0x32f251fc36a1174901124589eac2d4e391816f69",
+      "recipient": "0x32f251fc36a1174901124589eac2d4e391816f69",
+      "router": "0x4fca4a51ab4f23a7447b3284fbd7d73289a89fb1",
+      "poolManager": "0x8366a39cc670b4001a1121b8f6a443a643e40951",
+      "poolId": "0xeb0fd02fb8044d5514fb6e165ee134fd547eff0378bb33b76f4b81d8b03bd1ae",
+      "commands": "0x0a10",
+      "actions": "0x070b0e",
+      "amountIn": "87169",
+      "amountOut": "99899",
+      "nativeValue": "0"
+    }
+  ],
+  "conclusions": {
+    "poolKeySafeToAdopt": false,
+    "poolIdSafeToAdopt": false,
+    "quoteCalldataImplementationMayBegin": true,
+    "executable": false,
+    "independentlyVerifiedOnchainInitialize": true,
+    "bidirectionalDirectSwapsVerified": true,
+    "uniquenessResolved": false,
+    "unresolvedRequirements": [
+      "GIT_TRACKING_REQUIREMENT_UNSATISFIED",
+      "POOL_UNIQUENESS_SCAN_INCOMPLETE",
+      "RUNTIME_QUOTE_PROVIDER_UNAVAILABLE",
+      "EXECUTION_AUTHORIZATION_UNAVAILABLE"
+    ]
+  },
+  "canonicalEvidenceDigest": "0x86ddf7cca4b8db99a766ca498c9881a5ecf483a7146bea326ca2807dfebd6ca6"
+}

@@ -19,6 +19,7 @@ const {
   getArcExplorerResource,
   getArcNetworkByChainId,
   getArcNetworkByKey,
+  getArcMainnetUniswapV4Readiness,
   getArcOperationResourceReadiness,
   getArcProtocolCapabilityResource,
   getArcProtocolContractResource,
@@ -207,10 +208,36 @@ test("rejects dependency-invalid capability combinations", () => {
 });
 
 test("defines the exact Arc Testnet and Mainnet identities", () => {
-  assert.deepEqual(ARC_NETWORK_DEFINITIONS.map(({ key, name, chainId, environment, nativeCurrency, testnet }) => ({ key, name, chainId, environment, nativeCurrency, testnet })), [
-    { key: "arc-testnet", name: "Arc Testnet", chainId: 5_042_002, environment: "testnet", nativeCurrency: { name: "USDC", symbol: "USDC", decimals: 18 }, testnet: true },
-    { key: "arc-mainnet", name: "Arc Mainnet", chainId: 5_042, environment: "mainnet", nativeCurrency: { name: "USDC", symbol: "USDC", decimals: 18 }, testnet: false },
-  ]);
+  assert.deepEqual(
+    ARC_NETWORK_DEFINITIONS.map(
+      ({ key, name, chainId, environment, nativeCurrency, testnet }) => ({
+        key,
+        name,
+        chainId,
+        environment,
+        nativeCurrency,
+        testnet,
+      }),
+    ),
+    [
+      {
+        key: "arc-testnet",
+        name: "Arc Testnet",
+        chainId: 5_042_002,
+        environment: "testnet",
+        nativeCurrency: { name: "USDC", symbol: "USDC", decimals: 18 },
+        testnet: true,
+      },
+      {
+        key: "arc-mainnet",
+        name: "Arc Mainnet",
+        chainId: 5_042,
+        environment: "mainnet",
+        nativeCurrency: { name: "USDC", symbol: "USDC", decimals: 18 },
+        testnet: false,
+      },
+    ],
+  );
   assert.notEqual(
     ARC_NETWORK_DEFINITIONS[0].chainId,
     ARC_NETWORK_DEFINITIONS[1].chainId,
@@ -380,7 +407,7 @@ test("resolves the exact available Arc Testnet tokens", () => {
   });
 });
 
-test("keeps Arc Mainnet RPC, explorer, and tokens unavailable", () => {
+test("keeps Arc Mainnet RPC and explorer unavailable while tokens remain published-only", () => {
   assert.deepEqual(getArcRpcResource("arc-mainnet"), {
     status: "unavailable",
     reason: "OFFICIAL_ARC_MAINNET_RPC_UNAVAILABLE",
@@ -390,12 +417,28 @@ test("keeps Arc Mainnet RPC, explorer, and tokens unavailable", () => {
     reason: "OFFICIAL_ARC_MAINNET_EXPLORER_UNAVAILABLE",
   });
   assert.deepEqual(getArcTokenResource("arc-mainnet", "USDC"), {
-    status: "unavailable",
-    reason: "CIRCLE_ARC_MAINNET_USDC_NOT_YET_CONFIRMED",
+    status: "published",
+    value: {
+      symbol: "USDC",
+      address: "0x3600000000000000000000000000000000000000",
+      decimals: 6,
+      authoritativeSource:
+        "https://docs.arc.io/arc/references/contract-addresses",
+    },
+    verification: "onchain-pending",
+    executable: false,
   });
   assert.deepEqual(getArcTokenResource("arc-mainnet", "EURC"), {
-    status: "unavailable",
-    reason: "CIRCLE_ARC_MAINNET_EURC_NOT_YET_CONFIRMED",
+    status: "published",
+    value: {
+      symbol: "EURC",
+      address: "0xbEf5f6d51CB62b58e6A8f77868681825C6fe21c1",
+      decimals: 6,
+      authoritativeSource:
+        "https://docs.arc.io/arc/references/contract-addresses",
+    },
+    verification: "onchain-pending",
+    executable: false,
   });
 });
 
@@ -450,6 +493,7 @@ test("records the exact published Arc Mainnet Uniswap contract mapping", () => {
     },
     "universal-router": {
       universalRouter: "0x4fca4a51ab4f23a7447b3284fbd7d73289a89fb1",
+      permit2: "0x000000000022D473030F116dDEE9F6B43aC78BA3",
     },
   };
 
@@ -481,7 +525,7 @@ test("records the exact published Arc Mainnet Uniswap contract mapping", () => {
   );
 });
 
-test("never exposes published or unavailable resources as executable", () => {
+test("never exposes published, candidate, verified-non-executable, or unavailable resources as executable", () => {
   const publishedResource = getArcProtocolContractResource(
     "arc-mainnet",
     "uniswap-v3",
@@ -493,6 +537,20 @@ test("never exposes published or unavailable resources as executable", () => {
       error instanceof UnavailableArcResourceError &&
       error.resourceStatus === "published" &&
       error.reason === "PUBLISHED_RESOURCE_ONCHAIN_VERIFICATION_PENDING",
+  );
+  assert.throws(
+    () =>
+      requireAvailableArcResource(
+        getArcProtocolCapabilityResource(
+          "arc-mainnet",
+          "uniswap",
+          "usdc-eurc-pool-id",
+        ),
+      ),
+    (error) =>
+      error instanceof UnavailableArcResourceError &&
+      error.resourceStatus === "candidate" &&
+      error.reason === "CANDIDATE_RESOURCE_NOT_VERIFIED",
   );
   assert.throws(
     () => requireAvailableArcResource(getArcRpcResource("arc-mainnet")),
@@ -509,7 +567,7 @@ test("never exposes published or unavailable resources as executable", () => {
   );
 });
 
-test("keeps Arc Mainnet USDC/EURC pool and liquidity unverified", () => {
+test("keeps the generic pool capability and live liquidity unavailable", () => {
   assert.deepEqual(
     getArcProtocolCapabilityResource(
       "arc-mainnet",
@@ -534,13 +592,58 @@ test("keeps Arc Mainnet USDC/EURC pool and liquidity unverified", () => {
   );
 });
 
+test("exposes candidate V4 pool identity without enabling execution", () => {
+  const readiness = getArcMainnetUniswapV4Readiness();
+  assert.equal(readiness.network, "arc-mainnet");
+  assert.equal(readiness.chainId, 5_042);
+  assert.deepEqual(readiness.pair, ["USDC", "EURC"]);
+  assert.deepEqual(readiness.walletControl, ["external-wallet"]);
+  assert.equal(readiness.custody, "user-controlled-only");
+  assert.equal(readiness.capabilityEnabled, false);
+  assert.equal(readiness.executable, false);
+  assert.equal(readiness.poolKey.status, "candidate");
+  assert.equal(readiness.poolId.status, "candidate");
+  assert.equal(readiness.poolKey.executable, false);
+  assert.equal(readiness.poolId.executable, false);
+  assert.equal(readiness.poolUniqueness.status, "unavailable");
+  assert.equal(readiness.liquidity.status, "unavailable");
+  assert.equal(readiness.rpcQuorum.status, "unavailable");
+  assert.equal(readiness.officialResourceEvidence.status, "verified");
+  assert.equal(readiness.officialResourceEvidence.executable, false);
+  assert.equal(readiness.executionAuthorization.status, "unavailable");
+  assert.deepEqual(readiness.blockers, [
+    "UNISWAP_USDC_EURC_POOL_UNIQUENESS_NOT_VERIFIED",
+    "UNISWAP_USDC_EURC_LIQUIDITY_NOT_VERIFIED",
+    "ARC_MAINNET_RPC_QUORUM_UNAVAILABLE",
+    "ARC_MAINNET_UNISWAP_EXECUTION_AUTHORIZATION_UNAVAILABLE",
+  ]);
+  assert.equal(readiness.tokens.USDC.status, "published");
+  assert.equal(readiness.tokens.EURC.status, "published");
+  assert.equal(readiness.contracts.universalRouter.status, "published");
+  assert.equal(readiness.contracts.permit2.status, "published");
+  assert.equal(
+    readiness.contracts.universalRouter.value.address,
+    "0x4fca4a51ab4f23a7447b3284fbd7d73289a89fb1",
+  );
+  assert.equal(Object.isFrozen(readiness), true);
+  assert.equal(Object.isFrozen(readiness.blockers), true);
+});
+
 test("does not fall back across Arc networks", () => {
   assert.equal(getArcRpcResource("arc-mainnet").status, "unavailable");
   assert.equal(getArcExplorerResource("arc-mainnet").status, "unavailable");
-  assert.equal(
-    getArcTokenResource("arc-mainnet", "USDC").status,
-    "unavailable",
-  );
+  assert.deepEqual(getArcTokenResource("arc-mainnet", "USDC"), {
+    status: "published",
+    value: {
+      symbol: "USDC",
+      address: "0x3600000000000000000000000000000000000000",
+      decimals: 6,
+      authoritativeSource:
+        "https://docs.arc.io/arc/references/contract-addresses",
+    },
+    verification: "onchain-pending",
+    executable: false,
+  });
   assert.equal(
     getArcWizPayContractResource("arc-mainnet", "wizpay").status,
     "unavailable",

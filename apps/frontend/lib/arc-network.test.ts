@@ -20,6 +20,7 @@ const TESTNET_EXECUTOR = "0x7B5573759576AD3AD9F9E3b4425ad68FD2b525ed";
 
 describe("frontend Arc network configuration", () => {
   it("creates the exact immutable Arc Testnet transactional configuration", () => {
+    const state = resolveFrontendArcNetworkResourceState("arc-testnet");
     const config =
       createFrontendTransactionalArcNetworkConfiguration("arc-testnet");
     expect(config).toMatchObject({
@@ -38,6 +39,7 @@ describe("frontend Arc network configuration", () => {
     });
     expect(Object.isFrozen(config)).toBe(true);
     expect(Object.isFrozen(config.contracts)).toBe(true);
+    expect(state.mainnetUniswapV4).toBeNull();
   });
 
   it.each([undefined, "", " arc-testnet ", "ARC-TESTNET", "unknown"])(
@@ -57,19 +59,42 @@ describe("frontend Arc network configuration", () => {
       status: "published",
       executable: false,
     });
+    expect(state.mainnetUniswapV4).toMatchObject({
+      chainId: 5_042,
+      capabilityEnabled: false,
+      executable: false,
+      poolKey: { status: "candidate", executable: false },
+      poolId: { status: "candidate", executable: false },
+      poolUniqueness: { status: "unavailable" },
+    });
     expect(() =>
       requireFrontendTransactionalArcNetworkConfiguration(state),
     ).toThrow("OFFICIAL_ARC_MAINNET_RPC_UNAVAILABLE");
   });
 
   it("permits a fail-closed Mainnet build without constructing transaction resources", () => {
-    const config = createFrontendBuildSafeArcNetworkConfiguration("arc-mainnet");
-    expect(config).toMatchObject({ key: "arc-mainnet", name: "Arc Mainnet", chainId: 5_042, environment: "mainnet", nativeCurrency: { symbol: "USDC", decimals: 18 }, testnet: false, transactionalAvailable: false });
+    const config =
+      createFrontendBuildSafeArcNetworkConfiguration("arc-mainnet");
+    expect(config).toMatchObject({
+      key: "arc-mainnet",
+      name: "Arc Mainnet",
+      chainId: 5_042,
+      environment: "mainnet",
+      nativeCurrency: { symbol: "USDC", decimals: 18 },
+      testnet: false,
+      transactionalAvailable: false,
+    });
     expect(config).not.toHaveProperty("rpcUrl");
     expect(config.tokens).toEqual({});
     expect(config.contracts).toEqual({});
-    expect(() => assertFrontendTransactionsAvailable(config)).toThrow("OFFICIAL_ARC_MAINNET_RPC_UNAVAILABLE");
-    expect(() => validateFrontendArcNetworkOverrides(config, { NEXT_PUBLIC_RPC_URL: TESTNET_RPC })).toThrow("cannot override unavailable Arc Mainnet resources");
+    expect(() => assertFrontendTransactionsAvailable(config)).toThrow(
+      "OFFICIAL_ARC_MAINNET_RPC_UNAVAILABLE",
+    );
+    expect(() =>
+      validateFrontendArcNetworkOverrides(config, {
+        NEXT_PUBLIC_RPC_URL: TESTNET_RPC,
+      }),
+    ).toThrow("cannot override unavailable Arc Mainnet resources");
   });
 
   it("never imports Testnet active resources into Arc Mainnet", () => {
@@ -80,9 +105,11 @@ describe("frontend Arc network configuration", () => {
     expect(state.explorer).not.toEqual(
       expect.objectContaining({ value: { baseUrl: TESTNET_EXPLORER } }),
     );
-    expect(state.tokens.USDC).not.toEqual(
-      expect.objectContaining({ value: { address: TESTNET_USDC } }),
-    );
+    expect(state.tokens.USDC).toMatchObject({
+      status: "published",
+      value: { address: TESTNET_USDC },
+      executable: false,
+    });
     expect(state.tokens.EURC).not.toEqual(
       expect.objectContaining({ value: { address: TESTNET_EURC } }),
     );
