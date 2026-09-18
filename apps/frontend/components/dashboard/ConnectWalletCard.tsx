@@ -1,17 +1,17 @@
 "use client";
 
-import { ConnectButton } from "@rainbow-me/rainbowkit";
 import { ArrowRightLeft, Globe, Shield, Wallet, Zap } from "lucide-react";
 
 import { useCircleWallet } from "@/components/providers/CircleWalletProvider";
 import { useHybridWallet } from "@/components/providers/HybridWalletProvider";
 import { WalletModeToggle } from "@/components/wallet/WalletModeToggle";
+import { ReownConnectButton } from "@/components/wallet/ReownConnectButton";
 import { Card, CardContent } from "@/components/ui/card";
 import {
   getWalletModeDescription,
   getWalletModeLabel,
 } from "@/lib/wallet-mode";
-import { HAS_WALLETCONNECT_PROJECT_ID } from "@/lib/wagmi";
+import { ACTIVE_ARC_NETWORK } from "@/lib/active-arc-network";
 
 const features = [
   { icon: Zap, label: "Multi-Token" },
@@ -24,6 +24,7 @@ export function ConnectWalletCard() {
   const { externalConnectError, walletMode } = useHybridWallet();
   const title = getWalletModeLabel(walletMode);
   const description = getWalletModeDescription(walletMode);
+  const mainnetExternalOnly = ACTIVE_ARC_NETWORK.key === "arc-mainnet";
 
   return (
     <Card className="glass-card animate-scale-in relative mx-auto w-full max-w-xl overflow-hidden border-border/40">
@@ -43,9 +44,9 @@ export function ConnectWalletCard() {
             Welcome to WizPay
           </h1>
           <p className="mx-auto max-w-md text-sm leading-relaxed text-muted-foreground sm:text-base">
-            Choose how you want to transact. Keep the built-in Circle app wallet
-            for Google or email login, or use an external wallet through
-            RainbowKit.
+            {mainnetExternalOnly
+              ? "Arc Mainnet uses connected external wallets only through Reown AppKit."
+              : "Choose how you want to transact. Keep the built-in Circle app wallet for Google or email login, or use an external wallet through Reown AppKit."}
           </p>
         </div>
 
@@ -92,27 +93,17 @@ export function ConnectWalletCard() {
                         : "Circle wallet needs attention"}
               </button>
             ) : (
-              <ConnectButton.Custom>
-                {({ mounted, openConnectModal }) => (
-                  <button
-                    type="button"
-                    onClick={openConnectModal}
-                    disabled={!mounted}
-                    className="glow-btn group relative inline-flex w-full items-center justify-center gap-2.5 rounded-2xl bg-gradient-to-r from-primary via-violet-500 to-primary px-8 py-4 text-base font-bold text-primary-foreground shadow-xl shadow-primary/25 transition-all hover:shadow-2xl hover:shadow-primary/40 hover:brightness-110 active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-70"
-                  >
-                    <Globe className="h-5 w-5 transition-transform group-hover:scale-110" />
-                    Connect External Wallet
-                  </button>
-                )}
-              </ConnectButton.Custom>
+              <ReownConnectButton className="glow-btn group relative inline-flex w-full items-center justify-center gap-2.5 rounded-2xl bg-gradient-to-r from-primary via-violet-500 to-primary px-8 py-4 text-base font-bold text-primary-foreground shadow-xl shadow-primary/25 transition-all hover:shadow-2xl hover:shadow-primary/40 hover:brightness-110 active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-70">
+                <Globe className="h-5 w-5 transition-transform group-hover:scale-110" />
+                Connect External Wallet
+              </ReownConnectButton>
             )}
           </div>
 
           {walletMode === "external" ? (
             <p className="mt-3 text-xs leading-relaxed text-amber-300/80">
-              {HAS_WALLETCONNECT_PROJECT_ID
-                ? "Browser wallets and WalletConnect QR are available in this build."
-                : "Browser wallets."}
+              Browser wallets, Coinbase Wallet, Safe, and WalletConnect mobile
+              wallets are available through Reown AppKit.
             </p>
           ) : null}
 
@@ -133,16 +124,20 @@ export function ConnectWalletCard() {
         </div>
 
         <div className="flex items-center gap-3 text-[11px] text-muted-foreground/70">
+          {!mainnetExternalOnly ? (
+            <>
+              <span className="flex items-center gap-1.5">
+                <Globe className="h-3.5 w-3.5" /> Social
+              </span>
+              <span className="h-3 w-px bg-border/60" />
+              <span className="flex items-center gap-1.5">
+                <Wallet className="h-3.5 w-3.5" /> Circle MPC
+              </span>
+              <span className="h-3 w-px bg-border/60" />
+            </>
+          ) : null}
           <span className="flex items-center gap-1.5">
-            <Globe className="h-3.5 w-3.5" /> Social
-          </span>
-          <span className="h-3 w-px bg-border/60" />
-          <span className="flex items-center gap-1.5">
-            <Wallet className="h-3.5 w-3.5" /> Circle MPC
-          </span>
-          <span className="h-3 w-px bg-border/60" />
-          <span className="flex items-center gap-1.5">
-            <ArrowRightLeft className="h-3.5 w-3.5" /> RainbowKit
+            <ArrowRightLeft className="h-3.5 w-3.5" /> Reown AppKit
           </span>
         </div>
       </CardContent>

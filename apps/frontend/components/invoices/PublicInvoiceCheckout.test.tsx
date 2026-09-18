@@ -23,17 +23,8 @@ vi.mock("@/lib/invoice-api", async (original) => ({
 vi.mock("qrcode", () => ({
   default: { toDataURL: vi.fn().mockResolvedValue("data:image/png;base64,qr") },
 }));
-vi.mock("@rainbow-me/rainbowkit", () => ({
-  ConnectButton: {
-    Custom: ({
-      children,
-    }: {
-      children: (value: {
-        mounted: boolean;
-        openConnectModal: () => void;
-      }) => React.ReactNode;
-    }) => children({ mounted: true, openConnectModal: vi.fn() }),
-  },
+vi.mock("@reown/appkit/react", () => ({
+  useAppKit: () => ({ open: vi.fn() }),
 }));
 
 describe("PublicInvoiceCheckout", () => {

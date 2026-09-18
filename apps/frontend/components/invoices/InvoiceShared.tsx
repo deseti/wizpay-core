@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useCircleWallet } from "@/components/providers/CircleWalletProvider";
 import { useHybridWallet } from "@/components/providers/HybridWalletProvider";
+import { ACTIVE_ARC_NETWORK } from "@/lib/active-arc-network";
 import type { InvoiceStatus } from "@/lib/invoice-api";
 import { getInvoiceCheckoutUrl } from "@/lib/invoice-links";
 import { InvoiceQrCode } from "./InvoiceQrCode";
@@ -34,20 +35,24 @@ export function MerchantInvoiceAuthNotice({
   ready: boolean;
   onUseAppWallet: () => void;
 }) {
+  const mainnetExternalOnly = ACTIVE_ARC_NETWORK.key === "arc-mainnet";
+
   return (
     <Card className="glass-card border-amber-500/30">
       <CardContent className="space-y-4 p-6">
         <div>
           <h2 className="text-lg font-semibold">
-            App Wallet merchant session required
+            {mainnetExternalOnly
+              ? "Invoice management unavailable on Arc Mainnet"
+              : "App Wallet merchant session required"}
           </h2>
           <p className="mt-1 text-sm text-muted-foreground">
-            Invoice management is authenticated with the active Circle
-            User-Controlled Wallet session. External Wallet identity is accepted
-            only for public checkout payments.
+            {mainnetExternalOnly
+              ? "Mainnet invoice management remains disabled. Circle App Wallet controls are unavailable, and WizPay will not fall back to Testnet."
+              : "Invoice management is authenticated with the active Circle User-Controlled Wallet session. External Wallet identity is accepted only for public checkout payments."}
           </p>
         </div>
-        {walletMode !== "circle" ? (
+        {mainnetExternalOnly ? null : walletMode !== "circle" ? (
           <Button onClick={onUseAppWallet}>Use App Wallet</Button>
         ) : (
           <p className="text-sm text-amber-300">

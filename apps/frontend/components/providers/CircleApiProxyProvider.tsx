@@ -8,9 +8,7 @@ const PROXIED_HOSTS = new Set([
   "iris-api-sandbox.circle.com",
 ]);
 const CIRCLE_API_PROXY_ENABLED = ["1", "true", "yes", "on"].includes(
-  (process.env.NEXT_PUBLIC_CIRCLE_API_PROXY_ENABLED ?? "")
-    .trim()
-    .toLowerCase()
+  (process.env.NEXT_PUBLIC_CIRCLE_API_PROXY_ENABLED ?? "").trim().toLowerCase(),
 );
 
 function resolveRequestUrl(input: RequestInfo | URL): URL | null {
@@ -47,11 +45,13 @@ function shouldProxyCircleRequest(url: URL) {
 
 export function CircleApiProxyProvider({
   children,
+  enabled = true,
 }: {
   children: React.ReactNode;
+  enabled?: boolean;
 }) {
   useEffect(() => {
-    if (!CIRCLE_API_PROXY_ENABLED) {
+    if (!enabled || !CIRCLE_API_PROXY_ENABLED) {
       return;
     }
 
@@ -109,7 +109,7 @@ export function CircleApiProxyProvider({
     return () => {
       window.fetch = originalFetch;
     };
-  }, []);
+  }, [enabled]);
 
   return children;
 }

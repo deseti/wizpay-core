@@ -39,6 +39,10 @@ import {
   prepareWalletExecutionIntent,
 } from "@/lib/execution-intent";
 import { ACTIVE_ARC_NETWORK } from "@/lib/active-arc-network";
+import {
+  assertSelectedArcWalletChain,
+  requestExternalWalletChain,
+} from "@/lib/external-wallet-policy";
 
 export type InvoicePayerMethod = "app" | "external";
 export type InvoicePaymentStage =
@@ -70,8 +74,9 @@ export function useInvoicePayment(
   const { address, chainId, isConnected } = useAccount();
   const { switchChainAsync } = useSwitchChain();
   const { writeContractAsync } = useWriteContract();
+  const mainnetExternalOnly = ACTIVE_ARC_NETWORK.key === "arc-mainnet";
   const [method, setMethod] = useState<InvoicePayerMethod>(() => {
-    if (typeof window === "undefined") return "external";
+    if (mainnetExternalOnly || typeof window === "undefined") return "external";
     return readInvoicePaymentRecovery(invoice.publicId, window.localStorage)
       ?.method === "app"
       ? "app"
@@ -369,7 +374,7 @@ export function useInvoicePayment(
             "The wallet may have broadcast this payment without returning its transaction hash. WizPay will not request another payment automatically. Bind the known hash to reconcile it, or cancel only after confirming that no transaction was broadcast.",
           );
         }
-      } else if (recovery?.method === "app") {
+      } else if (recovery?.method === "app" && !mainnetExternalOnly) {
         signed.current = true;
         setMethod("app");
         setSubmissionLocked(true);
@@ -401,6 +406,7 @@ export function useInvoicePayment(
     invoice.publicId,
     invoice.status,
     invoice.transactionHash,
+    mainnetExternalOnly,
     verify,
   ]);
 
@@ -414,10 +420,13 @@ export function useInvoicePayment(
         "This invoice cannot be paid from the merchant's receiving wallet.",
       );
     }
-    if (chainId !== invoice.chain.id) {
-      setStage("switching_network");
-      await switchChainAsync({ chainId: invoice.chain.id });
-    }
+    assertSelectedArcWalletChain(invoice.chain.id);
+    if (chainId !== invoice.chain.id) setStage("switching_network");
+    await requestExternalWalletChain({
+      currentChainId: chainId,
+      targetChainId: invoice.chain.id,
+      switchChain: switchChainAsync,
+    });
     const intent = await acquireExecutionIntent({
       network: ACTIVE_ARC_NETWORK.key,
       operation: invoice.settlementOperation ?? "INVOICE_SETTLEMENT",
@@ -450,14 +459,15 @@ export function useInvoicePayment(
     setExternalRecovery(recovery);
     writeInvoicePaymentRecovery(recovery, window.localStorage);
     setStage("awaiting_signature");
-    const hash = await writeContractAsync(
-      buildInvoiceTransferRequest({
+    const hash = await writeContractAsync({
+      ...buildInvoiceTransferRequest({
         chainId: invoice.chain.id,
         tokenAddress: invoice.token.address,
         recipient: invoice.receivingAddress,
         amountUnits: invoice.amountUnits,
       }),
-    );
+      account: getAddress(address),
+    });
     await bindExecutionIntentTransactionHash(
       intent.id,
       hash,
@@ -482,6 +492,11 @@ export function useInvoicePayment(
   }
 
   async function payAppWallet() {
+    if (mainnetExternalOnly) {
+      throw new TerminalInvoicePaymentError(
+        "Arc Mainnet supports external wallet payments only.",
+      );
+    }
     if (!circle.authenticated) {
       setStage("authenticating_app_wallet");
       circle.login();
@@ -696,6 +711,10 @@ export function useInvoicePayment(
 
   function selectMethod(next: InvoicePayerMethod) {
     if (submissionLocked || signed.current || invoice.status !== "OPEN") return;
+    if (mainnetExternalOnly && next !== "external") {
+      setError("Arc Mainnet supports external wallet payments only.");
+      return;
+    }
     setMethod(next);
     setError(null);
     setStage("ready");
@@ -706,6 +725,10 @@ export function useInvoicePayment(
     appAuthenticated: circle.authenticated,
     appWalletAddress: canonicalCircleIdentity(circle).address,
     authenticateAppWallet: () => {
+      if (mainnetExternalOnly) {
+        setError("Arc Mainnet supports external wallet payments only.");
+        return;
+      }
       if (submissionLocked && !appRecovery) return;
       setStage("authenticating_app_wallet");
       circle.login();

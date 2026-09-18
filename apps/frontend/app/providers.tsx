@@ -1,15 +1,14 @@
 "use client";
 
-import "@rainbow-me/rainbowkit/styles.css";
-
 import { useState } from "react";
-import { midnightTheme, RainbowKitProvider } from "@rainbow-me/rainbowkit";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { WagmiProvider } from "wagmi";
 import { CircleApiProxyProvider } from "@/components/providers/CircleApiProxyProvider";
 import { CircleWalletProvider } from "@/components/providers/CircleWalletProvider";
 import { HybridWalletProvider } from "@/components/providers/HybridWalletProvider";
-import { activeArcChain, config } from "@/lib/wagmi";
+import { ACTIVE_ARC_NETWORK } from "@/lib/active-arc-network";
+import "@/lib/reown-appkit";
+import { config, REOWN_CONFIGURATION_ERROR } from "@/lib/wagmi";
 import { PwaRuntime } from "@/src/features/pwa/components/PwaRuntime";
 import { CapabilityProvider } from "@/components/providers/CapabilityProvider";
 
@@ -28,21 +27,39 @@ export function Providers({ children }: { children: React.ReactNode }) {
       }),
   );
 
+  if (REOWN_CONFIGURATION_ERROR) {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-background px-6">
+        <div
+          role="alert"
+          className="max-w-lg rounded-2xl border border-red-500/30 bg-red-500/10 p-6 text-sm text-red-100"
+        >
+          <h1 className="text-lg font-semibold">
+            Wallet configuration unavailable
+          </h1>
+          <p className="mt-2">{REOWN_CONFIGURATION_ERROR}</p>
+        </div>
+      </main>
+    );
+  }
+
   return (
     <QueryClientProvider client={queryClient}>
       <WagmiProvider config={config}>
-        <RainbowKitProvider initialChain={activeArcChain} theme={midnightTheme()}>
-          <CircleWalletProvider>
-            <CapabilityProvider>
-              <HybridWalletProvider>
-                <CircleApiProxyProvider>
-                  <PwaRuntime />
-                  {children}
-                </CircleApiProxyProvider>
-              </HybridWalletProvider>
-            </CapabilityProvider>
-          </CircleWalletProvider>
-        </RainbowKitProvider>
+        <CircleWalletProvider
+          enabled={ACTIVE_ARC_NETWORK.key === "arc-testnet"}
+        >
+          <CapabilityProvider>
+            <HybridWalletProvider>
+              <CircleApiProxyProvider
+                enabled={ACTIVE_ARC_NETWORK.key === "arc-testnet"}
+              >
+                <PwaRuntime />
+                {children}
+              </CircleApiProxyProvider>
+            </HybridWalletProvider>
+          </CapabilityProvider>
+        </CircleWalletProvider>
       </WagmiProvider>
     </QueryClientProvider>
   );

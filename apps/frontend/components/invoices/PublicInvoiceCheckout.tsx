@@ -1,6 +1,6 @@
 "use client";
 
-import { ConnectButton } from "@rainbow-me/rainbowkit";
+import { useAppKit } from "@reown/appkit/react";
 import {
   AlertTriangle,
   ArrowRightLeft,
@@ -26,6 +26,7 @@ import { getInvoiceCheckoutUrl } from "@/lib/invoice-links";
 import { ARC_CHAIN_ID, getExplorerTxUrl } from "@/lib/wizpay";
 import { InvoiceQrCode } from "./InvoiceQrCode";
 import { useCapability } from "@/components/providers/CapabilityProvider";
+import { ACTIVE_ARC_NETWORK } from "@/lib/active-arc-network";
 
 export function PublicInvoiceCheckout({ publicId }: { publicId: string }) {
   const [invoice, setInvoice] = useState<PublicInvoice | null>(null);
@@ -95,6 +96,7 @@ function CheckoutLoaded({
       : "invoice",
   );
   const payment = useInvoicePayment(invoice, onInvoice);
+  const { open: openAppKit } = useAppKit();
   const [recoveryHash, setRecoveryHash] = useState("");
   const checkoutUrl = getInvoiceCheckoutUrl(invoice.publicId);
   const explorerUrl = getExplorerTxUrl(invoice.transactionHash, ARC_CHAIN_ID);
@@ -102,6 +104,7 @@ function CheckoutLoaded({
     invoice.status === "PAID" ||
     invoice.status === "EXPIRED" ||
     invoice.status === "CANCELLED";
+  const mainnetExternalOnly = ACTIVE_ARC_NETWORK.key === "arc-mainnet";
 
   return (
     <StandaloneShell>
@@ -199,25 +202,27 @@ function CheckoutLoaded({
                 <div
                   role="radiogroup"
                   aria-label="Payment method"
-                  className="grid gap-3 sm:grid-cols-2"
+                  className={`grid gap-3 ${mainnetExternalOnly ? "" : "sm:grid-cols-2"}`}
                 >
-                  <Button
-                    type="button"
-                    role="radio"
-                    aria-checked={payment.method === "app"}
-                    variant={payment.method === "app" ? "default" : "outline"}
-                    className="h-auto min-h-20 justify-start whitespace-normal p-4 text-left"
-                    disabled={payment.locked}
-                    onClick={() => payment.selectMethod("app")}
-                  >
-                    <ShieldCheck className="mr-3 h-5 w-5 shrink-0" />
-                    <span>
-                      <span className="block font-semibold">App Wallet</span>
-                      <span className="mt-1 block text-xs opacity-75">
-                        Pay with your WizPay App Wallet
+                  {!mainnetExternalOnly ? (
+                    <Button
+                      type="button"
+                      role="radio"
+                      aria-checked={payment.method === "app"}
+                      variant={payment.method === "app" ? "default" : "outline"}
+                      className="h-auto min-h-20 justify-start whitespace-normal p-4 text-left"
+                      disabled={payment.locked}
+                      onClick={() => payment.selectMethod("app")}
+                    >
+                      <ShieldCheck className="mr-3 h-5 w-5 shrink-0" />
+                      <span>
+                        <span className="block font-semibold">App Wallet</span>
+                        <span className="mt-1 block text-xs opacity-75">
+                          Pay with your WizPay App Wallet
+                        </span>
                       </span>
-                    </span>
-                  </Button>
+                    </Button>
+                  ) : null}
                   <Button
                     type="button"
                     role="radio"
@@ -279,19 +284,15 @@ function CheckoutLoaded({
                     />
                   )
                 ) : !payment.isConnected ? (
-                  <ConnectButton.Custom>
-                    {({ mounted, openConnectModal }) => (
-                      <Button
-                        className="w-full"
-                        size="lg"
-                        disabled={!mounted || payment.locked}
-                        onClick={openConnectModal}
-                      >
-                        <Wallet className="mr-2 h-4 w-4" />
-                        Connect External Wallet
-                      </Button>
-                    )}
-                  </ConnectButton.Custom>
+                  <Button
+                    className="w-full"
+                    size="lg"
+                    disabled={payment.locked}
+                    onClick={() => void openAppKit({ view: "Connect" })}
+                  >
+                    <Wallet className="mr-2 h-4 w-4" />
+                    Connect External Wallet
+                  </Button>
                 ) : (
                   <PaymentButton
                     invoice={invoice}

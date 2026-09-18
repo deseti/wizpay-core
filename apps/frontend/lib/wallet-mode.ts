@@ -14,5 +14,5 @@ export function getWalletModeLabel(mode: WalletMode): string {
 export function getWalletModeDescription(mode: WalletMode): string {
   return mode === "circle"
     ? "Circle user-controlled wallet with user-approved confirmations"
-    : "Injected browser wallet such as MetaMask, Rainbow, or Rabby";
+    : "External wallet such as Rabby, MetaMask, Coinbase Wallet, Safe, or a WalletConnect mobile wallet";
 }

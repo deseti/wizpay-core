@@ -18,12 +18,8 @@ import { useCircleWallet } from "@/components/providers/CircleWalletProvider";
 import { useHybridWallet } from "@/components/providers/HybridWalletProvider";
 import { writeContractTransaction } from "@/lib/web3-transactions";
 import { prepareWalletExecutionIntent } from "@/lib/execution-intent";
-import {
-  arcTestnet,
-  CHAIN_BY_ID,
-  CHAIN_NAME_BY_ID,
-  ethereumSepolia,
-} from "@/lib/wagmi";
+import { requestExternalWalletChain } from "@/lib/external-wallet-policy";
+import { arcTestnet, CHAIN_BY_ID, ethereumSepolia } from "@/lib/wagmi";
 
 const CIRCLE_FEE_LEVEL = "MEDIUM";
 
@@ -191,32 +187,11 @@ export function useTransactionExecutor() {
   };
 
   const ensureExternalChain = async (targetChainId: number) => {
-    if (activeWalletChainId === targetChainId) {
-      return;
-    }
-
-    if (!switchChainAsync) {
-      throw new Error(
-        `Switch your external wallet to ${CHAIN_NAME_BY_ID[targetChainId] ?? `chain ${targetChainId}`} to continue.`,
-      );
-    }
-
-    try {
-      await switchChainAsync({ chainId: targetChainId });
-    } catch (error) {
-      const message =
-        error instanceof Error
-          ? error.message.toLowerCase()
-          : String(error).toLowerCase();
-
-      if (message.includes("rejected")) {
-        throw new Error("Network switch was rejected in your wallet.");
-      }
-
-      throw new Error(
-        `Failed to switch the external wallet to ${CHAIN_NAME_BY_ID[targetChainId] ?? `chain ${targetChainId}`}.`,
-      );
-    }
+    await requestExternalWalletChain({
+      currentChainId: activeWalletChainId,
+      targetChainId,
+      switchChain: switchChainAsync,
+    });
   };
 
   const getExternalWalletClient = async (targetChainId: number) => {

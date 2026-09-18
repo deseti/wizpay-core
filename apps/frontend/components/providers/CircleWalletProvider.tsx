@@ -89,12 +89,22 @@ function isMobileOrStandaloneAuthRuntime() {
 
 export function CircleWalletProvider({
   children,
+  enabled = true,
 }: {
   children: React.ReactNode;
+  enabled?: boolean;
 }) {
   // If CIRCLE_APP_ID is not configured, skip SDK initialization entirely.
   // Google and OTP logins both require Circle SDK, so we render a no-op
   // context that signals auth is unavailable rather than crashing.
+  if (!enabled) {
+    return (
+      <CircleWalletContext.Provider value={DISABLED_CONTEXT_VALUE}>
+        {children}
+      </CircleWalletContext.Provider>
+    );
+  }
+
   if (!CIRCLE_APP_ID) {
     console.warn(
       "[CircleWalletProvider] The selected network-scoped Circle App ID is not set. " +
