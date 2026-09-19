@@ -106,7 +106,8 @@ export type ArcUnavailableReason =
   | "UNISWAP_USDC_EURC_LIQUIDITY_NOT_VERIFIED"
   | "ARC_MAINNET_RPC_QUORUM_UNAVAILABLE"
   | "ARC_MAINNET_UNISWAP_RESOURCE_EVIDENCE_UNAVAILABLE"
-  | "ARC_MAINNET_UNISWAP_EXECUTION_AUTHORIZATION_UNAVAILABLE";
+  | "ARC_MAINNET_UNISWAP_EXECUTION_AUTHORIZATION_UNAVAILABLE"
+  | "WIZPAY_MAINNET_SWAP_EXECUTOR_NOT_DEPLOYED";
 
 export type AvailableArcResource<T> = {
   readonly status: "available";
@@ -157,10 +158,17 @@ export type ArcTokenResourceValue = {
   readonly authoritativeSource?: string;
 };
 
-export type ArcWizPayContractKey = "wizpay" | "wizpay-swap-executor-v2";
+export type ArcWizPayContractKey =
+  | "wizpay"
+  | "wizpay-swap-executor-v2"
+  | "wizpay-swap-executor-mainnet";
 
 export type ArcWizPayContractValue = {
-  readonly contract: "WizPay" | "WizPayMainnetV2" | "WizPaySwapExecutorV2";
+  readonly contract:
+    | "WizPay"
+    | "WizPayMainnetV2"
+    | "WizPaySwapExecutorV2"
+    | "WizPaySwapExecutorMainnet";
   readonly address: `0x${string}`;
   readonly deploymentSource: string;
 };

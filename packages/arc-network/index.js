@@ -269,11 +269,20 @@ const ARC_WIZPAY_CONTRACT_RESOURCES = deepFreeze({
       deploymentSource:
         "packages/contracts/deployments/arc-testnet-wizpay-swap-executor-v2.json",
     }),
+    // WizPaySwapExecutorMainnet is an Arc Mainnet-only contract; unavailable on testnet.
+    "wizpay-swap-executor-mainnet": unavailable(
+      "WIZPAY_MAINNET_SWAP_EXECUTOR_NOT_DEPLOYED",
+    ),
   },
   "arc-mainnet": {
     wizpay: unavailable("WIZPAY_MAINNET_CONTRACT_NOT_DEPLOYED"),
     "wizpay-swap-executor-v2": unavailable(
       "WIZPAY_MAINNET_CONTRACT_NOT_DEPLOYED",
+    ),
+    // WizPaySwapExecutorMainnet: registered as unavailable until the contract is
+    // deployed, audited, and execution authorization is granted. executable=false.
+    "wizpay-swap-executor-mainnet": unavailable(
+      "WIZPAY_MAINNET_SWAP_EXECUTOR_NOT_DEPLOYED",
     ),
   },
 });
@@ -648,7 +657,9 @@ function getArcOperationResourceReadiness(networkKey) {
     ARC_WIZPAY_CONTRACT_RESOURCES[key].wizpay.status === "available";
   const swapExecutor =
     ARC_WIZPAY_CONTRACT_RESOURCES[key]["wizpay-swap-executor-v2"].status ===
-    "available";
+      "available" ||
+    ARC_WIZPAY_CONTRACT_RESOURCES[key]["wizpay-swap-executor-mainnet"]
+      ?.status === "available";
   const circle = ARC_CIRCLE_EXECUTION_DEFINITIONS[key];
   return deepFreeze({
     sendDirect: rpc && explorer && usdc,

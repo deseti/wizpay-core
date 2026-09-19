@@ -109,6 +109,10 @@ export type MainnetUniswapV4PoolKey = Readonly<{
   hooks: typeof ARC_MAINNET_UNISWAP_V4_HOOKS;
 }>;
 
+// WizPaySwapExecutorMainnet — not yet deployed; executable=false.
+// When deployed and authorized, this will replace the direct-wallet router flow.
+export const WIZPAY_SWAP_EXECUTOR_MAINNET_EXECUTABLE = false as const;
+
 export const ARC_MAINNET_UNISWAP_V4_POOL_KEY: MainnetUniswapV4PoolKey =
   Object.freeze({
     currency0: ARC_MAINNET_UNISWAP_V4_USDC,

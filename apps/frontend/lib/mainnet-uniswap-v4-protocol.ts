@@ -50,6 +50,11 @@ const PATH_KEY_COMPONENTS = [
   { name: "hookData", type: "bytes" },
 ] as const;
 
+// WizPaySwapExecutorMainnet — not yet deployed; executable=false.
+// When deployed, this address will be set to the verified contract address.
+// Until then, the direct external-wallet flow via UniversalRouter is used.
+export const WIZPAY_SWAP_EXECUTOR_MAINNET_EXECUTABLE = false as const;
+
 export const ARC_MAINNET_UNISWAP_V4_POOL_KEY = Object.freeze({
   currency0: ARC_MAINNET_UNISWAP_V4_USDC,
   currency1: ARC_MAINNET_UNISWAP_V4_EURC,
