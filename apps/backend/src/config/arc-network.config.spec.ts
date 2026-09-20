@@ -54,9 +54,8 @@ describe('backend Arc network configuration', () => {
       expect.objectContaining({ value: { url: TESTNET_RPC } }),
     );
     expect(state.tokens.USDC).toMatchObject({
-      status: 'published',
+      status: 'available',
       value: { address: TESTNET_USDC },
-      executable: false,
     });
     expect(state.tokens.EURC).not.toEqual(
       expect.objectContaining({ value: { address: TESTNET_EURC } }),
@@ -79,50 +78,36 @@ describe('backend Arc network configuration', () => {
       poolId: { status: 'candidate', executable: false },
       poolUniqueness: { status: 'unavailable' },
     });
-    expect(() => requireBackendArcNetworkReadiness(state)).toThrow(
-      'OFFICIAL_ARC_MAINNET_RPC_UNAVAILABLE',
-    );
-  });
-
-  it('builds a future Mainnet direct configuration with only the required contract', () => {
-    const state = resolveBackendArcNetworkResourceState('arc-mainnet');
-    const available = <T>(value: T) => ({
-      status: 'available' as const,
-      value,
-    });
-    const config = requireBackendArcNetworkReadiness({
-      ...state,
-      rpc: available({ url: 'https://mainnet.invalid' }),
-      explorer: available({ baseUrl: 'https://explorer.invalid' }),
+    const config = requireBackendArcNetworkReadiness(state);
+    expect(config).toMatchObject({
+      key: 'arc-mainnet',
+      chainId: 5_042,
+      rpcUrl: 'https://rpc.mainnet.arc.io',
+      explorerBaseUrl: 'https://explorer.arc.io',
       tokens: {
-        USDC: available({
-          symbol: 'USDC',
-          address: '0x123456789012345678901234567890123456789a',
-          decimals: 6,
-        }),
-        EURC: available({
-          symbol: 'EURC',
-          address: '0x12345678901234567890123456789012345689ab',
-          decimals: 6,
-        }),
+        USDC: { address: TESTNET_USDC },
+        EURC: { address: '0xbEf5f6d51CB62b58e6A8f77868681825C6fe21c1' },
       },
       contracts: {
-        wizpay: available({
-          contract: 'WizPayMainnetV2',
-          address: '0x1234567890123456789012345678901234569abc',
-          deploymentSource:
-            'packages/contracts/deployments/arc-mainnet-wizpay-v2.json',
-        }),
-        wizpaySwapExecutorV2: available({
-          contract: 'WizPaySwapExecutorV2',
-          address: '0x123456789012345678901234567890123456abcd',
-          deploymentSource: 'forbidden-mainnet-swap.json',
-        }),
+        wizpay: {
+          contract: 'WizPayPayrollMainnet',
+          address: '0x77AC7Cb6507D404b5530fC03e3D39BAaEdE10C34',
+        },
+        wizpaySwapExecutorMainnet: {
+          address: '0x7A051F17B237750EF9D4E63fb75381B9F8755774',
+        },
       },
     });
-    expect(config.tokens).not.toHaveProperty('EURC');
-    expect(config.contracts.wizpay?.contract).toBe('WizPayMainnetV2');
     expect(config.contracts).not.toHaveProperty('wizpaySwapExecutorV2');
+  });
+
+  it('loads live Arc Mainnet configuration without enabling capabilities', () => {
+    const config = loadBackendArcNetworkConfiguration({
+      WIZPAY_ARC_NETWORK: 'arc-mainnet',
+    });
+    expect(config.chainId).toBe(5_042);
+    expect(config.contracts.wizpay?.contract).toBe('WizPayPayrollMainnet');
+    expect(config.contracts.wizpaySwapExecutorV2).toBeUndefined();
   });
 
   it.each([

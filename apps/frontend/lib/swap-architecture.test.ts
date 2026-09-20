@@ -42,11 +42,12 @@ describe("canonical swap signing boundaries", () => {
     expect(screen).not.toContain("circle-swap-kit");
   });
 
-  it("keeps Arc Mainnet visibly fail-closed without changing Testnet routing", () => {
-    expect(screen).toContain('ACTIVE_ARC_NETWORK.key === "arc-mainnet"');
-    expect(screen).toContain("ARC_MAINNET_UNISWAP_V4_UNAVAILABLE_MESSAGE");
-    expect(screen).toContain("arcTestnet.id");
+  it("keeps Arc Mainnet Swap Executor routing without changing Testnet XyloNet", () => {
+    expect(screen).toContain("WIZPAY_SWAP_EXECUTOR_MAINNET_ADDRESS");
+    expect(screen).toContain("executeMainnetExecutorSwap");
     expect(screen).toContain("quoteUserSwap");
+    expect(screen).toContain("arcTestnet.id");
+    expect(screen).not.toContain("ARC_MAINNET_UNISWAP_V4_UNAVAILABLE_MESSAGE");
   });
 
   it("removes Circle App Wallet from Arc Mainnet wallet controls", () => {

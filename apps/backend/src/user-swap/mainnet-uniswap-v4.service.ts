@@ -5,7 +5,6 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { type ArcNetworkKey } from '@wizpay/arc-network';
-import type { Hex } from 'viem';
 import type { BackendArcNetworkConfiguration } from '../config/arc-network.config';
 import {
   ARC_MAINNET_UNISWAP_V4_ERROR_CODES,
@@ -16,10 +15,8 @@ import {
   ARC_MAINNET_UNISWAP_V4_POOL_ID,
   ARC_MAINNET_UNISWAP_V4_POOL_KEY,
   ARC_MAINNET_UNISWAP_V4_QUOTER,
-  ARC_MAINNET_UNISWAP_V4_UNIVERSAL_ROUTER,
-  buildPermit2TypedData,
+  WIZPAY_SWAP_EXECUTOR_MAINNET_ADDRESS,
   buildUserControlledSwapPlan,
-  encodePermit2PermitAndSwap,
   encodeQuoteExactInputSingle,
   type MainnetUniswapV4QuoteObservation,
   type MainnetUniswapV4Receipt,
@@ -58,9 +55,10 @@ export class MainnetUniswapV4Service {
       ? buildUserControlledSwapPlan(normalized, request.quoteResult).quote
       : undefined;
     return Object.freeze({
-      status: 'candidate-non-executable' as const,
+      status: 'executor-prepared' as const,
       executable: false as const,
       chainId: 5_042,
+      executor: WIZPAY_SWAP_EXECUTOR_MAINNET_ADDRESS,
       poolKey: ARC_MAINNET_UNISWAP_V4_POOL_KEY,
       poolId: ARC_MAINNET_UNISWAP_V4_POOL_ID,
       quoter: Object.freeze({
@@ -102,15 +100,23 @@ export class MainnetUniswapV4Service {
       request.permit2Signature !== undefined ||
       request.permit2Nonce !== undefined
     ) {
-      this.requireExternalWalletPermit(request, plan);
+      throw new BadRequestException({
+        code: ARC_MAINNET_UNISWAP_V4_ERROR_CODES.INVALID_REQUEST,
+        message:
+          'Permit2 signatures are not used for Arc Mainnet Swap Executor execution.',
+      });
     }
-    this.readiness.requireExecutable();
+    return plan;
   }
 
   execute(request: MainnetUniswapV4PrepareRequest): never {
     this.assertMainnetProcess();
     this.readiness.validateBoundary(request);
-    this.readiness.requireExecutable();
+    throw new ServiceUnavailableException({
+      code: ARC_MAINNET_UNISWAP_V4_ERROR_CODES.UNAVAILABLE,
+      message:
+        'Arc Mainnet swaps are signed by the external wallet against WizPaySwapExecutorMainnet. The backend does not custody or submit user funds.',
+    });
   }
 
   verifyReceipt(
@@ -126,11 +132,17 @@ export class MainnetUniswapV4Service {
       });
     }
     const plan = buildUserControlledSwapPlan(normalized, request.quoteResult);
-    const transactionData =
+    if (
       request.permit2Signature !== undefined ||
       request.permit2Nonce !== undefined
-        ? this.permit2SwapData(request, plan)
-        : plan.swap.data;
+    ) {
+      throw new BadRequestException({
+        code: ARC_MAINNET_UNISWAP_V4_ERROR_CODES.INVALID_REQUEST,
+        message:
+          'Permit2 signatures are not used for Arc Mainnet Swap Executor execution.',
+      });
+    }
+    const transactionData = plan.swap.data;
     const verified = verifySwapReceipt(receipt, {
       walletAddress: normalized.walletAddress,
       recipient: normalized.recipient,
@@ -148,91 +160,11 @@ export class MainnetUniswapV4Service {
     });
   }
 
-  permit2TypedData(request: MainnetUniswapV4PrepareRequest, nonce: number) {
-    this.assertMainnetProcess();
-    const normalized = this.readiness.validateBoundary(request);
-    if (!request.quoteResult) {
-      throw new BadRequestException({
-        code: ARC_MAINNET_UNISWAP_V4_ERROR_CODES.INVALID_REQUEST,
-        message: 'A successful pinned quote observation is required.',
-      });
-    }
-    const plan = buildUserControlledSwapPlan(normalized, request.quoteResult);
-    return buildPermit2TypedData({
-      token: plan.quote.tokenIn,
-      amount: plan.quote.amountIn,
-      spender: ARC_MAINNET_UNISWAP_V4_UNIVERSAL_ROUTER,
-      nonce,
-      deadline: normalized.deadline,
-    });
-  }
-
-  private requireExternalWalletPermit(
-    request: MainnetUniswapV4PrepareRequest,
-    plan: MainnetUniswapV4SwapPlan,
-  ): never {
-    if (plan.permit2 === null) {
-      throw new BadRequestException({
-        code: ARC_MAINNET_UNISWAP_V4_ERROR_CODES.INVALID_REQUEST,
-        message: 'Permit2 signatures are not valid for native USDC input.',
-      });
-    }
-    if (
-      typeof request.permit2Nonce !== 'number' ||
-      !Number.isInteger(request.permit2Nonce) ||
-      request.permit2Nonce < 0 ||
-      request.permit2Nonce > 2 ** 48 - 1 ||
-      typeof request.permit2Signature !== 'string' ||
-      !/^0x(?:[0-9a-fA-F]{2})+$/.test(request.permit2Signature)
-    ) {
-      throw new BadRequestException({
-        code: ARC_MAINNET_UNISWAP_V4_ERROR_CODES.INVALID_REQUEST,
-        message: 'Permit2 nonce and signature are invalid.',
-      });
-    }
-    encodePermit2PermitAndSwap({
-      quote: plan.quote,
-      recipient: plan.recipient,
-      deadline: plan.deadline,
-      nonce: request.permit2Nonce,
-      signature: request.permit2Signature as Hex,
-    });
-    this.readiness.requireExecutable();
-  }
-
-  private permit2SwapData(
-    request: MainnetUniswapV4PrepareRequest,
-    plan: MainnetUniswapV4SwapPlan,
-  ): Hex {
-    if (
-      plan.permit2 === null ||
-      typeof request.permit2Nonce !== 'number' ||
-      !Number.isInteger(request.permit2Nonce) ||
-      request.permit2Nonce < 0 ||
-      request.permit2Nonce > 2 ** 48 - 1 ||
-      typeof request.permit2Signature !== 'string' ||
-      !/^0x(?:[0-9a-fA-F]{2})+$/.test(request.permit2Signature)
-    ) {
-      throw new BadRequestException({
-        code: ARC_MAINNET_UNISWAP_V4_ERROR_CODES.INVALID_REQUEST,
-        message: 'Permit2 nonce and signature are invalid.',
-      });
-    }
-    return encodePermit2PermitAndSwap({
-      quote: plan.quote,
-      recipient: plan.recipient,
-      deadline: plan.deadline,
-      nonce: request.permit2Nonce,
-      signature: request.permit2Signature as Hex,
-    });
-  }
-
   private assertMainnetProcess() {
     const network =
       this.config.get<BackendArcNetworkConfiguration>('arcNetwork');
     const key = (network?.key ?? process.env.WIZPAY_ARC_NETWORK) as
-      | ArcNetworkKey
-      | undefined;
+      ArcNetworkKey | undefined;
     if (key !== 'arc-mainnet') {
       throw new BadRequestException({
         code: ARC_MAINNET_UNISWAP_V4_ERROR_CODES.INVALID_REQUEST,

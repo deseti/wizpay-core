@@ -123,20 +123,42 @@ test("parses capability flags exactly and fails closed for malformed or unknown 
   );
 });
 
-test("rejects forbidden Mainnet enablement and unavailable direct resources", () => {
+test("rejects still-forbidden Mainnet capabilities while allowing verified swap and payroll flags", () => {
   assert.throws(
     () =>
       resolveArcCapabilities("arc-mainnet", {
-        WIZPAY_ARC_MAINNET_CAPABILITY_SWAP: "true",
+        WIZPAY_ARC_MAINNET_CAPABILITY_BRIDGE: "true",
       }),
     (error) => error.code === "CAPABILITY_FORBIDDEN_FOR_NETWORK",
   );
   assert.throws(
     () =>
       resolveArcCapabilities("arc-mainnet", {
-        WIZPAY_ARC_MAINNET_CAPABILITY_SEND: "true",
+        WIZPAY_ARC_MAINNET_CAPABILITY_LIQUIDITY: "true",
       }),
-    (error) => error.code === "CAPABILITY_RESOURCE_DEPENDENCY_UNAVAILABLE",
+    (error) => error.code === "CAPABILITY_FORBIDDEN_FOR_NETWORK",
+  );
+  const swapEnabled = resolveArcCapabilities("arc-mainnet", {
+    WIZPAY_ARC_MAINNET_CAPABILITY_SWAP: "true",
+  });
+  assert.equal(swapEnabled.swap, true);
+  assert.equal(swapEnabled.sameTokenPayroll, false);
+  const payrollEnabled = resolveArcCapabilities("arc-mainnet", {
+    WIZPAY_ARC_MAINNET_CAPABILITY_SAME_TOKEN_PAYROLL: "true",
+  });
+  assert.equal(payrollEnabled.sameTokenPayroll, true);
+  const crossEnabled = resolveArcCapabilities("arc-mainnet", {
+    WIZPAY_ARC_MAINNET_CAPABILITY_SWAP: "true",
+    WIZPAY_ARC_MAINNET_CAPABILITY_CROSS_TOKEN_PAYROLL: "true",
+  });
+  assert.equal(crossEnabled.swap, true);
+  assert.equal(crossEnabled.crossTokenPayroll, true);
+  assert.throws(
+    () =>
+      resolveArcCapabilities("arc-mainnet", {
+        WIZPAY_ARC_MAINNET_CAPABILITY_CROSS_TOKEN_PAYROLL: "true",
+      }),
+    (error) => error.code === "CONTRADICTORY_CAPABILITY_CONFIGURATION",
   );
 });
 
@@ -167,12 +189,17 @@ test("decouples direct-USDC readiness from EURC and swap resources", () => {
 });
 
 test("keeps cross-token readiness independently dependent on EURC and swap executor", () => {
-  const readiness = getArcOperationResourceReadiness("arc-testnet");
-  assert.equal(readiness.crossToken, true);
-  assert.equal(
-    getArcOperationResourceReadiness("arc-mainnet").crossToken,
-    false,
-  );
+  const testnet = getArcOperationResourceReadiness("arc-testnet");
+  assert.equal(testnet.crossToken, true);
+  assert.equal(testnet.swapDirect, true);
+  const mainnet = getArcOperationResourceReadiness("arc-mainnet");
+  assert.equal(mainnet.sendDirect, true);
+  assert.equal(mainnet.payrollDirect, true);
+  assert.equal(mainnet.swapDirect, true);
+  assert.equal(mainnet.crossToken, true);
+  assert.equal(mainnet.sendDirectAppWallet, false);
+  assert.equal(mainnet.payrollDirectAppWallet, false);
+  assert.equal(mainnet.paymentLinkDirectAppWallet, false);
 });
 
 test("rejects dependency-invalid capability combinations", () => {
@@ -407,17 +434,17 @@ test("resolves the exact available Arc Testnet tokens", () => {
   });
 });
 
-test("keeps Arc Mainnet RPC and explorer unavailable while tokens remain published-only", () => {
+test("resolves the live Arc Mainnet RPC, explorer, and canonical tokens", () => {
   assert.deepEqual(getArcRpcResource("arc-mainnet"), {
-    status: "unavailable",
-    reason: "OFFICIAL_ARC_MAINNET_RPC_UNAVAILABLE",
+    status: "available",
+    value: { url: "https://rpc.mainnet.arc.io" },
   });
   assert.deepEqual(getArcExplorerResource("arc-mainnet"), {
-    status: "unavailable",
-    reason: "OFFICIAL_ARC_MAINNET_EXPLORER_UNAVAILABLE",
+    status: "available",
+    value: { baseUrl: "https://explorer.arc.io" },
   });
   assert.deepEqual(getArcTokenResource("arc-mainnet", "USDC"), {
-    status: "published",
+    status: "available",
     value: {
       symbol: "USDC",
       address: "0x3600000000000000000000000000000000000000",
@@ -425,11 +452,9 @@ test("keeps Arc Mainnet RPC and explorer unavailable while tokens remain publish
       authoritativeSource:
         "https://docs.arc.io/arc/references/contract-addresses",
     },
-    verification: "onchain-pending",
-    executable: false,
   });
   assert.deepEqual(getArcTokenResource("arc-mainnet", "EURC"), {
-    status: "published",
+    status: "available",
     value: {
       symbol: "EURC",
       address: "0xbEf5f6d51CB62b58e6A8f77868681825C6fe21c1",
@@ -437,8 +462,6 @@ test("keeps Arc Mainnet RPC and explorer unavailable while tokens remain publish
       authoritativeSource:
         "https://docs.arc.io/arc/references/contract-addresses",
     },
-    verification: "onchain-pending",
-    executable: false,
   });
 });
 
@@ -466,13 +489,35 @@ test("records only authoritative Arc Testnet WizPay deployments", () => {
   );
 });
 
-test("keeps every Arc Mainnet WizPay contract unavailable", () => {
-  for (const contractKey of ["wizpay", "wizpay-swap-executor-v2"]) {
-    assert.deepEqual(getArcWizPayContractResource("arc-mainnet", contractKey), {
+test("registers confirmed Arc Mainnet Payroll and Swap Executor without repurposing V2", () => {
+  assert.deepEqual(getArcWizPayContractResource("arc-mainnet", "wizpay"), {
+    status: "available",
+    value: {
+      contract: "WizPayPayrollMainnet",
+      address: "0x77AC7Cb6507D404b5530fC03e3D39BAaEdE10C34",
+      deploymentSource:
+        "confirmed Arc Mainnet WizPayPayrollMainnet 0x77AC7Cb6507D404b5530fC03e3D39BAaEdE10C34",
+    },
+  });
+  assert.deepEqual(
+    getArcWizPayContractResource("arc-mainnet", "wizpay-swap-executor-mainnet"),
+    {
+      status: "available",
+      value: {
+        contract: "WizPaySwapExecutorMainnet",
+        address: "0x7A051F17B237750EF9D4E63fb75381B9F8755774",
+        deploymentSource:
+          "confirmed Arc Mainnet WizPaySwapExecutorMainnet 0x7A051F17B237750EF9D4E63fb75381B9F8755774",
+      },
+    },
+  );
+  assert.deepEqual(
+    getArcWizPayContractResource("arc-mainnet", "wizpay-swap-executor-v2"),
+    {
       status: "unavailable",
       reason: "WIZPAY_MAINNET_CONTRACT_NOT_DEPLOYED",
-    });
-  }
+    },
+  );
 });
 
 test("records the exact published Arc Mainnet Uniswap contract mapping", () => {
@@ -552,12 +597,9 @@ test("never exposes published, candidate, verified-non-executable, or unavailabl
       error.resourceStatus === "candidate" &&
       error.reason === "CANDIDATE_RESOURCE_NOT_VERIFIED",
   );
-  assert.throws(
-    () => requireAvailableArcResource(getArcRpcResource("arc-mainnet")),
-    (error) =>
-      error instanceof UnavailableArcResourceError &&
-      error.resourceStatus === "unavailable" &&
-      error.reason === "OFFICIAL_ARC_MAINNET_RPC_UNAVAILABLE",
+  assert.deepEqual(
+    requireAvailableArcResource(getArcRpcResource("arc-mainnet")),
+    { url: "https://rpc.mainnet.arc.io" },
   );
   assert.deepEqual(
     requireAvailableArcResource(getArcRpcResource("arc-testnet")),
@@ -617,8 +659,8 @@ test("exposes candidate V4 pool identity without enabling execution", () => {
     "ARC_MAINNET_RPC_QUORUM_UNAVAILABLE",
     "ARC_MAINNET_UNISWAP_EXECUTION_AUTHORIZATION_UNAVAILABLE",
   ]);
-  assert.equal(readiness.tokens.USDC.status, "published");
-  assert.equal(readiness.tokens.EURC.status, "published");
+  assert.equal(readiness.tokens.USDC.status, "available");
+  assert.equal(readiness.tokens.EURC.status, "available");
   assert.equal(readiness.contracts.universalRouter.status, "published");
   assert.equal(readiness.contracts.permit2.status, "published");
   assert.equal(
@@ -630,23 +672,29 @@ test("exposes candidate V4 pool identity without enabling execution", () => {
 });
 
 test("does not fall back across Arc networks", () => {
-  assert.equal(getArcRpcResource("arc-mainnet").status, "unavailable");
-  assert.equal(getArcExplorerResource("arc-mainnet").status, "unavailable");
-  assert.deepEqual(getArcTokenResource("arc-mainnet", "USDC"), {
-    status: "published",
-    value: {
-      symbol: "USDC",
-      address: "0x3600000000000000000000000000000000000000",
-      decimals: 6,
-      authoritativeSource:
-        "https://docs.arc.io/arc/references/contract-addresses",
-    },
-    verification: "onchain-pending",
-    executable: false,
-  });
   assert.equal(
-    getArcWizPayContractResource("arc-mainnet", "wizpay").status,
-    "unavailable",
+    getArcRpcResource("arc-mainnet").value.url,
+    "https://rpc.mainnet.arc.io",
+  );
+  assert.notEqual(
+    getArcRpcResource("arc-mainnet").value.url,
+    getArcRpcResource("arc-testnet").value.url,
+  );
+  assert.equal(
+    getArcExplorerResource("arc-mainnet").value.baseUrl,
+    "https://explorer.arc.io",
+  );
+  assert.notEqual(
+    getArcTokenResource("arc-mainnet", "EURC").value.address,
+    getArcTokenResource("arc-testnet", "EURC").value.address,
+  );
+  assert.equal(
+    getArcWizPayContractResource("arc-mainnet", "wizpay").value.contract,
+    "WizPayPayrollMainnet",
+  );
+  assert.notEqual(
+    getArcWizPayContractResource("arc-mainnet", "wizpay").value.address,
+    getArcWizPayContractResource("arc-testnet", "wizpay").value.address,
   );
   assert.equal(
     getArcProtocolContractResource("arc-testnet", "uniswap-v3", "swapRouter02")

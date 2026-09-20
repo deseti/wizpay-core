@@ -21,7 +21,7 @@ import {
   type TransactionReceipt,
 } from 'viem';
 import type { BackendArcNetworkConfiguration } from '../config/arc-network.config';
-import { WIZPAY_MAINNET_V2_ABI } from '../contracts/generated/wizpay-mainnet-v2.abi';
+import { WIZPAY_PAYROLL_MAINNET_ABI } from '../contracts/generated/wizpay-payroll-mainnet.abi';
 import { createPayrollBatchDigest } from '../execution-intent/execution-intent.service';
 import type { VerifiedExecutionReceipt } from '../execution-intent/execution-intent.service';
 
@@ -44,10 +44,13 @@ const TRANSFER_EVENT = parseAbiItem(
   'event Transfer(address indexed from, address indexed to, uint256 value)',
 );
 const MAINNET_PAYMENT_EVENT = parseAbiItem(
-  'event DirectUsdcPayment(bytes32 indexed referenceHash, address indexed payer, address indexed recipient, uint256 paymentIndex, uint256 grossAmount, uint256 netAmount, uint256 feeAmount)',
+  'event PayrollPayment(bytes32 indexed referenceHash, address indexed employer, address indexed tokenOut, address recipient, uint256 paymentIndex, uint256 amountOut)',
 );
 const MAINNET_REFERENCE_EVENT = parseAbiItem(
-  'event PayrollReferenceConsumed(bytes32 indexed referenceHash, address indexed payer, address indexed token, bytes32 batchDigest, uint256 totalAmount, uint256 totalOut, uint256 totalFees, uint256 recipientCount, string referenceId)',
+  'event PayrollReferenceConsumed(bytes32 indexed referenceHash, address indexed employer, address indexed tokenIn, address tokenOut, bytes32 batchDigest, uint256 totalInput, uint256 totalOutput, uint256 totalFees, uint256 recipientCount, string referenceId)',
+);
+const MAINNET_BATCH_EVENT = parseAbiItem(
+  'event PayrollBatchExecuted(address indexed employer, address indexed tokenIn, address indexed tokenOut, uint256 totalInput, uint256 totalOutput, uint256 totalFees, uint256 recipientCount, string referenceId)',
 );
 const PAYROLL_ABI = [
   {
@@ -153,8 +156,7 @@ export class PayrollReceiptVerifierService {
       transaction.hash.toLowerCase() !== input.transactionHash.toLowerCase() ||
       receipt.transactionHash.toLowerCase() !==
         input.transactionHash.toLowerCase() ||
-      transaction.chainId !== this.network.chainId ||
-      transaction.value !== 0n
+      transaction.chainId !== this.network.chainId
     )
       this.reject();
     if (
@@ -168,20 +170,39 @@ export class PayrollReceiptVerifierService {
       decodedCall = decodeFunctionData({
         abi:
           this.network.key === 'arc-mainnet'
-            ? WIZPAY_MAINNET_V2_ABI
+            ? WIZPAY_PAYROLL_MAINNET_ABI
             : PAYROLL_ABI,
         data: transaction.input,
       });
     } catch {
       this.reject();
     }
+    if (this.network.key === 'arc-mainnet') {
+      const verified = this.verifyMainnetCall(
+        decodedCall,
+        transaction.value,
+        sourceWallet,
+        token,
+        input,
+      );
+      return this.finishMainnetReceipt({
+        transaction,
+        receipt,
+        contractAddress,
+        sourceWallet,
+        token: verified.tokenOut,
+        input,
+        verified,
+      });
+    }
+    if (transaction.value !== 0n) this.reject();
     if (!isPayrollBatchCall(decodedCall)) this.reject();
     const [
       callTokenIn,
       callTokenOuts,
       callRecipients,
       callAmounts,
-      callMinimums,
+      ,
       callReference,
     ] = decodedCall.args;
     if (
@@ -217,10 +238,7 @@ export class PayrollReceiptVerifierService {
     );
     if (
       verifiedTotal.toString() !== input.totalAmountUnits ||
-      verifiedBatchDigest !== input.expectedBatchDigest.toLowerCase() ||
-      (this.network.key === 'arc-mainnet' &&
-        new Set(verifiedRecipients.map((entry) => entry.address.toLowerCase()))
-          .size !== verifiedRecipients.length)
+      verifiedBatchDigest !== input.expectedBatchDigest.toLowerCase()
     )
       this.reject();
     let latestBlock: bigint;
@@ -241,34 +259,6 @@ export class PayrollReceiptVerifierService {
         message: `Payroll receipt needs ${this.confirmationsRequired} confirmations.`,
         retryable: true,
       });
-    if (this.network.key === 'arc-mainnet') {
-      if (
-        !verifyMainnetReceiptEvidence({
-          logs: receipt.logs,
-          chainId: this.network.chainId,
-          contract: contractAddress,
-          payer: sourceWallet,
-          token,
-          referenceId: input.referenceId,
-          recipients: callRecipients.map((recipient) => getAddress(recipient)),
-          amounts: [...callAmounts],
-          minimums: [...callMinimums],
-        })
-      )
-        this.reject();
-      return this.evidence({
-        transactionHash: transaction.hash,
-        sourceWallet,
-        token,
-        contractAddress,
-        referenceId: input.referenceId,
-        recipients: verifiedRecipients,
-        batchDigest: verifiedBatchDigest,
-        totalAmountUnits: verifiedTotal.toString(),
-        blockNumber: receipt.blockNumber,
-        confirmations,
-      });
-    }
     const batchMatches = receipt.logs.filter((log) => {
       if (!isAddressEqual(log.address, contractAddress)) return false;
       try {
@@ -343,6 +333,209 @@ export class PayrollReceiptVerifierService {
     });
   }
 
+  private verifyMainnetCall(
+    decodedCall: ReturnType<typeof decodeFunctionData>,
+    value: bigint,
+    sourceWallet: `0x${string}`,
+    token: `0x${string}`,
+    input: {
+      referenceId: string;
+      totalAmountUnits: string;
+      expectedBatchDigest: string;
+      recipients: readonly { address: string; amountUnits: string }[];
+    },
+  ) {
+    if (
+      decodedCall.functionName === 'executeSameTokenPayroll' &&
+      decodedCall.args
+    ) {
+      const [callToken, callRecipients, callAmounts, callReference] =
+        decodedCall.args as readonly [
+          `0x${string}`,
+          readonly `0x${string}`[],
+          readonly bigint[],
+          string,
+        ];
+      if (value !== 0n) this.reject();
+      this.assertCallRecipients(
+        callToken,
+        token,
+        callRecipients,
+        callAmounts,
+        callReference,
+        input,
+      );
+      return {
+        tokenIn: getAddress(callToken),
+        tokenOut: getAddress(callToken),
+        recipients: callRecipients.map((recipient) => getAddress(recipient)),
+        amounts: [...callAmounts],
+      };
+    }
+    if (
+      decodedCall.functionName === 'executeCrossTokenPayroll' &&
+      decodedCall.args
+    ) {
+      const [
+        callTokenIn,
+        callTokenOut,
+        callRecipients,
+        callAmounts,
+        grossInput,
+        ,
+        ,
+        ,
+        callReference,
+      ] = decodedCall.args as readonly [
+        `0x${string}`,
+        `0x${string}`,
+        readonly `0x${string}`[],
+        readonly bigint[],
+        bigint,
+        bigint,
+        bigint,
+        bigint,
+        string,
+      ];
+      const usdc = this.network.tokens.USDC.address;
+      const expectedValue = isAddressEqual(getAddress(callTokenIn), usdc)
+        ? grossInput * 1_000_000_000_000n
+        : 0n;
+      if (value !== expectedValue) this.reject();
+      this.assertCallRecipients(
+        callTokenOut,
+        token,
+        callRecipients,
+        callAmounts,
+        callReference,
+        input,
+      );
+      return {
+        tokenIn: getAddress(callTokenIn),
+        tokenOut: getAddress(callTokenOut),
+        recipients: callRecipients.map((recipient) => getAddress(recipient)),
+        amounts: [...callAmounts],
+      };
+    }
+    this.reject();
+  }
+
+  private assertCallRecipients(
+    callToken: `0x${string}`,
+    expectedToken: `0x${string}`,
+    callRecipients: readonly `0x${string}`[],
+    callAmounts: readonly bigint[],
+    callReference: string,
+    input: {
+      referenceId: string;
+      recipients: readonly { address: string; amountUnits: string }[];
+    },
+  ) {
+    if (
+      !isAddressEqual(getAddress(callToken), expectedToken) ||
+      callReference !== input.referenceId ||
+      callRecipients.length !== input.recipients.length ||
+      callAmounts.length !== input.recipients.length ||
+      callRecipients.some(
+        (recipient, index) =>
+          !isAddressEqual(
+            getAddress(recipient),
+            getAddress(input.recipients[index].address),
+          ) ||
+          callAmounts[index] !== BigInt(input.recipients[index].amountUnits),
+      )
+    )
+      this.reject();
+  }
+
+  private async finishMainnetReceipt(input: {
+    transaction: Transaction;
+    receipt: TransactionReceipt;
+    contractAddress: `0x${string}`;
+    sourceWallet: `0x${string}`;
+    token: `0x${string}`;
+    verified: {
+      tokenIn: `0x${string}`;
+      tokenOut: `0x${string}`;
+      recipients: readonly `0x${string}`[];
+      amounts: readonly bigint[];
+    };
+    input: {
+      transactionHash: string;
+      referenceId: string;
+      totalAmountUnits: string;
+      expectedBatchDigest: string;
+      recipients: readonly { address: string; amountUnits: string }[];
+    };
+  }): Promise<VerifiedPayrollReceipt> {
+    const verifiedRecipients = input.verified.recipients.map(
+      (recipient, index) => ({
+        address: recipient,
+        amountUnits: input.verified.amounts[index].toString(),
+      }),
+    );
+    const verifiedTotal = input.verified.amounts.reduce(
+      (sum, amount) => sum + amount,
+      0n,
+    );
+    const verifiedBatchDigest = createPayrollBatchDigest(
+      verifiedRecipients.map((recipient) => ({
+        recipient: recipient.address,
+        token: input.token,
+        amountUnits: recipient.amountUnits,
+      })),
+    );
+    if (
+      verifiedTotal.toString() !== input.input.totalAmountUnits ||
+      verifiedBatchDigest !== input.input.expectedBatchDigest.toLowerCase()
+    )
+      this.reject();
+    let latestBlock: bigint;
+    try {
+      latestBlock = await this.client.getBlockNumber();
+    } catch {
+      throw new ServiceUnavailableException({
+        code: 'PAYROLL_RECEIPT_PENDING',
+        message: 'Payroll confirmation state is not available yet.',
+        retryable: true,
+      });
+    }
+    if (latestBlock < input.receipt.blockNumber) this.reject();
+    const confirmations = Number(latestBlock - input.receipt.blockNumber + 1n);
+    if (confirmations < this.confirmationsRequired)
+      throw new ServiceUnavailableException({
+        code: 'PAYROLL_CONFIRMATIONS_PENDING',
+        message: `Payroll receipt needs ${this.confirmationsRequired} confirmations.`,
+        retryable: true,
+      });
+    if (
+      !verifyMainnetPayrollEvents({
+        logs: input.receipt.logs,
+        chainId: this.network.chainId,
+        contract: input.contractAddress,
+        employer: input.sourceWallet,
+        tokenIn: input.verified.tokenIn,
+        tokenOut: input.verified.tokenOut,
+        referenceId: input.input.referenceId,
+        recipients: input.verified.recipients,
+        amounts: input.verified.amounts,
+      })
+    )
+      this.reject();
+    return this.evidence({
+      transactionHash: input.transaction.hash,
+      sourceWallet: input.sourceWallet,
+      token: input.token,
+      contractAddress: input.contractAddress,
+      referenceId: input.input.referenceId,
+      recipients: verifiedRecipients,
+      batchDigest: verifiedBatchDigest,
+      totalAmountUnits: verifiedTotal.toString(),
+      blockNumber: input.receipt.blockNumber,
+      confirmations,
+    });
+  }
+
   private evidence(input: {
     transactionHash: Hash;
     sourceWallet: `0x${string}`;
@@ -411,7 +604,7 @@ function isTransactionHash(value: string): value is Hash {
   return /^0x[0-9a-fA-F]{64}$/.test(value);
 }
 
-function verifyMainnetReceiptEvidence(input: {
+function verifyMainnetPayrollEvents(input: {
   logs: readonly {
     address: `0x${string}`;
     data: `0x${string}`;
@@ -419,139 +612,99 @@ function verifyMainnetReceiptEvidence(input: {
   }[];
   chainId: number;
   contract: `0x${string}`;
-  payer: `0x${string}`;
-  token: `0x${string}`;
+  employer: `0x${string}`;
+  tokenIn: `0x${string}`;
+  tokenOut: `0x${string}`;
   referenceId: string;
   recipients: readonly `0x${string}`[];
   amounts: readonly bigint[];
-  minimums: readonly bigint[];
 }) {
   const referenceHash = keccak256(
     encodeAbiParameters(
-      parseAbiParameters('uint256, address, address, address, string'),
+      parseAbiParameters('uint256, address, address, string'),
       [
         BigInt(input.chainId),
         input.contract,
-        input.payer,
-        input.token,
+        input.employer,
         input.referenceId,
       ],
     ),
   );
-  const batchDigest = keccak256(
-    encodeAbiParameters(
-      parseAbiParameters(
-        'uint256, address, address, address, address[], uint256[]',
-      ),
-      [
-        BigInt(input.chainId),
-        input.contract,
-        input.payer,
-        input.token,
-        input.recipients,
-        input.amounts,
-      ],
-    ),
-  );
-  const payments = new Map<number, { net: bigint; fee: bigint }>();
+  const payments = new Map<number, bigint>();
   let summaryCount = 0;
-  let summaryOut = 0n;
-  let summaryFees = 0n;
-  let incoming = 0n;
-  let outgoing = 0n;
+  let batchCount = 0;
+  const totalOut = input.amounts.reduce((sum, amount) => sum + amount, 0n);
   for (const log of input.logs) {
-    if (isAddressEqual(log.address, input.contract)) {
-      try {
-        const decoded = decodeEventLog({
-          abi: [MAINNET_PAYMENT_EVENT],
-          data: log.data,
-          topics: [...log.topics] as [`0x${string}`, ...`0x${string}`[]],
-        });
-        const index = Number(decoded.args.paymentIndex);
-        if (
-          decoded.eventName !== 'DirectUsdcPayment' ||
-          decoded.args.referenceHash !== referenceHash ||
-          !isAddressEqual(decoded.args.payer, input.payer) ||
-          index >= input.recipients.length ||
-          payments.has(index) ||
-          !isAddressEqual(decoded.args.recipient, input.recipients[index]) ||
-          decoded.args.grossAmount !== input.amounts[index] ||
-          decoded.args.netAmount + decoded.args.feeAmount !==
-            decoded.args.grossAmount ||
-          decoded.args.netAmount < input.minimums[index]
-        )
-          return false;
-        payments.set(index, {
-          net: decoded.args.netAmount,
-          fee: decoded.args.feeAmount,
-        });
-        continue;
-      } catch {
-        // Try the summary event next.
-      }
-      try {
-        const decoded = decodeEventLog({
-          abi: [MAINNET_REFERENCE_EVENT],
-          data: log.data,
-          topics: [...log.topics] as [`0x${string}`, ...`0x${string}`[]],
-        });
-        const totalAmount = input.amounts.reduce(
-          (sum, amount) => sum + amount,
-          0n,
-        );
-        if (
-          decoded.eventName !== 'PayrollReferenceConsumed' ||
-          decoded.args.referenceHash !== referenceHash ||
-          !isAddressEqual(decoded.args.payer, input.payer) ||
-          !isAddressEqual(decoded.args.token, input.token) ||
-          decoded.args.batchDigest !== batchDigest ||
-          decoded.args.totalAmount !== totalAmount ||
-          decoded.args.recipientCount !== BigInt(input.recipients.length) ||
-          decoded.args.referenceId !== input.referenceId
-        )
-          return false;
-        summaryCount += 1;
-        summaryOut = decoded.args.totalOut;
-        summaryFees = decoded.args.totalFees;
-      } catch {
-        // Ignore the legacy compatibility event and unrelated contract logs.
-      }
-    }
-    if (!isAddressEqual(log.address, input.token)) continue;
+    if (!isAddressEqual(log.address, input.contract)) continue;
     try {
       const decoded = decodeEventLog({
-        abi: [TRANSFER_EVENT],
+        abi: [MAINNET_PAYMENT_EVENT],
         data: log.data,
         topics: [...log.topics] as [`0x${string}`, ...`0x${string}`[]],
       });
-      if (decoded.eventName !== 'Transfer') continue;
+      const index = Number(decoded.args.paymentIndex);
       if (
-        isAddressEqual(decoded.args.from, input.payer) &&
-        isAddressEqual(decoded.args.to, input.contract)
+        decoded.eventName !== 'PayrollPayment' ||
+        decoded.args.referenceHash !== referenceHash ||
+        !isAddressEqual(decoded.args.employer, input.employer) ||
+        !isAddressEqual(decoded.args.tokenOut, input.tokenOut) ||
+        index >= input.recipients.length ||
+        payments.has(index) ||
+        !isAddressEqual(decoded.args.recipient, input.recipients[index]) ||
+        decoded.args.amountOut !== input.amounts[index]
       )
-        incoming += decoded.args.value;
-      if (isAddressEqual(decoded.args.from, input.contract))
-        outgoing += decoded.args.value;
+        return false;
+      payments.set(index, decoded.args.amountOut);
+      continue;
     } catch {
-      // Ignore unrelated canonical-token logs.
+      // Try summary events next.
+    }
+    try {
+      const decoded = decodeEventLog({
+        abi: [MAINNET_REFERENCE_EVENT],
+        data: log.data,
+        topics: [...log.topics] as [`0x${string}`, ...`0x${string}`[]],
+      });
+      if (
+        decoded.eventName !== 'PayrollReferenceConsumed' ||
+        decoded.args.referenceHash !== referenceHash ||
+        !isAddressEqual(decoded.args.employer, input.employer) ||
+        !isAddressEqual(decoded.args.tokenIn, input.tokenIn) ||
+        !isAddressEqual(decoded.args.tokenOut, input.tokenOut) ||
+        decoded.args.totalOutput !== totalOut ||
+        decoded.args.recipientCount !== BigInt(input.recipients.length) ||
+        decoded.args.referenceId !== input.referenceId
+      )
+        return false;
+      summaryCount += 1;
+      continue;
+    } catch {
+      // Try batch event next.
+    }
+    try {
+      const decoded = decodeEventLog({
+        abi: [MAINNET_BATCH_EVENT],
+        data: log.data,
+        topics: [...log.topics] as [`0x${string}`, ...`0x${string}`[]],
+      });
+      if (
+        decoded.eventName !== 'PayrollBatchExecuted' ||
+        !isAddressEqual(decoded.args.employer, input.employer) ||
+        !isAddressEqual(decoded.args.tokenIn, input.tokenIn) ||
+        !isAddressEqual(decoded.args.tokenOut, input.tokenOut) ||
+        decoded.args.totalOutput !== totalOut ||
+        decoded.args.recipientCount !== BigInt(input.recipients.length) ||
+        decoded.args.referenceId !== input.referenceId
+      )
+        return false;
+      batchCount += 1;
+    } catch {
+      // Ignore unrelated contract logs.
     }
   }
-  const totalAmount = input.amounts.reduce((sum, amount) => sum + amount, 0n);
-  const paymentOut = [...payments.values()].reduce(
-    (sum, payment) => sum + payment.net,
-    0n,
-  );
-  const paymentFees = [...payments.values()].reduce(
-    (sum, payment) => sum + payment.fee,
-    0n,
-  );
   return (
     payments.size === input.recipients.length &&
     summaryCount === 1 &&
-    incoming === totalAmount &&
-    outgoing === totalAmount &&
-    paymentOut === summaryOut &&
-    paymentFees === summaryFees &&
-    summaryOut + summaryFees === totalAmount
+    batchCount === 1
   );
 }

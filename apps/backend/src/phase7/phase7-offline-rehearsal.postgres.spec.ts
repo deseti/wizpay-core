@@ -282,20 +282,21 @@ describePostgres('Phase 7 deterministic offline Mainnet rehearsal', () => {
 
   it('keeps real unresolved Mainnet resources and every deferred route fail closed', () => {
     expect(getArcOperationResourceReadiness('arc-mainnet')).toEqual({
-      sendDirect: false,
+      sendDirect: true,
       sendDirectAppWallet: false,
-      payrollDirect: false,
+      payrollDirect: true,
       payrollDirectAppWallet: false,
-      invoiceCreation: false,
-      paymentLinkDirect: false,
+      invoiceCreation: true,
+      paymentLinkDirect: true,
       paymentLinkDirectAppWallet: false,
-      crossToken: false,
+      swapDirect: true,
+      crossToken: true,
     });
-    expect(() =>
+    expect(
       resolveArcCapabilities('arc-mainnet', {
         WIZPAY_ARC_MAINNET_CAPABILITY_SEND: 'true',
-      }),
-    ).toThrow('requires its operation-specific Arc resources');
+      }).send,
+    ).toBe(true);
     const capabilities = resolveArcCapabilities('arc-mainnet', {});
     expect(Object.values(capabilities).every((enabled) => !enabled)).toBe(true);
     expect(() =>

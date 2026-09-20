@@ -7,6 +7,7 @@ import { backendFetch } from "@/lib/backend-api";
 import { bindExecutionIntentTransactionHash } from "@/lib/execution-intent";
 import { PayrollFxRecoveryError } from "@/lib/payroll-fx-recovery";
 import { allocateVerifiedPayrollOutput } from "@/lib/payroll-output-allocation";
+import { ACTIVE_ARC_NETWORK } from "@/lib/active-arc-network";
 import { useActiveWalletAddress } from "@/hooks/useActiveWalletAddress";
 import { useCircleWallet } from "@/components/providers/CircleWalletProvider";
 import {
@@ -757,12 +758,18 @@ export function useBatchPayroll({
           })),
         );
       } else if (crossTargets && crossTargets.length > 0 && !executePreSwap) {
-        // Cross-currency detected but no pre-swap handler available
-        setErrorMessage(
-          "Cross-currency payroll requires the External Wallet swap adapter. " +
-            "Connect an external wallet to enable cross-currency payroll.",
-        );
-        return;
+        if (ACTIVE_ARC_NETWORK.key !== "arc-mainnet") {
+          setErrorMessage(
+            "Cross-currency payroll requires the External Wallet swap adapter. " +
+              "Connect an external wallet to enable cross-currency payroll.",
+          );
+          return;
+        }
+        effectiveRecipients = allRecipients.map((recipient) => ({
+          address: recipient.address,
+          amount: recipient.amount,
+          targetToken: recipient.targetToken,
+        }));
       } else {
         // Pure same-token payroll
         effectiveRecipients = allRecipients.map((recipient) => ({
@@ -775,7 +782,10 @@ export function useBatchPayroll({
       // External cross-token payroll must submit homogeneous plans after the
       // browser-signed swap. Mixed source/target rows cannot share one
       // batchRouteAndPay call because each plan has exactly one input token.
-      if (walletMode === "external" && didSwap) {
+      if (
+        walletMode === "external" &&
+        (didSwap || ACTIVE_ARC_NETWORK.key === "arc-mainnet")
+      ) {
         if (
           !getRecoveredPayrollBatch ||
           !recordPayrollBatchConfirmation ||

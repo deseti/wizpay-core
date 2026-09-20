@@ -16,7 +16,7 @@ const payer: Address = '0x1000000000000000000000000000000000000001';
 const recipient: Address = '0x2000000000000000000000000000000000000002';
 const usdc: Address = '0x3000000000000000000000000000000000000003';
 const contract: Address = '0x4000000000000000000000000000000000000004';
-const hash = `0x${'a'.repeat(64)}` as Hash;
+const hash = `0x${'a'.repeat(64)}`;
 const reference = 'PAYROLL-1-BATCH-0';
 const payrollAbi = [
   {
@@ -40,13 +40,29 @@ const batchEvent = parseAbiItem(
 const transferEvent = parseAbiItem(
   'event Transfer(address indexed from, address indexed to, uint256 value)',
 );
+const mainnetPayrollAbi = [
+  {
+    type: 'function',
+    name: 'executeSameTokenPayroll',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'token', type: 'address' },
+      { name: 'recipients', type: 'address[]' },
+      { name: 'amounts', type: 'uint256[]' },
+      { name: 'referenceId', type: 'string' },
+    ],
+    outputs: [{ name: 'totalOut', type: 'uint256' }],
+  },
+] as const;
 const mainnetPaymentEvent = parseAbiItem(
-  'event DirectUsdcPayment(bytes32 indexed referenceHash, address indexed payer, address indexed recipient, uint256 paymentIndex, uint256 grossAmount, uint256 netAmount, uint256 feeAmount)',
+  'event PayrollPayment(bytes32 indexed referenceHash, address indexed employer, address indexed tokenOut, address recipient, uint256 paymentIndex, uint256 amountOut)',
 );
 const mainnetReferenceEvent = parseAbiItem(
-  'event PayrollReferenceConsumed(bytes32 indexed referenceHash, address indexed payer, address indexed token, bytes32 batchDigest, uint256 totalAmount, uint256 totalOut, uint256 totalFees, uint256 recipientCount, string referenceId)',
+  'event PayrollReferenceConsumed(bytes32 indexed referenceHash, address indexed employer, address indexed tokenIn, address tokenOut, bytes32 batchDigest, uint256 totalInput, uint256 totalOutput, uint256 totalFees, uint256 recipientCount, string referenceId)',
 );
-const feeRecipient: Address = '0x5000000000000000000000000000000000000005';
+const mainnetBatchEvent = parseAbiItem(
+  'event PayrollBatchExecuted(address indexed employer, address indexed tokenIn, address indexed tokenOut, uint256 totalInput, uint256 totalOutput, uint256 totalFees, uint256 recipientCount, string referenceId)',
+);
 
 describe('PayrollReceiptVerifierService', () => {
   it('accepts only the exact payer, contract, calldata, batch event, transfer, chain, and confirmations', async () => {
@@ -75,14 +91,16 @@ describe('PayrollReceiptVerifierService', () => {
     ['wrong token', { token: recipient }],
     ['stale task reference', { referenceId: 'PAYROLL-OTHER-BATCH-0' }],
   ])('rejects %s', async (_label, change) => {
-    await expect(service().verify({ ...input(), ...change })).rejects.toMatchObject({
+    await expect(
+      service().verify({ ...input(), ...change }),
+    ).rejects.toMatchObject({
       response: { code: 'PAYROLL_RECEIPT_MISMATCH', retryable: false },
     });
   });
 
   it('rejects a returned transaction hash substitution', async () => {
     await expect(
-      service(11n, { returnedHash: `0x${'b'.repeat(64)}` as Hash }).verify(input()),
+      service(11n, { returnedHash: `0x${'b'.repeat(64)}` }).verify(input()),
     ).rejects.toMatchObject({
       response: { code: 'PAYROLL_RECEIPT_MISMATCH', retryable: false },
     });
@@ -90,7 +108,7 @@ describe('PayrollReceiptVerifierService', () => {
 
   it('rejects a receipt hash substitution and a reverted replacement', async () => {
     await expect(
-      service(11n, { receiptHash: `0x${'b'.repeat(64)}` as Hash }).verify(input()),
+      service(11n, { receiptHash: `0x${'b'.repeat(64)}` }).verify(input()),
     ).rejects.toMatchObject({ response: { code: 'PAYROLL_RECEIPT_MISMATCH' } });
     await expect(
       service(11n, { status: 'reverted' }).verify(input()),
@@ -105,10 +123,19 @@ describe('PayrollReceiptVerifierService', () => {
     ];
     const total = '3000000';
     const digest = createPayrollBatchDigest(
-      two.map((entry) => ({ recipient: entry.address, token: usdc, amountUnits: entry.amountUnits })),
+      two.map((entry) => ({
+        recipient: entry.address,
+        token: usdc,
+        amountUnits: entry.amountUnits,
+      })),
     );
     await expect(
-      service().verify({ ...input(), recipients: two, totalAmountUnits: total, expectedBatchDigest: digest }),
+      service().verify({
+        ...input(),
+        recipients: two,
+        totalAmountUnits: total,
+        expectedBatchDigest: digest,
+      }),
     ).rejects.toMatchObject({ response: { code: 'PAYROLL_RECEIPT_MISMATCH' } });
     const reordered = [...two].reverse();
     await expect(
@@ -117,7 +144,11 @@ describe('PayrollReceiptVerifierService', () => {
         recipients: reordered,
         totalAmountUnits: total,
         expectedBatchDigest: createPayrollBatchDigest(
-          reordered.map((entry) => ({ recipient: entry.address, token: usdc, amountUnits: entry.amountUnits })),
+          reordered.map((entry) => ({
+            recipient: entry.address,
+            token: usdc,
+            amountUnits: entry.amountUnits,
+          })),
         ),
       }),
     ).rejects.toMatchObject({ response: { code: 'PAYROLL_RECEIPT_MISMATCH' } });
@@ -134,7 +165,11 @@ describe('PayrollReceiptVerifierService', () => {
         recipients: duplicate,
         totalAmountUnits: '2000000',
         expectedBatchDigest: createPayrollBatchDigest(
-          duplicate.map((entry) => ({ recipient: entry.address, token: usdc, amountUnits: entry.amountUnits })),
+          duplicate.map((entry) => ({
+            recipient: entry.address,
+            token: usdc,
+            amountUnits: entry.amountUnits,
+          })),
         ),
       }),
     ).rejects.toMatchObject({ response: { code: 'PAYROLL_RECEIPT_MISMATCH' } });
@@ -146,7 +181,7 @@ describe('PayrollReceiptVerifierService', () => {
     });
   });
 
-  it('accepts the final Mainnet domain-bound events and exact fee conservation', async () => {
+  it('accepts the final Mainnet domain-bound payroll events', async () => {
     await expect(mainnetService().verify(input())).resolves.toMatchObject({
       network: 'arc-mainnet',
       batchDigest: input().expectedBatchDigest,
@@ -154,7 +189,7 @@ describe('PayrollReceiptVerifierService', () => {
     });
   });
 
-  it('rejects a Mainnet payment event with a mismatched net amount', async () => {
+  it('rejects a Mainnet payment event with a mismatched payment amount', async () => {
     await expect(
       mainnetService(998_999n).verify(input()),
     ).rejects.toMatchObject({
@@ -254,8 +289,10 @@ function service(
 }
 
 function mainnetService(
-  netAmount = 999_000n,
-  options: { recipients?: readonly { address: Address; amountUnits: string }[] } = {},
+  paymentAmountOut = 1_000_000n,
+  options: {
+    recipients?: readonly { address: Address; amountUnits: string }[];
+  } = {},
 ) {
   const config = {
     getOrThrow: jest.fn().mockReturnValue({
@@ -271,55 +308,35 @@ function mainnetService(
     { address: recipient, amountUnits: '1000000' },
   ];
   const transactionInput = encodeFunctionData({
-    abi: payrollAbi,
-    functionName: 'batchRouteAndPay',
+    abi: mainnetPayrollAbi,
+    functionName: 'executeSameTokenPayroll',
     args: [
       usdc,
-      transactionRecipients.map(() => usdc),
       transactionRecipients.map((entry) => entry.address),
       transactionRecipients.map((entry) => BigInt(entry.amountUnits)),
-      transactionRecipients.map(() => 999_000n),
       reference,
     ],
   });
   const referenceHash = keccak256(
     encodeAbiParameters(
-      parseAbiParameters('uint256, address, address, address, string'),
-      [5_042n, contract, payer, usdc, reference],
-    ),
-  );
-  const batchDigest = keccak256(
-    encodeAbiParameters(
-      parseAbiParameters(
-        'uint256, address, address, address, address[], uint256[]',
-      ),
-      [5_042n, contract, payer, usdc, [recipient], [1_000_000n]],
+      parseAbiParameters('uint256, address, address, string'),
+      [5_042n, contract, payer, reference],
     ),
   );
   const paymentTopics = encodeEventTopics({
     abi: [mainnetPaymentEvent],
-    eventName: 'DirectUsdcPayment',
-    args: { referenceHash, payer, recipient },
+    eventName: 'PayrollPayment',
+    args: { referenceHash, employer: payer, tokenOut: usdc },
   });
   const referenceTopics = encodeEventTopics({
     abi: [mainnetReferenceEvent],
     eventName: 'PayrollReferenceConsumed',
-    args: { referenceHash, payer, token: usdc },
+    args: { referenceHash, employer: payer, tokenIn: usdc },
   });
-  const incomingTopics = encodeEventTopics({
-    abi: [transferEvent],
-    eventName: 'Transfer',
-    args: { from: payer, to: contract },
-  });
-  const feeTopics = encodeEventTopics({
-    abi: [transferEvent],
-    eventName: 'Transfer',
-    args: { from: contract, to: feeRecipient },
-  });
-  const recipientTopics = encodeEventTopics({
-    abi: [transferEvent],
-    eventName: 'Transfer',
-    args: { from: contract, to: recipient },
+  const batchTopics = encodeEventTopics({
+    abi: [mainnetBatchEvent],
+    eventName: 'PayrollBatchExecuted',
+    args: { employer: payer, tokenIn: usdc, tokenOut: usdc },
   });
   Object.assign(verifier as unknown as { client: unknown }, {
     client: {
@@ -338,30 +355,11 @@ function mainnetService(
         status: 'success',
         logs: [
           {
-            address: usdc,
-            topics: incomingTopics,
-            data: encodeAbiParameters(parseAbiParameters('uint256'), [
-              1_000_000n,
-            ]),
-          },
-          {
-            address: usdc,
-            topics: feeTopics,
-            data: encodeAbiParameters(parseAbiParameters('uint256'), [1_000n]),
-          },
-          {
-            address: usdc,
-            topics: recipientTopics,
-            data: encodeAbiParameters(parseAbiParameters('uint256'), [
-              999_000n,
-            ]),
-          },
-          {
             address: contract,
             topics: paymentTopics,
             data: encodeAbiParameters(
-              parseAbiParameters('uint256, uint256, uint256, uint256'),
-              [0n, 1_000_000n, netAmount, 1_000n],
+              parseAbiParameters('address, uint256, uint256'),
+              [recipient, 0n, paymentAmountOut],
             ),
           },
           {
@@ -369,9 +367,25 @@ function mainnetService(
             topics: referenceTopics,
             data: encodeAbiParameters(
               parseAbiParameters(
-                'bytes32, uint256, uint256, uint256, uint256, string',
+                'address, bytes32, uint256, uint256, uint256, uint256, string',
               ),
-              [batchDigest, 1_000_000n, 999_000n, 1_000n, 1n, reference],
+              [
+                usdc,
+                `0x${'c'.repeat(64)}`,
+                1_000_000n,
+                paymentAmountOut,
+                0n,
+                1n,
+                reference,
+              ],
+            ),
+          },
+          {
+            address: contract,
+            topics: batchTopics,
+            data: encodeAbiParameters(
+              parseAbiParameters('uint256, uint256, uint256, uint256, string'),
+              [1_000_000n, paymentAmountOut, 0n, 1n, reference],
             ),
           },
         ],

@@ -59,6 +59,7 @@ export type ArcOperationResourceReadiness = Readonly<{
   invoiceCreation: boolean;
   paymentLinkDirect: boolean;
   paymentLinkDirectAppWallet: boolean;
+  swapDirect: boolean;
   crossToken: boolean;
 }>;
 
@@ -167,6 +168,7 @@ export type ArcWizPayContractValue = {
   readonly contract:
     | "WizPay"
     | "WizPayMainnetV2"
+    | "WizPayPayrollMainnet"
     | "WizPaySwapExecutorV2"
     | "WizPaySwapExecutorMainnet";
   readonly address: `0x${string}`;
@@ -222,7 +224,7 @@ export type ArcMainnetUniswapV4Readiness = Readonly<{
   deploymentSource: string;
   universalRouterSource: string;
   tokens: Readonly<
-    Record<"USDC" | "EURC", PublishedArcResource<ArcTokenResourceValue>>
+    Record<"USDC" | "EURC", ArcResource<ArcTokenResourceValue>>
   >;
   contracts: Readonly<
     Record<

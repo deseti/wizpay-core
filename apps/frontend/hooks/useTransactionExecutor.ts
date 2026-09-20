@@ -29,6 +29,7 @@ export type ExecuteTransactionParams = {
   chainId?: number;
   contractAddress: Address;
   functionName: string;
+  value?: bigint;
   idempotencyKey?: string;
   executionIntentId?: string;
   onWalletPrepared?: (leaseOwner: string) => void | Promise<void>;
@@ -302,6 +303,7 @@ export function useTransactionExecutor() {
       args: params.args,
       chain,
       functionName: params.functionName,
+      value: params.value,
       walletClient: nextWalletClient,
     });
 

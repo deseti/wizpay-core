@@ -31,6 +31,7 @@ export type BackendArcNetworkResourceState = Readonly<{
   contracts: Readonly<{
     wizpay: ArcResource<ArcWizPayContractValue>;
     wizpaySwapExecutorV2: ArcResource<ArcWizPayContractValue>;
+    wizpaySwapExecutorMainnet: ArcResource<ArcWizPayContractValue>;
   }>;
   uniswapSwapRouter02: ReturnType<typeof getArcProtocolContractResource>;
   mainnetUniswapV4: ReturnType<typeof getArcMainnetUniswapV4Readiness> | null;
@@ -49,6 +50,7 @@ export type BackendArcNetworkConfiguration = Readonly<{
   contracts: Readonly<{
     wizpay?: ArcWizPayContractValue;
     wizpaySwapExecutorV2?: ArcWizPayContractValue;
+    wizpaySwapExecutorMainnet?: ArcWizPayContractValue;
   }>;
 }>;
 
@@ -80,6 +82,10 @@ export function resolveBackendArcNetworkResourceState(
       wizpaySwapExecutorV2: getArcWizPayContractResource(
         key,
         'wizpay-swap-executor-v2',
+      ),
+      wizpaySwapExecutorMainnet: getArcWizPayContractResource(
+        key,
+        'wizpay-swap-executor-mainnet',
       ),
     },
     uniswapSwapRouter02: getArcProtocolContractResource(
@@ -137,6 +143,11 @@ function validateLegacyActiveConfiguration(
     environment.WIZPAY_SWAP_EXECUTOR_V2_ADDRESS,
     config.contracts.wizpaySwapExecutorV2?.address ?? '',
   );
+  assertExactLegacyValue(
+    'WIZPAY_SWAP_EXECUTOR_MAINNET_ADDRESS',
+    environment.WIZPAY_SWAP_EXECUTOR_MAINNET_ADDRESS,
+    config.contracts.wizpaySwapExecutorMainnet?.address ?? '',
+  );
 }
 
 export function requireBackendArcNetworkReadiness(
@@ -145,14 +156,15 @@ export function requireBackendArcNetworkReadiness(
   const rpc = requireAvailableArcResource(state.rpc);
   const explorer = requireAvailableArcResource(state.explorer);
   const usdc = requireAvailableArcResource(state.tokens.USDC);
-  const eurc =
-    state.key === 'arc-testnet'
-      ? optionalAvailable(state.tokens.EURC)
-      : undefined;
+  const eurc = optionalAvailable(state.tokens.EURC);
   const wizpay = optionalAvailable(state.contracts.wizpay);
   const wizpaySwapExecutorV2 =
     state.key === 'arc-testnet'
       ? optionalAvailable(state.contracts.wizpaySwapExecutorV2)
+      : undefined;
+  const wizpaySwapExecutorMainnet =
+    state.key === 'arc-mainnet'
+      ? optionalAvailable(state.contracts.wizpaySwapExecutorMainnet)
       : undefined;
 
   return deepFreeze({
@@ -165,6 +177,7 @@ export function requireBackendArcNetworkReadiness(
     contracts: {
       ...(wizpay ? { wizpay } : {}),
       ...(wizpaySwapExecutorV2 ? { wizpaySwapExecutorV2 } : {}),
+      ...(wizpaySwapExecutorMainnet ? { wizpaySwapExecutorMainnet } : {}),
     },
   });
 }

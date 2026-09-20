@@ -30,6 +30,7 @@ export type FrontendArcNetworkResourceState = Readonly<{
   contracts: Readonly<{
     wizpay: ArcResource<ArcWizPayContractValue>;
     wizpaySwapExecutorV2: ArcResource<ArcWizPayContractValue>;
+    wizpaySwapExecutorMainnet: ArcResource<ArcWizPayContractValue>;
   }>;
   uniswapSwapRouter02: ReturnType<typeof getArcProtocolContractResource>;
   mainnetUniswapV4: ReturnType<typeof getArcMainnetUniswapV4Readiness> | null;
@@ -51,6 +52,7 @@ export type FrontendArcNetworkConfiguration = Readonly<{
   contracts: Readonly<{
     wizpay?: ArcWizPayContractValue;
     wizpaySwapExecutorV2?: ArcWizPayContractValue;
+    wizpaySwapExecutorMainnet?: ArcWizPayContractValue;
   }>;
   transactionalAvailable: boolean;
   unavailableReason?: string;
@@ -85,6 +87,10 @@ export function resolveFrontendArcNetworkResourceState(
         key,
         "wizpay-swap-executor-v2",
       ),
+      wizpaySwapExecutorMainnet: getArcWizPayContractResource(
+        key,
+        "wizpay-swap-executor-mainnet",
+      ),
     },
     uniswapSwapRouter02: getArcProtocolContractResource(
       key,
@@ -102,14 +108,15 @@ export function requireFrontendTransactionalArcNetworkConfiguration(
   const rpc = requireAvailableArcResource(state.rpc);
   const explorer = requireAvailableArcResource(state.explorer);
   const usdc = requireAvailableArcResource(state.tokens.USDC);
-  const eurc =
-    state.key === "arc-testnet"
-      ? requireAvailableArcResource(state.tokens.EURC)
-      : undefined;
+  const eurc = requireAvailableArcResource(state.tokens.EURC);
   const wizpay = requireAvailableArcResource(state.contracts.wizpay);
   const wizpaySwapExecutorV2 =
     state.key === "arc-testnet"
       ? requireAvailableArcResource(state.contracts.wizpaySwapExecutorV2)
+      : undefined;
+  const wizpaySwapExecutorMainnet =
+    state.key === "arc-mainnet"
+      ? requireAvailableArcResource(state.contracts.wizpaySwapExecutorMainnet)
       : undefined;
 
   return deepFreeze({
@@ -121,10 +128,11 @@ export function requireFrontendTransactionalArcNetworkConfiguration(
     testnet: state.network.testnet,
     rpcUrl: rpc.url,
     explorerBaseUrl: explorer.baseUrl,
-    tokens: { USDC: usdc, ...(eurc ? { EURC: eurc } : {}) },
+    tokens: { USDC: usdc, EURC: eurc },
     contracts: {
       wizpay,
       ...(wizpaySwapExecutorV2 ? { wizpaySwapExecutorV2 } : {}),
+      ...(wizpaySwapExecutorMainnet ? { wizpaySwapExecutorMainnet } : {}),
     },
     transactionalAvailable: true,
   });
@@ -199,6 +207,7 @@ export function validateFrontendArcNetworkOverrides(
       "NEXT_PUBLIC_WIZPAY_ADDRESS",
       "NEXT_PUBLIC_ARC_USDC",
       "NEXT_PUBLIC_WIZPAY_SWAP_EXECUTOR_V2_ADDRESS",
+      "NEXT_PUBLIC_WIZPAY_SWAP_EXECUTOR_MAINNET_ADDRESS",
     ]) {
       if (environment[name] !== undefined && environment[name] !== "")
         throw new Error(
@@ -243,6 +252,20 @@ export function validateFrontendArcNetworkOverrides(
   } else if (swapOverride !== undefined && swapOverride !== "") {
     throw new Error(
       "NEXT_PUBLIC_WIZPAY_SWAP_EXECUTOR_V2_ADDRESS is unavailable for the selected network.",
+    );
+  }
+  const mainnetSwapOverride =
+    environment.NEXT_PUBLIC_WIZPAY_SWAP_EXECUTOR_MAINNET_ADDRESS;
+  if (config.contracts.wizpaySwapExecutorMainnet) {
+    assertExactOverride(
+      "NEXT_PUBLIC_WIZPAY_SWAP_EXECUTOR_MAINNET_ADDRESS",
+      mainnetSwapOverride,
+      config.contracts.wizpaySwapExecutorMainnet.address,
+      true,
+    );
+  } else if (mainnetSwapOverride !== undefined && mainnetSwapOverride !== "") {
+    throw new Error(
+      "NEXT_PUBLIC_WIZPAY_SWAP_EXECUTOR_MAINNET_ADDRESS is unavailable for the selected network.",
     );
   }
 }

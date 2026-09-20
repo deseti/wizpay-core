@@ -12,6 +12,11 @@ export type PayrollRoutePolicy =
       blockedReason: null;
     }
   | {
+      kind: "external-wallet-mainnet-atomic";
+      requiresQuote: true;
+      blockedReason: null;
+    }
+  | {
       kind: "cross-token-disabled";
       requiresQuote: false;
       blockedReason: typeof CROSS_TOKEN_DISABLED_MESSAGE;
@@ -31,6 +36,20 @@ export function resolvePayrollRoutePolicy(input: {
 
   if (!hasCrossTokenRecipient) {
     return { kind: "direct", requiresQuote: false, blockedReason: null };
+  }
+  if (input.network === "arc-mainnet") {
+    if (!input.crossTokenEnabled || input.walletMode !== "external") {
+      return {
+        kind: "cross-token-disabled",
+        requiresQuote: false,
+        blockedReason: CROSS_TOKEN_DISABLED_MESSAGE,
+      };
+    }
+    return {
+      kind: "external-wallet-mainnet-atomic",
+      requiresQuote: true,
+      blockedReason: null,
+    };
   }
   if (input.network !== "arc-testnet" || !input.crossTokenEnabled) {
     return {

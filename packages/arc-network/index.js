@@ -204,12 +204,12 @@ const ARC_NETWORK_BY_CHAIN_ID = new Map(
 
 const ARC_RPC_RESOURCES = deepFreeze({
   "arc-testnet": available({ url: "https://rpc.testnet.arc.io" }),
-  "arc-mainnet": unavailable("OFFICIAL_ARC_MAINNET_RPC_UNAVAILABLE"),
+  "arc-mainnet": available({ url: "https://rpc.mainnet.arc.io" }),
 });
 
 const ARC_EXPLORER_RESOURCES = deepFreeze({
   "arc-testnet": available({ baseUrl: "https://testnet.arcscan.app" }),
-  "arc-mainnet": unavailable("OFFICIAL_ARC_MAINNET_EXPLORER_UNAVAILABLE"),
+  "arc-mainnet": available({ baseUrl: "https://explorer.arc.io" }),
 });
 
 const ARC_TOKEN_RESOURCES = deepFreeze({
@@ -230,7 +230,7 @@ const ARC_TOKEN_RESOURCES = deepFreeze({
     }),
   },
   "arc-mainnet": {
-    USDC: published({
+    USDC: available({
       symbol: "USDC",
       address: assertContractAddress(
         "0x3600000000000000000000000000000000000000",
@@ -239,7 +239,7 @@ const ARC_TOKEN_RESOURCES = deepFreeze({
       authoritativeSource:
         "https://docs.arc.io/arc/references/contract-addresses",
     }),
-    EURC: published({
+    EURC: available({
       symbol: "EURC",
       address: assertContractAddress(
         "0xbEf5f6d51CB62b58e6A8f77868681825C6fe21c1",
@@ -275,15 +275,27 @@ const ARC_WIZPAY_CONTRACT_RESOURCES = deepFreeze({
     ),
   },
   "arc-mainnet": {
-    wizpay: unavailable("WIZPAY_MAINNET_CONTRACT_NOT_DEPLOYED"),
+    // Runtime payroll resource expected by consumers. Arc Mainnet payroll is
+    // WizPayPayrollMainnet, not WizPayMainnetV2.
+    wizpay: available({
+      contract: "WizPayPayrollMainnet",
+      address: assertContractAddress(
+        "0x77AC7Cb6507D404b5530fC03e3D39BAaEdE10C34",
+      ),
+      deploymentSource:
+        "confirmed Arc Mainnet WizPayPayrollMainnet 0x77AC7Cb6507D404b5530fC03e3D39BAaEdE10C34",
+    }),
     "wizpay-swap-executor-v2": unavailable(
       "WIZPAY_MAINNET_CONTRACT_NOT_DEPLOYED",
     ),
-    // WizPaySwapExecutorMainnet: registered as unavailable until the contract is
-    // deployed, audited, and execution authorization is granted. executable=false.
-    "wizpay-swap-executor-mainnet": unavailable(
-      "WIZPAY_MAINNET_SWAP_EXECUTOR_NOT_DEPLOYED",
-    ),
+    "wizpay-swap-executor-mainnet": available({
+      contract: "WizPaySwapExecutorMainnet",
+      address: assertContractAddress(
+        "0x7A051F17B237750EF9D4E63fb75381B9F8755774",
+      ),
+      deploymentSource:
+        "confirmed Arc Mainnet WizPaySwapExecutorMainnet 0x7A051F17B237750EF9D4E63fb75381B9F8755774",
+    }),
   },
 });
 
@@ -558,6 +570,8 @@ const MAINNET_CONFIGURABLE_CAPABILITIES = new Set([
   "sameTokenPayroll",
   "invoice",
   "paymentLink",
+  "swap",
+  "crossTokenPayroll",
 ]);
 
 function parseArcCapabilityName(value) {
@@ -634,6 +648,8 @@ function resolveArcCapabilities(networkKey, environment = {}) {
     ["sameTokenPayroll", "payrollDirect"],
     ["invoice", "invoiceCreation"],
     ["paymentLink", "paymentLinkDirect"],
+    ["swap", "swapDirect"],
+    ["crossTokenPayroll", "crossToken"],
   ]) {
     if (capabilities[capability] && !operationResources[resource]) {
       throw new ArcCapabilityConfigurationError(
@@ -642,6 +658,13 @@ function resolveArcCapabilities(networkKey, environment = {}) {
         capability,
       );
     }
+  }
+  if (capabilities.crossTokenPayroll && !capabilities.swap) {
+    throw new ArcCapabilityConfigurationError(
+      "CONTRADICTORY_CAPABILITY_CONFIGURATION",
+      "crossTokenPayroll requires swap.",
+      "crossTokenPayroll",
+    );
   }
 
   return deepFreeze(capabilities);
@@ -661,6 +684,7 @@ function getArcOperationResourceReadiness(networkKey) {
     ARC_WIZPAY_CONTRACT_RESOURCES[key]["wizpay-swap-executor-mainnet"]
       ?.status === "available";
   const circle = ARC_CIRCLE_EXECUTION_DEFINITIONS[key];
+  const swapDirect = rpc && usdc && eurc && swapExecutor;
   return deepFreeze({
     sendDirect: rpc && explorer && usdc,
     sendDirectAppWallet: rpc && explorer && usdc && circle.support.transfer,
@@ -673,8 +697,13 @@ function getArcOperationResourceReadiness(networkKey) {
       rpc &&
       usdc &&
       (circle.support.transfer || circle.support.contractExecution),
+    swapDirect,
+    // External-wallet Mainnet swap/payroll does not depend on Circle
+    // contractExecution. Testnet cross-token App Wallet still does.
     crossToken:
-      rpc && usdc && eurc && swapExecutor && circle.support.contractExecution,
+      swapDirect &&
+      payrollContract &&
+      (key === "arc-mainnet" || circle.support.contractExecution),
   });
 }
 

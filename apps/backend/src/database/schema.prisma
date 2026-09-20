@@ -175,6 +175,7 @@ enum ExecutionIntentOperation {
 enum ExecutionIntentRoute {
   DIRECT_TRANSFER
   CROSS_TOKEN_PROVIDER
+  CROSS_TOKEN_ATOMIC
   CROSS_TOKEN_DISABLED
 }
 

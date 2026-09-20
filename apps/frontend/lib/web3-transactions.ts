@@ -40,6 +40,7 @@ export async function writeContractTransaction({
   args,
   chain,
   functionName,
+  value,
   walletClient,
 }: {
   abi: Abi;
@@ -48,6 +49,7 @@ export async function writeContractTransaction({
   args?: readonly unknown[];
   chain: Chain;
   functionName: string;
+  value?: bigint;
   walletClient: WalletClient;
 }): Promise<Hex> {
   return walletClient.writeContract({
@@ -57,6 +59,7 @@ export async function writeContractTransaction({
     args,
     chain,
     functionName,
+    ...(value !== undefined ? { value } : {}),
   } as Parameters<WalletClient["writeContract"]>[0]);
 }
 

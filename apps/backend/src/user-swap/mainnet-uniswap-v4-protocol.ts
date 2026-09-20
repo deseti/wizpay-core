@@ -4,12 +4,14 @@ import {
   encodeAbiParameters,
   encodeFunctionData,
   decodeAbiParameters,
+  decodeEventLog,
   getAddress,
   isAddress,
   isAddressEqual,
   keccak256,
   numberToHex,
   parseAbi,
+  parseAbiItem,
   zeroAddress,
   type Address,
   type Hex,
@@ -109,9 +111,16 @@ export type MainnetUniswapV4PoolKey = Readonly<{
   hooks: typeof ARC_MAINNET_UNISWAP_V4_HOOKS;
 }>;
 
-// WizPaySwapExecutorMainnet — not yet deployed; executable=false.
-// When deployed and authorized, this will replace the direct-wallet router flow.
-export const WIZPAY_SWAP_EXECUTOR_MAINNET_EXECUTABLE = false as const;
+export const WIZPAY_SWAP_EXECUTOR_MAINNET_ADDRESS =
+  '0x7A051F17B237750EF9D4E63fb75381B9F8755774' as const;
+export const WIZPAY_SWAP_EXECUTOR_MAINNET_EXECUTABLE = true as const;
+
+const EXECUTE_SWAP_ABI = parseAbi([
+  'function executeSwap(address tokenIn, address tokenOut, uint256 amountIn, uint256 minAmountOut, uint256 minHopPriceX36, uint256 deadline) payable returns (uint256 amountOut)',
+]);
+const SWAP_EXECUTED_EVENT = parseAbiItem(
+  'event WizPayMainnetSwapExecuted(address indexed caller, address indexed tokenIn, address indexed tokenOut, uint256 amountIn, uint256 feeAmount, uint256 netAmountIn, uint256 amountOut, uint256 minAmountOut)',
+);
 
 export const ARC_MAINNET_UNISWAP_V4_POOL_KEY: MainnetUniswapV4PoolKey =
   Object.freeze({
@@ -484,6 +493,37 @@ export function encodeUniversalRouterExactInput(
   });
 }
 
+export function encodeExecuteSwap(input: {
+  tokenIn: Address;
+  tokenOut: Address;
+  amountIn: bigint;
+  minAmountOut: bigint;
+  minHopPriceX36: bigint;
+  deadline: number;
+}): Hex {
+  zeroForOneFromTokens(input.tokenIn, input.tokenOut);
+  return encodeFunctionData({
+    abi: EXECUTE_SWAP_ABI,
+    functionName: 'executeSwap',
+    args: [
+      input.tokenIn,
+      input.tokenOut,
+      input.amountIn,
+      input.minAmountOut,
+      input.minHopPriceX36,
+      BigInt(input.deadline),
+    ],
+  });
+}
+
+export function encodeErc20ApproveExecutor(amount: bigint): Hex {
+  return encodeFunctionData({
+    abi: ERC20_APPROVE_ABI,
+    functionName: 'approve',
+    args: [WIZPAY_SWAP_EXECUTOR_MAINNET_ADDRESS, amount],
+  });
+}
+
 export function encodeErc20ApprovePermit2(amount: bigint): Hex {
   return encodeFunctionData({
     abi: ERC20_APPROVE_ABI,
@@ -636,40 +676,26 @@ export function buildUserControlledSwapPlan(
         : [
             Object.freeze({
               to: quote.tokenIn,
-              data: encodeErc20ApprovePermit2(quote.amountIn),
+              data: encodeErc20ApproveExecutor(quote.amountIn),
               value: 0n,
-              description: 'Approve Permit2 to spend ERC-20 EURC.',
-            }),
-            Object.freeze({
-              to: ARC_MAINNET_UNISWAP_V4_PERMIT2,
-              data: encodePermit2ApproveRouter(
-                quote.tokenIn,
-                quote.amountIn,
-                request.deadline,
-              ),
-              value: 0n,
-              description: 'Approve Universal Router through Permit2.',
+              description: 'Approve WizPaySwapExecutorMainnet to spend EURC.',
             }),
           ],
     ),
     swap: Object.freeze({
-      to: ARC_MAINNET_UNISWAP_V4_UNIVERSAL_ROUTER,
-      data: encodeUniversalRouterExactInput(
-        quote,
-        request.recipient,
-        request.deadline,
-      ),
+      to: WIZPAY_SWAP_EXECUTOR_MAINNET_ADDRESS,
+      data: encodeExecuteSwap({
+        tokenIn: quote.tokenIn,
+        tokenOut: quote.tokenOut,
+        amountIn: quote.amountIn,
+        minAmountOut: quote.minAmountOut,
+        minHopPriceX36: quote.minHopPriceX36,
+        deadline: request.deadline,
+      }),
       value: transactionValue,
-      description: 'Execute the Uniswap V4 USDC/EURC swap.',
+      description: 'Execute the WizPaySwapExecutorMainnet USDC/EURC swap.',
     }),
-    permit2: usesNativeUsdc
-      ? null
-      : Object.freeze({
-          token: quote.tokenIn,
-          spender: ARC_MAINNET_UNISWAP_V4_UNIVERSAL_ROUTER,
-          amount: quote.amountIn,
-          expiration: request.deadline,
-        }),
+    permit2: null,
     recipient: request.recipient,
     deadline: request.deadline,
     executable: false,
@@ -726,10 +752,10 @@ export function verifySwapReceipt(
       'Receipt sender must be the user-controlled wallet.',
     );
   }
-  if (!isAddressEqual(to, ARC_MAINNET_UNISWAP_V4_UNIVERSAL_ROUTER)) {
+  if (!isAddressEqual(to, WIZPAY_SWAP_EXECUTOR_MAINNET_ADDRESS)) {
     throw new MainnetUniswapV4ProtocolError(
       'INVALID_RECEIPT',
-      'Receipt target must be the published Universal Router.',
+      'Receipt target must be WizPaySwapExecutorMainnet.',
     );
   }
   if (
@@ -745,55 +771,37 @@ export function verifySwapReceipt(
 
   const transferTopic =
     '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
-  const swapTopic =
-    '0x40e9cecb9f5f1f1c5b9c97dec2917b7ee92e57ba5563708daca94dd84ad7112f';
   let tokenInSpent = 0n;
   let amountOut = 0n;
   let nativeInputTransferred = 0n;
-  let poolInput = 0n;
-  let poolOutput = 0n;
-  let matchingPoolSwaps = 0;
+  let executorEvents = 0;
+  let eventAmountOut = 0n;
   for (const log of receipt.logs) {
-    if (!isAddress(log.address) || log.topics.length < 3) continue;
+    if (!isAddress(log.address)) continue;
     const address = getAddress(log.address);
-    if (
-      log.topics[0]?.toLowerCase() === swapTopic &&
-      isAddressEqual(address, ARC_MAINNET_UNISWAP_V4_POOL_MANAGER) &&
-      log.topics[1]?.toLowerCase() === ARC_MAINNET_UNISWAP_V4_POOL_ID &&
-      /^0x[0-9a-fA-F]{64}$/.test(log.topics[2] ?? '') &&
-      isAddressEqual(
-        getAddress(`0x${log.topics[2].slice(-40)}`),
-        ARC_MAINNET_UNISWAP_V4_UNIVERSAL_ROUTER,
-      )
-    ) {
+    if (isAddressEqual(address, WIZPAY_SWAP_EXECUTOR_MAINNET_ADDRESS)) {
       try {
-        const [amount0, amount1, , , , fee] = decodeAbiParameters(
-          [
-            { name: 'amount0', type: 'int128' },
-            { name: 'amount1', type: 'int128' },
-            { name: 'sqrtPriceX96', type: 'uint160' },
-            { name: 'liquidity', type: 'uint128' },
-            { name: 'tick', type: 'int24' },
-            { name: 'fee', type: 'uint24' },
-          ],
-          log.data as Hex,
-        );
-        const inputDelta = expected.zeroForOne ? amount0 : amount1;
-        const outputDelta = expected.zeroForOne ? amount1 : amount0;
+        const decoded = decodeEventLog({
+          abi: [SWAP_EXECUTED_EVENT],
+          data: log.data as Hex,
+          topics: log.topics as [Hex, ...Hex[]],
+        });
         if (
-          inputDelta >= 0n ||
-          outputDelta <= 0n ||
-          fee !== ARC_MAINNET_UNISWAP_V4_FEE
-        )
-          continue;
-        matchingPoolSwaps += 1;
-        poolInput += -inputDelta;
-        poolOutput += outputDelta;
+          decoded.eventName === 'WizPayMainnetSwapExecuted' &&
+          isAddressEqual(decoded.args.caller, expected.walletAddress) &&
+          isAddressEqual(decoded.args.tokenIn, expected.tokenIn) &&
+          isAddressEqual(decoded.args.tokenOut, expected.tokenOut) &&
+          decoded.args.amountIn === expected.amountIn &&
+          decoded.args.amountOut >= expected.minAmountOut
+        ) {
+          executorEvents += 1;
+          eventAmountOut = decoded.args.amountOut;
+        }
       } catch {
         continue;
       }
-      continue;
     }
+    if (log.topics.length < 3) continue;
     if (log.topics[0]?.toLowerCase() !== transferTopic) continue;
     if (
       !/^0x[0-9a-fA-F]{64}$/.test(log.topics[1] ?? '') ||
@@ -807,44 +815,39 @@ export function verifySwapReceipt(
     const value = BigInt(log.data);
     if (
       isAddressEqual(address, expected.tokenIn) &&
-      ((isAddressEqual(expected.tokenIn, ARC_MAINNET_UNISWAP_V4_USDC) &&
-        isAddressEqual(
-          transferFrom,
-          ARC_MAINNET_UNISWAP_V4_UNIVERSAL_ROUTER,
-        )) ||
-        (!isAddressEqual(expected.tokenIn, ARC_MAINNET_UNISWAP_V4_USDC) &&
-          isAddressEqual(transferFrom, expected.walletAddress))) &&
-      isAddressEqual(transferTo, ARC_MAINNET_UNISWAP_V4_POOL_MANAGER)
+      isAddressEqual(transferFrom, expected.walletAddress) &&
+      isAddressEqual(transferTo, WIZPAY_SWAP_EXECUTOR_MAINNET_ADDRESS)
     ) {
       tokenInSpent += value;
     }
     if (
       isAddressEqual(address, ARC_NATIVE_USDC_TRANSFER_EMITTER) &&
       isAddressEqual(transferFrom, expected.walletAddress) &&
-      isAddressEqual(transferTo, ARC_MAINNET_UNISWAP_V4_UNIVERSAL_ROUTER)
+      isAddressEqual(transferTo, WIZPAY_SWAP_EXECUTOR_MAINNET_ADDRESS)
     ) {
       nativeInputTransferred += value;
     }
     if (
       isAddressEqual(address, expected.tokenOut) &&
-      isAddressEqual(transferFrom, ARC_MAINNET_UNISWAP_V4_POOL_MANAGER) &&
       isAddressEqual(transferTo, expected.recipient)
     ) {
       amountOut += value;
     }
   }
 
-  if (
-    matchingPoolSwaps !== 1 ||
-    poolInput !== expected.amountIn ||
-    poolOutput !== amountOut
-  ) {
+  if (isAddressEqual(expected.tokenIn, ARC_MAINNET_UNISWAP_V4_USDC)) {
+    tokenInSpent = expected.amountIn;
+  }
+  if (executorEvents !== 1 || eventAmountOut < expected.minAmountOut) {
     throw new MainnetUniswapV4ProtocolError(
       'INVALID_RECEIPT',
-      'PoolManager swap evidence does not match the expected PoolId and amounts.',
+      'Swap Executor event evidence does not match the expected swap.',
     );
   }
-  if (tokenInSpent !== expected.amountIn) {
+  if (
+    !isAddressEqual(expected.tokenIn, ARC_MAINNET_UNISWAP_V4_USDC) &&
+    tokenInSpent !== expected.amountIn
+  ) {
     throw new MainnetUniswapV4ProtocolError(
       'INVALID_RECEIPT',
       'Actual input spent does not match the quoted amountIn.',
@@ -865,5 +868,5 @@ export function verifySwapReceipt(
       'Actual output is below the slippage-protected minimum.',
     );
   }
-  return Object.freeze({ amountOut, tokenInSpent });
+  return Object.freeze({ amountOut: eventAmountOut, tokenInSpent });
 }

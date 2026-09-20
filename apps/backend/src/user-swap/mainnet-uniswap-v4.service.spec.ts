@@ -5,6 +5,7 @@ import {
   ARC_MAINNET_UNISWAP_V4_EURC,
   ARC_MAINNET_UNISWAP_V4_POOL_ID,
   ARC_MAINNET_UNISWAP_V4_USDC,
+  WIZPAY_SWAP_EXECUTOR_MAINNET_ADDRESS,
 } from './mainnet-uniswap-v4-protocol';
 
 const USER = '0x1234567890123456789012345678901234567890';
@@ -42,11 +43,12 @@ function service(network = 'arc-mainnet') {
 }
 
 describe('MainnetUniswapV4Service', () => {
-  it('returns a candidate quote plan without enabling execution', () => {
+  it('returns an executor-prepared quote plan without enabling execution', () => {
     const result = service().inspectQuote(request());
     expect(result).toMatchObject({
-      status: 'candidate-non-executable',
+      status: 'executor-prepared',
       executable: false,
+      executor: WIZPAY_SWAP_EXECUTOR_MAINNET_ADDRESS,
       poolId: ARC_MAINNET_UNISWAP_V4_POOL_ID,
       poolIdentityStatus: 'candidate-unverified',
       walletControl: 'external-wallet',
@@ -57,9 +59,12 @@ describe('MainnetUniswapV4Service', () => {
     expect(result.quoter.to).toMatch(/^0x8dc178ef/i);
   });
 
-  it('keeps the external-wallet execution path fail-closed', () => {
+  it('prepares the Swap Executor plan but keeps backend submission fail-closed', () => {
     const instance = service();
-    expect(() => instance.prepare(request())).toThrow(HttpException);
+    const plan = instance.prepare(request());
+    expect(plan.swap.to).toBe(WIZPAY_SWAP_EXECUTOR_MAINNET_ADDRESS);
+    expect(plan.executable).toBe(false);
+    expect(plan.permit2).toBeNull();
     expect(() => instance.execute(request())).toThrow(HttpException);
   });
 

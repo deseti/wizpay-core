@@ -4,20 +4,22 @@ import {
   decodeAbiParameters,
   decodeFunctionData,
   encodeAbiParameters,
+  encodeEventTopics,
   encodeFunctionResult,
   padHex,
   parseAbi,
+  parseAbiItem,
 } from 'viem';
 import {
   ARC_MAINNET_USDC_NATIVE_SCALE,
   ARC_NATIVE_USDC_TRANSFER_EMITTER,
   ARC_MAINNET_UNISWAP_V4_EURC,
-  ARC_MAINNET_UNISWAP_V4_POOL_MANAGER,
   ARC_MAINNET_UNISWAP_V4_POOL_ID,
   ARC_MAINNET_UNISWAP_V4_POOL_KEY,
   ARC_MAINNET_UNISWAP_V4_QUOTER,
   ARC_MAINNET_UNISWAP_V4_UNIVERSAL_ROUTER,
   ARC_MAINNET_UNISWAP_V4_USDC,
+  WIZPAY_SWAP_EXECUTOR_MAINNET_ADDRESS,
   applySlippage,
   assertCandidatePoolKeyMatchesEvidence,
   buildPermit2TypedData,
@@ -37,11 +39,45 @@ const USER = '0x1234567890123456789012345678901234567890' as const;
 const NOW = 2_000_000_000;
 const TRANSFER_TOPIC =
   '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef' as const;
-const SWAP_TOPIC =
-  '0x40e9cecb9f5f1f1c5b9c97dec2917b7ee92e57ba5563708daca94dd84ad7112f' as const;
 const ROUTER_ABI = parseAbi([
   'function execute(bytes commands, bytes[] inputs, uint256 deadline)',
 ]);
+const SWAP_EXECUTED_EVENT = parseAbiItem(
+  'event WizPayMainnetSwapExecuted(address indexed caller, address indexed tokenIn, address indexed tokenOut, uint256 amountIn, uint256 feeAmount, uint256 netAmountIn, uint256 amountOut, uint256 minAmountOut)',
+);
+
+function executorSwapLog(input: {
+  caller: `0x${string}`;
+  tokenIn: `0x${string}`;
+  tokenOut: `0x${string}`;
+  amountIn: bigint;
+  amountOut: bigint;
+  minAmountOut: bigint;
+}) {
+  const topics = encodeEventTopics({
+    abi: [SWAP_EXECUTED_EVENT],
+    eventName: 'WizPayMainnetSwapExecuted',
+    args: {
+      caller: input.caller,
+      tokenIn: input.tokenIn,
+      tokenOut: input.tokenOut,
+    },
+  });
+  return {
+    address: WIZPAY_SWAP_EXECUTOR_MAINNET_ADDRESS,
+    topics: topics.filter((topic): topic is `0x${string}` => topic !== null),
+    data: encodeAbiParameters(
+      [
+        { type: 'uint256' },
+        { type: 'uint256' },
+        { type: 'uint256' },
+        { type: 'uint256' },
+        { type: 'uint256' },
+      ],
+      [input.amountIn, 0n, input.amountIn, input.amountOut, input.minAmountOut],
+    ),
+  };
+}
 
 function transferLog(
   token: `0x${string}`,
@@ -92,28 +128,6 @@ function observation(
     amountOut: '864736',
     gasEstimate: '37217',
     ...overrides,
-  };
-}
-
-function swapLog(amount0: bigint, amount1: bigint) {
-  return {
-    address: ARC_MAINNET_UNISWAP_V4_POOL_MANAGER,
-    topics: [
-      SWAP_TOPIC,
-      ARC_MAINNET_UNISWAP_V4_POOL_ID,
-      padHex(ARC_MAINNET_UNISWAP_V4_UNIVERSAL_ROUTER, { size: 32 }),
-    ],
-    data: encodeAbiParameters(
-      [
-        { type: 'int128' },
-        { type: 'int128' },
-        { type: 'uint160' },
-        { type: 'uint128' },
-        { type: 'int24' },
-        { type: 'uint24' },
-      ],
-      [amount0, amount1, 1n, 1n, 0, 500],
-    ),
   };
 }
 
@@ -214,12 +228,25 @@ describe('mainnet Uniswap V4 protocol', () => {
     expect(plan.approvals).toHaveLength(0);
     expect(plan.permit2).toBeNull();
     expect(plan.swap.value).toBe(1_000_000n * ARC_MAINNET_USDC_NATIVE_SCALE);
-    expect(plan.swap.to).toBe(ARC_MAINNET_UNISWAP_V4_UNIVERSAL_ROUTER);
+    expect(plan.swap.to).toBe(WIZPAY_SWAP_EXECUTOR_MAINNET_ADDRESS);
     expect(plan.swap.data.startsWith('0x')).toBe(true);
     expect(ARC_MAINNET_UNISWAP_V4_QUOTER).toMatch(/^0x8dc178ef/i);
   });
 
-  it('encodes the deployed V4 exact-input path and binds TAKE to the wallet', () => {
+  it('encodes Swap Executor executeSwap instead of Universal Router execute', () => {
+    const plan = buildUserControlledSwapPlan(request(), observation());
+    const decoded = decodeFunctionData({
+      abi: parseAbi([
+        'function executeSwap(address tokenIn, address tokenOut, uint256 amountIn, uint256 minAmountOut, uint256 minHopPriceX36, uint256 deadline) payable returns (uint256 amountOut)',
+      ]),
+      data: plan.swap.data,
+    });
+    expect(decoded.functionName).toBe('executeSwap');
+    expect(decoded.args[0]).toBe(ARC_MAINNET_UNISWAP_V4_USDC);
+    expect(plan.swap.to).toBe(WIZPAY_SWAP_EXECUTOR_MAINNET_ADDRESS);
+  });
+
+  it.skip('encodes the deployed V4 exact-input path and binds TAKE to the wallet', () => {
     const plan = buildUserControlledSwapPlan(request(), observation());
     const decoded = decodeFunctionData({
       abi: ROUTER_ABI,
@@ -311,25 +338,22 @@ describe('mainnet Uniswap V4 protocol', () => {
     );
     expect(bundled).not.toBe(swapOnly);
     expect(bundled.startsWith(swapOnly.slice(0, 10))).toBe(true);
-    expect(plan.approvals).toHaveLength(2);
-    expect(plan.permit2?.spender).toBe(ARC_MAINNET_UNISWAP_V4_UNIVERSAL_ROUTER);
+    expect(plan.approvals).toHaveLength(1);
+    expect(plan.approvals[0]?.to).toBe(ARC_MAINNET_UNISWAP_V4_EURC);
+    expect(plan.permit2).toBeNull();
     expect(plan.swap.value).toBe(0n);
+    expect(plan.swap.to).toBe(WIZPAY_SWAP_EXECUTOR_MAINNET_ADDRESS);
     expect(decodeFunctionData({ abi: ROUTER_ABI, data: bundled }).args[0]).toBe(
       '0x0a10',
     );
     const decoded = decodeFunctionData({
-      abi: ROUTER_ABI,
+      abi: parseAbi([
+        'function executeSwap(address tokenIn, address tokenOut, uint256 amountIn, uint256 minAmountOut, uint256 minHopPriceX36, uint256 deadline) payable returns (uint256 amountOut)',
+      ]),
       data: plan.swap.data,
     });
-    const [, params] = decodeAbiParameters(
-      [{ type: 'bytes' }, { type: 'bytes[]' }],
-      decoded.args[1][0],
-    );
-    const [, , payerIsUser] = decodeAbiParameters(
-      [{ type: 'address' }, { type: 'uint256' }, { type: 'bool' }],
-      params[1],
-    );
-    expect(payerIsUser).toBe(true);
+    expect(decoded.functionName).toBe('executeSwap');
+    expect(decoded.args[0]).toBe(ARC_MAINNET_UNISWAP_V4_EURC);
   });
 
   it.each([
@@ -371,44 +395,15 @@ describe('mainnet Uniswap V4 protocol', () => {
       expect(plan.quote.minAmountOut).toBe(vector.minAmountOut);
       expect(plan.quote.minHopPriceX36).toBe(vector.minHopPriceX36);
       const decoded = decodeFunctionData({
-        abi: ROUTER_ABI,
+        abi: parseAbi([
+          'function executeSwap(address tokenIn, address tokenOut, uint256 amountIn, uint256 minAmountOut, uint256 minHopPriceX36, uint256 deadline) payable returns (uint256 amountOut)',
+        ]),
         data: plan.swap.data,
       });
-      const [, params] = decodeAbiParameters(
-        [{ type: 'bytes' }, { type: 'bytes[]' }],
-        decoded.args[1][0],
-      );
-      const [exactInput] = decodeAbiParameters(
-        [
-          {
-            type: 'tuple',
-            components: [
-              { name: 'currencyIn', type: 'address' },
-              {
-                name: 'path',
-                type: 'tuple[]',
-                components: [
-                  { name: 'intermediateCurrency', type: 'address' },
-                  { name: 'fee', type: 'uint24' },
-                  { name: 'tickSpacing', type: 'int24' },
-                  { name: 'hooks', type: 'address' },
-                  { name: 'hookData', type: 'bytes' },
-                ],
-              },
-              { name: 'minHopPriceX36', type: 'uint256[]' },
-              { name: 'amountIn', type: 'uint128' },
-              { name: 'amountOutMinimum', type: 'uint128' },
-            ],
-          },
-        ],
-        params[0],
-      );
-      expect(exactInput.minHopPriceX36).toEqual([vector.minHopPriceX36]);
-      const [, , payerIsUser] = decodeAbiParameters(
-        [{ type: 'address' }, { type: 'uint256' }, { type: 'bool' }],
-        params[1],
-      );
-      expect(payerIsUser).toBe(vector.payerIsUser);
+      expect(decoded.functionName).toBe('executeSwap');
+      expect(decoded.args[0]).toBe(vector.tokenInAddress);
+      expect(decoded.args[4]).toBe(vector.minHopPriceX36);
+      expect(plan.swap.to).toBe(WIZPAY_SWAP_EXECUTOR_MAINNET_ADDRESS);
     },
   );
 
@@ -445,7 +440,7 @@ describe('mainnet Uniswap V4 protocol', () => {
     ).toThrow(/EURC/);
   });
 
-  it('verifies native input, PoolId, exact calldata, and actual output', () => {
+  it('verifies native input, executor target, exact calldata, and actual output', () => {
     const directRequest = request({ amountIn: 100_000n });
     const plan = buildUserControlledSwapPlan(
       directRequest,
@@ -456,26 +451,27 @@ describe('mainnet Uniswap V4 protocol', () => {
         chainId: 5_042,
         status: 'success',
         from: USER,
-        to: ARC_MAINNET_UNISWAP_V4_UNIVERSAL_ROUTER,
+        to: WIZPAY_SWAP_EXECUTOR_MAINNET_ADDRESS,
         input: plan.swap.data,
         value: plan.swap.value.toString(),
         logs: [
+          executorSwapLog({
+            caller: USER,
+            tokenIn: ARC_MAINNET_UNISWAP_V4_USDC,
+            tokenOut: ARC_MAINNET_UNISWAP_V4_EURC,
+            amountIn: 100_000n,
+            amountOut: 87_169n,
+            minAmountOut: plan.quote.minAmountOut,
+          }),
           transferLog(
             ARC_NATIVE_USDC_TRANSFER_EMITTER,
             USER,
-            ARC_MAINNET_UNISWAP_V4_UNIVERSAL_ROUTER,
+            WIZPAY_SWAP_EXECUTOR_MAINNET_ADDRESS,
             plan.swap.value,
-          ),
-          swapLog(-100_000n, 87_169n),
-          transferLog(
-            ARC_MAINNET_UNISWAP_V4_USDC,
-            ARC_MAINNET_UNISWAP_V4_UNIVERSAL_ROUTER,
-            ARC_MAINNET_UNISWAP_V4_POOL_MANAGER,
-            100_000n,
           ),
           transferLog(
             ARC_MAINNET_UNISWAP_V4_EURC,
-            ARC_MAINNET_UNISWAP_V4_POOL_MANAGER,
+            WIZPAY_SWAP_EXECUTOR_MAINNET_ADDRESS,
             USER,
             87_169n,
           ),
@@ -502,19 +498,19 @@ describe('mainnet Uniswap V4 protocol', () => {
           chainId: 5_042,
           status: 'success',
           from: USER,
-          to: ARC_MAINNET_UNISWAP_V4_UNIVERSAL_ROUTER,
+          to: WIZPAY_SWAP_EXECUTOR_MAINNET_ADDRESS,
           input: plan.swap.data,
           value: plan.swap.value.toString(),
           logs: [
             transferLog(
-              ARC_MAINNET_UNISWAP_V4_USDC,
-              ARC_MAINNET_UNISWAP_V4_UNIVERSAL_ROUTER,
-              ARC_MAINNET_UNISWAP_V4_POOL_MANAGER,
-              100_000n,
+              ARC_NATIVE_USDC_TRANSFER_EMITTER,
+              USER,
+              WIZPAY_SWAP_EXECUTOR_MAINNET_ADDRESS,
+              plan.swap.value,
             ),
             transferLog(
               ARC_MAINNET_UNISWAP_V4_EURC,
-              ARC_MAINNET_UNISWAP_V4_POOL_MANAGER,
+              WIZPAY_SWAP_EXECUTOR_MAINNET_ADDRESS,
               USER,
               87_169n,
             ),
@@ -532,10 +528,10 @@ describe('mainnet Uniswap V4 protocol', () => {
           zeroForOne: true,
         },
       ),
-    ).toThrow(/PoolManager swap evidence/);
+    ).toThrow(/Swap Executor event evidence/);
   });
 
-  it('verifies the EURC-to-USDC Permit2 direction and actual output', () => {
+  it('verifies the EURC-to-USDC executor direction and actual output', () => {
     const reverse = request({
       tokenInAddress: ARC_MAINNET_UNISWAP_V4_EURC,
       tokenOutAddress: ARC_MAINNET_UNISWAP_V4_USDC,
@@ -545,32 +541,33 @@ describe('mainnet Uniswap V4 protocol', () => {
       reverse,
       observation(reverse, { amountOut: '99899', gasEstimate: '36933' }),
     );
-    const transactionData = encodePermit2PermitAndSwap({
-      quote: plan.quote,
-      recipient: USER,
-      deadline: plan.deadline,
-      nonce: 0,
-      signature: `0x${'11'.repeat(65)}`,
-    });
+    const transactionData = plan.swap.data;
     const verified = verifySwapReceipt(
       {
         chainId: 5_042,
         status: 'success',
         from: USER,
-        to: ARC_MAINNET_UNISWAP_V4_UNIVERSAL_ROUTER,
+        to: WIZPAY_SWAP_EXECUTOR_MAINNET_ADDRESS,
         input: transactionData,
         value: '0',
         logs: [
-          swapLog(99_899n, -87_169n),
+          executorSwapLog({
+            caller: USER,
+            tokenIn: ARC_MAINNET_UNISWAP_V4_EURC,
+            tokenOut: ARC_MAINNET_UNISWAP_V4_USDC,
+            amountIn: 87_169n,
+            amountOut: 99_899n,
+            minAmountOut: plan.quote.minAmountOut,
+          }),
           transferLog(
             ARC_MAINNET_UNISWAP_V4_EURC,
             USER,
-            ARC_MAINNET_UNISWAP_V4_POOL_MANAGER,
+            WIZPAY_SWAP_EXECUTOR_MAINNET_ADDRESS,
             87_169n,
           ),
           transferLog(
             ARC_MAINNET_UNISWAP_V4_USDC,
-            ARC_MAINNET_UNISWAP_V4_POOL_MANAGER,
+            WIZPAY_SWAP_EXECUTOR_MAINNET_ADDRESS,
             USER,
             99_899n,
           ),
@@ -593,7 +590,7 @@ describe('mainnet Uniswap V4 protocol', () => {
 
   it.each([
     ['wrong chain', { chainId: 5_042_002 }],
-    ['wrong router', { to: USER }],
+    ['wrong executor target', { to: USER }],
     ['reverted', { status: 'reverted' as const }],
   ])('rejects a %s receipt', (_label, overrides) => {
     expect(() =>

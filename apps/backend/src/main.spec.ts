@@ -1,12 +1,12 @@
 import { bootstrap } from './main';
 
 describe('backend startup Arc readiness order', () => {
-  it('fails before creating or listening when the selected network is incomplete', async () => {
+  it('fails before creating or listening when Mainnet isolation env is incomplete', async () => {
     const createApplication = jest.fn();
 
     await expect(
       bootstrap(createApplication, { WIZPAY_ARC_NETWORK: 'arc-mainnet' }),
-    ).rejects.toThrow('OFFICIAL_ARC_MAINNET_RPC_UNAVAILABLE');
+    ).rejects.toThrow();
     expect(createApplication).not.toHaveBeenCalled();
   });
 

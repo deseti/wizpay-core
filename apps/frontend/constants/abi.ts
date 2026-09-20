@@ -1,4 +1,6 @@
 import { WIZPAY_MAINNET_V2_ABI } from "@/constants/generated/wizpay-mainnet-v2.abi";
+import { WIZPAY_PAYROLL_MAINNET_ABI } from "@/constants/generated/wizpay-payroll-mainnet.abi";
+import { WIZPAY_SWAP_EXECUTOR_MAINNET_ABI } from "@/constants/generated/wizpay-swap-executor-mainnet.abi";
 
 export const WIZPAY_BATCH_PAYMENT_ROUTED_EVENT = {
   anonymous: false,
@@ -217,8 +219,13 @@ export const WIZPAY_TESTNET_LEGACY_ABI = [
   },
 ] as const;
 
-/** Exact generated ABI for the isolated WizPayMainnetV2 contract. */
-export const WIZPAY_MAINNET_ABI = WIZPAY_MAINNET_V2_ABI;
+/** Legacy generated ABI for WizPayMainnetV2. Kept for history/tests. */
+export const WIZPAY_MAINNET_V2_RUNTIME_ABI = WIZPAY_MAINNET_V2_ABI;
+
+/** Arc Mainnet runtime payroll ABI. */
+export const WIZPAY_MAINNET_ABI = WIZPAY_PAYROLL_MAINNET_ABI;
+
+export { WIZPAY_PAYROLL_MAINNET_ABI, WIZPAY_SWAP_EXECUTOR_MAINNET_ABI };
 
 /** Network-routed compatibility export; never shares a Mainnet/Testnet ABI. */
 export const WIZPAY_ABI =

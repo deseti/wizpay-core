@@ -82,7 +82,7 @@ describe("resolvePayrollRoutePolicy", () => {
     ["arc-mainnet", true],
     ["arc-testnet", false],
   ] as const)(
-    "blocks cross-token payroll on %s when capability is %s without quotes",
+    "blocks Circle or disabled cross-token payroll on %s when capability is %s",
     (network, crossTokenEnabled) => {
       expect(
         resolvePayrollRoutePolicy({
@@ -100,6 +100,22 @@ describe("resolvePayrollRoutePolicy", () => {
       });
     },
   );
+
+  it("routes Arc Mainnet external-wallet cross-token payroll to the atomic payroll contract", () => {
+    expect(
+      resolvePayrollRoutePolicy({
+        walletMode: "external",
+        network: "arc-mainnet",
+        sourceTokenAddress: USDC,
+        targetTokenAddresses: [EURC],
+        crossTokenEnabled: true,
+      }),
+    ).toEqual({
+      kind: "external-wallet-mainnet-atomic",
+      requiresQuote: true,
+      blockedReason: null,
+    });
+  });
 });
 
 describe("payroll quote scheduling boundary", () => {

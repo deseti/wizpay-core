@@ -18,6 +18,7 @@ import { getAddress, isAddressEqual, zeroAddress, type Address } from 'viem';
 export const PAYMENT_ROUTE_DECISIONS = Object.freeze({
   DIRECT_TRANSFER: 'DIRECT_TRANSFER',
   CROSS_TOKEN_PROVIDER: 'CROSS_TOKEN_PROVIDER',
+  CROSS_TOKEN_ATOMIC: 'CROSS_TOKEN_ATOMIC',
   CROSS_TOKEN_DISABLED: 'CROSS_TOKEN_DISABLED',
 });
 
@@ -117,6 +118,18 @@ export class PaymentRoutingService {
         tokenOut,
         PAYMENT_ROUTE_DECISIONS.CROSS_TOKEN_PROVIDER,
         'XYLONET',
+      );
+    }
+    if (
+      this.network === 'arc-mainnet' &&
+      isArcCapabilityEnabled(this.capabilities, capability)
+    ) {
+      return this.decision(
+        input.operation,
+        tokenIn,
+        tokenOut,
+        PAYMENT_ROUTE_DECISIONS.CROSS_TOKEN_ATOMIC,
+        null,
       );
     }
     return this.decision(

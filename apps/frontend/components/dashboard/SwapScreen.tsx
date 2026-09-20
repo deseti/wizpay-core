@@ -78,7 +78,16 @@ import {
 } from "@/lib/wizpay";
 import { useCapability } from "@/components/providers/CapabilityProvider";
 import { ACTIVE_ARC_NETWORK } from "@/lib/active-arc-network";
-import { ARC_MAINNET_UNISWAP_V4_UNAVAILABLE_MESSAGE } from "@/lib/mainnet-uniswap-v4";
+import { WIZPAY_SWAP_EXECUTOR_MAINNET_ABI } from "@/constants/generated/wizpay-swap-executor-mainnet.abi";
+import {
+  ARC_MAINNET_UNISWAP_V4_CHAIN_ID,
+  WIZPAY_SWAP_EXECUTOR_MAINNET_ADDRESS,
+  applySlippage,
+  calculateMinHopPriceX36,
+  encodeExecuteSwap,
+  encodeUserControlledApprovals,
+  mainnetUniswapV4TransactionValue,
+} from "@/lib/mainnet-uniswap-v4-protocol";
 
 type QuoteState = AppWalletSwapQuoteResponse | UserSwapQuoteResponse;
 type RequestStatus =
@@ -136,13 +145,6 @@ function assertAppWalletQuote(input: {
 export function SwapScreen() {
   const swapCapability = useCapability("swap");
   const bridgeCapability = useCapability("bridge");
-  if (ACTIVE_ARC_NETWORK.key === "arc-mainnet") {
-    return (
-      <p role="alert" className="text-sm text-amber-300">
-        {ARC_MAINNET_UNISWAP_V4_UNAVAILABLE_MESSAGE}
-      </p>
-    );
-  }
   if (!swapCapability.enabled && !bridgeCapability.enabled) {
     return (
       <p role="alert" className="text-sm text-amber-300">
@@ -479,7 +481,90 @@ function SwapWorkspace({
     };
   }
 
+  async function executeMainnetExecutorSwap() {
+    if (!walletAddress || !walletClient || !publicClient) {
+      throw new Error("A current External Wallet Mainnet quote is required.");
+    }
+    const tokenInAddress = SUPPORTED_TOKENS[tokenIn].address;
+    const tokenOutAddress = SUPPORTED_TOKENS[tokenOut].address;
+    const deadline = Math.floor(Date.now() / 1_000) + 600;
+    const amountOut = quote
+      ? BigInt(
+          String(
+            ("expectedOutput" in quote ? quote.expectedOutput : undefined) ??
+              ("expectedAmountOut" in quote
+                ? quote.expectedAmountOut
+                : undefined) ??
+              "0",
+          ),
+        )
+      : 0n;
+    if (amountOut <= 0n) {
+      throw new Error("A current Arc Mainnet Swap Executor quote is required.");
+    }
+    const minAmountOut = applySlippage(amountOut, Number(PREVIEW_SLIPPAGE_BPS));
+    const minHopPriceX36 = calculateMinHopPriceX36(
+      amountUnits,
+      amountOut,
+      Number(PREVIEW_SLIPPAGE_BPS),
+    );
+    const approvals = encodeUserControlledApprovals({
+      tokenIn: tokenInAddress,
+      amountIn: amountUnits,
+      deadline,
+    });
+    if (approvals.length > 0) {
+      setApprovalRequired(true);
+      setTransactionStatus("approving");
+      const approvalHash = await walletClient.writeContract({
+        address: approvals[0]!.to,
+        abi: ERC20_ABI,
+        functionName: "approve",
+        args: [WIZPAY_SWAP_EXECUTOR_MAINNET_ADDRESS, amountUnits],
+        account: walletAddress,
+        chain: arcTestnet,
+      });
+      const approvalReceipt = await publicClient.waitForTransactionReceipt({
+        hash: approvalHash,
+      });
+      if (approvalReceipt.status !== "success")
+        throw new Error("Executor approval transaction reverted.");
+    } else {
+      setApprovalRequired(false);
+    }
+    setTransactionStatus("signing");
+    const hash = await walletClient.writeContract({
+      address: WIZPAY_SWAP_EXECUTOR_MAINNET_ADDRESS,
+      abi: WIZPAY_SWAP_EXECUTOR_MAINNET_ABI,
+      functionName: "executeSwap",
+      args: [
+        tokenInAddress,
+        tokenOutAddress,
+        amountUnits,
+        minAmountOut,
+        minHopPriceX36,
+        BigInt(deadline),
+      ],
+      value: mainnetUniswapV4TransactionValue(tokenInAddress, amountUnits),
+      account: walletAddress,
+      chain: arcTestnet,
+    });
+    setTransactionStatus("confirming");
+    const receipt = await publicClient.waitForTransactionReceipt({ hash });
+    if (receipt.status !== "success") throw new Error("Swap transaction reverted.");
+    return {
+      hash,
+      inputAmount: amountUnits,
+      outputAmount: amountOut,
+      inputToken: tokenIn,
+      outputToken: tokenOut,
+    };
+  }
+
   async function executeExternalWalletSwap() {
+    if (ACTIVE_ARC_NETWORK.key === "arc-mainnet") {
+      return submitExternalSwap(executeMainnetExecutorSwap);
+    }
     if (
       !quote ||
       "sourceChain" in quote ||

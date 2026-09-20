@@ -15,22 +15,6 @@ import { PaymentRoutingService } from '../routing/payment-routing.service';
 const TESTNET_USDC = '0x3600000000000000000000000000000000000000';
 const TESTNET_EURC = '0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a';
 const WIZPAY = '0x1111111111111111111111111111111111111111';
-const PAYROLL_ABI = [
-  {
-    type: 'function',
-    name: 'batchRouteAndPay',
-    stateMutability: 'nonpayable',
-    inputs: [
-      { name: 'tokenIn', type: 'address' },
-      { name: 'tokenOuts', type: 'address[]' },
-      { name: 'recipients', type: 'address[]' },
-      { name: 'amountsIn', type: 'uint256[]' },
-      { name: 'minAmountsOut', type: 'uint256[]' },
-      { name: 'referenceId', type: 'string' },
-    ],
-    outputs: [{ name: 'totalOut', type: 'uint256' }],
-  },
-] as const;
 
 function config(capabilities = resolveArcCapabilities('arc-mainnet', {})) {
   return new ConfigService({
@@ -120,15 +104,37 @@ describe('CapabilityService', () => {
         sameTokenPayroll: true,
       }),
     );
+    const mainnetPayrollAbi = [
+      {
+        type: 'function',
+        name: 'executeCrossTokenPayroll',
+        stateMutability: 'payable',
+        inputs: [
+          { name: 'tokenIn', type: 'address' },
+          { name: 'tokenOut', type: 'address' },
+          { name: 'recipients', type: 'address[]' },
+          { name: 'outputAmounts', type: 'uint256[]' },
+          { name: 'grossInput', type: 'uint256' },
+          { name: 'minTotalOut', type: 'uint256' },
+          { name: 'minHopPriceX36', type: 'uint256' },
+          { name: 'deadline', type: 'uint256' },
+          { name: 'referenceId', type: 'string' },
+        ],
+        outputs: [{ name: 'amountOut', type: 'uint256' }],
+      },
+    ] as const;
     const callData = encodeFunctionData({
-      abi: PAYROLL_ABI,
-      functionName: 'batchRouteAndPay',
+      abi: mainnetPayrollAbi,
+      functionName: 'executeCrossTokenPayroll',
       args: [
         TESTNET_USDC,
-        [TESTNET_EURC.toLowerCase() as `0x${string}`],
+        TESTNET_EURC.toLowerCase() as `0x${string}`,
         ['0x2222222222222222222222222222222222222222'],
         [1n],
-        [1n],
+        2n,
+        1n,
+        1n,
+        2_000_000_300n,
         'reference',
       ],
     });

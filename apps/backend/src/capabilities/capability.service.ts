@@ -23,7 +23,8 @@ import {
   type PaymentRouteDecision,
   PaymentRoutingService,
 } from '../routing/payment-routing.service';
-import { WIZPAY_MAINNET_V2_ABI } from '../contracts/generated/wizpay-mainnet-v2.abi';
+import { WIZPAY_PAYROLL_MAINNET_ABI } from '../contracts/generated/wizpay-payroll-mainnet.abi';
+import { WIZPAY_SWAP_EXECUTOR_MAINNET_ABI } from '../contracts/generated/wizpay-swap-executor-mainnet.abi';
 
 const PAYROLL_ABI = [
   {
@@ -157,6 +158,7 @@ export class CapabilityService {
       } else if (refId.startsWith('PAYROLL-APPROVE-'))
         this.assertPayrollApproval(params);
       else if (refId.startsWith('PAYROLL-')) this.assertPayrollCall(params);
+      else if (refId.startsWith('SWAP-')) this.assertSwapCall(params);
       else if (refId.startsWith('app-wallet-xylonet:')) this.assert('swap');
       else this.contextRequired('contract execution');
     } else if (action === 'createTypedDataChallenge') {
@@ -212,9 +214,12 @@ export class CapabilityService {
     )
       return this.contextRequired('payroll contract execution');
     try {
+      if (this.network === 'arc-mainnet') {
+        this.assertMainnetPayrollCall(callData as Hex);
+        return;
+      }
       const decoded = decodeFunctionData({
-        abi:
-          this.network === 'arc-mainnet' ? WIZPAY_MAINNET_V2_ABI : PAYROLL_ABI,
+        abi: PAYROLL_ABI,
         data: callData as Hex,
       });
       if (decoded.functionName !== 'batchRouteAndPay' || !decoded.args) {
@@ -236,6 +241,76 @@ export class CapabilityService {
     } catch (error) {
       if (error instanceof HttpException) throw error;
       return this.contextRequired('payroll contract execution');
+    }
+  }
+
+  private assertMainnetPayrollCall(callData: Hex) {
+    const decoded = decodeFunctionData({
+      abi: WIZPAY_PAYROLL_MAINNET_ABI,
+      data: callData,
+    });
+    if (decoded.functionName === 'executeSameTokenPayroll' && decoded.args) {
+      const [token] = decoded.args;
+      this.assertPaymentDecision(
+        this.routing.decide({
+          network: this.network,
+          operation: 'PAYROLL',
+          tokenIn: token,
+          tokenOut: token,
+        }),
+      );
+      return;
+    }
+    if (decoded.functionName === 'executeCrossTokenPayroll' && decoded.args) {
+      const [tokenIn, tokenOut] = decoded.args;
+      this.assertPaymentDecision(
+        this.routing.decide({
+          network: this.network,
+          operation: 'PAYROLL',
+          tokenIn,
+          tokenOut,
+        }),
+      );
+      return;
+    }
+    return this.contextRequired('payroll contract execution');
+  }
+
+  private assertSwapCall(params: Record<string, unknown>) {
+    this.assert('swap');
+    if (this.network !== 'arc-mainnet')
+      return this.contextRequired('swap contract execution');
+    const contractAddress = params.contractAddress;
+    const callData = params.callData;
+    const executor = this.config.get<string>(
+      'arcNetwork.contracts.wizpaySwapExecutorMainnet.address',
+    );
+    if (
+      typeof contractAddress !== 'string' ||
+      typeof callData !== 'string' ||
+      !executor ||
+      !isAddressEqual(contractAddress as Address, executor as Address)
+    )
+      return this.contextRequired('swap contract execution');
+    try {
+      const decoded = decodeFunctionData({
+        abi: WIZPAY_SWAP_EXECUTOR_MAINNET_ABI,
+        data: callData as Hex,
+      });
+      if (decoded.functionName !== 'executeSwap' || !decoded.args)
+        return this.contextRequired('swap contract execution');
+      const [tokenIn, tokenOut] = decoded.args;
+      this.assertPaymentDecision(
+        this.routing.decide({
+          network: this.network,
+          operation: 'SEND',
+          tokenIn,
+          tokenOut,
+        }),
+      );
+    } catch (error) {
+      if (error instanceof HttpException) throw error;
+      return this.contextRequired('swap contract execution');
     }
   }
 

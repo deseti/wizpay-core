@@ -12,9 +12,10 @@ describe('canonical Arc RPC configuration', () => {
     },
   );
 
-  it('does not return the Testnet RPC for Arc Mainnet', () => {
-    expect(() => resolveArcRpcUrl('arc-mainnet')).toThrow(
-      'OFFICIAL_ARC_MAINNET_RPC_UNAVAILABLE',
+  it('resolves the live Arc Mainnet RPC without returning the Testnet RPC', () => {
+    expect(resolveArcRpcUrl('arc-mainnet')).toBe('https://rpc.mainnet.arc.io');
+    expect(resolveArcRpcUrl('arc-mainnet')).not.toBe(
+      'https://rpc.testnet.arc.io',
     );
   });
 

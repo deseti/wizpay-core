@@ -14,6 +14,14 @@ import { useActiveWalletAddress } from "@/hooks/useActiveWalletAddress";
 import { useTransactionExecutor } from "@/hooks/useTransactionExecutor";
 
 import { WIZPAY_ABI, WIZPAY_BATCH_PAYMENT_ROUTED_EVENT } from "@/constants/abi";
+import { WIZPAY_PAYROLL_MAINNET_ABI } from "@/constants/generated/wizpay-payroll-mainnet.abi";
+import { ACTIVE_ARC_NETWORK } from "@/lib/active-arc-network";
+import {
+  nativePayrollValue,
+  payrollApprovalTarget,
+  sameTokenFunding,
+} from "@/lib/mainnet-payroll-protocol";
+import { calculateMinHopPriceX36 } from "@/lib/mainnet-uniswap-v4-protocol";
 import {
   acquireExecutionIntent,
   bindExecutionIntentTransactionHash,
@@ -948,6 +956,118 @@ export function useWizPayContract({
       } else {
         const message = `Approve ${activeToken.symbol} before submitting this payroll batch.`;
         state.setErrorMessage(message);
+        return { ok: false, hash: null, error: message };
+      }
+    }
+
+    if (ACTIVE_ARC_NETWORK.key === "arc-mainnet") {
+      const payrollAddress = requireWizPayAddress();
+      const recipients = batchPreparedRecipients.map(
+        (recipient) => recipient.address,
+      ) as Address[];
+      const amounts = batchPreparedRecipients.map(
+        (recipient) => recipient.amountUnits,
+      );
+      const tokenOuts = batchPreparedRecipients.map(
+        (recipient) => SUPPORTED_TOKENS[recipient.targetToken].address,
+      );
+      const uniqueOut = new Set(tokenOuts.map((value) => value.toLowerCase()));
+      if (uniqueOut.size !== 1) {
+        const message =
+          "Arc Mainnet payroll requires a homogeneous destination token group.";
+        state.setErrorMessage(message);
+        return { ok: false, hash: null, error: message };
+      }
+      const tokenOut = tokenOuts[0]!;
+      const sameToken = tokenOut.toLowerCase() === activeToken.address.toLowerCase();
+      const deadline = Math.floor(Date.now() / 1_000) + 10 * 60;
+      state.setSubmitState("simulating");
+      state.setSubmitTxHash(null);
+      state.setErrorMessage(null);
+      state.setStatusMessage(
+        "Preparing the payroll batch for wallet confirmation...",
+      );
+      try {
+        const functionName = sameToken
+          ? "executeSameTokenPayroll"
+          : "executeCrossTokenPayroll";
+        const funding = sameToken
+          ? sameTokenFunding(amounts, feeBps)
+          : amounts.reduce((sum, amount) => sum + amount, 0n);
+        const approval = payrollApprovalTarget({
+          tokenIn: activeToken.address,
+          tokenOut,
+          funding,
+        });
+        if (approval && latestAllowance < approval.amount) {
+          const message = `Approve ${activeToken.symbol} before submitting this payroll batch.`;
+          state.setErrorMessage(message);
+          return { ok: false, hash: null, error: message };
+        }
+        const args = sameToken
+          ? [activeToken.address, recipients, amounts, referenceId]
+          : [
+              activeToken.address,
+              tokenOut,
+              recipients,
+              amounts,
+              funding,
+              amounts.reduce((sum, amount) => sum + amount, 0n),
+              calculateMinHopPriceX36(
+                funding,
+                amounts.reduce((sum, amount) => sum + amount, 0n),
+                Number(PREVIEW_SLIPPAGE_BPS),
+              ),
+              BigInt(deadline),
+              referenceId,
+            ];
+        const value = sameToken
+          ? 0n
+          : nativePayrollValue(activeToken.address, funding);
+        state.setSubmitState("wallet");
+        state.setStatusMessage("Confirm the payroll batch in your wallet.");
+        const executionResult = await executeTransaction({
+          abi: WIZPAY_PAYROLL_MAINNET_ABI,
+          args,
+          chainId: ACTIVE_ARC_NETWORK.chainId,
+          contractAddress: payrollAddress,
+          functionName,
+          value,
+          idempotencyKey: execution?.idempotencyKey,
+          executionIntentId: execution?.intentId,
+          refId: `PAYROLL-${referenceId}`,
+        });
+        if (
+          execution?.intentId &&
+          executionResult.txHash &&
+          executionResult.executionLeaseOwner
+        ) {
+          await bindExecutionIntentTransactionHash(
+            execution.intentId,
+            executionResult.txHash,
+            execution.idempotencyKey,
+            executionResult.executionLeaseOwner,
+          );
+        }
+        state.setSubmitState("confirming");
+        state.setSubmitTxHash(executionResult.txHash ?? executionResult.hash);
+        state.setStatusMessage("Waiting for Arc confirmation...");
+        const confirmedHash = executionResult.txHash ?? executionResult.hash;
+        state.setSubmitTxHash(confirmedHash);
+        state.setSubmitState("confirmed");
+        state.setStatusMessage(null);
+        applyBatchSessionTotals(
+          batchPreparedRecipients,
+          batchTotalAmount,
+          batchValidRecipientCount,
+        );
+        await Promise.all([refetchAllowance(), refetchBalance()]);
+        return { ok: true, hash: confirmedHash };
+      } catch (error) {
+        const message = getFriendlyErrorMessage(error);
+        state.setSubmitState("idle");
+        state.setErrorMessage(message);
+        state.setStatusMessage(null);
         return { ok: false, hash: null, error: message };
       }
     }
