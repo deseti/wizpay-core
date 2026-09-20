@@ -212,6 +212,11 @@ contract WizPaySwapExecutorMainnetTest is Test {
     WizPaySwapExecutorMainnet internal executor;
 
     function setUp() public {
+        vm.chainId(5_042);
+
+        // Safe-like owner: constructor requires deployed contract code.
+        vm.etch(SAFE, hex"00");
+
         user = makeAddr("user");
 
         usdc = new MockERC20("USDC", "USDC", 6, SUPPLY);
@@ -230,6 +235,11 @@ contract WizPaySwapExecutorMainnetTest is Test {
             POOL_FEE,
             TICK_SPACING
         );
+
+        // Production contracts are born paused. Tests explicitly activate
+        // after validating the constructor safety boundary.
+        vm.prank(SAFE);
+        executor.unpause();
 
         // Give user some ERC-20 balances for EURC->USDC direction.
         eurc.transfer(user, 100_000e6);
@@ -254,6 +264,86 @@ contract WizPaySwapExecutorMainnetTest is Test {
         assertEq(executor.owner(), SAFE);
         assertEq(executor.MAX_FEE_BPS(), 100);
         assertEq(executor.ARC_NATIVE_USDC_SCALE(), SCALE);
+    }
+
+    function testConstructorStartsPaused() public {
+        WizPaySwapExecutorMainnet fresh = new WizPaySwapExecutorMainnet(
+            SAFE, SAFE, FEE_BPS, address(usdc), address(eurc), address(router), address(permit2), POOL_FEE, TICK_SPACING
+        );
+
+        assertTrue(fresh.paused(), "executor must be born paused");
+    }
+
+    function testConstructorRejectsWrongChain() public {
+        vm.chainId(1);
+
+        vm.expectRevert(abi.encodeWithSelector(WizPaySwapExecutorMainnet.WrongChain.selector, uint256(1)));
+
+        new WizPaySwapExecutorMainnet(
+            SAFE, SAFE, FEE_BPS, address(usdc), address(eurc), address(router), address(permit2), POOL_FEE, TICK_SPACING
+        );
+    }
+
+    function testConstructorRejectsEoaOwner() public {
+        address eoaOwner = makeAddr("eoa-owner");
+
+        vm.expectRevert(abi.encodeWithSelector(WizPaySwapExecutorMainnet.InitialOwnerMustBeContract.selector, eoaOwner));
+
+        new WizPaySwapExecutorMainnet(
+            eoaOwner,
+            eoaOwner,
+            FEE_BPS,
+            address(usdc),
+            address(eurc),
+            address(router),
+            address(permit2),
+            POOL_FEE,
+            TICK_SPACING
+        );
+    }
+
+    function testConstructorRejectsNoCodeRouter() public {
+        address noCodeRouter = address(0xCAFE);
+
+        vm.expectRevert(abi.encodeWithSelector(WizPaySwapExecutorMainnet.ResourceHasNoCode.selector, noCodeRouter));
+
+        new WizPaySwapExecutorMainnet(
+            SAFE, SAFE, FEE_BPS, address(usdc), address(eurc), noCodeRouter, address(permit2), POOL_FEE, TICK_SPACING
+        );
+    }
+
+    function testConstructorRejectsWrongPoolFee() public {
+        vm.expectRevert(abi.encodeWithSelector(WizPaySwapExecutorMainnet.InvalidPoolFee.selector, uint24(3_000)));
+
+        new WizPaySwapExecutorMainnet(
+            SAFE, SAFE, FEE_BPS, address(usdc), address(eurc), address(router), address(permit2), 3_000, TICK_SPACING
+        );
+    }
+
+    function testConstructorRejectsWrongPoolTickSpacing() public {
+        vm.expectRevert(abi.encodeWithSelector(WizPaySwapExecutorMainnet.InvalidPoolTickSpacing.selector, int24(60)));
+
+        new WizPaySwapExecutorMainnet(
+            SAFE, SAFE, FEE_BPS, address(usdc), address(eurc), address(router), address(permit2), POOL_FEE, 60
+        );
+    }
+
+    function testAmountInAboveUint128Rejected() public {
+        uint256 tooLarge = uint256(type(uint128).max) + 1;
+
+        vm.expectRevert(abi.encodeWithSelector(WizPaySwapExecutorMainnet.AmountInExceedsUint128.selector, tooLarge));
+
+        vm.prank(user);
+        executor.executeSwap(address(eurc), address(usdc), tooLarge, 1, MIN_HOP_PRICE, block.timestamp + 10 minutes);
+    }
+
+    function testMinAmountOutAboveUint128Rejected() public {
+        uint256 tooLarge = uint256(type(uint128).max) + 1;
+
+        vm.expectRevert(abi.encodeWithSelector(WizPaySwapExecutorMainnet.MinAmountOutExceedsUint128.selector, tooLarge));
+
+        vm.prank(user);
+        executor.executeSwap(address(eurc), address(usdc), 1, tooLarge, MIN_HOP_PRICE, block.timestamp + 10 minutes);
     }
 
     function testConstructorRejectsMismatchedFeeRecipient() public {
@@ -495,6 +585,9 @@ contract WizPaySwapExecutorMainnetTest is Test {
             POOL_FEE,
             TICK_SPACING
         );
+        vm.prank(SAFE);
+        spyExec.unpause();
+
         usdc.transfer(address(simpleRouter), 10_000e6);
 
         eurc.transfer(user, AMOUNT_IN);
@@ -659,6 +752,9 @@ contract WizPaySwapExecutorMainnetTest is Test {
         WizPaySwapExecutorMainnet zeroFeeExec = new WizPaySwapExecutorMainnet(
             SAFE, SAFE, 0, address(usdc), address(eurc), address(router), address(permit2), 500, 10
         );
+        vm.prank(SAFE);
+        zeroFeeExec.unpause();
+
         uint256 grossNative = AMOUNT_IN * SCALE;
         router.configure(900e6, false);
         vm.deal(user, grossNative);
@@ -773,6 +869,9 @@ contract WizPaySwapExecutorMainnetTest is Test {
         WizPaySwapExecutorMainnet stuckExec = new WizPaySwapExecutorMainnet(
             SAFE, SAFE, 0, address(usdc), address(eurc), address(stuckRouter), address(localPermit2), 500, 10
         );
+        vm.prank(SAFE);
+        stuckExec.unpause();
+
         usdc.transfer(address(stuckRouter), 1_000e6);
         eurc.transfer(user, AMOUNT_IN);
 
@@ -792,6 +891,9 @@ contract WizPaySwapExecutorMainnetTest is Test {
         WizPaySwapExecutorMainnet residualExec = new WizPaySwapExecutorMainnet(
             SAFE, SAFE, 0, address(usdc), address(eurc), address(residualRouter), address(localPermit2), 500, 10
         );
+        vm.prank(SAFE);
+        residualExec.unpause();
+
         usdc.transfer(address(residualRouter), 10_000e6);
 
         vm.prank(user);
@@ -823,6 +925,9 @@ contract WizPaySwapExecutorMainnetTest is Test {
         WizPaySwapExecutorMainnet reentrantExec = new WizPaySwapExecutorMainnet(
             SAFE, SAFE, 0, address(usdc), address(eurc), address(placeholder), address(permit2), 500, 10
         );
+        vm.prank(SAFE);
+        reentrantExec.unpause();
+
         placeholder.setExecutor(reentrantExec, address(eurc), address(usdc));
 
         eurc.transfer(user, AMOUNT_IN);

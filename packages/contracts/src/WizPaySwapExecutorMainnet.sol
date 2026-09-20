@@ -6,6 +6,7 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 
 // ---------------------------------------------------------------------------
 // External interfaces
@@ -55,12 +56,20 @@ interface IPermit2 {
  */
 contract WizPaySwapExecutorMainnet is Ownable, Pausable, ReentrancyGuard {
     using SafeERC20 for IERC20;
+    using SafeCast for uint256;
 
     // -----------------------------------------------------------------------
     // Errors
     // -----------------------------------------------------------------------
 
     error AmountMustBeGreaterThanZero();
+    error AmountInExceedsUint128(uint256 amountIn);
+    error InitialOwnerMustBeContract(address owner);
+    error InvalidPoolFee(uint24 provided);
+    error InvalidPoolTickSpacing(int24 provided);
+    error MinAmountOutExceedsUint128(uint256 minAmountOut);
+    error ResourceHasNoCode(address resource);
+    error WrongChain(uint256 actualChainId);
     error DeadlineExpired(uint256 deadline, uint256 currentTimestamp);
     error DeadlineTooFar(uint256 deadline, uint256 maximumDeadline);
     error FeeExceedsMaximum(uint256 feeBps, uint256 maxFeeBps);
@@ -105,6 +114,9 @@ contract WizPaySwapExecutorMainnet is Ownable, Pausable, ReentrancyGuard {
     uint256 public constant MAX_FEE_BPS = 100;
     uint256 public constant MAX_DEADLINE_WINDOW = 20 minutes;
     uint256 public constant ARC_NATIVE_USDC_SCALE = 1_000_000_000_000;
+    uint256 public constant ARC_MAINNET_CHAIN_ID = 5_042;
+    uint24 public constant ARC_MAINNET_POOL_FEE = 500;
+    int24 public constant ARC_MAINNET_POOL_TICK_SPACING = 10;
 
     uint8 internal constant _CMD_V4_SWAP = 0x10;
     uint8 internal constant _ACTION_SWAP_EXACT_IN = 0x07;
@@ -162,8 +174,26 @@ contract WizPaySwapExecutorMainnet is Ownable, Pausable, ReentrancyGuard {
         if (initialFeeBps > MAX_FEE_BPS) {
             revert FeeExceedsMaximum(initialFeeBps, MAX_FEE_BPS);
         }
+        if (block.chainid != ARC_MAINNET_CHAIN_ID) {
+            revert WrongChain(block.chainid);
+        }
+        if (initialOwner.code.length == 0) {
+            revert InitialOwnerMustBeContract(initialOwner);
+        }
         require(usdc_ != address(0) && eurc_ != address(0) && usdc_ != eurc_, "bad tokens");
         require(universalRouter_ != address(0) && permit2_ != address(0), "bad infra");
+
+        if (usdc_.code.length == 0) revert ResourceHasNoCode(usdc_);
+        if (eurc_.code.length == 0) revert ResourceHasNoCode(eurc_);
+        if (universalRouter_.code.length == 0) revert ResourceHasNoCode(universalRouter_);
+        if (permit2_.code.length == 0) revert ResourceHasNoCode(permit2_);
+
+        if (fee_ != ARC_MAINNET_POOL_FEE) {
+            revert InvalidPoolFee(fee_);
+        }
+        if (tickSpacing_ != ARC_MAINNET_POOL_TICK_SPACING) {
+            revert InvalidPoolTickSpacing(tickSpacing_);
+        }
 
         USDC = usdc_;
         EURC = eurc_;
@@ -173,6 +203,10 @@ contract WizPaySwapExecutorMainnet is Ownable, Pausable, ReentrancyGuard {
         poolTickSpacing = tickSpacing_;
         feeRecipient = initialFeeRecipient;
         feeBps = initialFeeBps;
+
+        // Deployment never implies activation. The authorized Safe must
+        // explicitly unpause only after post-deployment verification.
+        _pause();
     }
 
     // -----------------------------------------------------------------------
@@ -336,8 +370,8 @@ contract WizPaySwapExecutorMainnet is Ownable, Pausable, ReentrancyGuard {
         // payerIsUser=true: _mapPayer(true) = msgSender() = executor.
         // Router calls payOrPermit2Transfer -> Permit2 pulls EURC from executor.
         inputToken.forceApprove(address(permit2), netAmountIn);
-        uint48 expiry = uint48(deadline + 1);
-        permit2.approve(tokenIn, address(universalRouter), uint160(netAmountIn), expiry);
+        uint48 expiry = (deadline + 1).toUint48();
+        permit2.approve(tokenIn, address(universalRouter), netAmountIn.toUint160(), expiry);
 
         // Call router.
         {
@@ -406,7 +440,11 @@ contract WizPaySwapExecutorMainnet is Ownable, Pausable, ReentrancyGuard {
             (tokenIn == USDC && tokenOut == EURC) || (tokenIn == EURC && tokenOut == USDC);
         if (!validPair) revert UnsupportedSwapPair(tokenIn, tokenOut);
         if (amountIn == 0) revert AmountMustBeGreaterThanZero();
+        if (amountIn > type(uint128).max) revert AmountInExceedsUint128(amountIn);
         if (minAmountOut == 0) revert MinAmountOutZero();
+        if (minAmountOut > type(uint128).max) {
+            revert MinAmountOutExceedsUint128(minAmountOut);
+        }
         if (minHopPriceX36 == 0) revert MinHopPriceX36Zero();
         if (deadline < block.timestamp) revert DeadlineExpired(deadline, block.timestamp);
         uint256 maxDeadline = block.timestamp + MAX_DEADLINE_WINDOW;
@@ -443,8 +481,8 @@ contract WizPaySwapExecutorMainnet is Ownable, Pausable, ReentrancyGuard {
                 currencyIn: tokenIn,
                 path: path,
                 minHopPriceX36: hopPrices,
-                amountIn: uint128(netAmountIn),
-                amountOutMinimum: uint128(minAmountOut)
+                amountIn: netAmountIn.toUint128(),
+                amountOutMinimum: minAmountOut.toUint128()
             })
         );
 
