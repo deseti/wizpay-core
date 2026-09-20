@@ -1,7 +1,6 @@
 "use client";
 
 import {
-  createContext,
   useCallback,
   useContext,
   useEffect,
@@ -69,8 +68,7 @@ import {
   mergeCircleRefreshedSession,
 } from "@/services/circle-auth.service";
 
-export const CircleWalletContext =
-  createContext<CircleWalletContextValue | null>(null);
+import { CircleWalletContext } from "@/components/providers/circle-wallet-context";
 
 const MOBILE_AUTH_UA_REGEX = /android|iphone|ipad|ipod|mobile/i;
 

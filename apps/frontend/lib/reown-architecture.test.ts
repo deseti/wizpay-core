@@ -78,12 +78,17 @@ describe("Reown AppKit wallet architecture", () => {
   });
 
   it("keeps Circle controls and initialization unavailable on Mainnet", () => {
-    expect(providers).toContain(
-      'enabled={ACTIVE_ARC_NETWORK.key === "arc-testnet"}',
+    // Arc Mainnet mounts a dedicated external-only provider tree: no Circle
+    // SDK provider and no Circle API proxy may appear on that branch.
+    expect(providers).toContain("IS_ARC_MAINNET");
+    expect(providers).toContain("ExternalWalletProvider");
+    expect(providers).toContain("CircleDisabledProvider");
+    const mainnetBranch = providers.slice(
+      providers.indexOf("if (IS_ARC_MAINNET)"),
+      providers.indexOf("\n  }\n", providers.indexOf("if (IS_ARC_MAINNET)")),
     );
-    expect(
-      providers.match(/enabled=\{ACTIVE_ARC_NETWORK\.key === "arc-testnet"\}/g),
-    ).toHaveLength(2);
+    expect(mainnetBranch).not.toContain("CircleWalletProvider");
+    expect(mainnetBranch).not.toContain("CircleApiProxyProvider");
     expect(invoiceCheckout).toContain("mainnetExternalOnly");
     expect(invoiceCheckout).toContain("!mainnetExternalOnly");
     expect(invoiceShared).toContain("mainnetExternalOnly ? null");

@@ -2,7 +2,6 @@
 
 import { ArrowRightLeft, Globe, Shield, Wallet, Zap } from "lucide-react";
 
-import { useCircleWallet } from "@/components/providers/CircleWalletProvider";
 import { useHybridWallet } from "@/components/providers/HybridWalletProvider";
 import { WalletModeToggle } from "@/components/wallet/WalletModeToggle";
 import { ReownConnectButton } from "@/components/wallet/ReownConnectButton";
@@ -20,8 +19,14 @@ const features = [
 ];
 
 export function ConnectWalletCard() {
-  const { authError, initializationPhase, login, ready } = useCircleWallet();
-  const { externalConnectError, walletMode } = useHybridWallet();
+  const {
+    circleAuthError: authError,
+    circleInitializationPhase: initializationPhase,
+    circleLogin: login,
+    circleReady: ready,
+    externalConnectError,
+    walletMode,
+  } = useHybridWallet();
   const title = getWalletModeLabel(walletMode);
   const description = getWalletModeDescription(walletMode);
   const mainnetExternalOnly = ACTIVE_ARC_NETWORK.key === "arc-mainnet";

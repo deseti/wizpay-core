@@ -4,9 +4,11 @@ import {
   Controller,
   HttpException,
   Post,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { W3sAuthService } from './w3s-auth.service';
 import { CapabilityService } from '../../capabilities/capability.service';
+import { CIRCLE_CONFIGURATION_ERROR_CODES } from '../../config/circle-execution.config';
 
 type W3sActionBody = {
   action?: string;
@@ -29,6 +31,15 @@ export class W3sAuthController {
 
   @Post('action')
   async dispatchAction(@Body() body: W3sActionBody) {
+    // Arc Mainnet is external-wallet-only: reject before capability checks,
+    // credential resolution, Circle HTTP, or any wallet/challenge operation.
+    if (this.capabilities.network === 'arc-mainnet') {
+      throw new ServiceUnavailableException({
+        code: CIRCLE_CONFIGURATION_ERROR_CODES.BLOCKCHAIN_UNSUPPORTED,
+        message:
+          'Circle App Wallet execution is unavailable on Arc Mainnet; use an external wallet.',
+      });
+    }
     const action = typeof body.action === 'string' ? body.action.trim() : '';
 
     if (!action) {

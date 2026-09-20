@@ -151,12 +151,28 @@ export class W3sAuthService {
   }
 
   /**
+   * Arc Mainnet is external-wallet-only: no Circle W3S/App Wallet action may
+   * execute there. This boundary runs before capability checks, credential
+   * resolution, Circle HTTP, wallet loading, challenge creation, or any
+   * developer-controlled execution, and never falls back to Arc Testnet.
+   */
+  private assertCircleExecutionAvailable(): void {
+    if (this.capabilities.network === 'arc-mainnet') {
+      throw new CircleConfigurationError(
+        CIRCLE_CONFIGURATION_ERROR_CODES.BLOCKCHAIN_UNSUPPORTED,
+        'Circle App Wallet execution is unavailable on Arc Mainnet; use an external wallet.',
+      );
+    }
+  }
+
+  /**
    * Dispatch a W3S action by name. Returns the raw Circle API response payload.
    */
   async dispatch(
     action: string,
     params: Record<string, unknown>,
   ): Promise<W3sActionResult> {
+    this.assertCircleExecutionAvailable();
     this.capabilities.assertW3sAction(action, params);
     switch (action) {
       case 'createDeviceToken':
@@ -234,6 +250,7 @@ export class W3sAuthService {
   async createUserContractExecutionChallenge(
     input: UserContractExecutionChallengeInput,
   ): Promise<W3sActionResult> {
+    this.assertCircleExecutionAvailable();
     this.capabilities.assertW3sAction(
       'createContractExecutionChallenge',
       input,
@@ -260,6 +277,7 @@ export class W3sAuthService {
     userToken: string;
     walletId: string;
   }): Promise<W3sActionResult> {
+    this.assertCircleExecutionAvailable();
     return this.circleUserRequest({
       body: {
         callData: input.callData,
@@ -683,6 +701,7 @@ export class W3sAuthService {
     transactionId: string,
     userToken: string,
   ): Promise<W3sActionResult> {
+    this.assertCircleExecutionAvailable();
     const normalizedTransactionId = transactionId.trim();
     const normalizedUserToken = userToken.trim();
     if (!normalizedTransactionId) {
@@ -704,6 +723,7 @@ export class W3sAuthService {
     input: { walletId: string; pageAfter?: string; from?: string },
     userToken: string,
   ): Promise<W3sActionResult> {
+    this.assertCircleExecutionAvailable();
     const walletId = input.walletId.trim();
     const normalizedUserToken = userToken.trim();
     if (!walletId) {
@@ -731,6 +751,7 @@ export class W3sAuthService {
     walletId: string,
     userToken: string,
   ): Promise<W3sActionResult> {
+    this.assertCircleExecutionAvailable();
     if (!walletId.trim() || !userToken.trim())
       throw new Error('Missing Circle wallet authentication.');
     return this.circleUserRequest({
@@ -774,6 +795,7 @@ export class W3sAuthService {
     challengeId: string,
     userToken: string,
   ): Promise<W3sActionResult> {
+    this.assertCircleExecutionAvailable();
     const normalizedChallengeId = challengeId.trim();
     const normalizedUserToken = userToken.trim();
     if (!normalizedChallengeId) {
@@ -790,6 +812,7 @@ export class W3sAuthService {
   }
 
   async listUserChallenges(userToken: string): Promise<W3sActionResult> {
+    this.assertCircleExecutionAvailable();
     const normalizedUserToken = userToken.trim();
     if (!normalizedUserToken)
       throw new Error('Missing required field: userToken');
@@ -979,6 +1002,7 @@ export class W3sAuthService {
    * raw transaction payload so callers can decide whether a txHash is usable.
    */
   async getTransaction(transactionId: string): Promise<W3sActionResult> {
+    this.assertCircleExecutionAvailable();
     const normalizedTransactionId = transactionId.trim();
 
     if (!normalizedTransactionId) {
@@ -1000,6 +1024,7 @@ export class W3sAuthService {
     destinationAddress?: string;
     walletIds?: string;
   }): Promise<W3sActionResult> {
+    this.assertCircleExecutionAvailable();
     const query = new URLSearchParams();
 
     if (params.blockchain?.trim()) {

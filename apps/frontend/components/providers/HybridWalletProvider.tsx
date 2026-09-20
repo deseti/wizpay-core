@@ -1,13 +1,6 @@
 "use client";
 
-import {
-  createContext,
-  useCallback,
-  useContext,
-  useEffect,
-  useMemo,
-  useSyncExternalStore,
-} from "react";
+import { useCallback, useEffect, useMemo, useSyncExternalStore } from "react";
 import type { Address } from "viem";
 import {
   useAccount,
@@ -20,6 +13,11 @@ import {
 import { useCircleWallet } from "@/components/providers/CircleWalletProvider";
 import { ACTIVE_ARC_NETWORK } from "@/lib/active-arc-network";
 import { formatCompactAddress } from "@/lib/wizpay";
+import {
+  HybridWalletContext,
+  useHybridWallet,
+  type HybridWalletContextValue,
+} from "@/components/providers/hybrid-wallet-context";
 import {
   DEFAULT_WALLET_MODE,
   getWalletModeDescription,
@@ -35,33 +33,9 @@ import {
   SUPPORTED_CHAIN_IDS,
 } from "@/lib/wagmi";
 
-type HybridWalletContextValue = {
-  activeWalletAddress: Address | undefined;
-  activeWalletChainId: number | undefined;
-  activeWalletChainName: string | null;
-  activeWalletLabel: string;
-  activeWalletModeDescription: string;
-  activeWalletShortAddress: string | null;
-  circleWalletAddress: Address | undefined;
-  externalConnectError: string | null;
-  externalConnectorName: string | null;
-  externalWalletAddress: Address | undefined;
-  externalWalletChainId: number | undefined;
-  externalWalletNativeBalance: string | null;
-  isActiveWalletConnected: boolean;
-  isCircleConnected: boolean;
-  isExternalConnected: boolean;
-  isExternalChainSupported: boolean;
-  isReady: boolean;
-  requiresArcSwitch: boolean;
-  sessionKey: string;
-  setWalletMode: (mode: WalletMode) => void;
-  walletMode: WalletMode;
-};
+export type { HybridWalletContextValue };
+export { HybridWalletContext, useHybridWallet };
 
-const HybridWalletContext = createContext<HybridWalletContextValue | null>(
-  null,
-);
 const walletModeListeners = new Set<() => void>();
 
 function notifyWalletModeListeners() {
@@ -124,8 +98,16 @@ export function HybridWalletProvider({
 }: {
   children: React.ReactNode;
 }) {
-  const { arcWallet, authenticated, primaryWallet, ready, sepoliaWallet } =
-    useCircleWallet();
+  const {
+    arcWallet,
+    authenticated,
+    authError: circleAuthError,
+    initializationPhase: circleInitializationPhase,
+    login: circleLogin,
+    primaryWallet,
+    ready,
+    sepoliaWallet,
+  } = useCircleWallet();
   const {
     address: externalAddress,
     connector,
@@ -159,8 +141,7 @@ export function HybridWalletProvider({
   }, []);
 
   const circleWalletAddress = (arcWallet?.address ?? primaryWallet?.address) as
-    | Address
-    | undefined;
+    Address | undefined;
   const circleChainId = arcWallet?.address
     ? arcTestnet.id
     : sepoliaWallet?.address
@@ -220,6 +201,10 @@ export function HybridWalletProvider({
       activeWalletLabel,
       activeWalletModeDescription,
       activeWalletShortAddress,
+      circleAuthError,
+      circleInitializationPhase,
+      circleLogin,
+      circleReady: ready,
       circleWalletAddress,
       externalConnectError: connectError?.message ?? null,
       externalConnectorName: connector?.name ?? null,
@@ -244,7 +229,10 @@ export function HybridWalletProvider({
       activeWalletLabel,
       activeWalletModeDescription,
       activeWalletShortAddress,
+      circleAuthError,
       circleConnected,
+      circleInitializationPhase,
+      circleLogin,
       circleWalletAddress,
       connectError?.message,
       connector?.name,
@@ -254,6 +242,7 @@ export function HybridWalletProvider({
       isExternalChainSupported,
       isExternalConnected,
       isReady,
+      ready,
       requiresArcSwitch,
       sessionKey,
       setWalletMode,
@@ -266,16 +255,4 @@ export function HybridWalletProvider({
       {children}
     </HybridWalletContext.Provider>
   );
-}
-
-export function useHybridWallet() {
-  const context = useContext(HybridWalletContext);
-
-  if (!context) {
-    throw new Error(
-      "useHybridWallet must be used within HybridWalletProvider.",
-    );
-  }
-
-  return context;
 }

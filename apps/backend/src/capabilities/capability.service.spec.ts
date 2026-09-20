@@ -239,7 +239,11 @@ describe('capability HTTP boundary', () => {
         tokenAddress: TESTNET_USDC,
       })
       .expect(503);
-    expect(responseRecord(response.body).code).toBe('CAPABILITY_DISABLED');
+    // Arc Mainnet is external-wallet-only: the explicit Mainnet network
+    // boundary rejects before capability routing and before Circle dispatch.
+    expect(responseRecord(response.body).code).toBe(
+      'CIRCLE_BLOCKCHAIN_UNSUPPORTED',
+    );
     expect(dispatch).not.toHaveBeenCalled();
   });
 });

@@ -37,9 +37,21 @@ describe('Arc deployment isolation files', () => {
     expect(testnet).not.toContain('ARC_MAINNET_');
     expect(testnet).not.toContain('CIRCLE_MAINNET_');
     expect(mainnet).toContain('ARC_MAINNET_DATABASE_URL');
-    expect(mainnet).toContain('CIRCLE_MAINNET_WALLET_SET_ID');
+    // Arc Mainnet is external-wallet-only: no Circle Mainnet configuration
+    // may be required or referenced by the Mainnet deployment.
+    expect(mainnet).not.toContain('CIRCLE_MAINNET_');
     expect(mainnet).not.toContain('ARC_TESTNET_');
     expect(mainnet).not.toContain('CIRCLE_TESTNET_');
+  });
+
+  it('documents Mainnet Circle unavailability in the env template', () => {
+    const mainnetTemplate = read('deploy/arc-mainnet/environment.template');
+    const testnetTemplate = read('deploy/arc-testnet/environment.template');
+    // No CIRCLE_MAINNET_* variable definitions may remain; the explanatory
+    // comment below names the family only in prose.
+    expect(mainnetTemplate).not.toMatch(/^CIRCLE_MAINNET_/m);
+    expect(mainnetTemplate).toContain('external-wallet-only');
+    expect(testnetTemplate).toContain('CIRCLE_TESTNET_WALLET_SET_ID');
   });
 
   it('keeps the Mainnet manifest empty of addresses and receipts', () => {

@@ -4,13 +4,17 @@ import { useState } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { WagmiProvider } from "wagmi";
 import { CircleApiProxyProvider } from "@/components/providers/CircleApiProxyProvider";
+import { CircleDisabledProvider } from "@/components/providers/CircleDisabledProvider";
 import { CircleWalletProvider } from "@/components/providers/CircleWalletProvider";
+import { ExternalWalletProvider } from "@/components/providers/ExternalWalletProvider";
 import { HybridWalletProvider } from "@/components/providers/HybridWalletProvider";
 import { ACTIVE_ARC_NETWORK } from "@/lib/active-arc-network";
 import "@/lib/reown-appkit";
 import { config, REOWN_CONFIGURATION_ERROR } from "@/lib/wagmi";
 import { PwaRuntime } from "@/src/features/pwa/components/PwaRuntime";
 import { CapabilityProvider } from "@/components/providers/CapabilityProvider";
+
+const IS_ARC_MAINNET = ACTIVE_ARC_NETWORK.key === "arc-mainnet";
 
 export function Providers({ children }: { children: React.ReactNode }) {
   const [queryClient] = useState(
@@ -43,17 +47,35 @@ export function Providers({ children }: { children: React.ReactNode }) {
     );
   }
 
+  // Arc Mainnet is external-wallet-only: the Mainnet tree mounts no Circle
+  // SDK provider, no Circle API proxy, and no hybrid Circle state. The inert
+  // CircleDisabledProvider exists only so components that directly consume
+  // useCircleWallet keep rendering the external-wallet path without any
+  // Circle runtime behind them. Arc Testnet keeps the hybrid Circle tree.
+  if (IS_ARC_MAINNET) {
+    return (
+      <QueryClientProvider client={queryClient}>
+        <WagmiProvider config={config}>
+          <CapabilityProvider>
+            <CircleDisabledProvider>
+              <ExternalWalletProvider>
+                <PwaRuntime />
+                {children}
+              </ExternalWalletProvider>
+            </CircleDisabledProvider>
+          </CapabilityProvider>
+        </WagmiProvider>
+      </QueryClientProvider>
+    );
+  }
+
   return (
     <QueryClientProvider client={queryClient}>
       <WagmiProvider config={config}>
-        <CircleWalletProvider
-          enabled={ACTIVE_ARC_NETWORK.key === "arc-testnet"}
-        >
+        <CircleWalletProvider enabled={true}>
           <CapabilityProvider>
             <HybridWalletProvider>
-              <CircleApiProxyProvider
-                enabled={ACTIVE_ARC_NETWORK.key === "arc-testnet"}
-              >
+              <CircleApiProxyProvider enabled={true}>
                 <PwaRuntime />
                 {children}
               </CircleApiProxyProvider>
