@@ -89,6 +89,10 @@ interface IPermit2 {
  *   - Cross-token USDC->EURC: native-only input. msg.value must equal
  *     grossInput * ARC_NATIVE_USDC_SCALE. No ERC-20 approval. Fee split in
  *     native; net forwarded to UniversalRouter; SETTLE payerIsUser=false.
+ *     Residual accounting is ResidualNativeBalance. Do not apply
+ *     IERC20(USDC).balanceOf as an ERC-20 residual: on Arc, native USDC and
+ *     the canonical USDC ERC-20 balance are coupled, so msg.value is already
+ *     visible in that reading.
  *   - Cross-token EURC->USDC: ERC-20 via Permit2. msg.value must be 0.
  *     Pull gross, split fee, hold net, approve Permit2 + router, swap with
  *     SETTLE payerIsUser=true, clear both allowances.
@@ -542,7 +546,13 @@ contract WizPayPayrollMainnet is Ownable, Pausable, ReentrancyGuard {
         uint256 netAmountIn = grossInput - feeAmount;
 
         uint256 startOutputBal = IERC20(tokenOut).balanceOf(address(this));
-        uint256 startInputBal = IERC20(tokenIn).balanceOf(address(this));
+        // EURC input only. Arc native USDC is coupled with IERC20(USDC).balanceOf,
+        // so msg.value is already included in that reading. USDC input residual
+        // accounting is ResidualNativeBalance inside _executeCrossUsdcInput.
+        uint256 startInputBal;
+        if (eurcIn) {
+            startInputBal = IERC20(tokenIn).balanceOf(address(this));
+        }
 
         if (usdcIn) {
             _executeCrossUsdcInput(grossInput, netAmountIn, feeAmount, minTotalOut, minHopPriceX36, deadline, msg.value);
@@ -556,7 +566,7 @@ contract WizPayPayrollMainnet is Ownable, Pausable, ReentrancyGuard {
             tokenOut, recipients, outputAmounts, totalObligations, startOutputBal, minTotalOut, referenceHash
         );
 
-        {
+        if (eurcIn) {
             uint256 finalInputBal = IERC20(tokenIn).balanceOf(address(this));
             if (finalInputBal != startInputBal) {
                 revert ResidualInputBalance(startInputBal, finalInputBal);

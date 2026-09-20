@@ -160,6 +160,22 @@ contract BypassRouter {
 }
 
 // ---------------------------------------------------------------------------
+// ArcNativeUsdcMock: test-only model of Arc native/ERC-20 USDC coupling.
+// IERC20.balanceOf(account) reflects account.balance / ARC_NATIVE_USDC_SCALE,
+// so msg.value credited on executeCrossTokenPayroll is visible as a 6-decimal
+// ERC-20 USDC balance. Reproduces ResidualInputBalance(gross, 0) if the
+// generic ERC-20 input residual is applied to USDC -> EURC.
+// ---------------------------------------------------------------------------
+
+contract ArcNativeUsdcMock {
+    uint256 internal constant ARC_NATIVE_USDC_SCALE = 1_000_000_000_000;
+
+    function balanceOf(address account) external view returns (uint256) {
+        return account.balance / ARC_NATIVE_USDC_SCALE;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // ResidualInputRouter: never pulls EURC, delivers output anyway.
 // ---------------------------------------------------------------------------
 
@@ -1778,6 +1794,64 @@ contract WizPayPayrollMainnetTest is Test {
             block.timestamp + 5 minutes,
             "RESIN"
         );
+    }
+
+    function testCrossUsdcToEurcNativeCouplingDoesNotRevertResidualInput() public {
+        ArcNativeUsdcMock nativeUsdc = new ArcNativeUsdcMock();
+        WizPayPayrollMainnet target = new WizPayPayrollMainnet(
+            SAFE,
+            SAFE,
+            FEE_BPS,
+            address(nativeUsdc),
+            address(eurc),
+            address(router),
+            address(permit2),
+            address(poolManager),
+            500,
+            10
+        );
+        vm.prank(SAFE);
+        target.unpause();
+
+        // Confirmed Mainnet revert was ResidualInputBalance(3000, 0): start
+        // IERC20(USDC).balanceOf included the gross native credit, then fell
+        // to 0 after ResidualNativeBalance-clean disbursement.
+        uint256 gross = 3000;
+        uint256 fee = (gross * FEE_BPS) / 10_000;
+        uint256 outA = 1000;
+        uint256 outB = 1500;
+        uint256 totalOut = outA + outB;
+        router.configure(totalOut);
+
+        uint256 native = gross * SCALE;
+        vm.deal(employer, native);
+        assertEq(nativeUsdc.balanceOf(employer), gross, "mock couples native wei to 6-decimal USDC");
+
+        uint256 safeBefore = SAFE.balance;
+        uint256 aliceBefore = eurc.balanceOf(alice);
+        uint256 bobBefore = eurc.balanceOf(bob);
+
+        vm.prank(employer);
+        uint256 amountOut = target.executeCrossTokenPayroll{value: native}(
+            address(nativeUsdc),
+            address(eurc),
+            _recipients2(),
+            _amounts(outA, outB),
+            gross,
+            totalOut,
+            MIN_HOP,
+            block.timestamp + 10 minutes,
+            "ARC-NATIVE-USDC"
+        );
+
+        assertEq(amountOut, totalOut);
+        assertEq(eurc.balanceOf(alice), aliceBefore + outA, "alice EURC obligation exact");
+        assertEq(eurc.balanceOf(bob), bobBefore + outB, "bob EURC obligation exact");
+        assertEq(SAFE.balance, safeBefore + fee * SCALE, "native fee to SAFE");
+        assertEq(address(target).balance, 0, "no native residual");
+        assertEq(nativeUsdc.balanceOf(address(target)), 0, "coupled USDC reading is zero");
+        assertEq(eurc.balanceOf(address(target)), 0);
+        assertEq(router.lastValue(), (gross - fee) * SCALE);
     }
 
     function testCrossReentrancyGuardBlocksValidNestedCall() public {
