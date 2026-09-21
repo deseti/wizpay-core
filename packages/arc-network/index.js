@@ -216,6 +216,41 @@ const ARC_TOKEN_RESOURCES = deepFreeze({
   },
 });
 
+const ARC_CCTP_RESOURCES = deepFreeze({
+  "arc-mainnet": {
+    // Official Circle CCTP V2 production contracts on Arc (domain 26).
+    // Authoritative sources:
+    // - https://developers.circle.com/cctp/references/contract-addresses
+    // - https://docs.arc.io/arc/references/contract-addresses
+    tokenMessengerV2: available({
+      address: assertContractAddress(
+        "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d",
+      ),
+      domain: 26,
+      version: "CCTP_V2",
+      authoritativeSource:
+        "https://developers.circle.com/cctp/references/contract-addresses",
+    }),
+    messageTransmitterV2: available({
+      address: assertContractAddress(
+        "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64",
+      ),
+      domain: 26,
+      version: "CCTP_V2",
+      authoritativeSource:
+        "https://developers.circle.com/cctp/references/contract-addresses",
+    }),
+    // Circle attestation/message service (production).
+    // https://developers.circle.com/api-reference/cctp/all/get-messages-v2
+    irisApi: available({
+      baseUrl: "https://iris-api.circle.com",
+      version: "v2",
+      authoritativeSource:
+        "https://developers.circle.com/api-reference/cctp/all/get-messages-v2",
+    }),
+  },
+});
+
 const ARC_WIZPAY_CONTRACT_RESOURCES = deepFreeze({
   "arc-mainnet": {
     wizpay: available({
@@ -406,6 +441,7 @@ const MAINNET_CONFIGURABLE_CAPABILITIES = new Set([
   "sameTokenPayroll",
   "invoice",
   "paymentLink",
+  "bridge",
   "swap",
   "crossTokenPayroll",
 ]);
@@ -470,6 +506,7 @@ function resolveArcCapabilities(networkKey, environment = {}) {
     ["sameTokenPayroll", "payrollDirect"],
     ["invoice", "invoiceCreation"],
     ["paymentLink", "paymentLinkDirect"],
+    ["bridge", "bridgeDirect"],
     ["swap", "swapDirect"],
     ["crossTokenPayroll", "crossToken"],
   ]) {
@@ -506,11 +543,16 @@ function getArcOperationResourceReadiness(networkKey) {
     ARC_WIZPAY_CONTRACT_RESOURCES[key]["wizpay-swap-executor-mainnet"]
       ?.status === "available";
   const swapDirect = rpc && usdc && eurc && swapExecutor;
+  const cctp =
+    ARC_CCTP_RESOURCES[key].tokenMessengerV2.status === "available" &&
+    ARC_CCTP_RESOURCES[key].messageTransmitterV2.status === "available" &&
+    ARC_CCTP_RESOURCES[key].irisApi.status === "available";
   return deepFreeze({
     sendDirect: rpc && explorer && usdc,
     payrollDirect: rpc && usdc && payrollContract,
     invoiceCreation: usdc,
     paymentLinkDirect: rpc && usdc,
+    bridgeDirect: rpc && usdc && cctp,
     swapDirect,
     crossToken: swapDirect && payrollContract,
   });
@@ -643,6 +685,14 @@ function getArcWizPayContractResource(networkKey, contractKey) {
   );
   if (!hasOwn(resources, contractKey)) {
     throw new UnknownArcResourceError("WizPay contract", contractKey);
+  }
+  return resources[contractKey];
+}
+
+function getArcCctpResource(networkKey, contractKey) {
+  const resources = getNetworkRegistry(ARC_CCTP_RESOURCES, networkKey);
+  if (!hasOwn(resources, contractKey)) {
+    throw new UnknownArcResourceError("CCTP", contractKey);
   }
   return resources[contractKey];
 }
@@ -784,6 +834,7 @@ function requireAvailableArcResource(resource) {
 }
 
 module.exports = {
+  ARC_CCTP_RESOURCES,
   ARC_EXPLORER_RESOURCES,
   ARC_CAPABILITY_DEFINITIONS,
   ARC_CAPABILITY_NAMES,
@@ -801,6 +852,7 @@ module.exports = {
   UnknownArcResourceError,
   UnsupportedArcNetworkError,
   assertValidArcNetworkDefinitions,
+  getArcCctpResource,
   getArcExplorerResource,
   getArcNetworkByChainId,
   getArcNetworkByKey,

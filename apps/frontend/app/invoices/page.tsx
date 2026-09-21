@@ -41,7 +41,7 @@ export default function InvoicesPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const load = useCallback(async () => {
-    if (!session.userToken) return;
+    if (!session.userToken || !session.registered) return;
     setLoading(true);
     setError(null);
     try {
@@ -61,7 +61,7 @@ export default function InvoicesPage() {
     } finally {
       setLoading(false);
     }
-  }, [offset, session.userToken, status]);
+  }, [offset, session.registered, session.userToken, status]);
   useEffect(() => {
     const timer = window.setTimeout(() => void load(), 0);
     return () => window.clearTimeout(timer);
@@ -74,11 +74,12 @@ export default function InvoicesPage() {
         description="Create and track fixed Arc Mainnet payment requests."
         create
       />
-      {!session.userToken ? (
+      {!session.userToken || !session.registered ? (
         <MerchantInvoiceAuthNotice
           walletMode={session.walletMode}
           ready={session.ready}
           onUseAppWallet={session.useAppWallet}
+          session={session}
         />
       ) : (
         <>

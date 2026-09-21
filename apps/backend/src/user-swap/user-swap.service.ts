@@ -29,10 +29,11 @@ export class UserSwapService {
   async quote(request: UserSwapQuoteRequest): Promise<UserSwapNormalizedQuote> {
     this.capabilities.assert('swap');
     const normalized = this.normalize(request);
-    // Validate the Mainnet execution boundary (chain, pair, wallet control,
-    // slippage, deadline) without submitting anything. Inspection errors
-    // propagate so misconfigured requests fail closed.
-    this.mainnetSwap.inspectQuote({
+    // Live executable quote from the official Uniswap V4 Quoter on Arc
+    // Mainnet. Inspection errors propagate so misconfigured requests and
+    // unavailable liquidity fail closed. The live amounts below are what the
+    // frontend renders; there is no static or 1:1 fallback.
+    const live = await this.mainnetSwap.inspectQuote({
       chainId: 5_042,
       tokenInAddress: normalized.tokenInAddress,
       tokenOutAddress: normalized.tokenOutAddress,
@@ -46,7 +47,21 @@ export class UserSwapService {
     return {
       ...normalized,
       provider: 'uniswap-v4',
-      raw: null,
+      raw: {
+        executable: live.executable,
+        status: live.status,
+        poolId: live.poolId,
+        quoter: live.quoter,
+        quote: live.quote,
+        observation: live.observation,
+        quotedAt: live.quotedAt,
+        expiresAt: live.expiresAt,
+        expiresAtBlock: live.expiresAtBlock,
+        expectedAmountOut: live.quote.amountOut,
+        minimumAmountOut: live.quote.minAmountOut,
+        expectedOutput: live.quote.amountOut,
+        minimumOutput: live.quote.minAmountOut,
+      },
     };
   }
 

@@ -30,7 +30,7 @@ export default function InvoiceDetailPage() {
   const [cancelling, setCancelling] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const load = useCallback(async () => {
-    if (!session.userToken) return;
+    if (!session.userToken || !session.registered) return;
     setLoading(true);
     setError(null);
     try {
@@ -42,7 +42,7 @@ export default function InvoiceDetailPage() {
     } finally {
       setLoading(false);
     }
-  }, [id, session.userToken]);
+  }, [id, session.registered, session.userToken]);
   useEffect(() => {
     const timer = window.setTimeout(() => void load(), 0);
     return () => window.clearTimeout(timer);
@@ -70,11 +70,12 @@ export default function InvoiceDetailPage() {
         title="Invoice detail"
         description="Merchant-safe terms and independently verified payment evidence."
       />
-      {!session.userToken ? (
+      {!session.userToken || !session.registered ? (
         <MerchantInvoiceAuthNotice
           walletMode={session.walletMode}
           ready={session.ready}
           onUseAppWallet={session.useAppWallet}
+          session={session}
         />
       ) : loading ? (
         <PageSkeleton cards={2} />

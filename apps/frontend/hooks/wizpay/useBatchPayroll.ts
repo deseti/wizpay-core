@@ -42,8 +42,17 @@ export interface UseBatchPayrollOptions {
     symbol: TokenSymbol;
     decimals: number;
   };
-  approveBatchAmount: (amount: bigint) => Promise<TransactionActionResult>;
+  approveBatchAmount: (
+    amount: bigint,
+    payrollReferenceId?: string,
+  ) => Promise<TransactionActionResult>;
   currentAllowance: bigint;
+  /**
+   * On-chain WizPayPayrollMainnet feeBps (25 on Arc Mainnet). Used to top up
+   * the backend fee-exclusive approval hint to fee-inclusive funding so the
+   * approval never leaves the submission short by exactly the fee.
+   */
+  feeBps?: bigint;
   recipients: RecipientDraft[];
   pendingBatches: RecipientDraft[][];
   refetchAllowance: () => Promise<unknown>;
@@ -201,6 +210,25 @@ function toRecipientDraftBatch(unit: PayrollTaskUnit): RecipientDraft[] {
   }));
 }
 
+/**
+ * Fee-inclusive funding for a same-token payroll group.
+ * Mirrors WizPayPayrollMainnet: sum(amounts) + sum(amount*feeBps/10_000).
+ * Exported for tests.
+ */
+export function groupFeeInclusiveAmount(
+  groupRecipients: readonly { amount: string }[],
+  decimals: number,
+  feeBps: bigint,
+): bigint {
+  let total = 0n;
+  for (const recipient of groupRecipients) {
+    const amountUnits = parseAmountToUnits(recipient.amount, decimals);
+    if (amountUnits <= 0n) continue;
+    total += amountUnits + (amountUnits * feeBps) / 10_000n;
+  }
+  return total;
+}
+
 function isTaskTerminal(task: BackendTask | null) {
   return (
     task?.status === "executed" ||
@@ -289,6 +317,7 @@ export function useBatchPayroll({
   activeToken,
   approveBatchAmount,
   currentAllowance,
+  feeBps = 0n,
   recipients,
   pendingBatches,
   referenceId,
@@ -395,6 +424,11 @@ export function useBatchPayroll({
         return;
       }
 
+      if (!referenceId.trim()) {
+        setErrorMessage("Reference ID is required before the batch can be submitted.");
+        return;
+      }
+
       const crossTargets = detectCrossCurrencyTargets(
         activeToken.symbol,
         batches,
@@ -498,14 +532,40 @@ export function useBatchPayroll({
         await refreshTask(initPlan.taskId);
 
         const groupApprovalAmount = BigInt(initPlan.approvalAmount);
+        // Top up the backend hint to fee-inclusive funding. The backend now
+        // returns fee-inclusive approval, but older tasks or a zero-fee
+        // fallback could still be fee-exclusive; the frontend recomputes from
+        // its own on-chain feeBps so approval never leaves the submission
+        // short by exactly the payroll fee (e.g. 10000 approved but 10025
+        // required at 25 bps for 0.01 USDC). Execution-intent protections are
+        // preserved: the approval still acquires/prepares/binds an intent.
+        const groupFeeInclusiveApproval = groupFeeInclusiveAmount(
+          groupRecipients,
+          activeToken.decimals,
+          feeBps,
+        );
+        const requiredApproval =
+          groupFeeInclusiveApproval > groupApprovalAmount
+            ? groupFeeInclusiveApproval
+            : groupApprovalAmount;
         if (
           groupToken === activeToken.symbol &&
-          groupApprovalAmount > 0n &&
-          currentAllowance < groupApprovalAmount
+          requiredApproval > 0n &&
+          currentAllowance < requiredApproval
         ) {
-          const approvalResult =
-            await approveBatchAmount(groupApprovalAmount);
+          const approvalResult = await approveBatchAmount(
+            requiredApproval,
+            groupReferenceId,
+          );
           if (!approvalResult.ok) {
+            // Surface the actual approval failure instead of collapsing into
+            // a generic message. The requestApproval hook already sets a
+            // friendly message, but ensure the batch runner does not swallow
+            // the reason when that hook returns ok:false.
+            setErrorMessage(
+              approvalResult.error ??
+                "Payroll approval did not complete. Check the wallet prompt, Arc Mainnet connection, and allowance, then retry.",
+            );
             await refreshTask(initPlan.taskId);
             return;
           }
@@ -597,6 +657,7 @@ export function useBatchPayroll({
       setIsRunning(false);
     }
   }, [
+    activeToken.decimals,
     activeToken.symbol,
     approveBatchAmount,
     batches,
@@ -605,6 +666,7 @@ export function useBatchPayroll({
     currentAllowance,
     crossCurrencyExecutionBlocked,
     crossCurrencyExecutionBlockedReason,
+    feeBps,
     getRecoveredPayrollBatch,
     officialQuoteError,
     officialQuoteReady,

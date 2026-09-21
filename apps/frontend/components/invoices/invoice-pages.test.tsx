@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import InvoicesPage from "@/app/invoices/page";
 import NewInvoicePage from "@/app/invoices/new/page";
@@ -9,6 +9,8 @@ import {
   getMerchantInvoice,
   listInvoices,
 } from "@/lib/invoice-api";
+
+const WALLET = "0x32F251fc36A1174901124589EAC2d4E391816F69";
 
 vi.mock("@/components/providers/CapabilityProvider", () => ({
   useCapability: () => ({
@@ -21,10 +23,21 @@ vi.mock("@/components/providers/CapabilityProvider", () => ({
 vi.mock("@/components/providers/external-wallet-context", () => ({
   useExternalWallet: () => ({
     isReady: true,
-    activeWalletAddress:
-      "0x32F251fc36A1174901124589EAC2d4E391816F69",
+    activeWalletAddress: WALLET,
   }),
 }));
+
+vi.mock("@/lib/wallet-registration", () => ({
+  ensureExternalWalletRegistered: vi.fn(async (address: string) => ({
+    address,
+    userId: "user-test",
+  })),
+}));
+
+vi.mock("@reown/appkit/react", () => ({
+  useAppKit: () => ({ open: vi.fn() }),
+}));
+
 vi.mock("@/components/dashboard/DashboardAppFrame", () => ({
   DashboardAppFrame: ({ children }: { children: React.ReactNode }) => (
     <div>{children}</div>
@@ -47,43 +60,74 @@ describe("merchant invoice pages", () => {
     vi.clearAllMocks();
   });
 
-  it("fails closed on the invoice list without calling the merchant API", async () => {
+  it("lists merchant invoices for the registered external wallet", async () => {
+    vi.mocked(listInvoices).mockResolvedValue({
+      items: [],
+      total: 0,
+      limit: 10,
+      offset: 0,
+    });
     render(<InvoicesPage />);
-    expect(
-      await screen.findByText(
-        "Invoice management unavailable on Arc Mainnet",
+    await waitFor(() =>
+      expect(listInvoices).toHaveBeenCalledWith(
+        WALLET,
+        expect.objectContaining({ limit: 10, offset: 0 }),
       ),
-    ).toBeInTheDocument();
+    );
     expect(
-      screen.getByText(/remains disabled for external wallets/),
+      await screen.findByText("No invoices found", undefined, {
+        timeout: 3000,
+      }),
     ).toBeInTheDocument();
-    expect(listInvoices).not.toHaveBeenCalled();
   });
 
-  it("fails closed on invoice creation without submitting", async () => {
+  it("renders the creation form for the registered external wallet", async () => {
     render(<NewInvoicePage />);
     expect(
-      await screen.findByText(
-        "Invoice management unavailable on Arc Mainnet",
-      ),
+      await screen.findByRole("button", { name: "Create invoice" }),
     ).toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", { name: "Create invoice" }),
-    ).not.toBeInTheDocument();
     expect(createInvoice).not.toHaveBeenCalled();
   });
 
-  it("fails closed on the invoice detail without loading or cancelling", async () => {
+  it("loads the invoice detail for the registered external wallet", async () => {
+    vi.mocked(getMerchantInvoice).mockResolvedValue({
+      id: "3fcbcc73-3471-4e64-8dda-63c12ebf6c3c",
+      publicId: "public-id-123456789012",
+      settlementOperation: "INVOICE_SETTLEMENT",
+      merchantDisplayLabel: null,
+      receivingAddress: WALLET as `0x${string}`,
+      receivingAddressShort: "0x32F2...816F69",
+      chain: { id: 5042, name: "Arc Mainnet" },
+      token: {
+        symbol: "USDC",
+        name: "USD Coin",
+        address: "0x3600000000000000000000000000000000000000",
+        decimals: 6,
+      },
+      amount: "10",
+      amountUnits: "10000000",
+      title: "Consulting",
+      description: null,
+      expiresAt: null,
+      status: "OPEN",
+      paymentStatus: null,
+      verificationCode: null,
+      transactionHash: null,
+      paidAt: null,
+      invoiceNumber: null,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      cancelledAt: null,
+      payerAddress: null,
+    });
     render(<InvoiceDetailPage />);
-    expect(
-      await screen.findByText(
-        "Invoice management unavailable on Arc Mainnet",
+    await waitFor(() =>
+      expect(getMerchantInvoice).toHaveBeenCalledWith(
+        "3fcbcc73-3471-4e64-8dda-63c12ebf6c3c",
+        WALLET,
       ),
-    ).toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", { name: "Cancel invoice" }),
-    ).not.toBeInTheDocument();
-    expect(getMerchantInvoice).not.toHaveBeenCalled();
+    );
+    expect(await screen.findByText("Consulting")).toBeInTheDocument();
     expect(cancelInvoice).not.toHaveBeenCalled();
   });
 });

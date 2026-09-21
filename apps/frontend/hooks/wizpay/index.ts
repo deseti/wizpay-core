@@ -10,7 +10,10 @@ import { useBatchPayroll } from "./useBatchPayroll";
 import { useActiveWalletAddress } from "@/hooks/useActiveWalletAddress";
 import { useCapability } from "@/components/providers/CapabilityProvider";
 import { resolvePayrollRoutePolicy } from "@/lib/payroll-route-policy";
-import { getMainnetUniswapV4UnavailableState } from "@/lib/mainnet-uniswap-v4";
+import {
+  ARC_MAINNET_UNISWAP_V4_UNAVAILABLE_MESSAGE,
+  useMainnetUniswapV4Gate,
+} from "@/lib/mainnet-uniswap-v4";
 import { activeArcChain } from "@/lib/wagmi";
 import {
   isTransactionHash,
@@ -170,10 +173,7 @@ export function useWizPay(): WizPayState {
   // the Mainnet pool reports available and executable. Otherwise execution
   // stays fail-closed with the gate message. No synthetic pricing or
   // alternate route is substituted.
-  const mainnetSwapGate = useMemo(
-    () => getMainnetUniswapV4UnavailableState(),
-    [],
-  );
+  const mainnetSwapGate = useMainnetUniswapV4Gate();
   const atomicRouteBlocked =
     payrollRoutePolicy.kind === "external-wallet-mainnet-atomic" &&
     (!mainnetSwapGate.available || !mainnetSwapGate.executable);
@@ -183,14 +183,20 @@ export function useWizPay(): WizPayState {
     payrollRoutePolicy.kind === "cross-token-disabled"
       ? payrollRoutePolicy.blockedReason
       : atomicRouteBlocked
-        ? mainnetSwapGate.message
+        ? (mainnetSwapGate.message ??
+          ARC_MAINNET_UNISWAP_V4_UNAVAILABLE_MESSAGE)
         : null;
 
-  // No verified Mainnet quote source is wired, so a required official quote
-  // can never be ready while the pool gate is closed. Direct payroll needs no
+  // Cross-token funding is quoted live at submit time (handleSubmit via
+  // the payroll-quote endpoint), so a required official quote is ready
+  // exactly when the shared live swap gate is open. Direct payroll needs no
   // quote and is trivially ready.
   const officialQuoteRequired = payrollRoutePolicy.requiresQuote;
-  const officialQuoteReady = !payrollRoutePolicy.requiresQuote;
+  // Cross-token funding comes from the live payroll-quote endpoint at submit
+  // time (handleSubmit), so readiness follows the shared live swap gate:
+  // open gate = quotable, closed gate = blocked with the gate reason.
+  const officialQuoteReady =
+    !payrollRoutePolicy.requiresQuote || !crossCurrencyExecutionBlocked;
   const officialQuoteError =
     crossCurrencyExecutionBlockedReason ??
     (officialQuoteRequired ? OFFICIAL_PAYROLL_QUOTE_UNAVAILABLE : null);
@@ -295,6 +301,7 @@ export function useWizPay(): WizPayState {
     activeToken: contract.activeToken,
     approveBatchAmount: contract.requestApproval,
     currentAllowance: contract.currentAllowance,
+    feeBps: contract.feeBps,
     recipients: state.recipients,
     pendingBatches: state.pendingBatches,
     referenceId: state.referenceId,
@@ -372,9 +379,31 @@ export function useWizPay(): WizPayState {
     : batchPayroll.isRunning
       ? (batchPayroll.progress.label ?? "Sending...")
       : "Send";
+  // Approval preview must be fee-inclusive for same-token payroll, otherwise
+  // the UI predicts 1 confirmation while the chain requires approval + batch.
+  const smartBatchFeeInclusiveTotal = useMemo(() => {
+    const allSameToken = preparedRecipients.every(
+      (recipient) => recipient.targetToken === contract.activeToken.symbol,
+    );
+    if (!allSameToken || preparedRecipients.length === 0) {
+      return batchPayroll.totalAmount;
+    }
+    let total = 0n;
+    for (const recipient of preparedRecipients) {
+      total +=
+        recipient.amountUnits +
+        (recipient.amountUnits * contract.feeBps) / 10_000n;
+    }
+    return total;
+  }, [
+    batchPayroll.totalAmount,
+    contract.activeToken.symbol,
+    contract.feeBps,
+    preparedRecipients,
+  ]);
   const requiresSmartBatchApproval =
-    batchPayroll.totalAmount > 0n &&
-    contract.currentAllowance < batchPayroll.totalAmount;
+    smartBatchFeeInclusiveTotal > 0n &&
+    contract.currentAllowance < smartBatchFeeInclusiveTotal;
   const estimatedSmartBatchConfirmations =
     smartBatchCount + (requiresSmartBatchApproval ? 1 : 0);
   const smartBatchHelperText = batchPayroll.isSupported

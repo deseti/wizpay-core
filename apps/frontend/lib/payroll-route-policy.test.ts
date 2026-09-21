@@ -100,7 +100,7 @@ describe("payroll quote scheduling boundary", () => {
     );
 
     expect(hookSource).toContain("resolvePayrollRoutePolicy");
-    expect(hookSource).toContain("getMainnetUniswapV4UnavailableState");
+    expect(hookSource).toContain("useMainnetUniswapV4Gate");
     expect(hookSource.toLowerCase()).not.toContain("xylo" + "net");
     expect(swapScreen).toContain("quoteUserSwap");
     expect(swapScreen).toContain("USER_SWAP_CHAIN");

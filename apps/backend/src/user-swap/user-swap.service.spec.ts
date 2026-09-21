@@ -13,7 +13,17 @@ const baseRequest = {
 
 describe('UserSwapService (Mainnet Uniswap V4 only)', () => {
   const mainnetSwap = {
-    inspectQuote: jest.fn(() => ({ status: 'executor-prepared' })),
+    inspectQuote: jest.fn().mockResolvedValue({
+      status: 'live',
+      executable: true,
+      poolId: '0xpool',
+      quoter: { to: '0xquoter', data: '0x', value: '0' },
+      quote: { amountOut: '864736', minAmountOut: '860412' },
+      observation: { blockNumber: 1 },
+      quotedAt: new Date().toISOString(),
+      expiresAt: new Date().toISOString(),
+      expiresAtBlock: 2,
+    }),
   };
   const service = new UserSwapService(
     mainnetSwap as never,
@@ -36,6 +46,15 @@ describe('UserSwapService (Mainnet Uniswap V4 only)', () => {
         walletControl: 'external-wallet',
       }),
     );
+  });
+
+  it('returns live executable amounts with no static fallback', async () => {
+    const result = await service.quote({ ...baseRequest });
+    expect(result.raw).toMatchObject({
+      executable: true,
+      expectedAmountOut: '864736',
+      minimumAmountOut: '860412',
+    });
   });
 
   it('rejects recipient mismatch before calling the provider', async () => {

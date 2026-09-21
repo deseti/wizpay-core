@@ -1,7 +1,7 @@
 {
   "name": "@wizpay/bridge-registry",
   "version": "1.0.0",
-  "description": "Canonical fail-closed Circle CCTP V2 testnet registry for WizPay.",
+  "description": "Canonical fail-closed official Circle CCTP V2 mainnet registry for WizPay (Arc-centric).",
   "private": true,
   "main": "index.js",
   "types": "index.d.ts",

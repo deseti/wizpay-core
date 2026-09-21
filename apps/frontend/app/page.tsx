@@ -19,6 +19,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyStateView } from "@/components/ui/empty-state";
 import { TokenIcon } from "@/components/ui/token-icon";
 import { useActiveWalletAddress } from "@/hooks/useActiveWalletAddress";
+import { useMerchantInvoiceSession } from "@/components/invoices/InvoiceShared";
 import { useUnifiedActivity } from "@/hooks/useUnifiedActivity";
 import { useTokenBalances } from "@/hooks/useTokenBalances";
 import { useDelayedLoading } from "@/hooks/useDelayedLoading";
@@ -340,10 +341,12 @@ function RecentActivity({
 
 function HomeContent() {
   const { isConnected } = useActiveWalletAddress();
+  const merchantSession = useMerchantInvoiceSession();
   const { balances, isLoading: isBalancesLoading } = useTokenBalances({
     refetchInterval: 30_000,
   });
   const { items, isLoading: isHistoryLoading } = useUnifiedActivity({
+    userToken: merchantSession.registered ? merchantSession.userToken : null,
     enabled: isConnected,
     limit: 25,
     refetchInterval: 60_000,

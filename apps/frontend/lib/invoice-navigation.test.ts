@@ -15,6 +15,7 @@ describe("payment navigation regression", () => {
       "Send",
       "Payroll",
       "Swap",
+      "Bridge",
       "Assets",
       "Profile",
       "Invoices",
@@ -24,6 +25,7 @@ describe("payment navigation regression", () => {
       "Send",
       "Payroll",
       "Invoices",
+      "Bridge",
       "Scan QR",
     ])
       expect(actions).toContain(label);

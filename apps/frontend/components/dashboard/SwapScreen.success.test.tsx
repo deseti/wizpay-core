@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { formatUnits } from "viem";
 
 import { SwapScreen } from "./SwapScreen";
-import { quoteUserSwap } from "@/lib/user-swap-service";
+import { prepareMainnetSwap, quoteUserSwap } from "@/lib/user-swap-service";
 import { activeArcChain } from "@/lib/wagmi";
 import {
   calculateArcMaxAmount,
@@ -28,7 +28,7 @@ const state = vi.hoisted(() => ({
   walletAddress: "0x90ab859240b941eaf0cbcbf42df5086e0ad54147" as `0x${string}`,
   hash: `0x${"ab".repeat(32)}` as `0x${string}`,
   approvals: [] as Array<{ to: `0x${string}` }>,
-  writeContract: vi.fn(),
+  sendTransaction: vi.fn(),
   waitForTransactionReceipt: vi.fn(),
   toast: vi.fn(),
 }));
@@ -55,7 +55,7 @@ vi.mock("wagmi", async (importOriginal) => ({
     data: {
       account: { address: state.walletAddress },
       chain: { id: 5_042 },
-      writeContract: state.writeContract,
+      sendTransaction: state.sendTransaction,
     },
   }),
   usePublicClient: () => ({
@@ -68,8 +68,55 @@ vi.mock("wagmi", async (importOriginal) => ({
 vi.mock("@/lib/user-swap-service", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/user-swap-service")>()),
   quoteUserSwap: vi.fn(),
+  prepareMainnetSwap: vi.fn(async (params: { tokenInAddress: string }) => ({
+    walletControl: "external-wallet",
+    chainId: 5042,
+    poolKey: {},
+    poolId: "0xpool",
+    quote: {
+      zeroForOne: true,
+      tokenIn: params.tokenInAddress,
+      tokenOut: "0xtokenOut",
+      amountIn: "1000000",
+      amountOut: "990000",
+      gasEstimate: "37000",
+      minAmountOut: "990000",
+      minHopPriceX36: "1",
+      slippageBps: 200,
+      poolId: "0xpool",
+    },
+    approvals:
+      params.tokenInAddress.toLowerCase() === eurc.toLowerCase()
+        ? [
+            {
+              to: eurc,
+              data: "0xapprove",
+              value: "0",
+              description: "Approve executor",
+            },
+          ]
+        : [],
+    swap: {
+      to: "0x7A051F17B237750EF9D4E63fb75381B9F8755774",
+      data: "0xswap",
+      value: "1000000000000000000",
+      description: "Execute swap",
+    },
+    permit2: null,
+    recipient: state.walletAddress,
+    deadline: Math.floor(Date.now() / 1_000) + 600,
+    executable: false,
+  })),
 }));
 vi.mock("@/lib/mainnet-uniswap-v4", () => ({
+  ARC_MAINNET_UNISWAP_V4_UNAVAILABLE_MESSAGE: "unavailable",
+  useMainnetUniswapV4Gate: () => ({
+    available: true,
+    executable: true,
+    poolIdentityStatus: "verified-live",
+    message: null,
+    blockers: [],
+  }),
   getMainnetUniswapV4UnavailableState: () => ({
     available: true,
     executable: true,
@@ -101,7 +148,22 @@ function mainnetQuote() {
     executorAddress: "0x7A051F17B237750EF9D4E63fb75381B9F8755774",
     expectedOutput: "990000",
     expiresAt: new Date(Date.now() + 600_000).toISOString(),
-    raw: {},
+    raw: {
+      observation: {
+        chainId: 5042,
+        quoterAddress: "0x8dc178efb8111bb0973dd9d722ebeff267c98f94",
+        poolId: "0xpool",
+        tokenInAddress: "0x3600000000000000000000000000000000000000",
+        tokenOutAddress: eurc,
+        amountIn: "1000000",
+        blockNumber: 1,
+        amountOut: "990000",
+        gasEstimate: "37000",
+      },
+      expiresAt: new Date(Date.now() + 600_000).toISOString(),
+      expectedAmountOut: "990000",
+      minimumAmountOut: "990000",
+    },
   };
 }
 
@@ -123,7 +185,7 @@ describe("SwapScreen verified success modal", () => {
     vi.clearAllMocks();
     window.localStorage.clear();
     state.approvals = [];
-    state.writeContract.mockResolvedValue(state.hash);
+    state.sendTransaction.mockResolvedValue(state.hash);
     state.waitForTransactionReceipt.mockResolvedValue({
       status: "success",
       logs: [],
@@ -203,18 +265,18 @@ describe("SwapScreen verified success modal", () => {
     expect(
       await screen.findByRole("heading", { name: "Swap completed" }),
     ).toBeInTheDocument();
-    expect(state.writeContract).toHaveBeenCalledTimes(2);
-    expect(state.writeContract.mock.calls[0]?.[0]).toMatchObject({
-      functionName: "approve",
+    expect(state.sendTransaction).toHaveBeenCalledTimes(2);
+    expect(state.sendTransaction.mock.calls[0]?.[0]).toMatchObject({
+      to: eurc,
     });
-    expect(state.writeContract.mock.calls[1]?.[0]).toMatchObject({
-      functionName: "executeSwap",
+    expect(state.sendTransaction.mock.calls[1]?.[0]).toMatchObject({
+      to: "0x7A051F17B237750EF9D4E63fb75381B9F8755774",
     });
   });
 
   it("shows non-modal progress immediately and keeps one External Wallet submission active", async () => {
     let resolveHash!: (hash: `0x${string}`) => void;
-    state.writeContract.mockReturnValueOnce(
+    state.sendTransaction.mockReturnValueOnce(
       new Promise<`0x${string}`>((resolve) => {
         resolveHash = resolve;
       }),
@@ -238,7 +300,7 @@ describe("SwapScreen verified success modal", () => {
   });
 
   it("keeps a failed swap visible without retrying automatically", async () => {
-    state.writeContract.mockRejectedValueOnce(
+    state.sendTransaction.mockRejectedValueOnce(
       new Error("User rejected request"),
     );
     render(<SwapScreen />);
@@ -246,7 +308,7 @@ describe("SwapScreen verified success modal", () => {
 
     expect(await screen.findByText("Swap stopped")).toBeInTheDocument();
     expect(screen.getAllByText(/rejected/i).length).toBeGreaterThan(0);
-    expect(state.writeContract).toHaveBeenCalledTimes(1);
+    expect(state.sendTransaction).toHaveBeenCalledTimes(1);
     expect(
       screen.queryByRole("heading", { name: "Swap completed" }),
     ).not.toBeInTheDocument();
@@ -255,7 +317,7 @@ describe("SwapScreen verified success modal", () => {
     expect(
       screen.queryByRole("region", { name: "Swap progress" }),
     ).not.toBeInTheDocument();
-    expect(state.writeContract).toHaveBeenCalledTimes(1);
+    expect(state.sendTransaction).toHaveBeenCalledTimes(1);
   });
 
   it("Start another swap resets only the swap presentation and amount", async () => {

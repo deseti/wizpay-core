@@ -8,6 +8,7 @@ import {
   Home,
   Repeat,
   ReceiptText,
+  Route,
   User,
   Wallet,
 } from "lucide-react";
@@ -21,6 +22,7 @@ const navItems = [
   { href: "/payroll", label: "Payroll", icon: BriefcaseBusiness },
   { href: "/invoices", label: "Invoices", icon: ReceiptText },
   { href: "/swap", label: "Swap", icon: Repeat },
+  { href: "/bridge", label: "Bridge", icon: Route },
   { href: "/assets", label: "Assets", icon: Wallet },
   { href: "/profile", label: "Profile", icon: User },
 ];

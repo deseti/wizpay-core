@@ -46,7 +46,7 @@ export default function NewInvoicePage() {
   async function submit(event: React.FormEvent) {
     event.preventDefault();
     invoiceCapability.assertEnabled();
-    if (!session.userToken || submitting) return;
+    if (!session.userToken || !session.registered || submitting) return;
     setSubmitting(true);
     setError(null);
     try {
@@ -82,11 +82,12 @@ export default function NewInvoicePage() {
         title="New invoice"
         description="Create one immutable fixed-amount payment request."
       />
-      {!session.userToken ? (
+      {!session.userToken || !session.registered ? (
         <MerchantInvoiceAuthNotice
           walletMode={session.walletMode}
           ready={session.ready}
           onUseAppWallet={session.useAppWallet}
+          session={session}
         />
       ) : created ? (
         <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_340px]">

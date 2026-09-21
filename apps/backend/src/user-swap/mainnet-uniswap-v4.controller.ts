@@ -2,11 +2,13 @@ import {
   BadRequestException,
   Body,
   Controller,
+  Get,
   Post,
   UsePipes,
   ValidationPipe,
 } from '@nestjs/common';
 import {
+  MainnetUniswapV4PayrollQuoteDto,
   MainnetUniswapV4PrepareDto,
   MainnetUniswapV4QuoteDto,
   MainnetUniswapV4VerifyReceiptDto,
@@ -31,13 +33,42 @@ export class MainnetUniswapV4Controller {
   constructor(private readonly mainnetUniswapV4: MainnetUniswapV4Service) {}
 
   @Post('quote')
-  quote(@Body() body: MainnetUniswapV4QuoteDto) {
-    return { data: this.mainnetUniswapV4.inspectQuote(body) };
+  async quote(@Body() body: MainnetUniswapV4QuoteDto) {
+    return { data: await this.mainnetUniswapV4.inspectQuote(body) };
+  }
+
+  @Get('readiness')
+  async readiness() {
+    try {
+      return { data: await this.mainnetUniswapV4.liveReadiness() };
+    } catch (error) {
+      const response =
+        error && typeof error === 'object' && 'getResponse' in error
+          ? (error as { getResponse(): unknown }).getResponse()
+          : null;
+      const message =
+        response && typeof response === 'object' && 'message' in response
+          ? String((response as Record<string, unknown>).message)
+          : 'Arc Mainnet swaps are unavailable.';
+      return {
+        data: {
+          available: false,
+          executable: false,
+          poolIdentityStatus: 'candidate-unverified',
+          blockers: [message],
+        },
+      };
+    }
   }
 
   @Post('prepare')
-  prepare(@Body() body: MainnetUniswapV4PrepareDto) {
-    return { data: this.mainnetUniswapV4.prepare(body) };
+  async prepare(@Body() body: MainnetUniswapV4PrepareDto) {
+    return { data: await this.mainnetUniswapV4.prepare(body) };
+  }
+
+  @Post('payroll-quote')
+  async payrollQuote(@Body() body: MainnetUniswapV4PayrollQuoteDto) {
+    return { data: await this.mainnetUniswapV4.payrollCrossTokenQuote(body) };
   }
 
   @Post('execute')
@@ -46,9 +77,9 @@ export class MainnetUniswapV4Controller {
   }
 
   @Post('verify-receipt')
-  verifyReceipt(@Body() body: MainnetUniswapV4VerifyReceiptDto) {
+  async verifyReceipt(@Body() body: MainnetUniswapV4VerifyReceiptDto) {
     return {
-      data: this.mainnetUniswapV4.verifyReceipt(body.receipt, body.request),
+      data: await this.mainnetUniswapV4.verifyReceipt(body.receipt, body.request),
     };
   }
 }

@@ -1,5 +1,4 @@
 import { backendFetch } from "@/lib/backend-api";
-import { getMainnetUniswapV4UnavailableState } from "@/lib/mainnet-uniswap-v4";
 import type { TokenSymbol } from "@/lib/wizpay";
 
 export const USER_SWAP_CHAIN = "ARC-MAINNET" as const;
@@ -79,11 +78,108 @@ function assertMainnetUserSwapRequest(params: UserSwapQuoteRequest) {
   }
 }
 
-function assertMainnetSwapGate() {
-  const gate = getMainnetUniswapV4UnavailableState();
-  if (!gate.available || !gate.executable) {
-    throw new Error(gate.message);
-  }
+export interface MainnetSwapPrepareRequest {
+  chainId: 5042;
+  tokenInAddress: string;
+  tokenOutAddress: string;
+  amountIn: string;
+  recipient: string;
+  walletAddress: string;
+  walletControl: "external-wallet";
+  slippageBps: number;
+  deadline: number;
+  quoteResult: unknown;
+}
+
+export interface MainnetSwapPlan {
+  walletControl: "external-wallet";
+  chainId: 5042;
+  poolKey: unknown;
+  poolId: string;
+  quote: {
+    zeroForOne: boolean;
+    tokenIn: string;
+    tokenOut: string;
+    amountIn: string;
+    amountOut: string;
+    gasEstimate: string;
+    minAmountOut: string;
+    minHopPriceX36: string;
+    slippageBps: number;
+    poolId: string;
+  };
+  approvals: ReadonlyArray<{
+    to: string;
+    data: `0x${string}`;
+    value: string;
+    description: string;
+  }>;
+  swap: {
+    to: string;
+    data: `0x${string}`;
+    value: string;
+    description: string;
+  };
+  permit2: null;
+  recipient: string;
+  deadline: number;
+  executable: false;
+}
+
+export async function prepareMainnetSwap(
+  params: MainnetSwapPrepareRequest,
+): Promise<MainnetSwapPlan> {
+  return backendFetch<MainnetSwapPlan>("/user-swap/mainnet/prepare", {
+    method: "POST",
+    body: JSON.stringify(params),
+  });
+}
+
+export async function fetchMainnetSwapReadiness(): Promise<{
+  available: boolean;
+  executable: boolean;
+  poolIdentityStatus: string;
+  blockers: string[];
+}> {
+  return backendFetch("/user-swap/mainnet/readiness");
+}
+
+export interface PayrollCrossTokenQuoteRequest {
+  tokenInAddress: string;
+  tokenOutAddress: string;
+  outputTotals: string;
+  slippageBps: number;
+  walletAddress: string;
+  recipient: string;
+}
+
+export interface PayrollCrossTokenQuote {
+  tokenIn: string;
+  tokenOut: string;
+  obligations: string;
+  grossInput: string;
+  feeAmount: string;
+  netAmountIn: string;
+  minTotalOut: string;
+  minHopPriceX36: string;
+  slippageBps: number;
+  payrollFeeBps: string;
+  quoteBlock: number;
+  quotedAt: string;
+  expiresAt: string;
+  expiresAtBlock: number;
+}
+
+export async function fetchPayrollCrossTokenQuote(
+  params: PayrollCrossTokenQuoteRequest,
+): Promise<PayrollCrossTokenQuote> {
+  return backendFetch<PayrollCrossTokenQuote>(
+    "/user-swap/mainnet/payroll-quote",
+    {
+      method: "POST",
+      body: JSON.stringify(params),
+    },
+  );
 }
 
 export async function quoteUserSwap(
@@ -91,7 +187,9 @@ export async function quoteUserSwap(
   init?: Pick<RequestInit, "signal">,
 ): Promise<UserSwapQuoteResponse> {
   assertMainnetUserSwapRequest(params);
-  assertMainnetSwapGate();
+  // No static frontend gate: the backend live quorum (pool state on two
+  // RPCs, executor config, live quoter) is the single authoritative
+  // readiness state and fails closed with specific blockers.
   return backendFetch<UserSwapQuoteResponse>("/user-swap/quote", {
     method: "POST",
     body: JSON.stringify(params),
@@ -103,7 +201,6 @@ export async function prepareUserSwap(
   params: UserSwapPrepareRequest,
 ): Promise<UserSwapPrepareResponse> {
   assertMainnetUserSwapRequest(params);
-  assertMainnetSwapGate();
   return backendFetch<UserSwapPrepareResponse>("/user-swap/prepare", {
     method: "POST",
     body: JSON.stringify(params),

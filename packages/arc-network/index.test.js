@@ -15,6 +15,7 @@ const {
   UnknownArcResourceError,
   UnsupportedArcNetworkError,
   assertValidArcNetworkDefinitions,
+  getArcCctpResource,
   getArcExplorerResource,
   getArcNetworkByChainId,
   getArcNetworkByKey,
@@ -106,14 +107,7 @@ test("parses capability flags exactly and fails closed for malformed or unknown 
   );
 });
 
-test("rejects still-forbidden Mainnet capabilities while allowing verified swap and payroll flags", () => {
-  assert.throws(
-    () =>
-      resolveArcCapabilities("arc-mainnet", {
-        WIZPAY_ARC_MAINNET_CAPABILITY_BRIDGE: "true",
-      }),
-    (error) => error.code === "CAPABILITY_FORBIDDEN_FOR_NETWORK",
-  );
+test("rejects still-forbidden Mainnet capabilities while allowing the verified bridge, swap, and payroll flags", () => {
   assert.throws(
     () =>
       resolveArcCapabilities("arc-mainnet", {
@@ -121,6 +115,10 @@ test("rejects still-forbidden Mainnet capabilities while allowing verified swap 
       }),
     (error) => error.code === "CAPABILITY_FORBIDDEN_FOR_NETWORK",
   );
+  const bridgeEnabled = resolveArcCapabilities("arc-mainnet", {
+    WIZPAY_ARC_MAINNET_CAPABILITY_BRIDGE: "true",
+  });
+  assert.equal(bridgeEnabled.bridge, true);
   const swapEnabled = resolveArcCapabilities("arc-mainnet", {
     WIZPAY_ARC_MAINNET_CAPABILITY_SWAP: "true",
   });
@@ -168,8 +166,35 @@ test("keeps Mainnet cross-token readiness dependent on EURC and swap executor", 
   const mainnet = getArcOperationResourceReadiness("arc-mainnet");
   assert.equal(mainnet.sendDirect, true);
   assert.equal(mainnet.payrollDirect, true);
+  assert.equal(mainnet.bridgeDirect, true);
   assert.equal(mainnet.swapDirect, true);
   assert.equal(mainnet.crossToken, true);
+});
+
+test("exposes official Circle CCTP V2 production resources for Arc Mainnet", () => {
+  const messenger = getArcCctpResource("arc-mainnet", "tokenMessengerV2");
+  assert.equal(messenger.status, "available");
+  assert.equal(
+    messenger.value.address,
+    "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d",
+  );
+  assert.equal(messenger.value.domain, 26);
+  const transmitter = getArcCctpResource(
+    "arc-mainnet",
+    "messageTransmitterV2",
+  );
+  assert.equal(transmitter.status, "available");
+  assert.equal(
+    transmitter.value.address,
+    "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64",
+  );
+  const iris = getArcCctpResource("arc-mainnet", "irisApi");
+  assert.equal(iris.status, "available");
+  assert.equal(iris.value.baseUrl, "https://iris-api.circle.com");
+  assert.throws(
+    () => getArcCctpResource("arc-mainnet", "tokenMessengerV1"),
+    UnknownArcResourceError,
+  );
 });
 
 test("rejects dependency-invalid capability combinations", () => {

@@ -89,6 +89,28 @@ export class MainnetUniswapV4PrepareDto extends MainnetUniswapV4QuoteDto {
   permit2Signature?: string;
 }
 
+export class MainnetUniswapV4PayrollQuoteDto {
+  @IsString()
+  tokenInAddress!: string;
+
+  @IsString()
+  tokenOutAddress!: string;
+
+  @IsString()
+  outputTotals!: string;
+
+  @IsInt()
+  @Min(1)
+  @Max(500)
+  slippageBps!: number;
+
+  @IsString()
+  walletAddress!: string;
+
+  @IsString()
+  recipient!: string;
+}
+
 export class MainnetUniswapV4ReceiptLogDto {
   @IsString()
   address!: string;

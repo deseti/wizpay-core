@@ -38,6 +38,7 @@ import {
   sumGasReserves,
 } from "@/lib/arc-gas-reserve";
 import {
+  prepareMainnetSwap,
   quoteUserSwap,
   USER_SWAP_CHAIN,
   type UserSwapQuoteResponse,
@@ -52,15 +53,11 @@ import {
   type TokenSymbol,
 } from "@/lib/wizpay";
 import { useCapability } from "@/components/providers/CapabilityProvider";
-import { WIZPAY_SWAP_EXECUTOR_MAINNET_ABI } from "@/constants/generated/wizpay-swap-executor-mainnet.abi";
+import { applySlippage } from "@/lib/mainnet-uniswap-v4-protocol";
 import {
-  WIZPAY_SWAP_EXECUTOR_MAINNET_ADDRESS,
-  applySlippage,
-  calculateMinHopPriceX36,
-  encodeUserControlledApprovals,
-  mainnetUniswapV4TransactionValue,
-} from "@/lib/mainnet-uniswap-v4-protocol";
-import { getMainnetUniswapV4UnavailableState } from "@/lib/mainnet-uniswap-v4";
+  ARC_MAINNET_UNISWAP_V4_UNAVAILABLE_MESSAGE,
+  useMainnetUniswapV4Gate,
+} from "@/lib/mainnet-uniswap-v4";
 
 type RequestStatus =
   | "idle"
@@ -84,7 +81,9 @@ function readQuoteAmountOut(quote: UserSwapQuoteResponse | null): bigint | null 
     (quote as { expectedOutput?: unknown }).expectedOutput ??
     quote.expectedAmountOut ??
     quote.minimumAmountOut ??
-    quote.minAmountOut;
+    quote.minAmountOut ??
+    (quote.raw as { expectedAmountOut?: unknown } | null)?.expectedAmountOut ??
+    (quote.raw as { minimumAmountOut?: unknown } | null)?.minimumAmountOut;
   if (typeof raw === "bigint") return raw > 0n ? raw : null;
   if (typeof raw === "string" && /^\d+$/.test(raw)) {
     const parsed = BigInt(raw);
@@ -145,8 +144,10 @@ function SwapWorkspace({
   const quoteSequence = useRef(0);
   const transactionActive = useRef(false);
 
-  const poolGate = useMemo(() => getMainnetUniswapV4UnavailableState(), []);
+  const poolGate = useMainnetUniswapV4Gate();
   const poolBlocked = !poolGate.available || !poolGate.executable;
+  const poolBlockedMessage =
+    poolGate.message ?? ARC_MAINNET_UNISWAP_V4_UNAVAILABLE_MESSAGE;
 
   function setTransactionStatus(next: SwapProgressRequestStatus) {
     setProgressStatus(next);
@@ -234,7 +235,7 @@ function SwapWorkspace({
       : !walletClient
         ? "Connect an external browser wallet."
         : poolBlocked
-          ? poolGate.message
+          ? poolBlockedMessage
           : null;
 
   async function executeMainnetSwap() {
@@ -242,37 +243,60 @@ function SwapWorkspace({
       throw new Error("A current Mainnet quote is required.");
     }
     if (poolBlocked) {
-      throw new Error(poolGate.message);
+      throw new Error(poolBlockedMessage);
     }
-    const tokenInAddress = SUPPORTED_TOKENS[tokenIn].address;
-    const tokenOutAddress = SUPPORTED_TOKENS[tokenOut].address;
-    const deadline = Math.floor(Date.now() / 1_000) + 600;
-    const amountOut = readQuoteAmountOut(quote);
-    if (!amountOut || amountOut <= 0n) {
+    const raw = quote.raw as {
+      observation?: unknown;
+      expiresAt?: unknown;
+      expectedAmountOut?: unknown;
+    } | null;
+    if (
+      typeof raw?.expiresAt === "string" &&
+      Number.isFinite(Date.parse(raw.expiresAt)) &&
+      Date.now() > Date.parse(raw.expiresAt)
+    ) {
+      throw new Error("Quote expired. Wait for a new Mainnet quote.");
+    }
+    if (!raw || typeof raw.observation !== "object" || !raw.observation) {
       throw new Error("A current Arc Mainnet Swap Executor quote is required.");
     }
     if (amountUnits <= 0n) {
       throw new Error("Enter a positive swap amount.");
     }
-    const minAmountOut = applySlippage(amountOut, Number(PREVIEW_SLIPPAGE_BPS));
-    const minHopPriceX36 = calculateMinHopPriceX36(
-      amountUnits,
-      amountOut,
-      Number(PREVIEW_SLIPPAGE_BPS),
-    );
-    const approvals = encodeUserControlledApprovals({
-      tokenIn: tokenInAddress,
-      amountIn: amountUnits,
+    const tokenInAddress = SUPPORTED_TOKENS[tokenIn].address;
+    const tokenOutAddress = SUPPORTED_TOKENS[tokenOut].address;
+    const deadline = Math.floor(Date.now() / 1_000) + 600;
+    // Single authoritative plan: the backend re-validates the boundary,
+    // rejects stale quotes against the live head, and builds the exact
+    // executor calldata. The wallet signs exactly these values.
+    const plan = await prepareMainnetSwap({
+      chainId: activeArcChain.id as 5042,
+      tokenInAddress,
+      tokenOutAddress,
+      amountIn: amountUnits.toString(),
+      recipient: walletAddress,
+      walletAddress,
+      walletControl: "external-wallet",
+      slippageBps: Number(PREVIEW_SLIPPAGE_BPS),
       deadline,
+      quoteResult: raw.observation,
     });
-    if (approvals.length > 0) {
+    if (plan.chainId !== activeArcChain.id) {
+      throw new Error("Swap plan chain does not match Arc Mainnet.");
+    }
+    const planAmountIn = BigInt(plan.quote.amountIn);
+    const planAmountOut = BigInt(plan.quote.amountOut);
+    if (planAmountIn !== amountUnits || planAmountOut <= 0n) {
+      throw new Error("Swap plan does not match the quoted amount.");
+    }
+    if (plan.approvals.length > 0) {
       setApprovalRequired(true);
       setTransactionStatus("approving");
-      const approvalHash = await walletClient.writeContract({
-        address: approvals[0]!.to,
-        abi: ERC20_ABI,
-        functionName: "approve",
-        args: [WIZPAY_SWAP_EXECUTOR_MAINNET_ADDRESS, amountUnits],
+      const approval = plan.approvals[0]!;
+      const approvalHash = await walletClient.sendTransaction({
+        to: approval.to as `0x${string}`,
+        data: approval.data,
+        value: BigInt(approval.value),
         account: walletAddress,
         chain: activeArcChain,
       });
@@ -285,19 +309,10 @@ function SwapWorkspace({
       setApprovalRequired(false);
     }
     setTransactionStatus("signing");
-    const hash = await walletClient.writeContract({
-      address: WIZPAY_SWAP_EXECUTOR_MAINNET_ADDRESS,
-      abi: WIZPAY_SWAP_EXECUTOR_MAINNET_ABI,
-      functionName: "executeSwap",
-      args: [
-        tokenInAddress,
-        tokenOutAddress,
-        amountUnits,
-        minAmountOut,
-        minHopPriceX36,
-        BigInt(deadline),
-      ],
-      value: mainnetUniswapV4TransactionValue(tokenInAddress, amountUnits),
+    const hash = await walletClient.sendTransaction({
+      to: plan.swap.to as `0x${string}`,
+      data: plan.swap.data,
+      value: BigInt(plan.swap.value),
       account: walletAddress,
       chain: activeArcChain,
     });
@@ -307,7 +322,7 @@ function SwapWorkspace({
     return {
       hash,
       inputAmount: amountUnits,
-      outputAmount: amountOut,
+      outputAmount: planAmountOut,
       inputToken: tokenIn,
       outputToken: tokenOut,
     };
@@ -321,7 +336,7 @@ function SwapWorkspace({
       return;
     }
     if (poolBlocked) {
-      setError(poolGate.message);
+      setError(poolBlockedMessage);
       return;
     }
     if (!quoteCurrent || !quote) {
@@ -659,7 +674,7 @@ function SwapWorkspace({
                 role="alert"
                 className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-200"
               >
-                {poolGate.message}
+                {poolBlockedMessage}
               </div>
             ) : null}
             {progressOpen ? (

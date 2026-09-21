@@ -37,7 +37,7 @@ export class CreateBridgeIntentDto {
   maxFee!: string;
 
   @IsInt()
-  @Min(2_000)
+  @Min(1_000)
   @Max(2_000)
   minFinalityThreshold!: number;
 }

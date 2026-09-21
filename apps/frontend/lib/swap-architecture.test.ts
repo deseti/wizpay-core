@@ -10,8 +10,10 @@ const screen = readFileSync(
 
 describe("canonical swap signing boundaries", () => {
   it("keeps External Wallet signing in the browser", () => {
-    expect(screen).toContain("walletClient.writeContract");
-    expect(screen).toContain('functionName: "executeSwap"');
+    // The wallet signs the backend-authoritative plan calldata; the backend
+    // never signs or custodies funds.
+    expect(screen).toContain("walletClient.sendTransaction");
+    expect(screen).toContain("prepareMainnetSwap");
     expect(screen).toContain("connected external wallet signs approval");
   });
 
@@ -25,11 +27,15 @@ describe("canonical swap signing boundaries", () => {
   });
 
   it("keeps Arc Mainnet Swap Executor routing only", () => {
-    expect(screen).toContain("WIZPAY_SWAP_EXECUTOR_MAINNET_ADDRESS");
+    // Executor routing is pinned server-side in the prepare plan
+    // (plan.swap.to = WizPaySwapExecutorMainnet); the screen signs exactly
+    // the prepared plan and never selects another router.
+    expect(screen).toContain("prepareMainnetSwap");
+    expect(screen).toContain("plan.swap");
     expect(screen).toContain("executeMainnetSwap");
     expect(screen).toContain("quoteUserSwap");
     expect(screen).toContain("USER_SWAP_CHAIN");
-    expect(screen).not.toContain("ARC_MAINNET_UNISWAP_V4_UNAVAILABLE_MESSAGE");
+    expect(screen).toContain("useMainnetUniswapV4Gate");
     expect(screen).not.toContain("WIZPAY_SWAP_EXECUTOR_V2_ADDRESS");
   });
 

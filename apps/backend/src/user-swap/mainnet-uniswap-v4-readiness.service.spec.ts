@@ -90,22 +90,13 @@ describe('MainnetUniswapV4ReadinessService', () => {
     );
   });
 
-  it('fails closed with every unresolved evidence gate', () => {
-    try {
-      service.requireExecutable();
-      throw new Error('expected requireExecutable to throw');
-    } catch (error) {
-      expect(error).toBeInstanceOf(HttpException);
-      const response = (error as HttpException).getResponse();
-      expect(response).toMatchObject({
-        code: ARC_MAINNET_UNISWAP_V4_ERROR_CODES.UNAVAILABLE,
-        blockers: [
-          'UNISWAP_USDC_EURC_POOL_UNIQUENESS_NOT_VERIFIED',
-          'UNISWAP_USDC_EURC_LIQUIDITY_NOT_VERIFIED',
-          'ARC_MAINNET_RPC_QUORUM_UNAVAILABLE',
-          'ARC_MAINNET_UNISWAP_EXECUTION_AUTHORIZATION_UNAVAILABLE',
-        ],
-      });
-    }
+  it('leaves executability to the live quorum gate, not static flags', () => {
+    // Static candidate flags stay fail-closed by default; the single
+    // authoritative executability check is MainnetUniswapV4Service
+    // liveReadiness (two-RPC quorum over pool/executor state). This service
+    // only validates request boundaries and fails those closed.
+    expect(() =>
+      service.validateBoundary(request({ chainId: 1 }), NOW),
+    ).toThrow(HttpException);
   });
 });

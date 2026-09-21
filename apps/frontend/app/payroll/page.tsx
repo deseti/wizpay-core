@@ -16,6 +16,10 @@ import { useDelayedLoading } from "@/hooks/useDelayedLoading";
 import { SUPPORTED_TOKENS, type TokenSymbol } from "@/lib/wizpay";
 import { useState } from "react";
 import { useCapability } from "@/components/providers/CapabilityProvider";
+import {
+  ARC_MAINNET_UNISWAP_V4_UNAVAILABLE_MESSAGE,
+  useMainnetUniswapV4Gate,
+} from "@/lib/mainnet-uniswap-v4";
 
 function getTaskMetadataString(
   metadata: Record<string, unknown> | null | undefined,
@@ -82,7 +86,19 @@ function PayrollWorkspace() {
   const payrollCapability = payrollIsCrossToken
     ? crossTokenCapability
     : sameTokenCapability;
+  // Cross-token payroll settles through the Mainnet swap route, so it shares
+  // the Uniswap V4 pool executability gate with standalone swaps. Same-token
+  // payroll executes directly against WizPayPayrollMainnet and is unaffected.
+  const poolGate = useMainnetUniswapV4Gate();
+  const crossTokenBlocked =
+    payrollIsCrossToken && (!poolGate.available || !poolGate.executable);
   const submitPayroll = async () => {
+    if (crossTokenBlocked) {
+      wp.setErrorMessage(
+        poolGate.message ?? ARC_MAINNET_UNISWAP_V4_UNAVAILABLE_MESSAGE,
+      );
+      return;
+    }
     payrollCapability.assertEnabled();
     return wp.handleSmartBatchSubmit();
   };

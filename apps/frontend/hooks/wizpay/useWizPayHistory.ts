@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import { type Address, type Hex } from "viem";
 
 import { useActiveWalletAddress } from "@/hooks/useActiveWalletAddress";
+import { useMerchantInvoiceSession } from "@/components/invoices/InvoiceShared";
 import { sameAddress } from "@/lib/wizpay";
 import type { HistoryItem, UnifiedHistoryItem } from "@/lib/types";
 import { useUnifiedActivity } from "@/hooks/useUnifiedActivity";
@@ -16,9 +17,12 @@ export function useWizPayHistory({
   activeToken: { address: Address };
 }) {
   const { isConnected } = useActiveWalletAddress();
+  const merchantSession = useMerchantInvoiceSession();
   const { items: backendItems, isLoading: backendLoading } = useUnifiedActivity(
     {
-      userToken: null,
+      userToken: merchantSession.registered
+        ? merchantSession.userToken
+        : null,
       limit: 50,
       enabled: isConnected,
     },

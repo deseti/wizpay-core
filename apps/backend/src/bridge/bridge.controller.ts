@@ -9,6 +9,7 @@ import {
   ValidationPipe,
 } from '@nestjs/common';
 import { BridgeLifecycleService } from './bridge-lifecycle.service';
+import { BridgeQuoteService } from './bridge-quote.service';
 import {
   BridgeWalletDto,
   AuthorizeBridgeDestinationDto,
@@ -24,8 +25,21 @@ import { CapabilityService } from '../capabilities/capability.service';
 export class BridgeController {
   constructor(
     private readonly lifecycle: BridgeLifecycleService,
+    private readonly quotes: BridgeQuoteService,
     private readonly capabilities: CapabilityService,
   ) {}
+
+  @Get('quote')
+  quote(
+    @Query('sourceCode') sourceCode: string,
+    @Query('destinationCode') destinationCode: string,
+    @Query('amount') amount: string,
+  ) {
+    this.capabilities.assert('bridge');
+    return this.wrap(
+      this.quotes.quote(sourceCode, destinationCode, amount),
+    );
+  }
 
   @Post('intents')
   createIntent(

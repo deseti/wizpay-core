@@ -1,7 +1,6 @@
 import {
   BadRequestException,
   Injectable,
-  ServiceUnavailableException,
 } from '@nestjs/common';
 import { getArcMainnetUniswapV4Readiness } from '@wizpay/arc-network';
 import { getAddress, isAddress, isAddressEqual, zeroAddress } from 'viem';
@@ -130,15 +129,6 @@ export class MainnetUniswapV4ReadinessService {
       walletControl: request.walletControl as MainnetUniswapV4WalletControl,
       slippageBps: request.slippageBps as number,
       deadline: request.deadline as number,
-    });
-  }
-
-  requireExecutable(): never {
-    throw new ServiceUnavailableException({
-      code: ARC_MAINNET_UNISWAP_V4_ERROR_CODES.UNAVAILABLE,
-      message:
-        'Arc Mainnet Uniswap V4 USDC/EURC swaps are unavailable until every official resource and authorization gate passes.',
-      blockers: this.readiness.blockers,
     });
   }
 

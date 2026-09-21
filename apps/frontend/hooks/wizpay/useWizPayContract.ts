@@ -3,6 +3,7 @@ import { useEffect, useMemo } from "react";
 import {
   getAddress,
   isAddress,
+  isAddressEqual,
   type Address,
   type Hex,
   type PublicClient,
@@ -20,11 +21,11 @@ import {
   payrollApprovalTarget,
   sameTokenFunding,
 } from "@/lib/mainnet-payroll-protocol";
-import { calculateMinHopPriceX36 } from "@/lib/mainnet-uniswap-v4-protocol";
 import {
   acquireExecutionIntent,
   bindExecutionIntentTransactionHash,
 } from "@/lib/execution-intent";
+import { fetchPayrollCrossTokenQuote } from "@/lib/user-swap-service";
 import { WIZPAY_ADDRESS } from "@/constants/addresses";
 import { ERC20_ABI } from "@/constants/erc20";
 import {
@@ -228,6 +229,37 @@ function logPayrollRouteDiagnostic(label: string, value: unknown) {
   console.info(label, value);
 }
 
+/**
+ * Stable deterministic business reference for a payroll approval intent.
+ *
+ * Backend `execution-intent` requires `externalReference` non-empty and
+ * <=160 chars (`execution-intent.service.ts:672-677`). The previous approval
+ * reference concatenated run id + wallet + token + spender + amount
+ * (151 chars without a run id, 167+ with `PAY-260921-HZMV`), so adding the
+ * run id pushed it over 160 and every approval failed before the wallet
+ * with "A stable external business reference is required."
+ *
+ * Token, spender, amount, and wallet remain part of the intent's immutable
+ * `requestFingerprint` backend-side; they do not need to be duplicated in
+ * the business reference. The business reference is the payroll run id plus
+ * an `:approval` suffix: unique per run, stable across retries, short.
+ */
+export function buildPayrollApprovalReference(
+  groupReferenceId: string | null | undefined,
+): string {
+  const stableRunRef = (groupReferenceId ?? "").trim();
+  if (!stableRunRef) {
+    throw new Error(
+      "Reference ID is required before the batch can be submitted.",
+    );
+  }
+  const reference = `${stableRunRef}:approval`;
+  if (reference.length > 160) {
+    throw new Error("Reference ID must be 160 characters or less.");
+  }
+  return reference;
+}
+
 function getTokenSymbolByAddress(address: Address): TokenSymbol | null {
   const normalizedAddress = address.toLowerCase();
   const match = Object.values(SUPPORTED_TOKENS).find(
@@ -392,6 +424,10 @@ export function useWizPayContract({
       throw new Error("Arc public client is not ready yet.");
     }
 
+    if (!walletAddress || !allowanceSpender) {
+      throw new Error("Active wallet and payroll spender are required.");
+    }
+
     if (txHash) {
       await publicClient.waitForTransactionReceipt({
         hash: txHash,
@@ -399,11 +435,22 @@ export function useWizPayContract({
       });
     }
 
+    // Read allowance directly from chain on every poll. The wagmi
+    // useReadContract refetch is cached (staleTime 10s + keepPreviousData)
+    // and can return a stale 0n even after the approval receipt confirms,
+    // which previously surfaced as a timeout and then collapsed into the
+    // generic "Approve ... before submitting" message downstream.
     for (let attempt = 0; attempt < MAX_CONFIRMATION_POLLS; attempt += 1) {
-      const result = await refetchAllowance();
-      const nextAllowance = result.data ?? 0n;
+      const nextAllowance = (await publicClient.readContract({
+        address: activeToken.address,
+        abi: ERC20_ABI,
+        functionName: "allowance",
+        args: [walletAddress, allowanceSpender],
+      })) as bigint;
 
       if (nextAllowance >= requiredAmount) {
+        // Refresh the cached UI query after the chain confirms.
+        await refetchAllowance().catch(() => undefined);
         return;
       }
 
@@ -439,17 +486,18 @@ export function useWizPayContract({
 
   const requestApproval = async (
     amount = approvalAmount,
+    payrollReferenceId?: string,
   ): Promise<TransactionActionResult> => {
     if (!walletAddress) {
       const message = "Connect the active wallet before approving payroll.";
       state.setErrorMessage(message);
-      return { ok: false, hash: null };
+      return { ok: false, hash: null, error: message };
     }
 
     if (!publicClient) {
       const message = "Arc public client is not ready yet.";
       state.setErrorMessage(message);
-      return { ok: false, hash: null };
+      return { ok: false, hash: null, error: message };
     }
 
     state.setApprovalState("signing");
@@ -460,13 +508,13 @@ export function useWizPayContract({
     );
 
     try {
-      const approvalReference = [
-        "PAYROLL-APPROVAL",
-        walletAddress.toLowerCase(),
-        activeToken.address.toLowerCase(),
-        requireWizPayAddress().toLowerCase(),
-        amount.toString(),
-      ].join(":");
+      // Stable business reference per payroll run (see
+      // buildPayrollApprovalReference). Wallet/token/amount stay in the
+      // backend request fingerprint; the reference itself is short,
+      // deterministic, and retry-stable.
+      const approvalReference = buildPayrollApprovalReference(
+        payrollReferenceId,
+      );
       const approvalIntent = await acquireExecutionIntent({
         network: "arc-mainnet",
         operation: "TOKEN_APPROVAL",
@@ -517,12 +565,12 @@ export function useWizPayContract({
       state.setErrorMessage(message);
       state.setStatusMessage(null);
 
-      return { ok: false, hash: null };
+      return { ok: false, hash: null, error: message };
     }
   };
 
   const handleApprove = async (): Promise<TransactionActionResult> => {
-    return requestApproval(approvalAmount);
+    return requestApproval(approvalAmount, state.referenceId);
   };
 
   /**
@@ -576,22 +624,11 @@ export function useWizPayContract({
       return { ok: false, hash: null };
     }
 
-    // Determine the effective input token for the Mainnet payroll payout.
-    // When all recipients target the same token AND it differs from activeToken,
-    // it means a pre-swap has already been executed and the wallet now holds
-    // the target token. Use the target token as input for same-token payout.
-    const allSameTarget = batchPreparedRecipients.every(
-      (r) => r.targetToken === batchPreparedRecipients[0].targetToken,
-    );
-    const batchTargetToken = batchPreparedRecipients[0]?.targetToken;
-    const effectiveTokenIn =
-      allSameTarget &&
-      batchTargetToken &&
-      batchTargetToken !== activeToken.symbol
-        ? SUPPORTED_TOKENS[batchTargetToken].address
-        : activeToken.address;
-    const effectiveTokenInSymbol =
-      getTokenSymbolByAddress(effectiveTokenIn) ?? activeToken.symbol;
+    // Atomic payroll input is always the active (source) token. Cross-token
+    // groups swap inside executeCrossTokenPayroll; there is no pre-swap step
+    // and no post-swap token state to verify.
+    const effectiveTokenIn = activeToken.address;
+    const effectiveTokenInSymbol = activeToken.symbol;
 
     logPayrollRouteDiagnostic(
       "[official-payroll-route] final payout effectiveTokenIn",
@@ -604,68 +641,7 @@ export function useWizPayContract({
     let latestAllowance = currentAllowance;
     let latestBalance = currentBalance;
 
-    // When the effective input token differs from activeToken (post-swap scenario),
-    // read allowance and balance directly for the effective token.
-    if (effectiveTokenIn !== activeToken.address) {
-      const verificationContext = {
-        chainId: activeArcChain.id,
-        methods: ["allowance", "balanceOf"],
-        multicallAddress: ARC_MULTICALL3_ADDRESS,
-        rpcEndpoint: ACTIVE_ARC_NETWORK.rpcUrl,
-        spender: spenderAddress,
-        token: effectiveTokenInSymbol,
-        tokenAddress: effectiveTokenIn,
-        walletAddress,
-      };
-
-      logPayrollRouteDiagnostic(
-        "[official-payroll-route] post-settlement verification request",
-        verificationContext,
-      );
-
-      try {
-        const verifiedState = await readPostSettlementTokenState({
-          publicClient,
-          tokenAddress: effectiveTokenIn,
-          walletAddress,
-          spenderAddress,
-        });
-        latestAllowance = verifiedState.allowance;
-        latestBalance = verifiedState.balance;
-      } catch (verificationError) {
-        const transientRpcFailure = isTransientRpcError(verificationError);
-        logPayrollRouteDiagnostic(
-          "[official-payroll-route] post-settlement verification failed",
-          {
-            ...verificationContext,
-            error: verificationError,
-            transientRpcFailure,
-          },
-        );
-
-        if (!transientRpcFailure) {
-          throw new Error(
-            `Post-settlement ${effectiveTokenInSymbol} payroll verification failed: ${getFriendlyErrorMessage(verificationError)}`,
-          );
-        }
-
-        throw new Error(
-          `Arc Mainnet RPC could not verify the post-settlement ${effectiveTokenInSymbol} payroll allowance and balance. Wait a moment and use payroll recovery to continue.`,
-        );
-      }
-
-      logPayrollRouteDiagnostic(
-        "[official-payroll-route] post-swap wallet state",
-        {
-          token: effectiveTokenInSymbol,
-          balance: latestBalance.toString(),
-          allowanceToWizPay: latestAllowance.toString(),
-          requiredAmount: batchTotalAmount.toString(),
-          needsApproval: latestAllowance < batchTotalAmount,
-          insufficientBalance: latestBalance < batchTotalAmount,
-        },
-      );
-    } else if (
+    if (
       currentAllowance < batchTotalAmount ||
       currentBalance < batchTotalAmount
     ) {
@@ -678,139 +654,34 @@ export function useWizPayContract({
       latestBalance = latestBalanceResult.data ?? currentBalance;
     }
 
-    if (latestBalance < batchTotalAmount) {
-      const message = `Insufficient ${effectiveTokenInSymbol} balance for this payroll batch. Have ${latestBalance.toString()}, need ${batchTotalAmount.toString()}.`;
+    const crossTokenOuts = batchPreparedRecipients.map(
+      (recipient) => SUPPORTED_TOKENS[recipient.targetToken].address,
+    );
+    const crossUniqueOut = new Set(
+      crossTokenOuts.map((value) => value.toLowerCase()),
+    );
+    if (crossUniqueOut.size !== 1) {
+      const message =
+        "Arc Mainnet payroll requires a homogeneous destination token group.";
       state.setErrorMessage(message);
       return { ok: false, hash: null, error: message };
     }
+    const crossTokenOut = crossTokenOuts[0]!;
+    const isCrossToken =
+      crossTokenOut.toLowerCase() !== activeToken.address.toLowerCase();
 
-    if (latestAllowance < batchTotalAmount) {
-      // If effective token differs, auto-approve for the target token
-      if (effectiveTokenIn !== activeToken.address) {
-        logPayrollRouteDiagnostic(
-          "[official-payroll-route] auto-approving post-swap token",
-          {
-            token: batchTargetToken,
-            amount: batchTotalAmount.toString(),
-            spender: requireWizPayAddress(),
-          },
-        );
-        state.setStatusMessage(
-          `Approving ${batchTargetToken} for payroll payout...`,
-        );
-        try {
-          const approvalReference = [
-            "PAYROLL-APPROVAL",
-            walletAddress.toLowerCase(),
-            effectiveTokenIn.toLowerCase(),
-            requireWizPayAddress().toLowerCase(),
-            batchTotalAmount.toString(),
-          ].join(":");
-          const approvalIntent = await acquireExecutionIntent({
-            network: "arc-mainnet",
-            operation: "TOKEN_APPROVAL",
-            sourceWallet: walletAddress,
-            recipient: requireWizPayAddress(),
-            tokenIn: effectiveTokenIn,
-            tokenOut: effectiveTokenIn,
-            amountUnits: batchTotalAmount.toString(),
-            externalReference: approvalReference,
-          });
-          const approvalResult = await executeTransaction({
-            abi: ERC20_ABI,
-            args: [requireWizPayAddress(), batchTotalAmount],
-            chainId: activeArcChain.id,
-            contractAddress: effectiveTokenIn,
-            functionName: "approve",
-            executionIntentId: approvalIntent.id,
-            idempotencyKey: approvalIntent.idempotencyKey,
-            refId: approvalReference,
-          });
-          if (approvalResult.txHash && approvalResult.executionLeaseOwner) {
-            await bindExecutionIntentTransactionHash(
-              approvalIntent.id,
-              approvalResult.txHash,
-              approvalIntent.idempotencyKey,
-              approvalResult.executionLeaseOwner,
-            );
-          }
-          if (!approvalResult.hash && !approvalResult.txHash) {
-            const message = `Approval for ${batchTargetToken} was not confirmed.`;
-            state.setErrorMessage(message);
-            return { ok: false, hash: null, error: message };
-          }
-          // Only use txHash if it's a real EVM hash. The `hash` field may
-          // contain a referenceId which must NOT be passed to RPC.
-          const approvalEvmHash =
-            approvalResult.txHash &&
-            /^0x[a-fA-F0-9]{64}$/.test(approvalResult.txHash)
-              ? approvalResult.txHash
-              : approvalResult.hash &&
-                  /^0x[a-fA-F0-9]{64}$/.test(approvalResult.hash)
-                ? approvalResult.hash
-                : null;
+    if (!isCrossToken) {
+      if (latestBalance < batchTotalAmount) {
+        const message = `Insufficient ${effectiveTokenInSymbol} balance for this payroll batch. Have ${latestBalance.toString()}, need ${batchTotalAmount.toString()}.`;
+        state.setErrorMessage(message);
+        return { ok: false, hash: null, error: message };
+      }
 
-          logPayrollRouteDiagnostic(
-            "[official-payroll-route] approval tx submitted",
-            {
-              token: batchTargetToken,
-              txHash: approvalEvmHash,
-              rawHash: approvalResult.hash,
-              rawTxHash: approvalResult.txHash,
-            },
-          );
-
-          if (approvalEvmHash) {
-            state.setStatusMessage(
-              `Waiting for ${batchTargetToken} approval confirmation on Arc...`,
-            );
-            await publicClient.waitForTransactionReceipt({
-              hash: approvalEvmHash as Hex,
-              confirmations: 1,
-            });
-          } else {
-            // No EVM hash available — wait briefly then
-            // rely on the allowance polling below to confirm the approval.
-            state.setStatusMessage(
-              `Confirming ${batchTargetToken} approval...`,
-            );
-            await waitFor(3000);
-          }
-
-          for (
-            let attempt = 0;
-            attempt < MAX_CONFIRMATION_POLLS;
-            attempt += 1
-          ) {
-            const nextAllowance = (await publicClient.readContract({
-              address: effectiveTokenIn,
-              abi: ERC20_ABI,
-              functionName: "allowance",
-              args: [walletAddress, spenderAddress],
-            })) as bigint;
-
-            if (nextAllowance >= batchTotalAmount) {
-              latestAllowance = nextAllowance;
-              break;
-            }
-
-            if (attempt < MAX_CONFIRMATION_POLLS - 1) {
-              await waitFor(POLL_INTERVAL_MS);
-            }
-          }
-
-          if (latestAllowance < batchTotalAmount) {
-            const message = `Approval for ${batchTargetToken} did not update before the timeout window ended.`;
-            state.setErrorMessage(message);
-            return { ok: false, hash: null, error: message };
-          }
-        } catch (approvalError) {
-          const message = `Failed to approve ${batchTargetToken}: ${getFriendlyErrorMessage(approvalError)}`;
-          state.setErrorMessage(message);
-          return { ok: false, hash: null, error: message };
-        }
-      } else {
-        const message = `Approve ${activeToken.symbol} before submitting this payroll batch.`;
+      if (latestAllowance < batchTotalAmount) {
+        const message =
+          `Approve ${activeToken.symbol} before submitting this payroll batch. ` +
+          `Allowance ${latestAllowance.toString()} is below required ${batchTotalAmount.toString()} ` +
+          `(fee-inclusive funding includes payroll fee; approve the full funding amount and wait for confirmation).`;
         state.setErrorMessage(message);
         return { ok: false, hash: null, error: message };
       }
@@ -847,16 +718,124 @@ export function useWizPayContract({
         const functionName = sameToken
           ? "executeSameTokenPayroll"
           : "executeCrossTokenPayroll";
-        const funding = sameToken
-          ? sameTokenFunding(amounts, feeBps)
-          : amounts.reduce((sum, amount) => sum + amount, 0n);
+        let funding: bigint;
+        let crossMinTotalOut: bigint | null = null;
+        let crossMinHopPriceX36: bigint | null = null;
+        let crossDeadline = deadline;
+        if (sameToken) {
+          funding = sameTokenFunding(amounts, feeBps);
+        } else {
+          // Live funding from exact-in probes: gross input whose fee-netted
+          // output covers obligations after slippage. Never 1:1.
+          const obligations = amounts.reduce((sum, amount) => sum + amount, 0n);
+          const payrollQuote = await fetchPayrollCrossTokenQuote({
+            tokenInAddress: activeToken.address,
+            tokenOutAddress: tokenOut,
+            outputTotals: obligations.toString(),
+            slippageBps: Number(PREVIEW_SLIPPAGE_BPS),
+            walletAddress,
+            recipient: walletAddress,
+          });
+          if (
+            !Number.isFinite(Date.parse(payrollQuote.expiresAt)) ||
+            Date.now() > Date.parse(payrollQuote.expiresAt)
+          ) {
+            const message =
+              "Cross-token payroll quote expired. Retry to obtain a new Mainnet quote.";
+            state.setErrorMessage(message);
+            return { ok: false, hash: null, error: message };
+          }
+          funding = BigInt(payrollQuote.grossInput);
+          crossMinTotalOut = BigInt(payrollQuote.minTotalOut);
+          crossMinHopPriceX36 = BigInt(payrollQuote.minHopPriceX36);
+          crossDeadline = Math.floor(Date.now() / 1_000) + 10 * 60;
+          if (latestBalance < funding) {
+            const message =
+              `Insufficient ${activeToken.symbol} balance for this cross-token payroll batch. ` +
+              `Have ${latestBalance.toString()}, need ${funding.toString()} ` +
+              `(obligations ${obligations.toString()} plus swap input and payroll fee from the live Mainnet quote).`;
+            state.setErrorMessage(message);
+            return { ok: false, hash: null, error: message };
+          }
+          // EURC input needs an ERC20 approval for the quoted gross input
+          // (USDC input is native value, no approval). Approval binds the
+          // payroll run reference plus the quoted input so a moved quote
+          // cannot reuse a stale approval intent.
+          if (
+            !isAddressEqual(activeToken.address, SUPPORTED_TOKENS.USDC.address)
+          ) {
+            const refreshed = (await publicClient.readContract({
+              address: activeToken.address,
+              abi: ERC20_ABI,
+              functionName: "allowance",
+              args: [walletAddress, spenderAddress],
+            })) as bigint;
+            latestAllowance = refreshed;
+            if (latestAllowance < funding) {
+              state.setStatusMessage(
+                `Approving ${activeToken.symbol} for cross-token payroll...`,
+              );
+              const approvalReference = `${buildPayrollApprovalReference(referenceId)}:${funding.toString()}`;
+              if (approvalReference.length > 160) {
+                const message = "Reference ID must be 160 characters or less.";
+                state.setErrorMessage(message);
+                return { ok: false, hash: null, error: message };
+              }
+              const approvalIntent = await acquireExecutionIntent({
+                network: "arc-mainnet",
+                operation: "TOKEN_APPROVAL",
+                sourceWallet: walletAddress,
+                recipient: requireWizPayAddress(),
+                tokenIn: activeToken.address,
+                tokenOut: activeToken.address,
+                amountUnits: funding.toString(),
+                externalReference: approvalReference,
+              });
+              const approvalResult = await executeTransaction({
+                abi: ERC20_ABI,
+                args: [requireWizPayAddress(), funding],
+                chainId: activeArcChain.id,
+                contractAddress: activeToken.address,
+                functionName: "approve",
+                executionIntentId: approvalIntent.id,
+                idempotencyKey: approvalIntent.idempotencyKey,
+                refId: approvalReference,
+              });
+              if (approvalResult.txHash && approvalResult.executionLeaseOwner) {
+                await bindExecutionIntentTransactionHash(
+                  approvalIntent.id,
+                  approvalResult.txHash,
+                  approvalIntent.idempotencyKey,
+                  approvalResult.executionLeaseOwner,
+                );
+              }
+              await waitForAllowanceUpdate(funding, approvalResult.txHash);
+              latestAllowance = (await publicClient.readContract({
+                address: activeToken.address,
+                abi: ERC20_ABI,
+                functionName: "allowance",
+                args: [walletAddress, spenderAddress],
+              })) as bigint;
+              if (latestAllowance < funding) {
+                const message = `Approval for ${activeToken.symbol} did not reach quoted funding ${funding.toString()}.`;
+                state.setErrorMessage(message);
+                return { ok: false, hash: null, error: message };
+              }
+            }
+          }
+        }
         const approval = payrollApprovalTarget({
           tokenIn: activeToken.address,
           tokenOut,
           funding,
         });
         if (approval && latestAllowance < approval.amount) {
-          const message = `Approve ${activeToken.symbol} before submitting this payroll batch.`;
+          const message =
+            `Approve ${activeToken.symbol} before submitting this payroll batch. ` +
+            `Allowance ${latestAllowance.toString()} is below required funding ${approval.amount.toString()} ` +
+            `(batch ${batchTotalAmount.toString()} plus ${(
+              approval.amount - batchTotalAmount
+            ).toString()} payroll fee at ${feeBps.toString()} bps).`;
           state.setErrorMessage(message);
           return { ok: false, hash: null, error: message };
         }
@@ -868,13 +847,9 @@ export function useWizPayContract({
               recipients,
               amounts,
               funding,
-              amounts.reduce((sum, amount) => sum + amount, 0n),
-              calculateMinHopPriceX36(
-                funding,
-                amounts.reduce((sum, amount) => sum + amount, 0n),
-                Number(PREVIEW_SLIPPAGE_BPS),
-              ),
-              BigInt(deadline),
+              crossMinTotalOut as bigint,
+              crossMinHopPriceX36 as bigint,
+              BigInt(crossDeadline),
               referenceId,
             ];
         const value = sameToken

@@ -1,21 +1,86 @@
 "use client";
 
 import Link from "next/link";
-import { Copy, Plus } from "lucide-react";
-import { useState } from "react";
+import { Copy, Loader2, Plus } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useExternalWallet } from "@/components/providers/external-wallet-context";
+import { useAppKit } from "@reown/appkit/react";
 import type { InvoiceStatus } from "@/lib/invoice-api";
 import { getInvoiceCheckoutUrl } from "@/lib/invoice-links";
+import { ensureExternalWalletRegistered } from "@/lib/wallet-registration";
 import { InvoiceQrCode } from "./InvoiceQrCode";
 
-export function useMerchantInvoiceSession() {
+export type MerchantInvoiceSession = {
+  /** Bearer token for merchant invoice/activity endpoints: the wallet address. */
+  userToken: string | null;
+  registered: boolean;
+  registering: boolean;
+  registerError: string | null;
+  retry: () => void;
+  ready: boolean;
+  walletMode: "external";
+  walletAddress: string | undefined;
+  useAppWallet: () => void;
+};
+
+/**
+ * Merchant invoice session for Arc Mainnet external wallets.
+ *
+ * The backend binds the merchant principal to the registered external wallet
+ * address (presented as the bearer token). Registration is a self-custodial
+ * address binding — no keys, no hosted wallet, no alternate network.
+ */
+export function useMerchantInvoiceSession(): MerchantInvoiceSession {
   const { isReady, activeWalletAddress } = useExternalWallet();
+  const [registered, setRegistered] = useState(false);
+  const [registering, setRegistering] = useState(false);
+  const [registerError, setRegisterError] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
+
+  useEffect(() => {
+    if (!activeWalletAddress) {
+      setRegistered(false);
+      setRegistering(false);
+      setRegisterError(null);
+      return;
+    }
+    let cancelled = false;
+    setRegistering(true);
+    setRegisterError(null);
+    void ensureExternalWalletRegistered(activeWalletAddress)
+      .then(() => {
+        if (!cancelled) setRegistered(true);
+      })
+      .catch((cause: unknown) => {
+        if (!cancelled) {
+          setRegistered(false);
+          setRegisterError(
+            cause instanceof Error
+              ? cause.message
+              : "Wallet registration failed.",
+          );
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setRegistering(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeWalletAddress, attempt]);
+
+  const retry = useCallback(() => setAttempt((value) => value + 1), []);
+
   return {
-    userToken: null as string | null,
+    userToken: activeWalletAddress ?? null,
+    registered,
+    registering,
+    registerError,
+    retry,
     ready: isReady,
-    walletMode: "external" as const,
+    walletMode: "external",
     walletAddress: activeWalletAddress,
     useAppWallet: () => {},
   };
@@ -25,33 +90,74 @@ export function MerchantInvoiceAuthNotice({
   walletMode,
   ready,
   onUseAppWallet,
+  session,
 }: {
   walletMode: string;
   ready: boolean;
   onUseAppWallet: () => void;
+  session?: Pick<
+    MerchantInvoiceSession,
+    "registered" | "registering" | "registerError" | "retry" | "userToken"
+  >;
 }) {
   void walletMode;
   void onUseAppWallet;
-  return (
-    <Card className="glass-card border-amber-500/30">
-      <CardContent className="space-y-4 p-6">
-        <div>
-          <h2 className="text-lg font-semibold">
-            Invoice management unavailable on Arc Mainnet
-          </h2>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Mainnet invoice management remains disabled for external wallets.
-            WizPay stays fail-closed and will not use another network.
-          </p>
-        </div>
-        {!ready ? (
-          <p className="text-sm text-amber-300">
-            Loading external wallet session...
-          </p>
-        ) : null}
-      </CardContent>
-    </Card>
-  );
+  const { open } = useAppKit();
+  if (!session?.userToken) {
+    return (
+      <Card className="glass-card border-border/40">
+        <CardContent className="space-y-4 p-6">
+          <div>
+            <h2 className="text-lg font-semibold">Connect an external wallet</h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Merchant invoices on Arc Mainnet are scoped to your connected
+              external wallet. Connect to create and manage payment requests.
+            </p>
+          </div>
+          {!ready ? (
+            <p className="text-sm text-amber-300">
+              Loading external wallet session...
+            </p>
+          ) : (
+            <Button onClick={() => void open({ view: "Connect" })}>
+              Connect External Wallet
+            </Button>
+          )}
+        </CardContent>
+      </Card>
+    );
+  }
+  if (session.registering) {
+    return (
+      <Card className="glass-card border-border/40">
+        <CardContent className="flex items-center gap-3 p-6 text-sm text-muted-foreground">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          Registering the external wallet for merchant invoices...
+        </CardContent>
+      </Card>
+    );
+  }
+  if (session.registerError || !session.registered) {
+    return (
+      <Card className="glass-card border-amber-500/30">
+        <CardContent className="space-y-4 p-6">
+          <div>
+            <h2 className="text-lg font-semibold">
+              Merchant registration needed
+            </h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              {session.registerError ??
+                "Register the external Arc Mainnet wallet before using invoices."}
+            </p>
+          </div>
+          <Button variant="outline" onClick={session.retry}>
+            Retry registration
+          </Button>
+        </CardContent>
+      </Card>
+    );
+  }
+  return null;
 }
 
 export function InvoicePageHeader({

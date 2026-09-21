@@ -13,9 +13,17 @@ function backendConnectOrigin(environment: Record<string, string | undefined>) {
     environment.NEXT_PUBLIC_BACKEND_URL ??
     environment.BACKEND_API_BASE_URL;
   if (!value) return null;
-  if (process.env.NODE_ENV === "production" && value.startsWith("http://localhost")) {
-    return null;
+
+  const url = new URL(value);
+  if (
+    url.protocol === "http:" &&
+    (url.hostname === "localhost" || url.hostname === "127.0.0.1") &&
+    !url.username &&
+    !url.password
+  ) {
+    return url.origin;
   }
+
   return httpsOrigin(value, "Production backend URL");
 }
 

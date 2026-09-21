@@ -31,6 +31,7 @@ export type ArcOperationResourceReadiness = Readonly<{
   payrollDirect: boolean;
   invoiceCreation: boolean;
   paymentLinkDirect: boolean;
+  bridgeDirect: boolean;
   swapDirect: boolean;
   crossToken: boolean;
 }>;
@@ -293,6 +294,31 @@ export declare const ARC_TOKEN_RESOURCES: Readonly<
     Readonly<Record<ArcTokenSymbol, ArcResource<ArcTokenResourceValue>>>
   >
 >;
+
+export type ArcCctpContractKey =
+  | "tokenMessengerV2"
+  | "messageTransmitterV2"
+  | "irisApi";
+
+export type ArcCctpContractValue = {
+  readonly address?: `0x${string}`;
+  readonly baseUrl?: string;
+  readonly domain?: 26;
+  readonly version?: "CCTP_V2" | "v2";
+  readonly authoritativeSource?: string;
+};
+
+export declare const ARC_CCTP_RESOURCES: Readonly<
+  Record<
+    ArcNetworkKey,
+    Readonly<Record<ArcCctpContractKey, ArcResource<ArcCctpContractValue>>>
+  >
+>;
+
+export declare function getArcCctpResource(
+  networkKey: ArcNetworkKey,
+  contractKey: ArcCctpContractKey,
+): ArcResource<ArcCctpContractValue>;
 
 export declare const ARC_WIZPAY_CONTRACT_RESOURCES: Readonly<
   Record<

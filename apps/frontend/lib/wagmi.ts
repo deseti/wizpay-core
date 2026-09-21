@@ -3,6 +3,14 @@ import { coinbaseWallet, safe } from "@wagmi/connectors";
 import { createConfig, custom, http } from "wagmi";
 import { defineChain, type Chain } from "viem";
 import {
+  arbitrum,
+  avalanche,
+  base,
+  mainnet,
+  optimism,
+  polygon,
+} from "viem/chains";
+import {
   getArcExplorerResource,
   getArcNetworkByKey,
   getArcRpcResource,
@@ -79,7 +87,22 @@ function defineArcMainnet() {
 export const arcMainnetNetwork = defineArcMainnet();
 export const activeArcChain = arcMainnetNetwork;
 
-export const SUPPORTED_CHAINS = [activeArcChain] as const;
+// Arc Mainnet is the default WizPay application runtime. The additional
+// mainnet chains below exist exclusively so the connected external wallet can
+// sign official Circle CCTP bridge legs (source approval/burn, destination
+// mint) on the bridge counterparty chain. Payroll, send, swap, invoice, and
+// payment-link flows always pin to activeArcChain and never follow the
+// wallet's selected chain implicitly.
+export const BRIDGE_CHAINS = [
+  mainnet,
+  base,
+  arbitrum,
+  optimism,
+  polygon,
+  avalanche,
+] as const;
+
+export const SUPPORTED_CHAINS = [activeArcChain, ...BRIDGE_CHAINS] as const;
 export const CHAIN_BY_ID: Record<number, Chain> = Object.fromEntries(
   SUPPORTED_CHAINS.map((chain) => [chain.id, chain]),
 );
@@ -100,6 +123,12 @@ const transports = {
           );
         },
       }),
+  [mainnet.id]: http(),
+  [base.id]: http(),
+  [arbitrum.id]: http(),
+  [optimism.id]: http(),
+  [polygon.id]: http(),
+  [avalanche.id]: http(),
 } as const;
 
 const externalWalletConnectors = [

@@ -8,6 +8,7 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { isAddress } from 'viem';
 import { WalletProvisionError, WalletService } from './wallet.service';
 
 type WalletSessionBody = {
@@ -23,6 +24,46 @@ type EnsureWalletBody = WalletSessionBody & {
 @Controller('wallets')
 export class WalletController {
   constructor(private readonly walletService: WalletService) {}
+
+  /**
+   * Register the caller's external Arc Mainnet wallet address.
+   *
+   * Self-custodial address binding for chain 5042: the backend stores the
+   * address for ownership scoping (invoices, activity) and never holds keys
+   * or signs user transactions. The `userId` is a caller-provided stable
+   * identifier (derived client-side per wallet); the bearer address presented
+   * to authenticated endpoints must match the registered address.
+   */
+  @Post('register-external')
+  async registerExternal(
+    @Body() body: { userId?: unknown; address?: unknown; userEmail?: unknown },
+  ) {
+    const userId = typeof body.userId === 'string' ? body.userId.trim() : '';
+    const address = typeof body.address === 'string' ? body.address.trim() : '';
+    const userEmail =
+      typeof body.userEmail === 'string' && body.userEmail.trim()
+        ? body.userEmail.trim()
+        : null;
+    if (!userId) {
+      throw new BadRequestException('Missing required field: userId');
+    }
+    if (!isAddress(address)) {
+      throw new BadRequestException(
+        'Wallet registration requires a valid EVM address.',
+      );
+    }
+    try {
+      return {
+        data: await this.walletService.registerExternalWallet({
+          userId,
+          address,
+          userEmail,
+        }),
+      };
+    } catch (error) {
+      throw mapWalletControllerError(error);
+    }
+  }
 
   @Post('initialize')
   async initialize(@Body() body: WalletSessionBody) {
