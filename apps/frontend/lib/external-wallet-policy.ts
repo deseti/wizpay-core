@@ -1,20 +1,14 @@
 import type { Address } from "viem";
-import { BRIDGE_TESTNETS } from "@wizpay/bridge-registry";
 
 import { ACTIVE_ARC_NETWORK } from "@/lib/active-arc-network";
 
-const TESTNET_CHAIN_NAMES = Object.fromEntries(
-  BRIDGE_TESTNETS.map((network) => [network.chainId, network.name]),
-);
-export const SUPPORTED_EXTERNAL_WALLET_CHAIN_IDS = new Set<number>(
-  ACTIVE_ARC_NETWORK.key === "arc-mainnet"
-    ? [ACTIVE_ARC_NETWORK.chainId]
-    : BRIDGE_TESTNETS.map((network) => network.chainId),
-);
+export const SUPPORTED_EXTERNAL_WALLET_CHAIN_IDS = new Set<number>([
+  ACTIVE_ARC_NETWORK.chainId,
+]);
 
 function walletChainName(chainId: number) {
   if (chainId === ACTIVE_ARC_NETWORK.chainId) return ACTIVE_ARC_NETWORK.name;
-  return TESTNET_CHAIN_NAMES[chainId] ?? `chain ${chainId}`;
+  return `chain ${chainId}`;
 }
 
 export function assertSupportedExternalWalletChain(chainId: number) {

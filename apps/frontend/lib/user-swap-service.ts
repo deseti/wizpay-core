@@ -1,10 +1,11 @@
 import { backendFetch } from "@/lib/backend-api";
+import { getMainnetUniswapV4UnavailableState } from "@/lib/mainnet-uniswap-v4";
 import type { TokenSymbol } from "@/lib/wizpay";
 
-export const USER_SWAP_CHAIN = "ARC-TESTNET" as const;
+export const USER_SWAP_CHAIN = "ARC-MAINNET" as const;
 
-/** Standalone swap quotes and execution are XyloNet-only. */
-export type UserSwapProvider = "xylonet";
+/** Standalone swap quotes and execution resolve through Mainnet Uniswap V4 only. */
+export type UserSwapProvider = "mainnet-uniswap-v4";
 
 export interface UserSwapQuoteRequest {
   tokenIn: TokenSymbol;
@@ -63,10 +64,34 @@ export interface UserSwapPrepareResponse extends UserSwapQuoteResponse {
   transaction: UserSwapTransactionPayload;
 }
 
+function assertMainnetUserSwapRequest(params: UserSwapQuoteRequest) {
+  if (params.chain !== USER_SWAP_CHAIN) {
+    throw new Error("Standalone swaps support Arc Mainnet only.");
+  }
+  if (params.tokenIn === params.tokenOut) {
+    throw new Error("tokenIn and tokenOut must be different.");
+  }
+  if (
+    params.toAddress &&
+    params.toAddress.toLowerCase() !== params.fromAddress.toLowerCase()
+  ) {
+    throw new Error("toAddress must equal the connected wallet address.");
+  }
+}
+
+function assertMainnetSwapGate() {
+  const gate = getMainnetUniswapV4UnavailableState();
+  if (!gate.available || !gate.executable) {
+    throw new Error(gate.message);
+  }
+}
+
 export async function quoteUserSwap(
   params: UserSwapQuoteRequest,
   init?: Pick<RequestInit, "signal">,
 ): Promise<UserSwapQuoteResponse> {
+  assertMainnetUserSwapRequest(params);
+  assertMainnetSwapGate();
   return backendFetch<UserSwapQuoteResponse>("/user-swap/quote", {
     method: "POST",
     body: JSON.stringify(params),
@@ -77,6 +102,8 @@ export async function quoteUserSwap(
 export async function prepareUserSwap(
   params: UserSwapPrepareRequest,
 ): Promise<UserSwapPrepareResponse> {
+  assertMainnetUserSwapRequest(params);
+  assertMainnetSwapGate();
   return backendFetch<UserSwapPrepareResponse>("/user-swap/prepare", {
     method: "POST",
     body: JSON.stringify(params),

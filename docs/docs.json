@@ -34,8 +34,7 @@
             "pages": [
               "wallet-modes",
               "api-overview",
-              "agent-connect",
-              "circle-google-login-audit"
+              "agent-connect"
             ]
           }
         ]

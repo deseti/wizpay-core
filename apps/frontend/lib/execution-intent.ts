@@ -12,7 +12,7 @@ export type ExecutionIntent = {
 };
 
 export function acquireExecutionIntent(input: {
-  network: "arc-testnet" | "arc-mainnet";
+  network: "arc-mainnet";
   operation:
     | "SEND"
     | "PAYROLL"

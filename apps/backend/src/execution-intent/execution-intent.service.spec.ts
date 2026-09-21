@@ -25,8 +25,8 @@ describe('ExecutionIntentService', () => {
   beforeEach(() => {
     store = new IntentStore();
     routing = {
-      network: 'arc-testnet',
-      chainId: 5_042_002,
+      network: 'arc-mainnet',
+      chainId: 5_042,
       decide: jest.fn(({ network, operation, tokenIn, tokenOut }) => ({
         kind: 'DIRECT_TRANSFER',
         network,
@@ -61,13 +61,13 @@ describe('ExecutionIntentService', () => {
     expect(restarted.circleIdempotencyKey(retry)).toBe(first.idempotencyKey);
   });
 
-  it('prevents another network from reading, leasing, reconciling, or verifying an intent', async () => {
+  it('prevents a mismatched network binding from reading, leasing, reconciling, or verifying an intent', async () => {
     const intent = await service.acquire(sendInput());
     const otherNetwork = new ExecutionIntentService(
       store as never,
       {
         ...routing,
-        network: 'arc-mainnet',
+        network: 'unknown',
       } as never,
     );
     for (const action of [
@@ -274,7 +274,7 @@ describe('ExecutionIntentService', () => {
       publicId: 'invoice-1',
       status: 'OPEN',
       expiresAt: new Date('2099-09-11T00:00:00.000Z'),
-      chainId: 5_042_002,
+      chainId: 5_042,
       merchantWalletAddress: RECIPIENT,
       tokenAddress: USDC,
       amountUnits: '1',
@@ -349,7 +349,7 @@ describe('execution intent migration safety', () => {
 
 function sendInput() {
   return {
-    network: 'arc-testnet' as const,
+    network: 'arc-mainnet' as const,
     operation: 'SEND' as const,
     sourceWallet: WALLET,
     recipient: RECIPIENT,
@@ -362,7 +362,7 @@ function sendInput() {
 
 function receipt() {
   return {
-    network: 'arc-testnet',
+    network: 'arc-mainnet',
     transactionHash: HASH as `0x${string}`,
     sourceWallet: WALLET,
     token: USDC,

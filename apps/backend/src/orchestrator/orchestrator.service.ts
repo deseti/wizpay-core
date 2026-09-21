@@ -12,13 +12,6 @@ import { TaskDetails, TaskPayload } from '../task/task.types';
 import { TASK_QUEUE_MAP } from '../queue/queue.constants';
 import { QueueService } from '../queue/queue.service';
 import { TaskService } from '../task/task.service';
-import { FxRoutingGuard } from '../fx/fx-routing-guard.service';
-import { StableFXRfqClient } from '../fx/stablefx-rfq-client.service';
-import { FxOperationPayload } from '../fx/fx.types';
-import {
-  assertLegacyFxEnabled,
-  assertLegacyLiquidityEnabled,
-} from '../fx/stablefx-cutover.guard';
 import { CapabilityService } from '../capabilities/capability.service';
 
 @Injectable()
@@ -29,8 +22,6 @@ export class OrchestratorService {
     private readonly taskService: TaskService,
     private readonly queueService: QueueService,
     private readonly executionRouter: ExecutionRouterService,
-    private readonly fxRoutingGuard: FxRoutingGuard,
-    private readonly rfqClient: StableFXRfqClient,
     private readonly capabilities: CapabilityService,
   ) {}
 
@@ -45,12 +36,12 @@ export class OrchestratorService {
         'Legacy bridge tasks were removed. Use the external-wallet /bridge/intents lifecycle.',
       );
     }
-    if (type === TaskType.SWAP) {
-      assertLegacyFxEnabled();
-    }
-
-    if (type === TaskType.LIQUIDITY) {
-      assertLegacyLiquidityEnabled(this.capabilities.network);
+    if (type === TaskType.FX) {
+      throw new ServiceUnavailableException({
+        code: 'FX_TASK_TYPE_RETIRED',
+        message:
+          'FX tasks are retired on Arc Mainnet. Convert through the external-wallet Uniswap V4 flow.',
+      });
     }
 
     const route = TASK_QUEUE_MAP[type];
@@ -86,235 +77,6 @@ export class OrchestratorService {
     }
 
     return this.taskService.getTaskById(task.id);
-  }
-
-  // ─────────────────────────────────────────────────────────────────────────────
-  // FX Operation — routes through feature flag to legacy or new StableFX path
-  // ─────────────────────────────────────────────────────────────────────────────
-
-  /**
-   * Handle an FX operation by routing through the FxRoutingGuard.
-   *
-   * Flow:
-   * 1. Check FxRoutingGuard.getActiveMode() — if it throws (invalid/unset), let error propagate
-   * 2. For 'legacy' mode: route through existing swap path
-   * 3. For 'new' mode:
-   *    - Check circuit breaker — if open, throw ServiceUnavailableException
-   *    - Validate minOutput is present and non-empty
-   *    - Request quote via StableFXRfqClient.requestQuote()
-   *    - Create trade via StableFXRfqClient.createTrade()
-   *    - Enqueue settlement poll job on tx_poll queue
-   *    - Record outcome via FxRoutingGuard.recordOutcome()
-   * 4. Log routing path (legacy/new), operation ID, and timestamp for every FX operation
-   *
-   * Requirements: 1.1, 1.7, 2.1, 3.1, 9.1, 9.3, 9.4, 9.5, 10.3
-   */
-  async handleFxOperation(payload: FxOperationPayload): Promise<TaskDetails> {
-    this.capabilities.assert('stableFx');
-    const mode = this.fxRoutingGuard.getActiveMode();
-    const operationId = this.generateOperationId();
-    const timestamp = new Date().toISOString();
-
-    // Log routing path for every FX operation (Requirement 9.5)
-    this.logger.log(
-      `[fx-operation] route=${mode} operationId=${operationId} timestamp=${timestamp} ` +
-        `source=${payload.sourceToken} dest=${payload.destinationToken} amount=${payload.amount}`,
-    );
-
-    if (mode === 'legacy') {
-      assertLegacyFxEnabled();
-      return this.executeLegacySwap(payload, operationId, timestamp);
-    }
-
-    // 'new' mode — StableFX RFQ flow
-    return this.executeStableFxFlow(payload, operationId, timestamp);
-  }
-
-  /**
-   * Execute FX operation through the legacy StableFXAdapter_V2 path.
-   * Routes through the existing swap task handling.
-   */
-  private async executeLegacySwap(
-    payload: FxOperationPayload,
-    operationId: string,
-    timestamp: string,
-  ): Promise<TaskDetails> {
-    const task = await this.taskService.createTask(TaskType.SWAP, {
-      tokenIn: payload.sourceToken,
-      tokenOut: payload.destinationToken,
-      amountIn: payload.amount,
-      minAmountOut: payload.minOutput,
-      recipient: payload.recipient,
-      fxRoute: 'legacy',
-      operationId,
-      timestamp,
-    });
-
-    await this.taskService.logStep(
-      task.id,
-      'fx.routed_legacy',
-      TaskStatus.ASSIGNED,
-      `FX operation routed to legacy StableFXAdapter_V2 path`,
-      { context: { operationId, timestamp, route: 'legacy' } },
-    );
-
-    return this.taskService.getTaskById(task.id);
-  }
-
-  /**
-   * Execute FX operation through the new Circle StableFX RFQ flow.
-   *
-   * Steps:
-   * 1. Check circuit breaker
-   * 2. Validate minOutput
-   * 3. Request quote
-   * 4. Create trade
-   * 5. Enqueue settlement poll job
-   * 6. Record outcome
-   */
-  private async executeStableFxFlow(
-    payload: FxOperationPayload,
-    operationId: string,
-    timestamp: string,
-  ): Promise<TaskDetails> {
-    // Step 1: Check circuit breaker
-    if (this.fxRoutingGuard.isCircuitOpen()) {
-      throw new ServiceUnavailableException(
-        'FX operations halted: circuit open',
-      );
-    }
-
-    // Step 2: Validate minOutput is present for cross-currency operations (Requirement 10.3)
-    if (!payload.minOutput || payload.minOutput.trim() === '') {
-      throw new BadRequestException(
-        'Minimum output (minOutput) is required for all cross-currency FX operations',
-      );
-    }
-
-    // Create the task for tracking
-    const task = await this.taskService.createTask(TaskType.FX, {
-      sourceToken: payload.sourceToken,
-      destinationToken: payload.destinationToken,
-      amount: payload.amount,
-      minOutput: payload.minOutput,
-      recipient: payload.recipient,
-      tenor: payload.tenor ?? 'instant',
-      fxRoute: 'new',
-      operationId,
-      timestamp,
-    });
-
-    try {
-      // Step 3: Request quote via StableFXRfqClient
-      await this.taskService.logStep(
-        task.id,
-        'fx.quote_requested',
-        TaskStatus.IN_PROGRESS,
-        `Requesting RFQ quote from Circle StableFX`,
-        {
-          context: {
-            operationId,
-            sourceToken: payload.sourceToken,
-            destinationToken: payload.destinationToken,
-            amount: payload.amount,
-          },
-        },
-      );
-
-      const quote = await this.rfqClient.requestQuote({
-        fromCurrency: payload.sourceToken,
-        toCurrency: payload.destinationToken,
-        fromAmount: payload.amount,
-        tenor: payload.tenor ?? 'instant',
-      });
-
-      await this.taskService.logStep(
-        task.id,
-        'fx.quote_received',
-        TaskStatus.IN_PROGRESS,
-        `RFQ quote received: quoteId=${quote.quoteId} rate=${quote.rate} expiresAt=${quote.expiresAt}`,
-        {
-          context: {
-            quoteId: quote.quoteId,
-            rate: quote.rate,
-            expiresAt: quote.expiresAt,
-            fee: quote.fee,
-            toAmount: quote.toAmount,
-          },
-        },
-      );
-
-      // Step 4: Create trade via StableFXRfqClient
-      const trade = await this.rfqClient.createTrade(
-        quote.quoteId,
-        operationId,
-      );
-
-      await this.taskService.logStep(
-        task.id,
-        'fx.trade_created',
-        TaskStatus.IN_PROGRESS,
-        `Trade created: tradeId=${trade.tradeId} status=${trade.status}`,
-        {
-          context: {
-            tradeId: trade.tradeId,
-            quoteId: quote.quoteId,
-            status: trade.status,
-          },
-        },
-      );
-
-      // Step 5: Enqueue settlement poll job on tx_poll queue
-      await this.queueService.enqueueTransactionPoll(
-        {
-          taskId: task.id,
-          txId: trade.tradeId,
-          attempt: 0,
-        },
-        2000,
-      );
-
-      await this.taskService.logStep(
-        task.id,
-        'fx.settlement_polling',
-        TaskStatus.IN_PROGRESS,
-        `Settlement poll job enqueued for tradeId=${trade.tradeId}`,
-        {
-          context: {
-            tradeId: trade.tradeId,
-            taskId: task.id,
-            minOutput: payload.minOutput,
-            quotedAmount: quote.toAmount,
-          },
-        },
-      );
-
-      // Step 6: Record successful outcome
-      this.fxRoutingGuard.recordOutcome('new', true);
-
-      return this.taskService.getTaskById(task.id);
-    } catch (error) {
-      // Record failure outcome for circuit breaker evaluation
-      this.fxRoutingGuard.recordOutcome('new', false);
-
-      // Update task status to failed
-      const message =
-        error instanceof Error ? error.message : 'FX operation failed';
-
-      await this.taskService.updateStatus(task.id, TaskStatus.FAILED, {
-        step: 'fx.settlement_failed',
-        message,
-      });
-
-      throw error;
-    }
-  }
-
-  /**
-   * Generates a unique operation ID for FX operation tracking.
-   */
-  private generateOperationId(): string {
-    return `fx_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
@@ -450,7 +212,12 @@ export class OrchestratorService {
     if (type === TaskType.PAYROLL) this.capabilities.assertPayroll(payload);
     else if (type === TaskType.SWAP) this.capabilities.assert('swap');
     else if (type === TaskType.BRIDGE) this.capabilities.assert('bridge');
-    else if (type === TaskType.FX) this.capabilities.assert('stableFx');
+    else if (type === TaskType.FX)
+      throw new ServiceUnavailableException({
+        code: 'FX_TASK_TYPE_RETIRED',
+        message:
+          'FX tasks are retired on Arc Mainnet. Convert through the external-wallet Uniswap V4 flow.',
+      });
     else if (type === TaskType.LIQUIDITY) this.capabilities.assert('liquidity');
   }
 

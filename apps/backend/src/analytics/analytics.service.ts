@@ -2,8 +2,7 @@ import { Injectable, ServiceUnavailableException } from '@nestjs/common';
 import type { WizPayAnalyticsSnapshot } from './analytics.types';
 
 const DEFAULT_WIZPAY_CONTRACT_ADDRESS =
-  '0x87ACE45582f45cC81AC1E627E875AE84cbd75946';
-const DEFAULT_ARCSCAN_API_BASE_URL = 'https://testnet.arcscan.app/api/v2';
+  '0x77AC7Cb6507D404b5530fC03e3D39BAaEdE10C34';
 
 @Injectable()
 export class AnalyticsService {
@@ -43,7 +42,7 @@ export class AnalyticsService {
   private createSeedSnapshot(): WizPayAnalyticsSnapshot {
     return {
       contractName: 'WizPay',
-      network: 'Arc Testnet',
+      network: 'Arc Mainnet',
       contractAddress: this.resolveContractAddress(),
       transactions: 20996,
       transfers: 336994,
@@ -94,13 +93,13 @@ export class AnalyticsService {
   }
 
   private refreshArcscanCountersMetadata(): void {
-    const arcscanApiBaseUrl =
-      process.env.ARCSCAN_API_BASE_URL?.trim() || DEFAULT_ARCSCAN_API_BASE_URL;
+    const arcscanApiBaseUrl = process.env.ARCSCAN_API_BASE_URL?.trim();
     void arcscanApiBaseUrl;
 
-    // TODO: Add a lightweight Arcscan counter refresh here only after the
-    // endpoint shape, pagination limits, and failure behavior are documented.
-    // This first version intentionally never fetches full token-transfer pages.
+    // TODO: Add a lightweight Arc Mainnet explorer counter refresh here only
+    // after the endpoint shape, pagination limits, and failure behavior are
+    // documented. This version intentionally never fetches transfer pages and
+    // carries no default explorer URL.
   }
 
   private cloneSnapshot(

@@ -13,28 +13,22 @@ const WALLET = "0x1111111111111111111111111111111111111111";
 const OTHER_WALLET = "0x2222222222222222222222222222222222222222";
 
 describe("external wallet policy", () => {
-  it("supports only the selected Arc environment and its approved Testnet bridge chains", () => {
-    expect(SUPPORTED_EXTERNAL_WALLET_CHAIN_IDS).toContain(
-      ACTIVE_ARC_NETWORK.chainId,
-    );
-    if (ACTIVE_ARC_NETWORK.key === "arc-mainnet") {
-      expect([...SUPPORTED_EXTERNAL_WALLET_CHAIN_IDS]).toEqual([5_042]);
-      expect(SUPPORTED_EXTERNAL_WALLET_CHAIN_IDS).not.toContain(5_042_002);
-    } else {
-      expect(SUPPORTED_EXTERNAL_WALLET_CHAIN_IDS).toContain(5_042_002);
-      expect(SUPPORTED_EXTERNAL_WALLET_CHAIN_IDS).not.toContain(5_042);
-    }
+  it("supports only Arc Mainnet", () => {
+    expect(ACTIVE_ARC_NETWORK.key).toBe("arc-mainnet");
+    expect([...SUPPORTED_EXTERNAL_WALLET_CHAIN_IDS]).toEqual([5_042]);
+    expect(SUPPORTED_EXTERNAL_WALLET_CHAIN_IDS).not.toContain(9_999);
   });
 
-  it("rejects unsupported and opposite-environment chain IDs", () => {
+  it("rejects unsupported chain IDs", () => {
     expect(() => assertSupportedExternalWalletChain(1)).toThrow(
       "Unsupported wallet chain ID: 1",
     );
-    expect(() =>
-      assertSelectedArcWalletChain(
-        ACTIVE_ARC_NETWORK.key === "arc-mainnet" ? 5_042_002 : 5_042,
-      ),
-    ).toThrow(`chain ${ACTIVE_ARC_NETWORK.chainId}`);
+    expect(() => assertSupportedExternalWalletChain(9_999)).toThrow(
+      "Unsupported wallet chain ID: 9999",
+    );
+    expect(() => assertSelectedArcWalletChain(9_999)).toThrow(
+      "chain 5042",
+    );
   });
 
   it("requests exactly the selected chain without a fallback", async () => {

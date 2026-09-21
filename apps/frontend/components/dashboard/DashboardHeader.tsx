@@ -1,26 +1,20 @@
 "use client";
 
 import { useAppKit } from "@reown/appkit/react";
-import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import {
   ArrowRightLeft,
   Check,
   ChevronDown,
   Copy,
-  LogOut,
-  Mail,
   User,
   Wifi,
 } from "lucide-react";
 
-import { useCircleWallet } from "@/components/providers/CircleWalletProvider";
-import { useHybridWallet } from "@/components/providers/HybridWalletProvider";
-import { WalletModeToggle } from "@/components/wallet/WalletModeToggle";
+import { useExternalWallet } from "@/components/providers/external-wallet-context";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
-import { resolveCanonicalAppWalletEvmAddress } from "@/lib/canonical-app-wallet";
-import { arcTestnet } from "@/lib/wagmi";
+import { activeArcChain } from "@/lib/wagmi";
 
 function truncateAddress(address: string) {
   return `${address.slice(0, 6)}…${address.slice(-4)}`;
@@ -34,7 +28,7 @@ function MobileProfileEntry({
   statusLabel: string;
 }) {
   return (
-    <Link
+    <a
       href="/profile"
       className="flex items-center gap-2 rounded-2xl border border-border/40 bg-card/60 px-2.5 py-1.5 backdrop-blur-md shadow-lg shadow-black/10 transition-all hover:border-primary/25 hover:bg-primary/10 active:scale-95 md:hidden"
       aria-label="Open profile"
@@ -51,20 +45,11 @@ function MobileProfileEntry({
           {statusLabel}
         </span>
       </span>
-    </Link>
+    </a>
   );
 }
 
 export function DashboardHeader() {
-  const {
-    arcWallet,
-    login,
-    logout,
-    loginMethodLabel,
-    primaryWallet,
-    sepoliaWallet,
-    userEmail,
-  } = useCircleWallet();
   const {
     activeWalletAddress,
     activeWalletChainId,
@@ -72,25 +57,14 @@ export function DashboardHeader() {
     activeWalletLabel,
     activeWalletShortAddress,
     externalConnectorName,
-    isCircleConnected,
     isReady,
     requiresArcSwitch,
-    walletMode,
-  } = useHybridWallet();
+  } = useExternalWallet();
   const [menuOpen, setMenuOpen] = useState(false);
   const [copiedAddress, setCopiedAddress] = useState<string | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const { open: openAppKit } = useAppKit();
   const { toast } = useToast();
-  const canonicalAppWallet = resolveCanonicalAppWalletEvmAddress(
-    arcWallet?.address,
-    sepoliaWallet?.address,
-    primaryWallet?.address,
-    walletMode === "circle" ? activeWalletAddress : null,
-  );
-  const canonicalAppWalletShortAddress = canonicalAppWallet.address
-    ? truncateAddress(canonicalAppWallet.address)
-    : null;
 
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
@@ -107,7 +81,6 @@ export function DashboardHeader() {
     address: string,
     copiedKey = "wallet",
     label = activeWalletLabel,
-    description?: string,
   ) {
     try {
       await navigator.clipboard.writeText(address);
@@ -115,10 +88,7 @@ export function DashboardHeader() {
       toast({
         title: `${label} address copied`,
         description:
-          description ||
-          (walletMode === "circle"
-            ? "Use this EVM address across supported EVM networks."
-            : "Use this address when you want incoming funds to land in your external wallet."),
+          "Use this address when you want incoming funds to land in your external wallet on Arc Mainnet.",
       });
       window.setTimeout(() => setCopiedAddress(null), 2000);
     } catch (error) {
@@ -127,9 +97,8 @@ export function DashboardHeader() {
   }
 
   const showNetworkBadge = Boolean(activeWalletAddress);
-  const isArcActive =
-    walletMode === "circle" || activeWalletChainId === arcTestnet.id;
-  const networkBadgeLabel = activeWalletChainName ?? "Arc Testnet";
+  const isArcActive = activeWalletChainId === activeArcChain.id;
+  const networkBadgeLabel = activeWalletChainName ?? "Arc Mainnet";
 
   return (
     <header className="sticky top-0 z-30 border-b border-border/40 bg-background/60 backdrop-blur-2xl">
@@ -147,15 +116,7 @@ export function DashboardHeader() {
           </div>
         </div>
 
-        <div className="hidden lg:flex lg:flex-1 lg:justify-center">
-          <WalletModeToggle />
-        </div>
-
         <div className="flex items-center gap-2 sm:gap-3 ml-auto">
-          <div className="flex lg:hidden">
-            <WalletModeToggle className="scale-[0.92] origin-right" />
-          </div>
-
           {showNetworkBadge ? (
             <Badge
               variant="outline"
@@ -167,167 +128,13 @@ export function DashboardHeader() {
             >
               <Wifi className="h-2.5 w-2.5" />
               {requiresArcSwitch
-                ? `Switch to Arc · ${networkBadgeLabel}`
+                ? `Switch to Arc Mainnet · ${networkBadgeLabel}`
                 : networkBadgeLabel}
             </Badge>
           ) : null}
 
           {!isReady ? (
             <div className="h-9 w-32 animate-pulse rounded-xl bg-muted/30" />
-          ) : walletMode === "circle" ? (
-            !isCircleConnected ? (
-              <button
-                id="circle-sign-in-btn"
-                onClick={login}
-                className="glow-btn group relative flex items-center gap-2 rounded-xl bg-gradient-to-r from-primary to-violet-500 px-5 py-2.5 text-sm font-bold text-primary-foreground shadow-lg shadow-primary/20 transition-all hover:shadow-xl hover:shadow-primary/30 hover:brightness-110 active:scale-[0.97]"
-              >
-                <User className="h-4 w-4" />
-                Sign In to App Wallet
-              </button>
-            ) : (
-              <>
-                <MobileProfileEntry
-                  label={
-                    userEmail?.split("@")[0] ??
-                    canonicalAppWalletShortAddress ??
-                    "Account"
-                  }
-                  statusLabel="App Wallet"
-                />
-                <div className="hidden items-center gap-1.5 rounded-2xl border border-border/40 bg-card/50 p-1 backdrop-blur-md shadow-lg shadow-black/10 md:flex">
-                  {canonicalAppWallet.address ? (
-                    <button
-                      onClick={() =>
-                        void copyAddress(
-                          canonicalAppWallet.address,
-                          "evm",
-                          "EVM Address",
-                        )
-                      }
-                      className="hidden sm:flex items-center gap-1.5 rounded-xl px-2.5 py-2 font-mono text-[11px] text-foreground/75 transition-all hover:bg-primary/10 hover:text-primary active:scale-95 sm:text-xs"
-                      title="Copy active wallet address"
-                    >
-                      {canonicalAppWalletShortAddress}
-                      {copiedAddress === "evm" ? (
-                        <Check className="h-3 w-3 text-emerald-400" />
-                      ) : (
-                        <Copy className="h-3 w-3 text-muted-foreground" />
-                      )}
-                    </button>
-                  ) : null}
-
-                  <div className="relative" ref={menuRef}>
-                    <button
-                      id="circle-account-menu-btn"
-                      onClick={() => setMenuOpen((previous) => !previous)}
-                      className="flex h-9 w-9 items-center justify-center rounded-xl border border-transparent bg-background/80 transition-all hover:border-primary/20 hover:bg-primary/10 active:scale-95 sm:h-auto sm:w-auto sm:gap-1.5 sm:px-3 sm:py-2"
-                    >
-                      <span className="flex h-6 w-6 items-center justify-center rounded-lg bg-gradient-to-br from-primary/25 to-violet-500/20 text-[11px] font-bold text-primary ring-1 ring-primary/20">
-                        {loginMethodLabel.charAt(0)}
-                      </span>
-                      <ChevronDown
-                        className={`hidden h-3.5 w-3.5 text-muted-foreground transition-transform duration-200 sm:block ${menuOpen ? "rotate-180" : ""}`}
-                      />
-                    </button>
-
-                    {menuOpen ? (
-                      <>
-                        {/* Mobile backdrop */}
-                        <div
-                          className="fixed inset-0 z-40 bg-black/60 backdrop-blur-sm md:hidden"
-                          onClick={() => setMenuOpen(false)}
-                        />
-                        {/* Sheet – bottom on mobile, dropdown on desktop */}
-                        <div
-                          className="
-                        fixed inset-x-0 bottom-0 z-50 max-h-[80vh] overflow-y-auto rounded-t-3xl border-t border-border/40 bg-card/98 shadow-2xl shadow-black/60 backdrop-blur-2xl animate-scale-in
-                        md:absolute md:inset-auto md:right-0 md:top-full md:mt-2 md:max-h-none md:w-64 md:overflow-hidden md:rounded-2xl md:rounded-t-2xl md:border md:shadow-2xl
-                      "
-                        >
-                          {/* Handle bar (mobile only) */}
-                          <div className="flex justify-center pt-2.5 pb-1 md:hidden">
-                            <div className="h-1 w-10 rounded-full bg-border/60" />
-                          </div>
-
-                          <div className="border-b border-border/30 px-4 py-3">
-                            <p className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground/55">
-                              Active Wallet
-                            </p>
-                            <p className="mt-1 text-sm font-semibold text-foreground">
-                              {activeWalletLabel}
-                            </p>
-                            <p className="mt-1 text-xs text-muted-foreground">
-                              Logged in via {loginMethodLabel}
-                            </p>
-                            {userEmail ? (
-                              <p className="mt-2 flex items-center gap-1.5 text-xs text-muted-foreground/75">
-                                <Mail className="h-3.5 w-3.5" />
-                                {userEmail}
-                              </p>
-                            ) : null}
-                          </div>
-
-                          {canonicalAppWallet.address ? (
-                            <div className="border-b border-border/30 px-3 py-3">
-                              <button
-                                onClick={() =>
-                                  void copyAddress(
-                                    canonicalAppWallet.address,
-                                    "evm",
-                                    "EVM Address",
-                                  )
-                                }
-                                aria-label="Copy EVM Address"
-                                title={canonicalAppWallet.address}
-                                className="flex w-full items-center justify-between rounded-xl border border-border/30 bg-background/40 px-3 py-2.5 text-left transition-all hover:border-primary/20 hover:bg-primary/10"
-                              >
-                                <div className="min-w-0">
-                                  <p className="text-[10px] uppercase tracking-[0.2em] text-muted-foreground/60">
-                                    EVM Address
-                                  </p>
-                                  <p className="mt-0.5 truncate font-mono text-xs text-foreground/80">
-                                    {canonicalAppWallet.address}
-                                  </p>
-                                </div>
-                                <div className="ml-3 shrink-0">
-                                  {copiedAddress === "evm" ? (
-                                    <Check className="h-4 w-4 text-emerald-400" />
-                                  ) : (
-                                    <Copy className="h-4 w-4 text-muted-foreground" />
-                                  )}
-                                </div>
-                              </button>
-                            </div>
-                          ) : null}
-
-                          {canonicalAppWallet.mismatch ? (
-                            <div
-                              role="alert"
-                              className="border-b border-destructive/25 bg-destructive/5 px-4 py-3 text-xs leading-5 text-destructive"
-                            >
-                              App Wallet EVM addresses do not match. Address
-                              display is blocked to prevent funding the wrong
-                              wallet.
-                            </div>
-                          ) : null}
-
-                          <button
-                            onClick={() => {
-                              logout();
-                              setMenuOpen(false);
-                            }}
-                            className="flex w-full items-center gap-3 border-t border-border/30 px-4 py-4 text-sm text-red-400 transition-all hover:bg-red-500/10"
-                          >
-                            <LogOut className="h-4 w-4" />
-                            Logout
-                          </button>
-                        </div>
-                      </>
-                    ) : null}
-                  </div>
-                </div>
-              </>
-            )
           ) : !activeWalletAddress ? (
             <button
               type="button"
@@ -369,7 +176,7 @@ export function DashboardHeader() {
                   onClick={() =>
                     void openAppKit({
                       view:
-                        activeWalletChainId !== arcTestnet.id
+                        activeWalletChainId !== activeArcChain.id
                           ? "Networks"
                           : "Account",
                     })

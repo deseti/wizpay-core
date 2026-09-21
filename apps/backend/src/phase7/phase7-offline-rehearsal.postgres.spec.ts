@@ -40,10 +40,10 @@ const hashes = Array.from(
 describePostgres('Phase 7 deterministic offline Mainnet rehearsal', () => {
   let admin: Client;
   let databaseName: string;
-  let testnetDatabaseName: string;
+  let secondaryDatabaseName: string;
   let isolatedUrl: string;
   let prisma: PrismaClient;
-  let testnetPrisma: PrismaClient;
+  let secondaryPrisma: PrismaClient;
   let routing: PaymentRoutingService;
   let intents: ExecutionIntentService;
   let receiptVerifier: { verify: jest.Mock };
@@ -52,26 +52,26 @@ describePostgres('Phase 7 deterministic offline Mainnet rehearsal', () => {
   beforeAll(async () => {
     assertUrl(adminUrl!);
     databaseName = `wizpay_phase7_${randomUUID().replaceAll('-', '')}`;
-    testnetDatabaseName = `wizpay_phase7_testnet_${randomUUID().replaceAll('-', '')}`;
+    secondaryDatabaseName = `wizpay_phase7_secondary_${randomUUID().replaceAll('-', '')}`;
     admin = new Client({ connectionString: adminUrl });
     await admin.connect();
     await admin.query(`CREATE DATABASE "${databaseName}"`);
-    await admin.query(`CREATE DATABASE "${testnetDatabaseName}"`);
+    await admin.query(`CREATE DATABASE "${secondaryDatabaseName}"`);
     const url = new URL(adminUrl!);
     url.pathname = `/${databaseName}`;
     isolatedUrl = url.toString();
-    const testnetUrl = new URL(adminUrl!);
-    testnetUrl.pathname = `/${testnetDatabaseName}`;
+    const secondaryUrl = new URL(adminUrl!);
+    secondaryUrl.pathname = `/${secondaryDatabaseName}`;
     await migrate(isolatedUrl);
-    await migrate(testnetUrl.toString());
+    await migrate(secondaryUrl.toString());
     prisma = new PrismaClient({
       adapter: new PrismaPg({ connectionString: isolatedUrl }),
     });
-    testnetPrisma = new PrismaClient({
-      adapter: new PrismaPg({ connectionString: testnetUrl.toString() }),
+    secondaryPrisma = new PrismaClient({
+      adapter: new PrismaPg({ connectionString: secondaryUrl.toString() }),
     });
     await prisma.$connect();
-    await testnetPrisma.$connect();
+    await secondaryPrisma.$connect();
   });
 
   beforeEach(async () => {
@@ -100,10 +100,10 @@ describePostgres('Phase 7 deterministic offline Mainnet rehearsal', () => {
 
   afterAll(async () => {
     await prisma?.$disconnect();
-    await testnetPrisma?.$disconnect();
+    await secondaryPrisma?.$disconnect();
     if (admin && databaseName) {
       await admin.query(`DROP DATABASE "${databaseName}"`);
-      await admin.query(`DROP DATABASE "${testnetDatabaseName}"`);
+      await admin.query(`DROP DATABASE "${secondaryDatabaseName}"`);
       await admin.end();
     }
   });
@@ -198,13 +198,7 @@ describePostgres('Phase 7 deterministic offline Mainnet rehearsal', () => {
     expect(invoice.status).toBe('PAID');
     expect(paymentLink.status).toBe('PAID');
 
-    const activity = new ActivityService(
-      prisma as never,
-      {
-        listUserTransactions: jest.fn(),
-        listUserTokenBalances: jest.fn(),
-      } as never,
-    );
+    const activity = new ActivityService(prisma as never);
     for (const [index, operation] of [
       ['send', appSend],
       ['send', externalSend],
@@ -247,6 +241,7 @@ describePostgres('Phase 7 deterministic offline Mainnet rehearsal', () => {
       {
         merchantUserId: 'offline-owner',
         merchantWalletAddress: EXTERNAL_WALLET,
+        merchantDisplayLabel: 'Offline Owner',
       },
       { limit: 20 },
     );
@@ -319,23 +314,23 @@ describePostgres('Phase 7 deterministic offline Mainnet rehearsal', () => {
     ).toThrow('different Arc network');
   });
 
-  it('keeps identical Testnet and Mainnet identifiers in physically separate databases', async () => {
-    const testnetRouting = createRouting('arc-testnet');
-    const testnetIntents = new ExecutionIntentService(
-      testnetPrisma as never,
-      testnetRouting,
+  it('keeps identical Mainnet references isolated in physically separate databases', async () => {
+    const mainnetRouting = createRouting('arc-mainnet');
+    const secondaryIntents = new ExecutionIntentService(
+      secondaryPrisma as never,
+      mainnetRouting,
     );
     const reference = 'SEND-database-isolation';
     const mainnetIntent = await intents.acquire(
       sendInput(reference, EXTERNAL_WALLET, RECIPIENT_A),
     );
-    const testnetIntent = await testnetIntents.acquire({
+    const secondaryIntent = await secondaryIntents.acquire({
       ...sendInput(reference, EXTERNAL_WALLET, RECIPIENT_A),
-      network: 'arc-testnet',
+      network: 'arc-mainnet',
     });
-    expect(testnetIntent.logicalKey).not.toBe(mainnetIntent.logicalKey);
+    expect(secondaryIntent.logicalKey).not.toBe(mainnetIntent.logicalKey);
     expect(await prisma.executionIntent.count()).toBe(1);
-    expect(await testnetPrisma.executionIntent.count()).toBe(1);
+    expect(await secondaryPrisma.executionIntent.count()).toBe(1);
 
     const activityInput = {
       ownerUserId: 'offline-owner',
@@ -348,15 +343,12 @@ describePostgres('Phase 7 deterministic offline Mainnet rehearsal', () => {
       sourceReferenceType: 'execution_intent',
       sourceReferenceId: 'same-identifier',
     };
-    const mainnetActivity = new ActivityService(prisma as never, {} as never);
-    const testnetActivity = new ActivityService(
-      testnetPrisma as never,
-      {} as never,
-    );
+    const mainnetActivity = new ActivityService(prisma as never);
+    const secondaryActivity = new ActivityService(secondaryPrisma as never);
     await mainnetActivity.upsert({ ...activityInput, chainId: 5_042 });
-    await testnetActivity.upsert({ ...activityInput, chainId: 5_042_002 });
+    await secondaryActivity.upsert({ ...activityInput, chainId: 5_042 });
     expect(await prisma.activity.count()).toBe(1);
-    expect(await testnetPrisma.activity.count()).toBe(1);
+    expect(await secondaryPrisma.activity.count()).toBe(1);
   });
 
   async function createAndPayRequest(
@@ -402,10 +394,10 @@ describePostgres('Phase 7 deterministic offline Mainnet rehearsal', () => {
   }
 });
 
-function createRouting(network: 'arc-mainnet' | 'arc-testnet') {
+function createRouting(network: 'arc-mainnet') {
   const values: Record<string, unknown> = {
     'arcNetwork.key': network,
-    'arcNetwork.chainId': network === 'arc-mainnet' ? 5_042 : 5_042_002,
+    'arcNetwork.chainId': 5_042,
     'arcNetwork.tokens.USDC.address': OFFLINE_USDC,
     'arcNetwork.tokens.EURC.address': OFFLINE_EURC,
     arcCapabilities: {
@@ -413,11 +405,11 @@ function createRouting(network: 'arc-mainnet' | 'arc-testnet') {
       sameTokenPayroll: true,
       invoice: true,
       paymentLink: true,
+      liquidity: false,
       bridge: false,
       swap: false,
       crossTokenPayroll: false,
       crossTokenInvoice: false,
-      stableFx: false,
       nanoAgentApi: false,
     },
   };

@@ -6,23 +6,18 @@ import {
   PaymentRoutingService,
 } from './payment-routing.service';
 
-const TESTNET_USDC = '0x3600000000000000000000000000000000000000';
-const TESTNET_EURC = '0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a';
-const MAINNET_USDC_FIXTURE = '0x1111111111111111111111111111111111111111';
-const MAINNET_EURC_FIXTURE = '0x2222222222222222222222222222222222222222';
+const MAINNET_USDC = '0x3600000000000000000000000000000000000000';
+const MAINNET_EURC = '0xbEf5f6d51CB62b58e6A8f77868681825C6fe21c1';
+const FOREIGN_TOKEN = '0x3333333333333333333333333333333333333333';
 
-function service(
-  network: 'arc-testnet' | 'arc-mainnet',
-  capabilities = resolveArcCapabilities(network, {}),
-) {
-  const mainnet = network === 'arc-mainnet';
+function service(capabilities = resolveArcCapabilities('arc-mainnet', {})) {
   return new PaymentRoutingService(
     new ConfigService({
       arcNetwork: {
-        key: network,
+        key: 'arc-mainnet',
         tokens: {
-          USDC: { address: mainnet ? MAINNET_USDC_FIXTURE : TESTNET_USDC },
-          EURC: { address: mainnet ? MAINNET_EURC_FIXTURE : TESTNET_EURC },
+          USDC: { address: MAINNET_USDC },
+          EURC: { address: MAINNET_EURC },
         },
       },
       arcCapabilities: capabilities,
@@ -30,17 +25,24 @@ function service(
   );
 }
 
-describe('PaymentRoutingService', () => {
+function withCapabilities(overrides: Record<string, boolean>) {
+  return {
+    ...resolveArcCapabilities('arc-mainnet', {}),
+    ...overrides,
+  };
+}
+
+describe('PaymentRoutingService (Arc Mainnet only)', () => {
   it.each(['SEND', 'PAYROLL', 'INVOICE', 'PAYMENT_LINK'] as const)(
     'routes canonical same-token %s directly without a provider',
     (operation) => {
-      const routing = service('arc-testnet');
+      const routing = service();
       expect(
         routing.decide({
-          network: 'arc-testnet',
+          network: 'arc-mainnet',
           operation,
-          tokenIn: TESTNET_USDC,
-          tokenOut: TESTNET_USDC.toUpperCase().replace('0X', '0x'),
+          tokenIn: MAINNET_USDC,
+          tokenOut: MAINNET_USDC.toUpperCase().replace('0X', '0x'),
         }),
       ).toMatchObject({
         kind: PAYMENT_ROUTE_DECISIONS.DIRECT_TRANSFER,
@@ -52,12 +54,12 @@ describe('PaymentRoutingService', () => {
   );
 
   it('rejects Mainnet cross-token routing with the stable error before execution', () => {
-    const routing = service('arc-mainnet');
+    const routing = service();
     const decision = routing.decide({
       network: 'arc-mainnet',
       operation: 'PAYROLL',
-      tokenIn: MAINNET_USDC_FIXTURE,
-      tokenOut: MAINNET_EURC_FIXTURE,
+      tokenIn: MAINNET_USDC,
+      tokenOut: MAINNET_EURC,
     });
     expect(decision.kind).toBe(PAYMENT_ROUTE_DECISIONS.CROSS_TOKEN_DISABLED);
     expect(() => routing.assertExecutable(decision)).toThrow(
@@ -69,36 +71,33 @@ describe('PaymentRoutingService', () => {
       expect(error.response.code).toBe(
         PAYMENT_ROUTING_ERROR_CODES.CROSS_TOKEN_DISABLED,
       );
-      expect(JSON.stringify(error.response)).not.toMatch(
-        /key|secret|provider|xylonet|stablefx/i,
-      );
+      expect(JSON.stringify(error.response)).not.toMatch(/key|secret|provider/i);
     }
   });
 
-  it('preserves Testnet cross-token routing only while its capability is enabled', () => {
-    const enabled = service('arc-testnet');
+  it('routes Mainnet cross-token atomically only while its capability is enabled', () => {
+    const enabled = service(
+      withCapabilities({ swap: true, crossTokenPayroll: true }),
+    );
     expect(
       enabled.decide({
-        network: 'arc-testnet',
+        network: 'arc-mainnet',
         operation: 'PAYROLL',
-        tokenIn: TESTNET_USDC,
-        tokenOut: TESTNET_EURC,
+        tokenIn: MAINNET_USDC,
+        tokenOut: MAINNET_EURC,
       }),
     ).toMatchObject({
-      kind: PAYMENT_ROUTE_DECISIONS.CROSS_TOKEN_PROVIDER,
-      provider: 'XYLONET',
+      kind: PAYMENT_ROUTE_DECISIONS.CROSS_TOKEN_ATOMIC,
+      provider: 'UNISWAP_V4',
     });
 
-    const disabled = service('arc-testnet', {
-      ...resolveArcCapabilities('arc-testnet', {}),
-      crossTokenPayroll: false,
-    });
+    const disabled = service(withCapabilities({ crossTokenPayroll: false }));
     expect(
       disabled.decide({
-        network: 'arc-testnet',
+        network: 'arc-mainnet',
         operation: 'PAYROLL',
-        tokenIn: TESTNET_USDC,
-        tokenOut: TESTNET_EURC,
+        tokenIn: MAINNET_USDC,
+        tokenOut: MAINNET_EURC,
       }).kind,
     ).toBe(PAYMENT_ROUTE_DECISIONS.CROSS_TOKEN_DISABLED);
   });
@@ -107,56 +106,50 @@ describe('PaymentRoutingService', () => {
     'fails closed for invalid token input %p',
     (tokenIn) => {
       expect(() =>
-        service('arc-testnet').decide({
-          network: 'arc-testnet',
+        service().decide({
+          network: 'arc-mainnet',
           operation: 'SEND',
           tokenIn,
-          tokenOut: TESTNET_USDC,
+          tokenOut: MAINNET_USDC,
         }),
       ).toThrow();
     },
   );
 
-  it('rejects unsupported, foreign-network, and wrong-network context', () => {
-    const routing = service('arc-mainnet');
-    for (const [token, code] of [
-      [TESTNET_USDC, PAYMENT_ROUTING_ERROR_CODES.FOREIGN_NETWORK_TOKEN],
-      [
-        '0x3333333333333333333333333333333333333333',
+  it('rejects unsupported and wrong-network context', () => {
+    const routing = service();
+    try {
+      routing.decide({
+        network: 'arc-mainnet',
+        operation: 'SEND',
+        tokenIn: FOREIGN_TOKEN,
+        tokenOut: MAINNET_USDC,
+      });
+      throw new Error('Expected routing rejection.');
+    } catch (error: any) {
+      expect(error.response.code).toBe(
         PAYMENT_ROUTING_ERROR_CODES.UNSUPPORTED_TOKEN,
-      ],
-    ] as const) {
-      try {
-        routing.decide({
-          network: 'arc-mainnet',
-          operation: 'SEND',
-          tokenIn: token,
-          tokenOut: MAINNET_USDC_FIXTURE,
-        });
-        throw new Error('Expected routing rejection.');
-      } catch (error: any) {
-        expect(error.response.code).toBe(code);
-      }
+      );
     }
     expect(() =>
       routing.decide({
-        network: 'arc-testnet',
+        network: 'arc-legacy',
         operation: 'SEND',
-        tokenIn: MAINNET_USDC_FIXTURE,
-        tokenOut: MAINNET_USDC_FIXTURE,
+        tokenIn: MAINNET_USDC,
+        tokenOut: MAINNET_USDC,
       }),
     ).toThrow('Payment routing network does not match');
   });
 
   it('ignores caller route labels because they are not part of the policy input', () => {
-    const routing = service('arc-mainnet');
+    const routing = service();
     const decision = routing.decide({
       network: 'arc-mainnet',
       operation: 'PAYMENT_LINK',
-      tokenIn: MAINNET_USDC_FIXTURE,
-      tokenOut: MAINNET_EURC_FIXTURE,
+      tokenIn: MAINNET_USDC,
+      tokenOut: MAINNET_EURC,
       route: 'same-token',
-      provider: 'xylonet',
+      provider: 'external',
     } as never);
     expect(decision.kind).toBe(PAYMENT_ROUTE_DECISIONS.CROSS_TOKEN_DISABLED);
     expect(decision.provider).toBeNull();

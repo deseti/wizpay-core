@@ -2,15 +2,14 @@
 
 import {
   Check,
-  Circle,
-  LoaderCircle,
+  Clock,
+  Loader2,
   ShieldCheck,
   TriangleAlert,
   X,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import type { AppWalletXylonetLifecycleStage } from "@/lib/app-wallet-swap-service";
 import { cn } from "@/lib/utils";
 import type { TokenSymbol } from "@/lib/wizpay";
 
@@ -19,116 +18,62 @@ export type SwapProgressRequestStatus =
   | "approving"
   | "signing"
   | "executing"
-  | "confirming";
+  | "confirming"
+  | "completed";
 
 type SwapStepId =
   | "preparing"
-  | "authorization"
+  | "approval"
   | "signing"
   | "executing"
   | "confirming"
   | "completed";
 type StepState = "completed" | "active" | "pending" | "failed";
 
-const STEP_COPY: Record<
-  SwapStepId,
-  { title: string; description: Record<"circle" | "external", string> }
-> = {
+const STEP_COPY: Record<SwapStepId, { title: string; description: string }> = {
   preparing: {
     title: "Preparing swap",
-    description: {
-      circle: "Validating the quote and preparing your App Wallet operation.",
-      external: "Validating the quote, allowance, and executor route.",
-    },
+    description: "Validating the quote, allowance, and Mainnet route.",
   },
-  authorization: {
-    title: "Authorization required",
-    description: {
-      circle: "Waiting for Circle approval in your User-Controlled Wallet.",
-      external: "Waiting for wallet approval to use the input token.",
-    },
+  approval: {
+    title: "Approval required",
+    description: "Waiting for wallet approval to use the input token.",
   },
   signing: {
     title: "Signing transaction",
-    description: {
-      circle: "Waiting for your Circle transaction authorization.",
-      external: "Review and confirm the swap in your browser wallet.",
-    },
+    description: "Review and confirm the swap in your external wallet.",
   },
   executing: {
     title: "Executing swap",
-    description: {
-      circle: "Submitting the authorized swap through XyloNet.",
-      external: "Submitting the confirmed swap through XyloNet.",
-    },
+    description: "Submitting the confirmed swap on Arc Mainnet.",
   },
   confirming: {
-    title: "Confirming on Arc",
-    description: {
-      circle: "Waiting for on-chain confirmation and verified swap output.",
-      external: "Waiting for on-chain confirmation and receipt verification.",
-    },
+    title: "Confirming on Arc Mainnet",
+    description: "Waiting for on-chain confirmation and receipt verification.",
   },
   completed: {
     title: "Completed",
-    description: {
-      circle: "The confirmed output has been verified.",
-      external: "The confirmed output has been verified.",
-    },
+    description: "The confirmed output has been verified.",
   },
 };
 
-function appWalletStep(
-  requestStatus: SwapProgressRequestStatus,
-  lifecycleStage?: AppWalletXylonetLifecycleStage,
-): SwapStepId {
-  if (lifecycleStage === "completed" || lifecycleStage === "output_verified") {
-    return "completed";
-  }
-  if (
-    lifecycleStage === "created" ||
-    lifecycleStage === "approval_challenge_creating" ||
-    lifecycleStage === "awaiting_approval_confirmation" ||
-    lifecycleStage === "approval_submitted"
-  ) {
-    return "authorization";
-  }
-  if (
-    lifecycleStage === "approval_confirmed" ||
-    lifecycleStage === "swap_challenge_creating" ||
-    lifecycleStage === "awaiting_swap_confirmation"
-  ) {
-    return "signing";
-  }
-  if (lifecycleStage === "swap_submitted") return "confirming";
-  return requestStatus === "approving" ? "authorization" : requestStatus;
-}
-
 export function getSwapProgressModel({
-  walletMode,
   requestStatus,
-  lifecycleStage,
   approvalRequired,
   failed,
 }: {
-  walletMode: "circle" | "external";
   requestStatus: SwapProgressRequestStatus;
-  lifecycleStage?: AppWalletXylonetLifecycleStage;
   approvalRequired: boolean | null;
   failed: boolean;
 }) {
   const stepIds: SwapStepId[] = ["preparing"];
-  if (walletMode === "circle" || approvalRequired === true) {
-    stepIds.push("authorization");
+  if (approvalRequired === true) {
+    stepIds.push("approval");
   }
   stepIds.push("signing", "executing", "confirming", "completed");
 
-  const activeId =
-    walletMode === "circle"
-      ? appWalletStep(requestStatus, lifecycleStage)
-      : requestStatus === "approving"
-        ? "authorization"
-        : requestStatus;
+  const activeId: SwapStepId =
+    requestStatus === "approving" ? "approval" : requestStatus;
   const activeIndex = Math.max(0, stepIds.indexOf(activeId));
 
   return stepIds.map((id, index) => ({
@@ -145,30 +90,24 @@ export function getSwapProgressModel({
 }
 
 export function SwapProgress({
-  walletMode,
   tokenIn,
   tokenOut,
   amount,
   requestStatus,
-  lifecycleStage,
   approvalRequired,
   failure,
   onDismissFailure,
 }: {
-  walletMode: "circle" | "external";
   tokenIn: TokenSymbol;
   tokenOut: TokenSymbol;
   amount: string;
   requestStatus: SwapProgressRequestStatus;
-  lifecycleStage?: AppWalletXylonetLifecycleStage;
   approvalRequired: boolean | null;
   failure: string | null;
   onDismissFailure: () => void;
 }) {
   const steps = getSwapProgressModel({
-    walletMode,
     requestStatus,
-    lifecycleStage,
     approvalRequired,
     failed: Boolean(failure),
   });
@@ -195,7 +134,7 @@ export function SwapProgress({
             {failure ? (
               <TriangleAlert className="h-5 w-5" aria-hidden="true" />
             ) : (
-              <LoaderCircle className="h-5 w-5 animate-spin" aria-hidden="true" />
+              <Loader2 className="h-5 w-5 animate-spin" aria-hidden="true" />
             )}
           </span>
           <div className="min-w-0">
@@ -206,7 +145,7 @@ export function SwapProgress({
               Swapping {tokenIn} <span aria-hidden="true">→</span> {tokenOut}
             </h3>
             <p className="mt-1 break-words text-sm leading-6 text-muted-foreground">
-              {failure ?? active?.description[walletMode]}
+              {failure ?? active?.description}
             </p>
           </div>
         </div>
@@ -220,13 +159,11 @@ export function SwapProgress({
           </div>
           <div className="min-w-0">
             <dt className="text-xs text-muted-foreground">Wallet</dt>
-            <dd className="mt-1 break-words font-medium">
-              {walletMode === "circle" ? "App Wallet" : "External Wallet"}
-            </dd>
+            <dd className="mt-1 break-words font-medium">External Wallet</dd>
           </div>
           <div className="min-w-0">
             <dt className="text-xs text-muted-foreground">Route</dt>
-            <dd className="mt-1 break-words font-medium">XyloNet · Arc Testnet</dd>
+            <dd className="mt-1 break-words font-medium">Arc Mainnet · chain 5042</dd>
           </div>
         </dl>
 
@@ -238,8 +175,8 @@ export function SwapProgress({
                 : step.state === "failed"
                   ? X
                   : step.state === "active"
-                    ? LoaderCircle
-                    : Circle;
+                    ? Loader2
+                    : Clock;
             return (
               <li
                 key={step.id}
@@ -264,9 +201,7 @@ export function SwapProgress({
                   aria-hidden="true"
                 />
                 <span className="min-w-0 break-words leading-4">
-                  {walletMode === "external" && step.id === "authorization"
-                    ? "Approving token"
-                    : step.title}
+                  {step.id === "approval" ? "Approving token" : step.title}
                 </span>
               </li>
             );
@@ -276,8 +211,8 @@ export function SwapProgress({
         <div className="flex items-start gap-2 rounded-xl border border-sky-500/20 bg-sky-500/5 px-3 py-2.5 text-xs leading-5 text-sky-100">
           <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
           <span>
-            Keep this page open. Wallet and Circle authorization screens remain
-            fully interactive while WizPay tracks the verified transaction state.
+            Keep this page open. Your external wallet remains fully interactive
+            while WizPay tracks the verified Mainnet transaction state.
           </span>
         </div>
 

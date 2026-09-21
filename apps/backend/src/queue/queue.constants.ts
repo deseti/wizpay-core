@@ -3,7 +3,7 @@ import { TaskType } from '../task/task-type.enum';
 export enum QueueName {
   PAYROLL = 'payroll',
   SWAP = 'swap',
-  /** Queue for polling Circle transaction status (non-blocking) */
+  /** Queue for polling Arc Mainnet transaction receipts (non-blocking) */
   TX_POLL = 'tx_poll',
 }
 

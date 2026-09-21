@@ -54,7 +54,7 @@ export function decodeCctpV2Message(message: Hex): DecodedCctpMessage {
   ) {
     throw new BadRequestException({
       code: 'BRIDGE_MESSAGE_INVALID',
-      message: 'Circle returned an invalid or incomplete CCTP V2 message.',
+      message: 'The bridge message is invalid or incomplete.',
     });
   }
 

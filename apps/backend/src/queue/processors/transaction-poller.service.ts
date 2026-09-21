@@ -1,16 +1,9 @@
 import { Injectable, Logger } from '@nestjs/common';
-import {
-  CircleService,
-  type CircleTransactionStatusResult,
-} from '../../adapters/circle.service';
+import { BlockchainService } from '../../adapters/blockchain.service';
 import { TaskService } from '../../task/task.service';
 import { TaskStatus } from '../../task/task-status.enum';
 import { QueueService } from '../../queue/queue.service';
 import { TxPollJobData } from '../../queue/queue.types';
-import { ConfigService } from '@nestjs/config';
-import { getAddress, parseUnits } from 'viem';
-import { CircleReceiptVerifierService } from '../../adapters/circle/circle-receipt-verifier.service';
-import type { BackendArcNetworkConfiguration } from '../../config/arc-network.config';
 
 // ─── Constants ──────────────────────────────────────────────────────
 
@@ -20,34 +13,28 @@ const MAX_POLL_ATTEMPTS = 180;
 /** Delay between poll re-enqueues (ms) */
 const POLL_DELAY_MS = 2000;
 
-/** Circle transaction states that are terminal */
-const TERMINAL_STATUSES = new Set([
-  'COMPLETE',
-  'FAILED',
-  'CANCELLED',
-  'DENIED',
-]);
-
-/** Circle transaction states that indicate failure */
-const FAILURE_STATUSES = new Set(['FAILED', 'CANCELLED', 'DENIED']);
+/** Receipt status value that indicates on-chain success */
+const RECEIPT_SUCCESS_STATUS = '0x1';
 
 // ─── Service ────────────────────────────────────────────────────────
 
 /**
- * TransactionPollerService handles non-blocking transaction status polling.
+ * TransactionPollerService handles non-blocking transaction status polling
+ * on Arc Mainnet.
  *
  * Architecture:
- *   PayrollAgent submits transfer → enqueues poll job → returns immediately
+ *   External wallet submits transfer → poll job enqueued → returns immediately
  *   TransactionPollerWorker picks up poll job → calls this service
- *   This service polls Circle → updates DB → re-enqueues or finalizes
+ *   This service reads the Mainnet receipt → updates DB → re-enqueues or finalizes
  *
  * For each poll:
- *   1. Call CircleService.getTransactionStatus(txId)
- *   2. If terminal (COMPLETE/FAILED):
- *      a. Update TaskTransaction record
+ *   1. Read the receipt via BlockchainService.getTransactionReceiptOnChain(txHash, 'ARC-MAINNET')
+ *   2. If receipt present with success status:
+ *      a. Update TaskTransaction record to completed
  *      b. Check if ALL task transactions are terminal
  *      c. If yes → finalize task status (executed/partial/failed)
- *   3. If non-terminal:
+ *   3. If receipt present with failure status → mark failed, finalize check
+ *   4. If no receipt yet:
  *      a. Increment attempt counter
  *      b. Re-enqueue with delay
  *      c. If max attempts reached → mark as failed (timeout)
@@ -57,17 +44,15 @@ export class TransactionPollerService {
   private readonly logger = new Logger(TransactionPollerService.name);
 
   constructor(
-    private readonly circleService: CircleService,
+    private readonly blockchainService: BlockchainService,
     private readonly taskService: TaskService,
     private readonly queueService: QueueService,
-    private readonly receiptVerifier: CircleReceiptVerifierService,
-    private readonly config: ConfigService,
   ) {}
 
   /**
    * Process a single transaction poll job.
    *
-   * Called by TransactionPollerProcessor for each job on the TX_POLL queue.
+   * Called by TxPollProcessor for each job on the TX_POLL queue.
    */
   async poll(jobData: TxPollJobData): Promise<void> {
     const { network, taskId, txId, attempt } = jobData;
@@ -75,6 +60,17 @@ export class TransactionPollerService {
     this.logger.debug(
       `Polling tx — taskId=${taskId} txId=${txId} attempt=${attempt}/${MAX_POLL_ATTEMPTS}`,
     );
+
+    // ── Mainnet isolation ──────────────────────────────────────────
+    if (network !== 'arc-mainnet') {
+      await this.failVerification(
+        taskId,
+        txId,
+        attempt,
+        `Transaction polling supports Arc Mainnet only (got network="${network}").`,
+      );
+      return;
+    }
 
     // ── Check max attempts ─────────────────────────────────────────
     if (attempt >= MAX_POLL_ATTEMPTS) {
@@ -99,10 +95,15 @@ export class TransactionPollerService {
       return;
     }
 
-    // ── Poll Circle ────────────────────────────────────────────────
-    let circleStatus: CircleTransactionStatusResult;
+    // ── Read Mainnet receipt ───────────────────────────────────────
+    let receipt: Awaited<
+      ReturnType<BlockchainService['getTransactionReceiptOnChain']>
+    >;
     try {
-      circleStatus = await this.circleService.getTransactionStatus(txId);
+      receipt = await this.blockchainService.getTransactionReceiptOnChain(
+        txId,
+        'ARC-MAINNET',
+      );
     } catch (error) {
       const message =
         error instanceof Error ? error.message : 'Unknown polling error';
@@ -125,131 +126,65 @@ export class TransactionPollerService {
       return;
     }
 
-    // ── Handle terminal status ─────────────────────────────────────
-    if (TERMINAL_STATUSES.has(circleStatus.status)) {
-      if (FAILURE_STATUSES.has(circleStatus.status)) {
-        // Transaction failed
-        const reason =
-          circleStatus.errorReason ??
-          `Circle transaction ended with status: ${circleStatus.status}`;
+    // ── No receipt yet: re-enqueue ─────────────────────────────────
+    if (!receipt) {
+      this.logger.debug(
+        `TX still pending — taskId=${taskId} txId=${txId} attempt=${attempt} — re-enqueuing`,
+      );
 
-        await this.taskService.updateTransaction(txId, {
-          status: 'failed',
-          errorReason: reason,
-          pollAttempts: attempt + 1,
-        });
+      await this.taskService.updateTransaction(txId, {
+        status: 'pending',
+        pollAttempts: attempt + 1,
+      });
 
-        await this.taskService.logStep(
-          taskId,
-          'tx.failed',
-          TaskStatus.IN_PROGRESS,
-          `Transaction failed: txId=${txId} — ${reason}`,
-        );
-
-        this.logger.warn(
-          `TX failed — taskId=${taskId} txId=${txId} status=${circleStatus.status} reason="${reason}"`,
-        );
-      } else {
-        const trackedTransactions =
-          await this.taskService.getTaskTransactions(taskId);
-        const tracked = trackedTransactions.find(
-          (transaction) => transaction.txId === txId,
-        );
-        if (!tracked || !circleStatus.txHash) {
-          await this.requeueUnverified(jobData);
-          return;
-        }
-        const arcNetwork =
-          this.config.getOrThrow<BackendArcNetworkConfiguration>('arcNetwork');
-        const token =
-          arcNetwork.tokens[tracked.currency as keyof typeof arcNetwork.tokens];
-        if (!token) {
-          await this.failVerification(
-            taskId,
-            txId,
-            attempt,
-            'Tracked Circle transaction token is unavailable.',
-          );
-          return;
-        }
-        try {
-          await this.receiptVerifier.verifyTransfer({
-            transactionHash: circleStatus.txHash as `0x${string}`,
-            senderAddress: circleStatus.sourceAddress
-              ? getAddress(circleStatus.sourceAddress)
-              : null,
-            recipientAddress: getAddress(tracked.recipient),
-            tokenAddress: getAddress(token.address),
-            amountUnits: parseUnits(tracked.amount, token.decimals),
-            circleBlockchain: circleStatus.blockchain,
-          });
-        } catch (error) {
-          if (
-            error &&
-            typeof error === 'object' &&
-            'retryable' in error &&
-            (error as Record<string, unknown>).retryable === true
-          ) {
-            await this.requeueUnverified(jobData);
-          } else {
-            await this.failVerification(
-              taskId,
-              txId,
-              attempt,
-              'Circle transaction receipt verification failed.',
-            );
-          }
-          return;
-        }
-        // Circle COMPLETE is accepted only after selected-network receipt proof.
-        await this.taskService.updateTransaction(txId, {
-          status: 'completed',
-          txHash: circleStatus.txHash,
-          pollAttempts: attempt + 1,
-        });
-
-        await this.taskService.logStep(
-          taskId,
-          'tx.completed',
-          TaskStatus.IN_PROGRESS,
-          `Transaction confirmed: txId=${txId} txHash=${circleStatus.txHash}`,
-        );
-
-        this.logger.log(
-          `TX completed — taskId=${taskId} txId=${txId} txHash=${circleStatus.txHash}`,
-        );
-      }
-
-      // Check if all transactions for this task are now terminal
-      await this.checkAndFinalizeTask(taskId);
+      await this.queueService.enqueueTransactionPoll(
+        { network, taskId, txId, attempt: attempt + 1 },
+        POLL_DELAY_MS,
+      );
       return;
     }
 
-    // ── Non-terminal: re-enqueue ───────────────────────────────────
-    this.logger.debug(
-      `TX still pending — taskId=${taskId} txId=${txId} circleStatus=${circleStatus.status} — re-enqueuing`,
-    );
+    // ── Receipt present ────────────────────────────────────────────
+    if (receipt.status === RECEIPT_SUCCESS_STATUS) {
+      await this.taskService.updateTransaction(txId, {
+        status: 'completed',
+        txHash: receipt.transactionHash,
+        pollAttempts: attempt + 1,
+      });
 
-    await this.taskService.updateTransaction(txId, {
-      status: 'pending',
-      pollAttempts: attempt + 1,
-    });
+      await this.taskService.logStep(
+        taskId,
+        'tx.completed',
+        TaskStatus.IN_PROGRESS,
+        `Transaction confirmed: txId=${txId} txHash=${receipt.transactionHash}`,
+      );
 
-    await this.queueService.enqueueTransactionPoll(
-      { network, taskId, txId, attempt: attempt + 1 },
-      POLL_DELAY_MS,
-    );
-  }
+      this.logger.log(
+        `TX completed — taskId=${taskId} txId=${txId} txHash=${receipt.transactionHash}`,
+      );
+    } else {
+      const reason = `Mainnet transaction ended with receipt status: ${receipt.status}`;
 
-  private async requeueUnverified(jobData: TxPollJobData): Promise<void> {
-    await this.taskService.updateTransaction(jobData.txId, {
-      status: 'pending',
-      pollAttempts: jobData.attempt + 1,
-    });
-    await this.queueService.enqueueTransactionPoll(
-      { ...jobData, attempt: jobData.attempt + 1 },
-      POLL_DELAY_MS,
-    );
+      await this.taskService.updateTransaction(txId, {
+        status: 'failed',
+        errorReason: reason,
+        pollAttempts: attempt + 1,
+      });
+
+      await this.taskService.logStep(
+        taskId,
+        'tx.failed',
+        TaskStatus.IN_PROGRESS,
+        `Transaction failed: txId=${txId} — ${reason}`,
+      );
+
+      this.logger.warn(
+        `TX failed — taskId=${taskId} txId=${txId} status=${receipt.status} reason="${reason}"`,
+      );
+    }
+
+    // Check if all transactions for this task are now terminal
+    await this.checkAndFinalizeTask(taskId);
   }
 
   private async failVerification(

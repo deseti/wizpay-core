@@ -1,18 +1,14 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { randomUUID } from 'node:crypto';
+import { getAddress, isAddress } from 'viem';
 import { PrismaService } from '../../database/prisma.service';
-import {
-  CIRCLE_CONFIGURATION_ERROR_CODES,
-  CircleConfigurationError,
-  resolveCircleConfigurationFromService,
-} from '../../config/circle-execution.config';
+import { ARC_MAINNET_CHAIN_ID } from '../../config/arc-network.config';
+
+export const EXTERNAL_WALLET_BLOCKCHAIN = 'ARC-MAINNET' as const;
+export const EXTERNAL_WALLET_CHAIN = 'EVM' as const;
 
 export type WalletProvisionChain = 'EVM' | 'SOLANA';
-export type SupportedUserWalletBlockchain =
-  | 'ARC-TESTNET'
-  | 'ETH-SEPOLIA'
-  | 'SOLANA-DEVNET';
+export type SupportedUserWalletBlockchain = typeof EXTERNAL_WALLET_BLOCKCHAIN;
 
 type WalletSessionInput = {
   email?: string | null;
@@ -24,32 +20,11 @@ type EnsureWalletInput = WalletSessionInput & {
   chain: WalletProvisionChain;
 };
 
-type UpstreamWallet = {
-  accountType?: string;
-  address?: string;
-  blockchain?: string;
-  custodyType?: string;
-  id?: string;
-  type?: string;
-  walletType?: string;
-  walletSetId?: string | null;
-};
-
-type NormalizedUpstreamWallet = UpstreamWallet & {
-  address: string;
-  blockchain: SupportedUserWalletBlockchain;
-  id: string;
-  walletSetId: string | null;
-};
-
-type UpstreamWalletResponse = {
-  wallets?: unknown[];
-};
-
 export type PersistedUserWallet = {
   address: string;
   blockchain: SupportedUserWalletBlockchain;
   chain: WalletProvisionChain;
+  chainId: number;
   createdAt: string;
   updatedAt: string;
   userEmail: string | null;
@@ -87,504 +62,172 @@ export class WalletProvisionError extends Error {
   }
 }
 
-const SUPPORTED_BLOCKCHAINS = new Set<SupportedUserWalletBlockchain>([
-  'ARC-TESTNET',
-  'ETH-SEPOLIA',
-  'SOLANA-DEVNET',
-]);
-const WALLET_CHAIN_BY_BLOCKCHAIN: Record<
-  SupportedUserWalletBlockchain,
-  WalletProvisionChain
-> = {
-  'ARC-TESTNET': 'EVM',
-  'ETH-SEPOLIA': 'EVM',
-  'SOLANA-DEVNET': 'SOLANA',
-};
+const PROVIDER_RETIRED_CODE = 'WALLET_PROVISIONING_RETIRED';
+const PROVIDER_RETIRED_MESSAGE =
+  'Hosted wallet provisioning is retired. Register an external Arc Mainnet wallet instead.';
 
 @Injectable()
 export class WalletService {
   private readonly logger = new Logger(WalletService.name);
-  private readonly solanaRpcUrl: string;
 
   constructor(
     private readonly configService: ConfigService,
     private readonly prisma: PrismaService,
   ) {
-    this.solanaRpcUrl =
-      this.configService.get<string>('SOLANA_DEVNET_RPC_URL') ||
-      this.configService.get<string>('SOLANA_RPC_URL') ||
-      'https://api.devnet.solana.com';
+    void this.configService;
   }
 
-  private get circleConfig() {
-    return resolveCircleConfigurationFromService(
-      this.configService,
-      'user-controlled',
-    );
-  }
+  /**
+   * External wallet registry (Arc Mainnet only).
+   *
+   * Records a caller-provided external wallet address for chain 5042.
+   * The backend never holds keys and never proxies a wallet provider:
+   * registration is an address binding used for ownership scoping.
+   */
+  async registerExternalWallet(input: {
+    userId: string;
+    address: string;
+    userEmail?: string | null;
+  }): Promise<PersistedUserWallet> {
+    const userId = this.requireUserId(input.userId);
+    const address = this.requireAddress(input.address);
+    const userEmail = this.normalizeOptionalEmail(input.userEmail ?? null);
+    const walletId = `external:arc-mainnet:${address.toLowerCase()}`;
 
-  async initializeWallets(
-    input: WalletSessionInput,
-  ): Promise<InitializeWalletsResult> {
-    const userId = this.resolveUserId(input);
-
-    // Circle returns conflict when user wallets are already initialized.
-    // Short-circuit to keep this endpoint idempotent and avoid noisy 409s.
-    const existingWallets = await this.listUpstreamWallets(input.userToken);
-    const alreadyInitialized = existingWallets.some(
-      (wallet) => wallet.blockchain === this.circleConfig.blockchain,
-    );
-
-    if (alreadyInitialized) {
-      return {
-        challengeId: null,
-        userId,
-      };
+    const existingByWalletId = await this.prisma.userWallet.findUnique({
+      where: { walletId },
+    });
+    if (existingByWalletId && existingByWalletId.userId !== userId) {
+      throw new WalletProvisionError(
+        'This external wallet is already registered to another user.',
+        409,
+        'WALLET_ALREADY_EXISTS',
+        { walletId },
+      );
     }
 
-    let payload: Record<string, unknown>;
-    try {
-      payload = await this.circleRequest<Record<string, unknown>>({
-        body: {
-          accountType: 'EOA',
-          blockchains: [this.circleConfig.blockchain],
-          idempotencyKey: randomUUID(),
+    const stored = existingByWalletId
+      ? await this.prisma.userWallet.update({
+          where: { walletId },
+          data: {
+            address,
+            blockchain: EXTERNAL_WALLET_BLOCKCHAIN,
+            chain: EXTERNAL_WALLET_CHAIN,
+            userEmail,
+            userId,
+            walletSetId: null,
+          },
+        })
+      : await this.prisma.userWallet.upsert({
+          where: {
+            userId_blockchain: {
+              userId,
+              blockchain: EXTERNAL_WALLET_BLOCKCHAIN,
+            },
+          },
+          create: {
+            address,
+            blockchain: EXTERNAL_WALLET_BLOCKCHAIN,
+            chain: EXTERNAL_WALLET_CHAIN,
+            userEmail,
+            userId,
+            walletId,
+            walletSetId: null,
+          },
+          update: {
+            address,
+            userEmail,
+            walletId,
+            walletSetId: null,
+          },
+        });
+
+    this.logger.log(
+      `External wallet registered — userId=${userId} address=${address} chainId=${ARC_MAINNET_CHAIN_ID}.`,
+    );
+    return this.toPersistedWallet(stored);
+  }
+
+  async getExternalWalletByUser(
+    userId: string,
+  ): Promise<PersistedUserWallet | null> {
+    const normalizedUserId = this.normalizeOptionalValue(userId);
+    if (!normalizedUserId) return null;
+    const wallet = await this.prisma.userWallet.findUnique({
+      where: {
+        userId_blockchain: {
+          userId: normalizedUserId,
+          blockchain: EXTERNAL_WALLET_BLOCKCHAIN,
         },
-        method: 'POST',
-        path: '/v1/w3s/user/initialize',
-        userToken: input.userToken,
-      });
-    } catch (error) {
-      if (
-        error instanceof WalletProvisionError &&
-        (error.code === 155106 || error.code === '155106')
-      ) {
-        return {
-          challengeId: null,
-          userId,
-        };
-      }
-
-      throw error;
-    }
-
-    return {
-      challengeId: this.readString(payload, 'challengeId'),
-      userId,
-    };
-  }
-
-  async syncWallets(input: WalletSessionInput): Promise<SyncWalletsResult> {
-    const userId = this.resolveUserId(input);
-    const userEmail = this.normalizeOptionalEmail(input.email);
-    const upstreamWallets = await this.listUpstreamWallets(input.userToken);
-    const wallets = await this.persistWallets({
-      userEmail,
-      userId,
-      wallets: upstreamWallets,
-    });
-
-    return {
-      userId,
-      wallets,
-    };
-  }
-
-  async getOrCreateWallet(
-    input: EnsureWalletInput,
-  ): Promise<EnsureWalletResult> {
-    const syncedWallets = await this.syncWallets(input);
-    const targetBlockchain = this.resolveTargetBlockchain(input.chain);
-    const wallet = syncedWallets.wallets.find(
-      (candidate) => candidate.blockchain === targetBlockchain,
-    );
-
-    if (wallet) {
-      return {
-        challengeId: null,
-        requiresUserApproval: false,
-        userId: syncedWallets.userId,
-        wallet,
-      };
-    }
-
-    const payload = await this.circleRequest<Record<string, unknown>>({
-      body: {
-        accountType: 'EOA',
-        blockchains: [this.toCircleBlockchain(targetBlockchain)],
-        idempotencyKey: randomUUID(),
       },
-      method: 'POST',
-      path: '/v1/w3s/user/wallets',
-      userToken: input.userToken,
     });
-    const challengeId = this.readString(payload, 'challengeId');
+    return wallet ? this.toPersistedWallet(wallet) : null;
+  }
 
-    if (!challengeId) {
-      throw new Error('Circle did not return a wallet challenge identifier.');
-    }
+  async findExternalWalletsByAddress(
+    address: string,
+  ): Promise<PersistedUserWallet[]> {
+    if (!isAddress(address.trim())) return [];
+    const canonical = getAddress(address.trim()).toLowerCase();
+    const wallets = await this.prisma.userWallet.findMany({
+      where: { blockchain: EXTERNAL_WALLET_BLOCKCHAIN },
+    });
+    return wallets
+      .filter((wallet) => wallet.address.toLowerCase() === canonical)
+      .map((wallet) => this.toPersistedWallet(wallet));
+  }
 
-    return {
-      challengeId,
-      requiresUserApproval: true,
-      userId: syncedWallets.userId,
-      wallet: null,
-    };
+  async initializeWallets(_input: WalletSessionInput): Promise<never> {
+    throw this.retired();
+  }
+
+  async syncWallets(_input: WalletSessionInput): Promise<never> {
+    throw this.retired();
+  }
+
+  async getOrCreateWallet(_input: EnsureWalletInput): Promise<never> {
+    throw this.retired();
   }
 
   async getStoredWalletByBlockchain(
     userId: string,
     blockchain: SupportedUserWalletBlockchain,
   ) {
-    const normalizedUserId = this.normalizeOptionalValue(userId);
-
-    if (!normalizedUserId) {
-      return null;
-    }
-
-    const wallet = await this.prisma.userWallet.findUnique({
-      where: {
-        userId_blockchain: {
-          blockchain,
-          userId: normalizedUserId,
-        },
-      },
-    });
-
-    return wallet ? this.toPersistedWallet(wallet) : null;
+    if (blockchain !== EXTERNAL_WALLET_BLOCKCHAIN) return null;
+    return this.getExternalWalletByUser(userId);
   }
 
-  async getStoredWalletForSelectedArc(userId: string, walletId: string) {
-    const circle = this.circleConfig;
-    const wallet = await this.prisma.userWallet.findUnique({
-      where: { walletId },
-    });
-    if (
-      !wallet ||
-      wallet.userId !== userId ||
-      wallet.blockchain !== circle.blockchain
-    ) {
-      throw new CircleConfigurationError(
-        CIRCLE_CONFIGURATION_ERROR_CODES.WALLET_BLOCKCHAIN_MISMATCH,
-        'The persisted Circle wallet does not match the selected Arc network.',
-      );
-    }
-    if (
-      circle.walletSetId &&
-      (!wallet.walletSetId || wallet.walletSetId !== circle.walletSetId)
-    ) {
-      throw new CircleConfigurationError(
-        CIRCLE_CONFIGURATION_ERROR_CODES.WALLET_SET_MISMATCH,
-        'The persisted Circle wallet does not match the selected wallet set.',
-      );
-    }
-    return this.toPersistedWallet(wallet);
+  async getStoredWalletForSelectedArc(
+    _userId: string,
+    _walletId: string,
+  ): Promise<never> {
+    throw this.retired();
   }
 
-  resolveUserId(input: {
-    email?: string | null;
-    userId?: string | null;
-    userToken?: string | null;
-  }) {
-    const explicitUserId = this.normalizeOptionalValue(input.userId);
-
-    if (explicitUserId) {
-      return explicitUserId;
-    }
-
-    const tokenUserId = this.readStableUserIdFromToken(input.userToken);
-
-    if (tokenUserId) {
-      return tokenUserId;
-    }
-
-    const email = this.normalizeOptionalEmail(input.email);
-
-    if (email) {
-      return `circle:email:${email}`;
-    }
-
-    throw new BadRequestException(
-      'Wallet provisioning requires the stable Circle userId returned by login.',
+  private retired(): WalletProvisionError {
+    return new WalletProvisionError(
+      PROVIDER_RETIRED_MESSAGE,
+      503,
+      PROVIDER_RETIRED_CODE,
     );
   }
 
-  private async listUpstreamWallets(
-    userToken: string,
-  ): Promise<NormalizedUpstreamWallet[]> {
-    const payload = await this.circleRequest<UpstreamWalletResponse>({
-      method: 'GET',
-      path: '/v1/w3s/wallets',
-      userToken,
-    });
-    const walletItems = Array.isArray(payload.wallets) ? payload.wallets : [];
-
-    return walletItems
-      .filter((wallet): wallet is UpstreamWallet =>
-        Boolean(wallet && typeof wallet === 'object'),
-      )
-      .map((wallet) => {
-        this.logCircleWalletMetadata(wallet);
-        return wallet;
-      })
-      .map((wallet) => this.normalizeUpstreamWallet(wallet))
-      .filter((wallet): wallet is NormalizedUpstreamWallet => wallet !== null);
-  }
-
-  private logCircleWalletMetadata(wallet: UpstreamWallet): void {
-    if (process.env.WIZPAY_WALLET_METADATA_DIAGNOSTICS !== 'true') {
-      return;
-    }
-
-    const walletId = this.normalizeOptionalValue(wallet.id);
-
-    if (!walletId) {
-      return;
-    }
-
-    const rawKeys = Object.keys(wallet).sort();
-    const accountType = this.normalizeOptionalValue(wallet.accountType);
-    const custodyType = this.normalizeOptionalValue(wallet.custodyType);
-    const walletType =
-      this.normalizeOptionalValue(wallet.walletType) ??
-      this.normalizeOptionalValue(wallet.type);
-    this.logger.log(
-      `[circle-wallet-metadata] walletId=${walletId} ` +
-        `blockchain=${this.normalizeOptionalValue(wallet.blockchain) ?? 'unavailable'} ` +
-        `address=${this.normalizeOptionalValue(wallet.address) ?? 'unavailable'} ` +
-        `accountType=${accountType ?? 'unavailable'} ` +
-        `custodyType=${custodyType ?? 'unavailable'} ` +
-        `walletType=${walletType ?? 'unavailable'} ` +
-        `rawTopLevelKeys=${rawKeys.join(',')}`,
-    );
-  }
-
-  private normalizeUpstreamWallet(wallet: UpstreamWallet) {
-    const walletId = this.normalizeOptionalValue(wallet.id);
-    const address = this.normalizeOptionalValue(wallet.address);
-    const blockchain = this.normalizeUpstreamBlockchain(wallet.blockchain);
-
-    if (!walletId || !address || !blockchain) {
-      return null;
-    }
-
-    return {
-      ...wallet,
-      address,
-      blockchain,
-      id: walletId,
-      walletSetId: this.normalizeOptionalValue(wallet.walletSetId),
-    };
-  }
-
-  private normalizeUpstreamBlockchain(
-    blockchain: string | undefined,
-  ): SupportedUserWalletBlockchain | null {
-    const normalized = this.normalizeOptionalValue(blockchain)
-      ?.toUpperCase()
-      .replace(/_/g, '-');
-
+  private requireUserId(userId: string) {
+    const normalized = this.normalizeOptionalValue(userId);
     if (!normalized) {
-      return null;
+      throw new BadRequestException('Wallet registration requires a userId.');
     }
-
-    if (normalized === 'SOL-DEVNET') {
-      return 'SOLANA-DEVNET';
-    }
-
-    return SUPPORTED_BLOCKCHAINS.has(
-      normalized as SupportedUserWalletBlockchain,
-    )
-      ? (normalized as SupportedUserWalletBlockchain)
-      : null;
+    return normalized;
   }
 
-  private async persistWallets(input: {
-    userEmail: string | null;
-    userId: string;
-    wallets: NormalizedUpstreamWallet[];
-  }) {
-    const persistedWallets: PersistedUserWallet[] = [];
-
-    for (const wallet of input.wallets) {
-      try {
-        const existingByWalletId = await this.prisma.userWallet.findUnique({
-          where: {
-            walletId: wallet.id,
-          },
-        });
-
-        if (existingByWalletId) {
-          const storedWallet = await this.prisma.userWallet.update({
-            where: {
-              walletId: wallet.id,
-            },
-            data: {
-              address: wallet.address,
-              blockchain: wallet.blockchain,
-              chain: WALLET_CHAIN_BY_BLOCKCHAIN[wallet.blockchain],
-              userEmail: input.userEmail,
-              userId: input.userId,
-              walletSetId: wallet.walletSetId,
-            },
-          });
-
-          persistedWallets.push(this.toPersistedWallet(storedWallet));
-          continue;
-        }
-
-        const existingByUserId = await this.prisma.userWallet.findUnique({
-          where: {
-            userId_blockchain: {
-              userId: input.userId,
-              blockchain: wallet.blockchain,
-            },
-          },
-        });
-
-        let storedWallet;
-        if (existingByUserId) {
-          storedWallet = await this.prisma.userWallet.update({
-            where: {
-              userId_blockchain: {
-                userId: input.userId,
-                blockchain: wallet.blockchain,
-              },
-            },
-            data: {
-              address: wallet.address,
-              walletId: wallet.id,
-              userEmail: input.userEmail,
-              walletSetId: wallet.walletSetId,
-            },
-          });
-        } else {
-          storedWallet = await this.prisma.userWallet.create({
-            data: {
-              address: wallet.address,
-              blockchain: wallet.blockchain,
-              chain: WALLET_CHAIN_BY_BLOCKCHAIN[wallet.blockchain],
-              userEmail: input.userEmail,
-              userId: input.userId,
-              walletId: wallet.id,
-              walletSetId: wallet.walletSetId,
-            },
-          });
-
-          if (wallet.blockchain === 'SOLANA-DEVNET') {
-            void this.airdropSolanaDevnet(wallet.address);
-          }
-        }
-
-        persistedWallets.push(this.toPersistedWallet(storedWallet));
-      } catch (error) {
-        this.handleWalletPersistenceError(error, wallet.id);
-      }
-    }
-
-    return persistedWallets;
-  }
-
-  private async airdropSolanaDevnet(address: string) {
-    const lamports = Number.parseInt(
-      this.configService.get<string>('SOLANA_DEVNET_AIRDROP_LAMPORTS') ||
-        '10000000',
-      10,
-    );
-
-    if (!Number.isFinite(lamports) || lamports <= 0) {
-      return;
-    }
-
-    try {
-      const response = await fetch(this.solanaRpcUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          id: randomUUID(),
-          jsonrpc: '2.0',
-          method: 'requestAirdrop',
-          params: [address, lamports],
-        }),
-      });
-      const payload = (await response.json().catch(() => ({}))) as {
-        error?: { message?: string };
-        result?: string;
-      };
-
-      if (!response.ok || payload.error) {
-        this.logger.warn(
-          `Solana devnet airdrop failed for ${address}: ${payload.error?.message || response.statusText}`,
-        );
-        return;
-      }
-
-      if (payload.result) {
-        this.logger.log(
-          `Solana devnet airdrop requested for ${address} (signature=${payload.result}).`,
-        );
-      }
-    } catch (error) {
-      this.logger.warn(
-        `Solana devnet airdrop request failed: ${error instanceof Error ? error.message : String(error)}`,
+  private requireAddress(address: string) {
+    const candidate = typeof address === 'string' ? address.trim() : '';
+    if (!isAddress(candidate)) {
+      throw new BadRequestException(
+        'Wallet registration requires a valid EVM address.',
       );
     }
-  }
-
-  private async circleRequest<T extends Record<string, unknown>>(input: {
-    body?: Record<string, unknown>;
-    method: 'GET' | 'POST';
-    path: string;
-    userToken: string;
-  }): Promise<T> {
-    const response = await fetch(
-      new URL(input.path, this.circleConfig.apiBaseUrl).toString(),
-      {
-        method: input.method,
-        headers: {
-          Accept: 'application/json',
-          Authorization: `Bearer ${this.getCircleApiKey()}`,
-          ...(input.body ? { 'Content-Type': 'application/json' } : {}),
-          'X-User-Token': input.userToken,
-        },
-        body: input.body ? JSON.stringify(input.body) : undefined,
-        signal: AbortSignal.timeout(20_000),
-      },
-    );
-    const payload = (await response.json().catch(() => ({}))) as {
-      code?: string | number;
-      data?: T;
-      details?: unknown;
-      error?: string;
-      message?: string;
-    };
-
-    if (!response.ok) {
-      throw new WalletProvisionError(
-        payload.error ||
-          payload.message ||
-          `Circle wallet request failed with status ${response.status}.`,
-        response.status,
-        payload.code,
-        payload.details,
-      );
-    }
-
-    return payload.data ?? (payload as T);
-  }
-
-  private getCircleApiKey() {
-    return this.circleConfig.apiKey;
-  }
-
-  private resolveTargetBlockchain(chain: WalletProvisionChain) {
-    return chain === 'SOLANA' ? 'SOLANA-DEVNET' : this.circleConfig.blockchain;
-  }
-
-  private toCircleBlockchain(blockchain: SupportedUserWalletBlockchain) {
-    return blockchain === 'SOLANA-DEVNET' ? 'SOL-DEVNET' : blockchain;
+    return getAddress(candidate);
   }
 
   private normalizeOptionalEmail(value: string | null | undefined) {
@@ -601,68 +244,6 @@ export class WalletService {
     return trimmed ? trimmed : null;
   }
 
-  private readStableUserIdFromToken(userToken: string | null | undefined) {
-    const token = this.normalizeOptionalValue(userToken);
-
-    if (!token) {
-      return null;
-    }
-
-    const [, encodedPayload] = token.split('.');
-
-    if (!encodedPayload) {
-      return null;
-    }
-
-    try {
-      const payload = JSON.parse(
-        Buffer.from(this.toBase64(encodedPayload), 'base64').toString('utf8'),
-      ) as Record<string, unknown>;
-      const candidate =
-        this.readString(payload, 'userID') ||
-        this.readString(payload, 'userId') ||
-        this.readString(payload, 'user_id') ||
-        this.readString(payload, 'sub');
-
-      return candidate ? `circle:user:${candidate}` : null;
-    } catch {
-      return null;
-    }
-  }
-
-  private toBase64(value: string) {
-    const normalized = value.replace(/-/g, '+').replace(/_/g, '/');
-    const paddingLength = (4 - (normalized.length % 4)) % 4;
-
-    return normalized + '='.repeat(paddingLength);
-  }
-
-  private handleWalletPersistenceError(
-    error: unknown,
-    walletId: string,
-  ): never {
-    if (
-      error &&
-      typeof error === 'object' &&
-      'code' in error &&
-      error.code === 'P2002'
-    ) {
-      throw new WalletProvisionError(
-        'Circle wallet is already stored for another user session.',
-        409,
-        'WALLET_ALREADY_EXISTS',
-        { walletId },
-      );
-    }
-
-    throw error;
-  }
-
-  private readString(source: Record<string, unknown>, key: string) {
-    const value = source[key];
-    return typeof value === 'string' && value.trim() ? value.trim() : null;
-  }
-
   private toPersistedWallet(wallet: {
     address: string;
     blockchain: string;
@@ -676,8 +257,9 @@ export class WalletService {
   }): PersistedUserWallet {
     return {
       address: wallet.address,
-      blockchain: wallet.blockchain as SupportedUserWalletBlockchain,
-      chain: wallet.chain as WalletProvisionChain,
+      blockchain: EXTERNAL_WALLET_BLOCKCHAIN,
+      chain: EXTERNAL_WALLET_CHAIN,
+      chainId: ARC_MAINNET_CHAIN_ID,
       createdAt: wallet.createdAt.toISOString(),
       updatedAt: wallet.updatedAt.toISOString(),
       userEmail: wallet.userEmail,

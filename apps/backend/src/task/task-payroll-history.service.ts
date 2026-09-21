@@ -10,13 +10,12 @@ import type {
   TaskPayrollHistoryResponse,
 } from './task.types';
 
-const PAYROLL_CHAIN = 'ARC-TESTNET';
+const PAYROLL_CHAIN = 'ARC-MAINNET';
 const PAYROLL_HISTORY_FROM_BLOCK = 35_790_000n;
 const PAYROLL_HISTORY_CHUNK_SIZE = 9_999n;
-const DEFAULT_WIZPAY_ADDRESS = '0x87ACE45582f45cC81AC1E627E875AE84cbd75946';
-const LEGACY_WIZPAY_ADDRESS = '0xE89f7c3781Dd24baE53d6ef9Af8a6a174731b4c8';
+const DEFAULT_WIZPAY_ADDRESS = '0x77AC7Cb6507D404b5530fC03e3D39BAaEdE10C34';
 const USDC_ADDRESS = '0x3600000000000000000000000000000000000000';
-const EURC_ADDRESS = '0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a';
+const EURC_ADDRESS = '0xbEf5f6d51CB62b58e6A8f77868681825C6fe21c1';
 
 @Injectable()
 export class TaskPayrollHistoryService {
@@ -272,7 +271,7 @@ export class TaskPayrollHistoryService {
 
     return Array.from(
       new Set(
-        [configuredAddress, LEGACY_WIZPAY_ADDRESS].map((address) =>
+        [configuredAddress].map((address) =>
           getAddress(address),
         ),
       ),

@@ -6,7 +6,6 @@ import {
   type Hex,
 } from "viem";
 import { ERC20_ABI } from "@/constants/erc20";
-import type { LoginMethod } from "@/services/circle-auth.types";
 
 export const INVOICE_PAYMENT_RECOVERY_PREFIX = "wizpay.invoice-payment.v1.";
 export type ExternalInvoicePaymentRecovery = {
@@ -21,28 +20,7 @@ export type ExternalInvoicePaymentRecovery = {
   createdAt: string;
   stage: "awaiting_wallet_signature" | "confirming_onchain";
 };
-export type AppWalletInvoicePaymentRecovery = {
-  version: 2;
-  method: "app";
-  publicId: string;
-  executionIntentId?: string;
-  executionIntentKey?: string;
-  authMethod: LoginMethod;
-  walletId: string;
-  payerAddress: Address;
-  challengeId: string;
-  transactionId?: string;
-  transactionHash?: Hex;
-  createdAt: string;
-  stage:
-    | "awaiting_user_authorization"
-    | "authorization_completed"
-    | "resolving_transaction"
-    | "confirming_onchain";
-};
-export type InvoicePaymentRecovery =
-  | ExternalInvoicePaymentRecovery
-  | AppWalletInvoicePaymentRecovery;
+export type InvoicePaymentRecovery = ExternalInvoicePaymentRecovery;
 
 export function buildInvoiceTransferRequest(input: {
   chainId: number;
@@ -75,33 +53,9 @@ export function readInvoicePaymentRecovery(
     ) as Record<string, unknown> | null;
     if (!value || !validBaseRecovery(value, publicId)) return null;
 
-    if (value.method === "app") {
-      if (
-        value.version !== 2 ||
-        !["email", "google", "passkey"].includes(String(value.authMethod)) ||
-        typeof value.walletId !== "string" ||
-        !value.walletId ||
-        typeof value.challengeId !== "string" ||
-        !value.challengeId ||
-        !isAddress(String(value.payerAddress ?? "")) ||
-        ![
-          "awaiting_user_authorization",
-          "authorization_completed",
-          "resolving_transaction",
-          "confirming_onchain",
-        ].includes(String(value.stage)) ||
-        (value.transactionId !== undefined &&
-          (typeof value.transactionId !== "string" || !value.transactionId)) ||
-        (value.transactionHash !== undefined &&
-          !isTransactionHash(value.transactionHash))
-      )
-        return null;
-      return {
-        ...(value as unknown as AppWalletInvoicePaymentRecovery),
-        payerAddress: getAddress(String(value.payerAddress)),
-      };
-    }
-
+    // Fail closed: only external-wallet recovery records are honored on Arc
+    // Mainnet. Any legacy record with another method is rejected without
+    // being migrated or executed.
     if (
       value.method !== "external" ||
       value.version !== 2 ||

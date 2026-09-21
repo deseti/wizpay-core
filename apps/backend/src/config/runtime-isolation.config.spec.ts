@@ -1,14 +1,5 @@
 import { resolveRuntimeIsolationConfiguration } from './runtime-isolation.config';
 
-const testnet = {
-  WIZPAY_ARC_NETWORK: 'arc-testnet',
-  ARC_TESTNET_DATABASE_URL:
-    'postgresql://testnet_user:testnet_password@db-testnet.internal:5432/wizpay_testnet?sslmode=require',
-  ARC_TESTNET_REDIS_URL:
-    'rediss://testnet_user:testnet_password@redis-testnet.internal:6380/2',
-  ARC_TESTNET_QUEUE_PREFIX: 'wizpay:arc-testnet',
-};
-
 const mainnet = {
   WIZPAY_ARC_NETWORK: 'arc-mainnet',
   ARC_MAINNET_DATABASE_URL:
@@ -21,106 +12,102 @@ const mainnet = {
 describe('runtime isolation configuration', () => {
   it('rejects a missing network selector', () => {
     expect(() =>
-      resolveRuntimeIsolationConfiguration(withoutSelector(testnet)),
+      resolveRuntimeIsolationConfiguration(withoutSelector(mainnet)),
     ).toThrow();
   });
 
-  it('resolves only the selected Testnet targets', () => {
-    const config = resolveRuntimeIsolationConfiguration({
-      ...testnet,
-      ...withoutSelector(mainnet),
-    });
-    expect(config.databaseUrl).toBe(testnet.ARC_TESTNET_DATABASE_URL);
+  it.each([undefined, '', ' arc-mainnet ', 'ARC-MAINNET', 'unknown'])(
+    'rejects a missing or inexact network selector: %p',
+    (selector) => {
+      expect(() =>
+        resolveRuntimeIsolationConfiguration({
+          ...mainnet,
+          WIZPAY_ARC_NETWORK: selector,
+        }),
+      ).toThrow();
+    },
+  );
+
+  it('resolves only the selected Mainnet targets', () => {
+    const config = resolveRuntimeIsolationConfiguration({ ...mainnet });
+    expect(config.network).toBe('arc-mainnet');
+    expect(config.databaseUrl).toBe(mainnet.ARC_MAINNET_DATABASE_URL);
     expect(config.redis).toMatchObject({
-      host: 'redis-testnet.internal',
+      host: 'redis-mainnet.internal',
       port: 6380,
-      databaseIndex: 2,
+      databaseIndex: 3,
       tls: true,
     });
-    expect(config.queuePrefix).toBe('wizpay:arc-testnet');
-    expect(JSON.stringify(config.diagnostic)).not.toContain('password');
-  });
-
-  it('resolves only the selected Mainnet targets and remains non-transactional', () => {
-    const config = resolveRuntimeIsolationConfiguration({
-      ...mainnet,
-      ...withoutSelector(testnet),
-    });
-    expect(config.databaseUrl).toBe(mainnet.ARC_MAINNET_DATABASE_URL);
     expect(config.queuePrefix).toBe('wizpay:arc-mainnet');
     expect(config.diagnostic).toMatchObject({
+      network: 'arc-mainnet',
+      environment: 'mainnet',
       manifest: 'arc-mainnet-unavailable',
-      transactionalCapabilityAvailable: false,
-      circle: { blockchainAvailable: false },
     });
+    expect(JSON.stringify(config.diagnostic)).not.toContain('mainnet_password');
   });
 
   it.each([
-    { DATABASE_URL: testnet.ARC_TESTNET_DATABASE_URL },
-    { REDIS_URL: testnet.ARC_TESTNET_REDIS_URL },
-    { WIZPAY_WORKER_NETWORK: 'arc-mainnet' },
+    { DATABASE_URL: mainnet.ARC_MAINNET_DATABASE_URL },
+    { REDIS_URL: mainnet.ARC_MAINNET_REDIS_URL },
+    { QUEUE_PREFIX: 'wizpay:arc-mainnet' },
+    { WIZPAY_API_NETWORK: 'unknown' },
+    { WIZPAY_WORKER_NETWORK: 'unknown' },
   ])('fails closed for missing, legacy, or conflicting values: %p', (extra) => {
     expect(() =>
-      resolveRuntimeIsolationConfiguration({ ...testnet, ...extra }),
+      resolveRuntimeIsolationConfiguration({ ...mainnet, ...extra }),
     ).toThrow();
   });
 
-  it('rejects identical normalized database targets without exposing secrets', () => {
-    const action = () =>
-      resolveRuntimeIsolationConfiguration({
-        ...testnet,
-        ARC_MAINNET_DATABASE_URL:
-          'postgresql://testnet_user:different_secret@DB-TESTNET.INTERNAL/wizpay_testnet',
-      });
-    expect(action).toThrow('database targets must be distinct');
-    try {
-      action();
-    } catch (error) {
-      expect(String(error)).not.toContain('testnet_password');
-      expect(String(error)).not.toContain('different_secret');
-    }
-  });
-
-  it('rejects identical Redis targets and empty, generic, or shared prefixes', () => {
+  it('rejects retired network configuration without reading it', () => {
     expect(() =>
       resolveRuntimeIsolationConfiguration({
-        ...testnet,
-        ARC_MAINNET_REDIS_URL:
-          'rediss://testnet_user:other@REDIS-TESTNET.INTERNAL:6380/2',
+        ...mainnet,
+        WIZPAY_RETIRED_TESTNET_MODE: 'enabled',
       }),
-    ).toThrow('Redis targets must be distinct');
-    for (const prefix of ['', 'wizpay', 'wizpay:arc-mainnet']) {
+    ).toThrow('Legacy network configuration');
+  });
+
+  it('rejects custodied-wallet configuration on the external-wallet-only runtime', () => {
+    expect(() =>
+      resolveRuntimeIsolationConfiguration({
+        ...mainnet,
+        'CIRCLE-RETIRED-API-KEY': 'top-secret-api-key',
+      }),
+    ).toThrow('is not accepted');
+  });
+
+  it('rejects incomplete, non-PostgreSQL, or invalid-port database targets', () => {
+    for (const databaseUrl of [
+      'redis://mainnet_user:secret@db-mainnet.internal:5432/wizpay_mainnet',
+      'postgresql://db-mainnet.internal:5432/wizpay_mainnet',
+      'postgresql://mainnet_user:secret@db-mainnet.internal:99999/wizpay_mainnet',
+      'not-a-url',
+    ]) {
       expect(() =>
         resolveRuntimeIsolationConfiguration({
-          ...testnet,
-          ARC_TESTNET_QUEUE_PREFIX: prefix,
+          ...mainnet,
+          ARC_MAINNET_DATABASE_URL: databaseUrl,
         }),
       ).toThrow();
     }
-    expect(() =>
-      resolveRuntimeIsolationConfiguration({
-        ...testnet,
-        ARC_MAINNET_QUEUE_PREFIX: 'wizpay:arc-testnet',
-      }),
-    ).toThrow('queue prefixes must be distinct');
   });
 
-  it('reports Circle presence only as booleans', () => {
-    const config = resolveRuntimeIsolationConfiguration({
-      ...testnet,
-      CIRCLE_TESTNET_API_KEY: 'top-secret-api-key',
-      CIRCLE_TESTNET_ENTITY_SECRET: 'top-secret-entity-secret',
-      CIRCLE_TESTNET_WALLET_SET_ID: 'wallet-set-private',
-    });
-    expect(config.diagnostic.circle).toMatchObject({
-      apiCredentialConfigured: true,
-      entitySecretConfigured: true,
-      walletSetConfigured: true,
-      blockchainAvailable: true,
-    });
-    const serialized = JSON.stringify(config.diagnostic);
-    expect(serialized).not.toContain('top-secret');
-    expect(serialized).not.toContain('wallet-set-private');
+  it('rejects invalid Redis targets and empty, generic, or off-network prefixes', () => {
+    expect(() =>
+      resolveRuntimeIsolationConfiguration({
+        ...mainnet,
+        ARC_MAINNET_REDIS_URL: 'postgresql://redis-mainnet.internal:6380/3',
+      }),
+    ).toThrow('must be a Redis URL');
+    for (const prefix of ['', 'wizpay', 'wizpay:mainnet-ops']) {
+      expect(() =>
+        resolveRuntimeIsolationConfiguration({
+          ...mainnet,
+          ARC_MAINNET_QUEUE_PREFIX: prefix,
+        }),
+      ).toThrow();
+    }
   });
 });
 

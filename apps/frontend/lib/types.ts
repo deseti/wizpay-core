@@ -342,7 +342,7 @@ export interface WizPayState {
   smartBatchReason: string | null;
   smartBatchButtonText: string | null;
   smartBatchHelperText: string | null;
-  /** Cross-currency quote provider label (e.g. "StableFX"), null otherwise. */
+  /** Cross-currency quote provider label, null otherwise. */
   swapProviderLabel: string | null;
   smartBatchSubmissionHashes: string[];
   payrollTaskId: string | null;

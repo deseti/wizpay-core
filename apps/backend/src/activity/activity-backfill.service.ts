@@ -27,7 +27,7 @@ export class ActivityBackfillService {
 
   async run(): Promise<ActivityBackfillReport> {
     const wallets = await this.prisma.userWallet.findMany({
-      where: { blockchain: 'ARC-TESTNET' },
+      where: { blockchain: 'ARC-MAINNET' },
       orderBy: { id: 'asc' },
     });
     const byAddress = new Map<string, typeof wallets>();
@@ -52,6 +52,7 @@ export class ActivityBackfillService {
       await this.activity.projectPersisted({
         merchantUserId: wallet.userId,
         merchantWalletAddress: getAddress(wallet.address),
+        merchantDisplayLabel: null,
       });
       ownersProjected += 1;
     }
@@ -60,14 +61,10 @@ export class ActivityBackfillService {
       ownersProjected,
       malformedWalletsSkipped,
       ambiguousWalletsSkipped,
-      safeCategories: [
-        'xylonet_swap',
-        'verified_invoice_payment',
-        'verified_cctp_bridge',
-      ],
+      safeCategories: ['verified_invoice_payment'],
       unsupportedCategories: [
-        'circle_transfer_without_provider_sync',
-        'payroll_without_authenticated_circle_sync',
+        'provider_transfer_without_wallet_sync',
+        'payroll_without_wallet_sync',
         'legacy_swap',
         'unverified_liquidity_report',
         'ownerless_or_recipient_only_task',

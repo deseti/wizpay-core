@@ -1,5 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
-import { StableFXRfqClient } from './stablefx-rfq-client.service';
+import { Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
 
 /**
  * Represents a single leg in a batch payroll submission.
@@ -64,21 +63,18 @@ const AMOUNT_MAX = 999_999_999.99;
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
 
 /**
- * FxBatchService handles batch validation and cross-currency batch execution
- * for payroll operations.
+ * FxBatchService handles batch validation for payroll operations.
  *
  * Responsibilities:
  * - Atomic batch pre-validation: if ANY leg fails, reject the ENTIRE batch
- * - Cross-currency batch execution: independent RFQ quotes per leg
- * - Batch summary recording on terminal state
  *
- * Requirements: 4.2, 4.3, 4.5, 4.6, 4.8
+ * Cross-currency batch execution is retired on Arc Mainnet: conversion is
+ * priced by Uniswap V4 and executed by the external wallet. Backend batch
+ * execution fails closed without side effects.
  */
 @Injectable()
 export class FxBatchService {
   private readonly logger = new Logger(FxBatchService.name);
-
-  constructor(private readonly rfqClient: StableFXRfqClient) {}
 
   /**
    * Validates a batch of payment legs atomically.
@@ -176,109 +172,23 @@ export class FxBatchService {
   }
 
   /**
-   * Executes a cross-currency batch where each leg obtains its own independent
-   * RFQ quote and settles independently through the FX flow.
+   * Cross-currency batch execution is unavailable on Arc Mainnet.
    *
-   * If one leg fails, the failure is recorded but other legs continue processing.
-   *
-   * On batch terminal state, records a batch summary with:
-   * - Total legs attempted
-   * - Legs succeeded
-   * - Legs failed
-   * - Total amount disbursed
-   * - Batch reference ID
-   *
-   * @param legs - Array of validated batch legs to execute
-   * @param batchReferenceId - Unique identifier linking all legs to the originating batch
-   * @returns Batch execution result with per-leg outcomes and summary
+   * Each leg requires an external-wallet Uniswap V4 swap; the backend never
+   * submits conversions. Fails closed before any side effect.
    */
   async executeCrossCurrencyBatch(
     legs: BatchLeg[],
     batchReferenceId: string,
   ): Promise<BatchExecutionResult> {
-    this.logger.log(
-      `[batch-execute] Starting cross-currency batch ${batchReferenceId} with ${legs.length} legs`,
+    this.logger.warn(
+      `[batch-execute] Refused cross-currency batch ${batchReferenceId} with ${legs.length} legs: backend execution is retired on Arc Mainnet.`,
     );
-
-    const legResults: BatchExecutionResult['legResults'] = [];
-    let succeeded = 0;
-    let failed = 0;
-    let totalDisbursed = 0;
-
-    for (let i = 0; i < legs.length; i++) {
-      const leg = legs[i];
-      const timestamp = new Date().toISOString();
-
-      try {
-        // Obtain individual RFQ quote for this leg
-        const quote = await this.rfqClient.requestQuote({
-          fromCurrency: leg.sourceToken,
-          toCurrency: leg.destinationToken,
-          fromAmount: leg.amount,
-          tenor: 'instant',
-        });
-
-        // Create trade against the quote
-        const trade = await this.rfqClient.createTrade(
-          quote.quoteId,
-          `batch-${batchReferenceId}-leg-${i}`,
-        );
-
-        // Record success
-        const disbursedAmount = parseFloat(quote.toAmount) || 0;
-        totalDisbursed += disbursedAmount;
-        succeeded++;
-
-        legResults.push({
-          legIndex: i,
-          recipient: leg.recipient,
-          amount: leg.amount,
-          success: true,
-          quoteId: quote.quoteId,
-          tradeId: trade.tradeId,
-          timestamp,
-        });
-
-        this.logger.log(
-          `[batch-execute] Leg ${i} succeeded: quoteId=${quote.quoteId}, tradeId=${trade.tradeId}`,
-        );
-      } catch (error) {
-        // Record failure for this leg, continue processing other legs
-        failed++;
-        const reason =
-          error instanceof Error ? error.message : String(error);
-
-        legResults.push({
-          legIndex: i,
-          recipient: leg.recipient,
-          amount: leg.amount,
-          success: false,
-          reason,
-          timestamp,
-        });
-
-        this.logger.warn(
-          `[batch-execute] Leg ${i} failed: recipient=${leg.recipient}, amount=${leg.amount}, reason=${reason}`,
-        );
-      }
-    }
-
-    const result: BatchExecutionResult = {
-      batchReferenceId,
-      totalLegs: legs.length,
-      succeeded,
-      failed,
-      totalDisbursed: totalDisbursed.toFixed(2),
-      legResults,
-    };
-
-    this.logger.log(
-      `[batch-execute] Batch ${batchReferenceId} complete: ` +
-        `total=${result.totalLegs}, succeeded=${result.succeeded}, ` +
-        `failed=${result.failed}, disbursed=${result.totalDisbursed}`,
-    );
-
-    return result;
+    throw new ServiceUnavailableException({
+      code: 'FX_BATCH_EXECUTION_UNAVAILABLE',
+      message:
+        'Cross-currency batch execution is unavailable. Execute each leg through the external-wallet Uniswap V4 flow.',
+    });
   }
 
   /**

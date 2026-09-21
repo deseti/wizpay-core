@@ -3,7 +3,6 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 const {
-  ARC_CIRCLE_EXECUTION_DEFINITIONS,
   ARC_EXPLORER_RESOURCES,
   ARC_NETWORK_DEFINITIONS,
   ARC_PROTOCOL_CAPABILITY_RESOURCES,
@@ -28,41 +27,35 @@ const {
   getArcWizPayContractResource,
   parseArcNetworkKey,
   requireAvailableArcResource,
-  requireArcCircleBlockchain,
   ARC_CAPABILITY_DEFINITIONS,
   resolveArcCapabilities,
   parseArcCapabilityName,
   validateArcCapabilityDependencies,
 } = require(".");
 
-test("defines verified Circle Testnet support without inventing an Arc Mainnet identifier", () => {
-  assert.equal(
-    ARC_CIRCLE_EXECUTION_DEFINITIONS["arc-testnet"].blockchain,
-    "ARC-TESTNET",
-  );
-  assert.equal(
-    ARC_CIRCLE_EXECUTION_DEFINITIONS["arc-mainnet"].blockchain,
-    null,
-  );
-  assert.equal(requireArcCircleBlockchain("arc-testnet"), "ARC-TESTNET");
-  assert.throws(
-    () => requireArcCircleBlockchain("arc-mainnet"),
-    (error) => error.code === "CIRCLE_BLOCKCHAIN_UNSUPPORTED",
-  );
+test("defines Arc Mainnet-only network identity", () => {
+  assert.equal(ARC_NETWORK_DEFINITIONS.length, 1);
+  assert.deepEqual(ARC_NETWORK_DEFINITIONS[0], {
+    key: "arc-mainnet",
+    name: "Arc Mainnet",
+    chainId: 5_042,
+    environment: "mainnet",
+    nativeCurrency: { name: "USDC", symbol: "USDC", decimals: 18 },
+    testnet: false,
+  });
 });
 
-test("defines explicit Arc Testnet capabilities and all-false Arc Mainnet defaults", () => {
-  assert.deepEqual(ARC_CAPABILITY_DEFINITIONS["arc-testnet"], {
-    send: true,
-    sameTokenPayroll: true,
-    invoice: true,
-    paymentLink: true,
-    liquidity: true,
-    bridge: true,
-    swap: true,
-    crossTokenPayroll: true,
+test("defines all-false Arc Mainnet capability defaults", () => {
+  assert.deepEqual(ARC_CAPABILITY_DEFINITIONS["arc-mainnet"], {
+    send: false,
+    sameTokenPayroll: false,
+    invoice: false,
+    paymentLink: false,
+    liquidity: false,
+    bridge: false,
+    swap: false,
+    crossTokenPayroll: false,
     crossTokenInvoice: false,
-    stableFx: false,
     nanoAgentApi: false,
   });
   assert.equal(
@@ -88,16 +81,6 @@ test("keeps configurable Mainnet flags false when absent or explicitly false", (
   ]) {
     assert.equal(configured[capability], false);
   }
-});
-
-test("rejects Mainnet flags on Testnet as contradictory configuration", () => {
-  assert.throws(
-    () =>
-      resolveArcCapabilities("arc-testnet", {
-        WIZPAY_ARC_MAINNET_CAPABILITY_SEND: "true",
-      }),
-    (error) => error.code === "CONTRADICTORY_CAPABILITY_CONFIGURATION",
-  );
 });
 
 test("parses capability flags exactly and fails closed for malformed or unknown input", () => {
@@ -162,13 +145,7 @@ test("rejects still-forbidden Mainnet capabilities while allowing verified swap 
   );
 });
 
-test("decouples direct-USDC readiness from EURC and swap resources", () => {
-  const readiness = getArcOperationResourceReadiness("arc-testnet");
-  assert.equal(readiness.sendDirect, true);
-  assert.equal(readiness.payrollDirect, true);
-  assert.equal(readiness.invoiceCreation, true);
-  assert.equal(readiness.paymentLinkDirect, true);
-
+test("validates Mainnet capability dependencies without legacy fallbacks", () => {
   const allFalse = resolveArcCapabilities("arc-mainnet", {});
   assert.equal(
     validateArcCapabilityDependencies(
@@ -180,7 +157,6 @@ test("decouples direct-USDC readiness from EURC and swap resources", () => {
         paymentLinkDirect: false,
         bridge: false,
         swap: false,
-        stableFx: false,
         nanoAgentApi: false,
       },
     ),
@@ -188,18 +164,12 @@ test("decouples direct-USDC readiness from EURC and swap resources", () => {
   );
 });
 
-test("keeps cross-token readiness independently dependent on EURC and swap executor", () => {
-  const testnet = getArcOperationResourceReadiness("arc-testnet");
-  assert.equal(testnet.crossToken, true);
-  assert.equal(testnet.swapDirect, true);
+test("keeps Mainnet cross-token readiness dependent on EURC and swap executor", () => {
   const mainnet = getArcOperationResourceReadiness("arc-mainnet");
   assert.equal(mainnet.sendDirect, true);
   assert.equal(mainnet.payrollDirect, true);
   assert.equal(mainnet.swapDirect, true);
   assert.equal(mainnet.crossToken, true);
-  assert.equal(mainnet.sendDirectAppWallet, false);
-  assert.equal(mainnet.payrollDirectAppWallet, false);
-  assert.equal(mainnet.paymentLinkDirectAppWallet, false);
 });
 
 test("rejects dependency-invalid capability combinations", () => {
@@ -212,7 +182,6 @@ test("rejects dependency-invalid capability combinations", () => {
           directPayment: true,
           bridge: true,
           swap: true,
-          stableFx: true,
           nanoAgentApi: true,
         },
       ),
@@ -226,7 +195,6 @@ test("rejects dependency-invalid capability combinations", () => {
           directPayment: true,
           bridge: false,
           swap: true,
-          stableFx: true,
           nanoAgentApi: true,
         },
       ),
@@ -234,7 +202,7 @@ test("rejects dependency-invalid capability combinations", () => {
   );
 });
 
-test("defines the exact Arc Testnet and Mainnet identities", () => {
+test("defines the exact Arc Mainnet identity", () => {
   assert.deepEqual(
     ARC_NETWORK_DEFINITIONS.map(
       ({ key, name, chainId, environment, nativeCurrency, testnet }) => ({
@@ -248,14 +216,6 @@ test("defines the exact Arc Testnet and Mainnet identities", () => {
     ),
     [
       {
-        key: "arc-testnet",
-        name: "Arc Testnet",
-        chainId: 5_042_002,
-        environment: "testnet",
-        nativeCurrency: { name: "USDC", symbol: "USDC", decimals: 18 },
-        testnet: true,
-      },
-      {
         key: "arc-mainnet",
         name: "Arc Mainnet",
         chainId: 5_042,
@@ -265,21 +225,14 @@ test("defines the exact Arc Testnet and Mainnet identities", () => {
       },
     ],
   );
-  assert.notEqual(
-    ARC_NETWORK_DEFINITIONS[0].chainId,
-    ARC_NETWORK_DEFINITIONS[1].chainId,
-  );
 });
 
-test("resolves both exact network keys", () => {
-  assert.equal(getArcNetworkByKey("arc-testnet").chainId, 5_042_002);
+test("resolves the exact Mainnet key", () => {
   assert.equal(getArcNetworkByKey("arc-mainnet").chainId, 5_042);
-  assert.equal(parseArcNetworkKey("arc-testnet"), "arc-testnet");
   assert.equal(parseArcNetworkKey("arc-mainnet"), "arc-mainnet");
 });
 
-test("resolves both exact chain IDs", () => {
-  assert.equal(getArcNetworkByChainId(5_042_002).key, "arc-testnet");
+test("resolves the exact Mainnet chain ID", () => {
   assert.equal(getArcNetworkByChainId(5_042).key, "arc-mainnet");
 });
 
@@ -288,10 +241,11 @@ test("strictly rejects empty, whitespace, unknown, case-modified, and near-match
     "",
     "   ",
     "unknown",
-    "ARC-TESTNET",
-    "arc-Testnet",
-    "arc-testnet ",
+    "ARC-MAINNET",
+    "arc-Mainnet",
+    "arc-mainnet ",
     "arc-main",
+    "arc-test",
     undefined,
     null,
   ]) {
@@ -305,7 +259,7 @@ test("strictly rejects empty, whitespace, unknown, case-modified, and near-match
 });
 
 test("rejects unknown and malformed chain IDs without a default", () => {
-  for (const value of [0, 1, 5_043, 50_420_020, "5042", undefined, null]) {
+  for (const value of [0, 1, 5_043, 5_042_002, 50_420_020, "5042", undefined, null]) {
     assert.throws(
       () => getArcNetworkByChainId(value),
       (error) =>
@@ -331,8 +285,7 @@ test("validates key, chain ID, and environment relationships", () => {
   assert.throws(
     () =>
       assertValidArcNetworkDefinitions([
-        { key: "arc-testnet", chainId: 5_042_002, environment: "mainnet" },
-        { key: "arc-mainnet", chainId: 5_042, environment: "mainnet" },
+        { key: "arc-mainnet", chainId: 5_042, environment: "testnet" },
       ]),
     ArcNetworkInvariantError,
   );
@@ -342,30 +295,7 @@ test("rejects arc-mainnet with chain ID 5043", () => {
   assert.throws(
     () =>
       assertValidArcNetworkDefinitions([
-        ARC_NETWORK_DEFINITIONS[0],
         { key: "arc-mainnet", chainId: 5_043, environment: "mainnet" },
-      ]),
-    ArcNetworkInvariantError,
-  );
-});
-
-test("rejects arc-testnet with chain ID 5042", () => {
-  assert.throws(
-    () =>
-      assertValidArcNetworkDefinitions([
-        { key: "arc-testnet", chainId: 5_042, environment: "testnet" },
-        ARC_NETWORK_DEFINITIONS[1],
-      ]),
-    ArcNetworkInvariantError,
-  );
-});
-
-test("rejects swapped canonical chain IDs", () => {
-  assert.throws(
-    () =>
-      assertValidArcNetworkDefinitions([
-        { key: "arc-testnet", chainId: 5_042, environment: "testnet" },
-        { key: "arc-mainnet", chainId: 5_042_002, environment: "mainnet" },
       ]),
     ArcNetworkInvariantError,
   );
@@ -375,66 +305,13 @@ test("rejects arbitrary positive chain IDs with correct keys and environments", 
   assert.throws(
     () =>
       assertValidArcNetworkDefinitions([
-        { key: "arc-testnet", chainId: 7, environment: "testnet" },
         { key: "arc-mainnet", chainId: 8, environment: "mainnet" },
       ]),
     ArcNetworkInvariantError,
   );
 });
 
-test("detects duplicate keys and chain IDs", () => {
-  assert.throws(
-    () =>
-      assertValidArcNetworkDefinitions([
-        ARC_NETWORK_DEFINITIONS[0],
-        { ...ARC_NETWORK_DEFINITIONS[0] },
-      ]),
-    /Duplicate Arc network key/,
-  );
-  assert.throws(
-    () =>
-      assertValidArcNetworkDefinitions([
-        ARC_NETWORK_DEFINITIONS[0],
-        {
-          ...ARC_NETWORK_DEFINITIONS[1],
-          chainId: ARC_NETWORK_DEFINITIONS[0].chainId,
-        },
-      ]),
-    /Duplicate Arc chain ID/,
-  );
-});
-
-test("resolves the exact available Arc Testnet RPC and explorer", () => {
-  assert.deepEqual(getArcRpcResource("arc-testnet"), {
-    status: "available",
-    value: { url: "https://rpc.testnet.arc.io" },
-  });
-  assert.deepEqual(getArcExplorerResource("arc-testnet"), {
-    status: "available",
-    value: { baseUrl: "https://testnet.arcscan.app" },
-  });
-});
-
-test("resolves the exact available Arc Testnet tokens", () => {
-  assert.deepEqual(getArcTokenResource("arc-testnet", "USDC"), {
-    status: "available",
-    value: {
-      symbol: "USDC",
-      address: "0x3600000000000000000000000000000000000000",
-      decimals: 6,
-    },
-  });
-  assert.deepEqual(getArcTokenResource("arc-testnet", "EURC"), {
-    status: "available",
-    value: {
-      symbol: "EURC",
-      address: "0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a",
-      decimals: 6,
-    },
-  });
-});
-
-test("resolves the live Arc Mainnet RPC, explorer, and canonical tokens", () => {
+test("resolves the exact available Arc Mainnet RPC and explorer", () => {
   assert.deepEqual(getArcRpcResource("arc-mainnet"), {
     status: "available",
     value: { url: "https://rpc.mainnet.arc.io" },
@@ -443,6 +320,9 @@ test("resolves the live Arc Mainnet RPC, explorer, and canonical tokens", () => 
     status: "available",
     value: { baseUrl: "https://explorer.arc.io" },
   });
+});
+
+test("resolves the live Arc Mainnet canonical tokens", () => {
   assert.deepEqual(getArcTokenResource("arc-mainnet", "USDC"), {
     status: "available",
     value: {
@@ -463,30 +343,6 @@ test("resolves the live Arc Mainnet RPC, explorer, and canonical tokens", () => 
         "https://docs.arc.io/arc/references/contract-addresses",
     },
   });
-});
-
-test("records only authoritative Arc Testnet WizPay deployments", () => {
-  assert.deepEqual(getArcWizPayContractResource("arc-testnet", "wizpay"), {
-    status: "available",
-    value: {
-      contract: "WizPay",
-      address: "0x87ACE45582f45cC81AC1E627E875AE84cbd75946",
-      deploymentSource:
-        "packages/contracts/deployments/arc-testnet-wizpay-v2.json",
-    },
-  });
-  assert.deepEqual(
-    getArcWizPayContractResource("arc-testnet", "wizpay-swap-executor-v2"),
-    {
-      status: "available",
-      value: {
-        contract: "WizPaySwapExecutorV2",
-        address: "0x7B5573759576AD3AD9F9E3b4425ad68FD2b525ed",
-        deploymentSource:
-          "packages/contracts/deployments/arc-testnet-wizpay-swap-executor-v2.json",
-      },
-    },
-  );
 });
 
 test("registers confirmed Arc Mainnet Payroll and Swap Executor without repurposing V2", () => {
@@ -601,12 +457,6 @@ test("never exposes published, candidate, verified-non-executable, or unavailabl
     requireAvailableArcResource(getArcRpcResource("arc-mainnet")),
     { url: "https://rpc.mainnet.arc.io" },
   );
-  assert.deepEqual(
-    requireAvailableArcResource(getArcRpcResource("arc-testnet")),
-    {
-      url: "https://rpc.testnet.arc.io",
-    },
-  );
 });
 
 test("keeps the generic pool capability and live liquidity unavailable", () => {
@@ -671,45 +521,28 @@ test("exposes candidate V4 pool identity without enabling execution", () => {
   assert.equal(Object.isFrozen(readiness.blockers), true);
 });
 
-test("does not fall back across Arc networks", () => {
+test("resolves only Arc Mainnet without cross-network fallback", () => {
   assert.equal(
     getArcRpcResource("arc-mainnet").value.url,
     "https://rpc.mainnet.arc.io",
-  );
-  assert.notEqual(
-    getArcRpcResource("arc-mainnet").value.url,
-    getArcRpcResource("arc-testnet").value.url,
   );
   assert.equal(
     getArcExplorerResource("arc-mainnet").value.baseUrl,
     "https://explorer.arc.io",
   );
-  assert.notEqual(
-    getArcTokenResource("arc-mainnet", "EURC").value.address,
-    getArcTokenResource("arc-testnet", "EURC").value.address,
-  );
   assert.equal(
     getArcWizPayContractResource("arc-mainnet", "wizpay").value.contract,
     "WizPayPayrollMainnet",
-  );
-  assert.notEqual(
-    getArcWizPayContractResource("arc-mainnet", "wizpay").value.address,
-    getArcWizPayContractResource("arc-testnet", "wizpay").value.address,
-  );
-  assert.equal(
-    getArcProtocolContractResource("arc-testnet", "uniswap-v3", "swapRouter02")
-      .status,
-    "unavailable",
   );
 });
 
 test("strictly rejects unknown and inexact resource keys", () => {
   const calls = [
-    () => getArcTokenResource("arc-testnet", ""),
-    () => getArcTokenResource("arc-testnet", " "),
-    () => getArcTokenResource("arc-testnet", "usdc"),
-    () => getArcTokenResource("arc-testnet", "USD"),
-    () => getArcWizPayContractResource("arc-testnet", "WizPay"),
+    () => getArcTokenResource("arc-mainnet", ""),
+    () => getArcTokenResource("arc-mainnet", " "),
+    () => getArcTokenResource("arc-mainnet", "usdc"),
+    () => getArcTokenResource("arc-mainnet", "USD"),
+    () => getArcWizPayContractResource("arc-mainnet", "WizPay"),
     () => getArcProtocolContractResource("arc-mainnet", "uniswap", "quoter"),
     () => getArcProtocolContractResource("arc-mainnet", "UNISWAP-V3", "quoter"),
     () => getArcProtocolContractResource("arc-mainnet", "uniswap-v3", "Quoter"),

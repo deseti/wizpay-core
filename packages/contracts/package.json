@@ -15,7 +15,7 @@
     "test:mainnet-uniswap-evidence": "node scripts/mainnet-uniswap-v4-pool-evidence.mjs && node --test scripts/mainnet-uniswap-v4-pool-evidence.test.mjs",
     "test:mainnet-deployment": "npm run test:mainnet-plan && npm run test:mainnet-preflight && npm run test:mainnet-verifier && npm run test:mainnet-abi",
     "validate:mainnet-manifest": "node scripts/mainnet-deployment-plan.mjs validate-manifest deployments/arc-mainnet-wizpay-v2.json",
-    "deploy": "forge script script/Deploy.s.sol:Deploy --rpc-url https://rpc.testnet.arc.io --broadcast",
+    "deploy": "echo 'Arc Mainnet deployment is manual-only (see ARC_MAINNET_DEPLOYMENT_RUNBOOK.md). No automated broadcast is provided.' && exit 1",
     "anvil": "anvil"
   },
   "keywords": [],

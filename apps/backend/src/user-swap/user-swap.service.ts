@@ -1,38 +1,61 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import {
   USER_SWAP_ALLOWED_CHAIN,
+  USER_SWAP_EURC_ADDRESS,
   USER_SWAP_ERROR_CODES,
+  USER_SWAP_USDC_ADDRESS,
   type UserSwapNormalizedQuote,
   type UserSwapQuoteRequest,
   type UserSwapToken,
 } from './user-swap.types';
-import { XylonetQuoteProviderService } from './xylonet-quote-provider.service';
+import { MainnetUniswapV4Service } from './mainnet-uniswap-v4.service';
 import { CapabilityService } from '../capabilities/capability.service';
-
-export const USER_SWAP_USDC_ADDRESS =
-  '0x3600000000000000000000000000000000000000' as const;
-export const USER_SWAP_EURC_ADDRESS =
-  '0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a' as const;
 
 const SUPPORTED_TOKENS = new Set<UserSwapToken>(['USDC', 'EURC']);
 
-/** XyloNet-only quote boundary for browser-signed External Wallet swaps. */
+const TOKEN_ADDRESSES: Record<UserSwapToken, string> = {
+  USDC: USER_SWAP_USDC_ADDRESS,
+  EURC: USER_SWAP_EURC_ADDRESS,
+};
+
+/** Mainnet-only quote boundary for browser-signed External Wallet swaps. */
 @Injectable()
 export class UserSwapService {
   constructor(
-    private readonly xylonetQuoteProvider: XylonetQuoteProviderService,
+    private readonly mainnetSwap: MainnetUniswapV4Service,
     private readonly capabilities: CapabilityService,
   ) {}
 
   async quote(request: UserSwapQuoteRequest): Promise<UserSwapNormalizedQuote> {
     this.capabilities.assert('swap');
     const normalized = this.normalize(request);
-    return this.xylonetQuoteProvider.quote(normalized);
+    // Validate the Mainnet execution boundary (chain, pair, wallet control,
+    // slippage, deadline) without submitting anything. Inspection errors
+    // propagate so misconfigured requests fail closed.
+    this.mainnetSwap.inspectQuote({
+      chainId: 5_042,
+      tokenInAddress: normalized.tokenInAddress,
+      tokenOutAddress: normalized.tokenOutAddress,
+      amountIn: normalized.amountIn,
+      recipient: normalized.toAddress,
+      walletAddress: normalized.fromAddress,
+      walletControl: 'external-wallet',
+      slippageBps: normalized.slippageBps,
+      deadline: normalized.deadline,
+    });
+    return {
+      ...normalized,
+      provider: 'uniswap-v4',
+      raw: null,
+    };
   }
 
-  private normalize(request: UserSwapQuoteRequest) {
+  private normalize(request: UserSwapQuoteRequest): Omit<
+    UserSwapNormalizedQuote,
+    'provider' | 'raw'
+  > {
     if (request.chain !== USER_SWAP_ALLOWED_CHAIN) {
-      this.invalid('Only ARC-TESTNET is supported.');
+      this.invalid('Only ARC-MAINNET is supported.');
     }
     if (!SUPPORTED_TOKENS.has(request.tokenIn as UserSwapToken)) {
       this.invalid('tokenIn must be USDC or EURC.');
@@ -50,15 +73,29 @@ export class UserSwapService {
     if (toAddress.toLowerCase() !== request.fromAddress.toLowerCase()) {
       this.invalid('toAddress must equal the connected wallet address.');
     }
+    if (!/^[1-9]\d*$/.test(request.amountIn)) {
+      this.invalid('amountIn must be a canonical positive integer string.');
+    }
+    const slippageBps = request.slippageBps ?? 50;
+    if (!Number.isInteger(slippageBps) || slippageBps < 1 || slippageBps > 500) {
+      this.invalid('slippageBps must be an integer between 1 and 500.');
+    }
+
+    const tokenIn = request.tokenIn as UserSwapToken;
+    const tokenOut = request.tokenOut as UserSwapToken;
 
     return {
-      tokenIn: request.tokenIn as UserSwapToken,
-      tokenOut: request.tokenOut as UserSwapToken,
+      tokenIn,
+      tokenOut,
       amountIn: request.amountIn,
       fromAddress: request.fromAddress,
       toAddress,
       chain: USER_SWAP_ALLOWED_CHAIN,
-      slippageBps: request.slippageBps,
+      slippageBps,
+      deadline: Math.floor(Date.now() / 1_000) + 600,
+      tokenInAddress: TOKEN_ADDRESSES[tokenIn],
+      tokenOutAddress: TOKEN_ADDRESSES[tokenOut],
+      recipientAddress: toAddress,
     };
   }
 

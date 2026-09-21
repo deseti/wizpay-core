@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import type { Address } from "viem";
 import {
   useAccount,
@@ -11,28 +11,20 @@ import {
 } from "wagmi";
 
 import { formatCompactAddress } from "@/lib/wizpay";
-import {
-  getWalletModeDescription,
-  getWalletModeLabel,
-} from "@/lib/wallet-mode";
+import { getWalletModeLabel } from "@/lib/wallet-mode";
 import {
   activeArcChain,
   CHAIN_NAME_BY_ID,
   SUPPORTED_CHAIN_IDS,
 } from "@/lib/wagmi";
 import {
-  HybridWalletContext,
-  type HybridWalletContextValue,
-} from "@/components/providers/hybrid-wallet-context";
+  ExternalWalletContext,
+  type ExternalWalletContextValue,
+} from "@/components/providers/external-wallet-context";
 
 /**
  * External-wallet-only provider for Arc Mainnet.
- *
- * The active wallet comes solely from Wagmi/Reown (user signs every
- * transaction). No Circle SDK, auth state, login UI, or fallback exists on
- * this path: Circle fields are inert constants, walletMode is always
- * "external", and a disconnected external wallet stays disconnected.
- * Arc Testnet continues to use HybridWalletProvider (Circle + external).
+ * Identity comes solely from Wagmi/Reown (EOA / Safe user-signed).
  */
 export function ExternalWalletProvider({
   children,
@@ -55,11 +47,6 @@ export function ExternalWalletProvider({
       staleTime: 15_000,
     },
   });
-
-  const setWalletMode = useCallback(() => {
-    // Mainnet is external-wallet-only; mode selection is a no-op so a Circle
-    // mode can never activate here.
-  }, []);
 
   const activeWalletAddress = externalAddress as Address | undefined;
   const activeWalletChainId = externalChainId;
@@ -87,32 +74,24 @@ export function ExternalWalletProvider({
     }
   }, [connectors.length, disconnect, isExternalConnected]);
 
-  const value = useMemo<HybridWalletContextValue>(
+  const value = useMemo<ExternalWalletContextValue>(
     () => ({
       activeWalletAddress,
       activeWalletChainId,
       activeWalletChainName,
       activeWalletLabel,
-      activeWalletModeDescription: getWalletModeDescription("external"),
       activeWalletShortAddress,
-      circleAuthError: null,
-      circleInitializationPhase: "recoverable_error",
-      circleLogin: () => {},
-      circleReady: false,
-      circleWalletAddress: undefined,
       externalConnectError: connectError?.message ?? null,
       externalConnectorName: connector?.name ?? null,
       externalWalletAddress: externalAddress as Address | undefined,
       externalWalletChainId: externalChainId,
       externalWalletNativeBalance: externalNativeBalance?.formatted ?? null,
       isActiveWalletConnected: isExternalConnected && Boolean(externalAddress),
-      isCircleConnected: false,
       isExternalConnected,
       isExternalChainSupported,
       isReady: true,
       requiresArcSwitch,
       sessionKey,
-      setWalletMode,
       walletMode: "external",
     }),
     [
@@ -130,13 +109,12 @@ export function ExternalWalletProvider({
       isExternalConnected,
       requiresArcSwitch,
       sessionKey,
-      setWalletMode,
     ],
   );
 
   return (
-    <HybridWalletContext.Provider value={value}>
+    <ExternalWalletContext.Provider value={value}>
       {children}
-    </HybridWalletContext.Provider>
+    </ExternalWalletContext.Provider>
   );
 }

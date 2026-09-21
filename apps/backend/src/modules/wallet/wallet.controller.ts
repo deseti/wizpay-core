@@ -97,7 +97,7 @@ function mapWalletControllerError(error: unknown) {
   if (isDatabaseUnavailableError(error)) {
     return new ServiceUnavailableException({
       error:
-        'Circle wallet sync reached the backend, but the backend could not reach Postgres to persist wallet state.',
+        'Wallet sync reached the backend, but the backend could not reach Postgres to persist wallet state.',
       code: 'DATABASE_UNREACHABLE',
       details:
         'If you are running apps/backend directly on the host, configure the selected network database URL with a host-reachable PostgreSQL target.',

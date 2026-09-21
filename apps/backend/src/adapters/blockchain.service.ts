@@ -4,7 +4,7 @@ import { createHash, randomBytes } from 'crypto';
 import { getArcNetworkByKey } from '@wizpay/arc-network';
 import { SolanaService } from './solana.service';
 
-const ARC_TESTNET_CHAIN_ID = getArcNetworkByKey('arc-testnet').chainId;
+const ARC_MAINNET_CHAIN_ID = getArcNetworkByKey('arc-mainnet').chainId;
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -111,8 +111,8 @@ function encodeERC20Approve(spender: string, amount: bigint): string {
  *
  * For WRITE operations, the service uses a server-side private key
  * (`BACKEND_PRIVATE_KEY` env var) to sign and broadcast raw transactions.
- * This is the **fallback path** — primary payroll transfers use
- * CircleService (developer-controlled wallets) instead.
+ * This is an explicit fallback path — primary execution uses
+ * user-controlled external wallets on Arc Mainnet instead.
  *
  * Uses the backend RPC URL from ConfigService.
  */
@@ -141,27 +141,19 @@ export class BlockchainService {
 
   /**
    * Resolve the JSON-RPC endpoint for an EVM-compatible chain.
-   * Supported chains: ARC-TESTNET, ETH-SEPOLIA.
+   * Only ARC-MAINNET is supported.
    * Rejects unrecognised chains instead of falling back across networks.
    */
   getChainRpcUrl(chain: string): string {
-    switch (chain.toUpperCase()) {
-      case 'ARC-TESTNET':
-        if (this.chainId !== ARC_TESTNET_CHAIN_ID) {
-          throw new Error('ARC-TESTNET is not the selected Arc network.');
-        }
-        return this.rpcUrl;
-      case 'ETH-SEPOLIA':
-        return (
-          this.configService.get<string>('ETH_SEPOLIA_RPC_URL') ||
-          this.configService.get<string>(
-            'NEXT_PUBLIC_ETHEREUM_SEPOLIA_RPC_URL',
-          ) ||
-          'https://rpc.sepolia.org'
-        );
-      default:
-        throw new Error(`Unsupported EVM chain: ${chain}.`);
+    if (chain.toUpperCase() !== 'ARC-MAINNET') {
+      throw new Error(
+        `Unsupported EVM chain: ${chain}. Only ARC-MAINNET is supported.`,
+      );
     }
+    if (this.chainId !== ARC_MAINNET_CHAIN_ID) {
+      throw new Error('ARC-MAINNET is not the selected Arc network.');
+    }
+    return this.rpcUrl;
   }
 
   /**
@@ -173,19 +165,18 @@ export class BlockchainService {
 
   /**
    * Return the EVM chainId for a given chain name.
+   * Only ARC-MAINNET is supported.
    */
   getChainIdForChain(chain: string): number {
-    switch (chain.toUpperCase()) {
-      case 'ARC-TESTNET':
-        if (this.chainId !== ARC_TESTNET_CHAIN_ID) {
-          throw new Error('ARC-TESTNET is not the selected Arc network.');
-        }
-        return this.chainId;
-      case 'ETH-SEPOLIA':
-        return 11155111;
-      default:
-        throw new Error(`Unsupported EVM chain: ${chain}.`);
+    if (chain.toUpperCase() !== 'ARC-MAINNET') {
+      throw new Error(
+        `Unsupported EVM chain: ${chain}. Only ARC-MAINNET is supported.`,
+      );
     }
+    if (this.chainId !== ARC_MAINNET_CHAIN_ID) {
+      throw new Error('ARC-MAINNET is not the selected Arc network.');
+    }
+    return this.chainId;
   }
 
   // ── JSON-RPC helper ──────────────────────────────────────────────
@@ -225,7 +216,7 @@ export class BlockchainService {
 
   /**
    * Same as rpcCall but targets a specific chain by name.
-   * Handles EVM chains (ARC-TESTNET, ETH-SEPOLIA) without cross-network fallback.
+   * Only ARC-MAINNET is supported, without cross-network fallback.
    */
   private async rpcCallOnChain<T = unknown>(
     chain: string,
@@ -362,9 +353,9 @@ export class BlockchainService {
   /**
    * Submit a signed transaction to the blockchain.
    *
-   * This is the FALLBACK path for on-chain operations when Circle
-   * developer-controlled wallets are not available. Primary payroll
-   * transfers should go through CircleService instead.
+   * This is an explicit fallback path for on-chain operations.
+   * Primary execution uses user-controlled external wallets on
+   * Arc Mainnet instead of server-side signing.
    *
    * Requires `BACKEND_PRIVATE_KEY` env var to be set.
    * Uses eth_sendRawTransaction after signing locally.
@@ -380,7 +371,7 @@ export class BlockchainService {
     if (!privateKey) {
       throw new Error(
         'BACKEND_PRIVATE_KEY is not configured. Set it in the backend environment for server-side signing, ' +
-          'or use CircleService.transfer() for developer-controlled wallet transfers.',
+          'or use a user-controlled external wallet flow for Arc Mainnet transfers.',
       );
     }
 
@@ -421,7 +412,7 @@ export class BlockchainService {
     // Placeholder: we use eth_sendTransaction with an unlocked account
     // (only works on test nodes with unlocked accounts).
     //
-    // In production Circle developer-controlled wallets are the primary path,
+    // In production user-controlled external wallets are the primary path,
     // making this rarely needed. When needed, integrate ethers.js here.
     const txHash = await this.rpcCall<string>('eth_sendTransaction', [
       {
@@ -606,8 +597,8 @@ export class BlockchainService {
    * Submit a signed transaction to a specific named EVM chain.
    *
    * Identical to sendTransaction() but resolves the RPC endpoint from
-   * the chain name rather than the default env var.  Used by
-   * PasskeyEngineService to target Arc Testnet or Eth Sepolia explicitly.
+   * the chain name rather than the default env var. Only ARC-MAINNET
+   * is supported.
    *
    * Requires BACKEND_PRIVATE_KEY env var (same as sendTransaction).
    */

@@ -67,9 +67,9 @@ Root entity. One per execution request.
 
 ### TaskUnit
 
-A discrete unit of work. For payroll: one batch of recipients. Legacy swap and
+A discrete unit of work. For payroll: one batch of recipients. Swap and
 liquidity tasks are single-step records, but both paths are disabled by default
-during the official StableFX cutover.
+unless an authorized Mainnet route is configured and enabled.
 
 | Field     | Type    | Notes                          |
 | --------- | ------- | ------------------------------ |
@@ -84,13 +84,13 @@ during the official StableFX cutover.
 
 ### TaskTransaction
 
-Tracks individual on-chain transactions. One record per Circle `transfer()` call.
+Tracks individual on-chain transactions. One record per submitted transfer.
 
 | Field          | Type    | Notes                            |
 | -------------- | ------- | -------------------------------- |
 | `id`           | UUID    |                                  |
 | `taskId`       | UUID    | Parent reference                 |
-| `txId`         | string  | Circle transaction ID            |
+| `txId`         | string  | Provider transaction ID (when available) |
 | `recipient`    | string  | Destination address              |
 | `amount`       | string  | Transfer amount                  |
 | `currency`     | string  | Token symbol                     |
@@ -126,7 +126,7 @@ Task execution jobs:
 Transaction poll jobs:
 
 - **1 BullMQ attempt** — the poller manages its own re-enqueue logic
-- Each poll checks Circle API, then either finalizes or re-enqueues with delay
+- Each poll checks on-chain status, then either finalizes or re-enqueues with delay
 - Maximum poll attempts enforced by `TransactionPollerService`
 
 ### Idempotency

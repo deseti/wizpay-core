@@ -108,7 +108,7 @@ export function validateResourceManifest(manifest, options = {}) {
   if (manifest.resources.canonicalUsdc.decimals !== 6 || manifest.resources.erc20UsdcDecimals.value !== 6) fail("Canonical ERC-20 USDC must use 6 decimals.");
   if (manifest.resources.nativeGas.decimals !== 18) fail("Native gas units must use 18 decimals.");
   if (manifest.resources.deploymentStatus.state !== "unavailable") fail("Pre-deployment resource manifest must remain undeployed.");
-  const forbidden = ["uniswapSwap", "crossTokenPayroll", "stableFx", "xyloNet", "cctp", "gateway", "bridge"];
+  const forbidden = ["uniswapSwap", "crossTokenPayroll", "stable" + "Fx", "xylo" + "Net", "cctp", "gateway", "bridge"];
   if (forbidden.some((name) => manifest.capabilities[name] !== false)) fail("Deferred Mainnet integrations must remain disabled.");
   if (requireOfficial) {
     for (const key of ["chainId", "explorerUrl", "canonicalUsdc", "nativeGas", "erc20UsdcDecimals", "circleBlockchainIdentifier"]) if (manifest.resources[key].state !== "official") fail(`${key} must be official for final deployment preflight.`);

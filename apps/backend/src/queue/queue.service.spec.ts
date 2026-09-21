@@ -17,7 +17,7 @@ jest.mock('bullmq', () => ({
 
 describe('QueueService', () => {
   const jobData: TaskQueueJobData = {
-    network: 'arc-testnet',
+    network: 'arc-mainnet',
     taskId: 'c7e01b44-0569-466d-b521-b4302fdd49d0',
     taskType: TaskType.PAYROLL,
     agentKey: TaskType.PAYROLL,
@@ -32,8 +32,8 @@ describe('QueueService', () => {
   };
 
   const runtimeConfig: Record<string, string> = {
-    'arcNetwork.key': 'arc-testnet',
-    BULLMQ_PREFIX: 'wizpay:arc-testnet',
+    'arcNetwork.key': 'arc-mainnet',
+    BULLMQ_PREFIX: 'wizpay:arc-mainnet',
     REDIS_HOST: '127.0.0.1',
     REDIS_PORT: '6379',
     REDIS_DB: '1',
@@ -78,10 +78,10 @@ describe('QueueService', () => {
     };
 
     expect(mockQueueInstance.add).toHaveBeenCalledWith(
-      `arc-testnet:${TaskType.PAYROLL}:${jobData.taskId}`,
+      `arc-mainnet:${TaskType.PAYROLL}:${jobData.taskId}`,
       jobData,
       expect.objectContaining({
-        jobId: `arc-testnet--${TaskType.PAYROLL}--${jobData.taskId}`,
+        jobId: `arc-mainnet--${TaskType.PAYROLL}--${jobData.taskId}`,
         attempts: 3,
         backoff: { type: 'exponential', delay: 1000 },
       }),
@@ -164,18 +164,34 @@ describe('QueueService', () => {
     ).rejects.toThrow('CAPABILITY_DISABLED');
     expect(capabilityAssert).toHaveBeenCalledWith('liquidity');
     expect(Queue).not.toHaveBeenCalled();
-    runtimeConfig['arcNetwork.key'] = 'arc-testnet';
+    runtimeConfig['arcNetwork.key'] = 'arc-mainnet';
   });
 
   it('rejects a job carrying another network before queue side effects', async () => {
     await expect(
       queueService.enqueueTask(route, {
         ...jobData,
-        network: 'arc-mainnet',
+        network: 'arc-legacy' as never,
       }),
     ).rejects.toThrow(
       'Queue job network does not match the selected runtime network.',
     );
+    expect(Queue).not.toHaveBeenCalled();
+  });
+
+  it('retires FX jobs before queue side effects', async () => {
+    await expect(
+      queueService.enqueueTask(
+        { queueName: QueueName.SWAP, agentKey: TaskType.FX },
+        {
+          ...jobData,
+          taskType: TaskType.FX,
+          agentKey: TaskType.FX,
+        },
+      ),
+    ).rejects.toMatchObject({
+      response: { code: 'FX_TASK_TYPE_RETIRED' },
+    });
     expect(Queue).not.toHaveBeenCalled();
   });
 
@@ -184,7 +200,7 @@ describe('QueueService', () => {
     expect(Queue).toHaveBeenCalledWith(
       QueueName.PAYROLL,
       expect.objectContaining({
-        prefix: 'wizpay:arc-testnet',
+        prefix: 'wizpay:arc-mainnet',
         connection: expect.objectContaining({ db: 1 }),
       }),
     );

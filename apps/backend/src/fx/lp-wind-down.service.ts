@@ -56,7 +56,7 @@ export interface WindDownDiagnosticEvent {
 
 /**
  * LpWindDownService manages the orderly wind-down of the deprecated
- * StableFXAdapter_V2 LP system. It calculates pro-rata shares for each
+ * adapter LP system. It calculates pro-rata shares for each
  * depositor, enforces a minimum 7-day withdrawal window, and handles
  * failure scenarios by halting the sequence and blocking deprecation.
  *

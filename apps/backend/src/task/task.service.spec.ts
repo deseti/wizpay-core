@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   NotFoundException,
+  ServiceUnavailableException,
   UnauthorizedException,
 } from '@nestjs/common';
 import { TaskService, ALLOWED_TRANSITIONS, FX_STEPS } from './task.service';
@@ -22,9 +23,6 @@ describe('TaskService', () => {
   let taskUnitService: jest.Mocked<TaskUnitService>;
   let validationService: jest.Mocked<PayrollValidationService>;
   let batchService: jest.Mocked<PayrollBatchService>;
-  const originalLegacyFxFlag = process.env.WIZPAY_ENABLE_LEGACY_FX;
-  const originalLegacyLiquidityFlag =
-    process.env.WIZPAY_ENABLE_LEGACY_LIQUIDITY;
 
   beforeEach(() => {
     prisma = {
@@ -85,17 +83,7 @@ describe('TaskService', () => {
   });
 
   afterEach(() => {
-    if (originalLegacyFxFlag === undefined) {
-      delete process.env.WIZPAY_ENABLE_LEGACY_FX;
-    } else {
-      process.env.WIZPAY_ENABLE_LEGACY_FX = originalLegacyFxFlag;
-    }
-
-    if (originalLegacyLiquidityFlag === undefined) {
-      delete process.env.WIZPAY_ENABLE_LEGACY_LIQUIDITY;
-    } else {
-      process.env.WIZPAY_ENABLE_LEGACY_LIQUIDITY = originalLegacyLiquidityFlag;
-    }
+    jest.clearAllMocks();
   });
 
   // ════════════════════════════════════════════════════════════════════
@@ -207,16 +195,14 @@ describe('TaskService', () => {
     it('rejects generic and payroll task creation without an initiator/source owner', async () => {
       await expect(
         taskService.createTask('fx', { amount: '1' }),
-      ).rejects.toBeInstanceOf(BadRequestException);
+      ).rejects.toBeInstanceOf(ServiceUnavailableException);
       await expect(
         taskService.createPayrollTask({ recipients: [] }),
       ).rejects.toBeInstanceOf(BadRequestException);
       expect(prisma.task.create as jest.Mock).not.toHaveBeenCalled();
     });
 
-    it('rejects enabled liquidity task creation without an initiator/source owner', async () => {
-      process.env.WIZPAY_ENABLE_LEGACY_LIQUIDITY = 'true';
-
+    it('rejects liquidity task creation without an initiator/source owner', async () => {
       await expect(
         taskService.createLiquidityTask({
           operation: 'add',
@@ -227,8 +213,8 @@ describe('TaskService', () => {
     });
   });
 
-  describe('StableFX cutover guards', () => {
-    it('rejects legacy swap task planning by default', async () => {
+  describe('Mainnet execution guards', () => {
+    it('rejects backend swap task planning by default', async () => {
       await expect(
         taskService.createSwapTask({
           tokenIn: 'USDC',
@@ -239,7 +225,7 @@ describe('TaskService', () => {
         }),
       ).rejects.toMatchObject({
         response: expect.objectContaining({
-          code: 'OFFICIAL_STABLEFX_AUTH_REQUIRED',
+          code: 'SWAP_TASK_PLANNING_UNAVAILABLE',
         }),
       });
     });
@@ -269,9 +255,10 @@ describe('TaskService', () => {
       });
 
       // Cross-currency recipients are now allowed in createPayrollTask
-      // because FX settlement is handled upstream by PayrollInitService.
+      // because conversion is settled upstream through the external-wallet
+      // Uniswap V4 flow before payroll planning.
       // The method should proceed to batching (which will fail here due to
-      // missing mock, but the point is it no longer throws OFFICIAL_STABLEFX_AUTH_REQUIRED).
+      // missing mock, but the point is it proceeds past capability checks).
       await expect(
         taskService.createPayrollTask({
           sourceToken: 'USDC',
@@ -287,7 +274,7 @@ describe('TaskService', () => {
         }),
       ).rejects.not.toMatchObject({
         response: expect.objectContaining({
-          code: 'OFFICIAL_STABLEFX_AUTH_REQUIRED',
+          code: 'SWAP_TASK_PLANNING_UNAVAILABLE',
         }),
       });
     });

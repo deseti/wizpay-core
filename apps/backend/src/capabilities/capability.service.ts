@@ -26,23 +26,6 @@ import {
 import { WIZPAY_PAYROLL_MAINNET_ABI } from '../contracts/generated/wizpay-payroll-mainnet.abi';
 import { WIZPAY_SWAP_EXECUTOR_MAINNET_ABI } from '../contracts/generated/wizpay-swap-executor-mainnet.abi';
 
-const PAYROLL_ABI = [
-  {
-    type: 'function',
-    name: 'batchRouteAndPay',
-    stateMutability: 'nonpayable',
-    inputs: [
-      { name: 'tokenIn', type: 'address' },
-      { name: 'tokenOuts', type: 'address[]' },
-      { name: 'recipients', type: 'address[]' },
-      { name: 'amountsIn', type: 'uint256[]' },
-      { name: 'minAmountsOut', type: 'uint256[]' },
-      { name: 'referenceId', type: 'string' },
-    ],
-    outputs: [{ name: 'totalOut', type: 'uint256' }],
-  },
-] as const;
-
 const ERC20_APPROVE_ABI = [
   {
     type: 'function',
@@ -121,53 +104,6 @@ export class CapabilityService {
     }
   }
 
-  assertW3sAction(action: string, params: Record<string, unknown>) {
-    const refId = typeof params.refId === 'string' ? params.refId : '';
-    if (
-      action === 'createTransferChallenge' ||
-      action === 'estimateTransferFee'
-    ) {
-      const tokenAddress = params.tokenAddress;
-      this.assertPaymentDecision(
-        this.routing.decide({
-          network: this.network,
-          operation: refId.startsWith('PAYROLL-') ? 'PAYROLL' : 'SEND',
-          tokenIn: tokenAddress,
-          tokenOut: tokenAddress,
-        }),
-      );
-    } else if (action === 'createContractExecutionChallenge') {
-      if (refId.startsWith('INV-')) {
-        const contractAddress = params.contractAddress;
-        const callData = params.callData;
-        if (
-          !this.tokenIdentity(contractAddress) ||
-          typeof callData !== 'string' ||
-          !/^0xa9059cbb[0-9a-fA-F]{128}$/.test(callData)
-        ) {
-          this.contextRequired('invoice payment');
-        }
-        this.assertPaymentDecision(
-          this.routing.decide({
-            network: this.network,
-            operation: 'PAYMENT_LINK',
-            tokenIn: contractAddress,
-            tokenOut: contractAddress,
-          }),
-        );
-      } else if (refId.startsWith('PAYROLL-APPROVE-'))
-        this.assertPayrollApproval(params);
-      else if (refId.startsWith('PAYROLL-')) this.assertPayrollCall(params);
-      else if (refId.startsWith('SWAP-')) this.assertSwapCall(params);
-      else if (refId.startsWith('app-wallet-xylonet:')) this.assert('swap');
-      else this.contextRequired('contract execution');
-    } else if (action === 'createTypedDataChallenge') {
-      this.assert('stableFx');
-    } else if (action === 'bridge') {
-      this.assert('bridge');
-    }
-  }
-
   private assertPayrollApproval(params: Record<string, unknown>) {
     const contractAddress = params.contractAddress;
     const callData = params.callData;
@@ -214,30 +150,7 @@ export class CapabilityService {
     )
       return this.contextRequired('payroll contract execution');
     try {
-      if (this.network === 'arc-mainnet') {
-        this.assertMainnetPayrollCall(callData as Hex);
-        return;
-      }
-      const decoded = decodeFunctionData({
-        abi: PAYROLL_ABI,
-        data: callData as Hex,
-      });
-      if (decoded.functionName !== 'batchRouteAndPay' || !decoded.args) {
-        return this.contextRequired('payroll contract execution');
-      }
-      const [tokenIn, tokenOuts] = decoded.args;
-      for (const tokenOut of tokenOuts) {
-        const decision = this.assertPaymentDecision(
-          this.routing.decide({
-            network: this.network,
-            operation: 'PAYROLL',
-            tokenIn,
-            tokenOut,
-          }),
-        );
-        if (decision.kind === PAYMENT_ROUTE_DECISIONS.CROSS_TOKEN_PROVIDER)
-          return this.contextRequired('payroll provider execution');
-      }
+      this.assertMainnetPayrollCall(callData as Hex);
     } catch (error) {
       if (error instanceof HttpException) throw error;
       return this.contextRequired('payroll contract execution');

@@ -128,7 +128,7 @@ export class TaskController {
   }
 
   /**
-   * GET /tasks — List tasks owned by the authenticated Circle user.
+   * GET /tasks — List tasks owned by the authenticated wallet.
    *
    * Query params:
    *   type       — filter by task type (payroll, swap, bridge, liquidity, fx)

@@ -1,5 +1,5 @@
 /**
- * Default configuration constants for the StableFX RFQ settlement flow.
+ * Default configuration constants for the Mainnet settlement flow.
  *
  * These values are used as defaults when environment-specific configuration
  * is not provided. All can be overridden via environment variables.

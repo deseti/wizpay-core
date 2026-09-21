@@ -19,8 +19,6 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { useActiveWalletAddress } from "@/hooks/useActiveWalletAddress";
-import { useCircleWallet } from "@/components/providers/CircleWalletProvider";
-import { resolveCanonicalAppWalletEvmAddress } from "@/lib/canonical-app-wallet";
 import { useToast } from "@/hooks/use-toast";
 
 interface ReceiveQrModalProps {
@@ -29,10 +27,7 @@ interface ReceiveQrModalProps {
 }
 
 export function ReceiveQrModal({ open, onClose }: ReceiveQrModalProps) {
-  const { isConnected, walletAddress: activeAddress, walletMode } = useActiveWalletAddress();
-  const { arcWallet, sepoliaWallet } = useCircleWallet();
-  const canonical = resolveCanonicalAppWalletEvmAddress(arcWallet?.address, sepoliaWallet?.address);
-  const walletAddress = walletMode === "circle" ? canonical.address ?? undefined : activeAddress;
+  const { isConnected, walletAddress } = useActiveWalletAddress();
   const { toast } = useToast();
   const [copied, setCopied] = useState(false);
 
@@ -104,16 +99,13 @@ export function ReceiveQrModal({ open, onClose }: ReceiveQrModalProps) {
             Receive QR
           </DialogTitle>
           <DialogDescription>
-            Share your wallet address or let someone scan the QR code.
+            Share your external wallet address on Arc Mainnet (chain 5042) or
+            let someone scan the QR code.
           </DialogDescription>
         </DialogHeader>
 
         <div className="flex flex-col items-center gap-4 py-4">
-          {walletMode === "circle" && canonical.mismatch ? (
-            <div role="alert" className="rounded-2xl border border-destructive/30 bg-destructive/10 px-5 py-6 text-sm text-destructive">
-              App Wallet EVM addresses do not match. Receive QR is disabled for safety.
-            </div>
-          ) : !isConnected ? (
+          {!isConnected ? (
             /* ── No wallet connected state ── */
             <div className="flex flex-col items-center gap-3 rounded-2xl border border-dashed border-border/40 bg-muted/10 px-6 py-10">
               <Wallet className="h-8 w-8 text-muted-foreground/40" />
@@ -121,7 +113,8 @@ export function ReceiveQrModal({ open, onClose }: ReceiveQrModalProps) {
                 Connect wallet first
               </p>
               <p className="max-w-[220px] text-center text-xs text-muted-foreground/60">
-                Connect your wallet to generate a QR code for your address.
+                Connect your external wallet to generate a QR code for your
+                address.
               </p>
             </div>
           ) : (
@@ -146,7 +139,7 @@ export function ReceiveQrModal({ open, onClose }: ReceiveQrModalProps) {
               <div className="w-full space-y-3">
                 <div className="rounded-xl border border-border/40 bg-background/40 px-4 py-3">
                   <p className="text-[10px] uppercase tracking-wider text-muted-foreground/60 mb-1">
-                    EVM Address
+                    External wallet address · Arc Mainnet
                   </p>
                   <p className="font-mono text-xs text-foreground/80 break-all">
                     {walletAddress}

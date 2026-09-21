@@ -446,10 +446,7 @@ export class InvoiceService {
       receivingAddressShort: `${address.slice(0, 6)}...${address.slice(-4)}`,
       chain: {
         id: invoice.chainId,
-        name:
-          this.routing.network === 'arc-mainnet'
-            ? 'Arc Mainnet'
-            : 'Arc Testnet',
+        name: 'Arc Mainnet',
       },
       token: {
         symbol: invoice.tokenSymbol,

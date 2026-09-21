@@ -58,12 +58,8 @@ describe("PublicInvoiceCheckout", () => {
     expect(await screen.findByText("Test invoice")).toBeInTheDocument();
     expect(screen.getByText("0.1")).toBeInTheDocument();
     expect(screen.getAllByText("USDC").length).toBeGreaterThan(0);
-    expect(screen.getByText(/Arc Testnet · 5042002/)).toBeInTheDocument();
-    expect(
-      container
-        .querySelector('[data-token-icon="USDC"] img')
-        ?.getAttribute("src"),
-    ).toMatch(/\/tokens\/usdc\.png$/);
+    expect(screen.getByText(/Arc Mainnet · 5042/)).toBeInTheDocument();
+    expect(screen.getAllByText("USDC").length).toBeGreaterThan(0);
     expect(container.querySelector('[class*="lg:grid-cols"]')).toBeTruthy();
     await waitFor(() =>
       expect(QRCode.toDataURL).toHaveBeenCalledWith(
@@ -115,41 +111,28 @@ describe("PublicInvoiceCheckout", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("shows both payer choices and permits method switching before submission", async () => {
+  it("offers only the External Wallet method on Arc Mainnet", async () => {
     vi.mocked(getPublicInvoice).mockResolvedValue(invoice());
     render(<PublicInvoiceCheckout publicId={invoice().publicId} />);
-    const app = await screen.findByRole("radio", { name: /App Wallet/ });
-    const external = screen.getByRole("radio", { name: /External Wallet/ });
-    expect(app).toHaveAttribute("aria-checked", "false");
+    const external = await screen.findByRole("radio", {
+      name: /External Wallet/,
+    });
     expect(external).toHaveAttribute("aria-checked", "true");
+    expect(
+      screen.queryByRole("radio", { name: /App Wallet/ }),
+    ).not.toBeInTheDocument();
 
-    fireEvent.click(app);
-    expect(paymentState.selectMethod).toHaveBeenCalledWith("app");
     fireEvent.click(external);
     expect(paymentState.selectMethod).toHaveBeenCalledWith("external");
   });
 
-  it("uses the selected App Wallet action and locks both choices after submission", async () => {
+  it("prompts an unconnected payer to connect instead of executing", async () => {
     vi.mocked(getPublicInvoice).mockResolvedValue(invoice());
-    paymentState = {
-      ...paymentState,
-      method: "app",
-      appAuthenticated: true,
-      locked: true,
-      stage: "awaiting_signature",
-      canContinueAppAuthorization: true,
-    };
     render(<PublicInvoiceCheckout publicId={invoice().publicId} />);
     expect(
-      await screen.findByRole("radio", { name: /App Wallet/ }),
-    ).toBeDisabled();
-    expect(
-      screen.getByRole("radio", { name: /External Wallet/ }),
-    ).toBeDisabled();
-    fireEvent.click(
-      screen.getByRole("button", { name: "Authorize existing payment" }),
-    );
-    expect(paymentState.continueAppAuthorization).toHaveBeenCalledTimes(1);
+      await screen.findByRole("button", { name: "Connect External Wallet" }),
+    ).toBeInTheDocument();
+    expect(paymentState.pay).not.toHaveBeenCalled();
   });
 
   it("does not expose either payer executor for a paid invoice", async () => {
@@ -189,7 +172,7 @@ function invoice(): PublicInvoice {
     merchantDisplayLabel: null,
     receivingAddress: "0x32F251fc36A1174901124589EAC2d4E391816F69",
     receivingAddressShort: "0x32F2...6F69",
-    chain: { id: 5_042_002, name: "Arc Testnet" },
+    chain: { id: 5_042, name: "Arc Mainnet" },
     token: {
       symbol: "USDC",
       name: "USD Coin",

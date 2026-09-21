@@ -1,17 +1,17 @@
 export type TaskPayload = Record<string, unknown>;
 
 /**
- * Identifies which wallet execution engine should handle a task.
+ * Identifies which wallet execution path handles a task.
  *
- * - W3S      → Circle Wallet-as-a-Service (Google / Email login).
- *              Uses userToken, tokenId, createTransferChallenge.
- * - PASSKEY  → Circle modular Account-Abstraction wallet (passkey login).
- *              No userToken / tokenId. Execution goes through PasskeyEngineService.
+ * Arc Mainnet is external-wallet-only: the connected wallet signs every
+ * transaction and the backend never submits user funds.
  *
- * When absent from a task payload the system defaults to "W3S" for full
- * backward compatibility with every existing task.
+ * - EXTERNAL_WALLET → User-controlled wallet signing. Execution payloads
+ *              are prepared by the backend and submitted by the wallet.
+ *
+ * When absent from a task payload the system defaults to "EXTERNAL_WALLET".
  */
-export type WalletMode = 'W3S' | 'PASSKEY';
+export type WalletMode = 'EXTERNAL_WALLET';
 
 export type TaskLogLevel = 'INFO' | 'ERROR';
 
@@ -203,7 +203,7 @@ export interface NormalizedBridgeTransfer {
   transferId: string | null;
   /** Terminal status of the transfer ("settled" | "failed" | …). */
   status: string;
-  /** Canonical source chain (e.g. "arc_testnet"). */
+  /** Canonical source chain (e.g. "arc_mainnet"). */
   sourceChain: string | null;
   /** Canonical destination chain (e.g. "solana_devnet"). */
   destinationChain: string | null;

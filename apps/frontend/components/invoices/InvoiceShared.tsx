@@ -5,24 +5,19 @@ import { Copy, Plus } from "lucide-react";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { useCircleWallet } from "@/components/providers/CircleWalletProvider";
-import { useHybridWallet } from "@/components/providers/HybridWalletProvider";
-import { ACTIVE_ARC_NETWORK } from "@/lib/active-arc-network";
+import { useExternalWallet } from "@/components/providers/external-wallet-context";
 import type { InvoiceStatus } from "@/lib/invoice-api";
 import { getInvoiceCheckoutUrl } from "@/lib/invoice-links";
 import { InvoiceQrCode } from "./InvoiceQrCode";
 
 export function useMerchantInvoiceSession() {
-  const circle = useCircleWallet();
-  const hybrid = useHybridWallet();
+  const { isReady, activeWalletAddress } = useExternalWallet();
   return {
-    userToken:
-      circle.authMethod === "email" || circle.authMethod === "google"
-        ? circle.userToken
-        : null,
-    ready: circle.ready,
-    walletMode: hybrid.walletMode,
-    useAppWallet: () => hybrid.setWalletMode("circle"),
+    userToken: null as string | null,
+    ready: isReady,
+    walletMode: "external" as const,
+    walletAddress: activeWalletAddress,
+    useAppWallet: () => {},
   };
 }
 
@@ -35,32 +30,25 @@ export function MerchantInvoiceAuthNotice({
   ready: boolean;
   onUseAppWallet: () => void;
 }) {
-  const mainnetExternalOnly = ACTIVE_ARC_NETWORK.key === "arc-mainnet";
-
+  void walletMode;
+  void onUseAppWallet;
   return (
     <Card className="glass-card border-amber-500/30">
       <CardContent className="space-y-4 p-6">
         <div>
           <h2 className="text-lg font-semibold">
-            {mainnetExternalOnly
-              ? "Invoice management unavailable on Arc Mainnet"
-              : "App Wallet merchant session required"}
+            Invoice management unavailable on Arc Mainnet
           </h2>
           <p className="mt-1 text-sm text-muted-foreground">
-            {mainnetExternalOnly
-              ? "Mainnet invoice management remains disabled. Circle App Wallet controls are unavailable, and WizPay will not fall back to Testnet."
-              : "Invoice management is authenticated with the active Circle User-Controlled Wallet session. External Wallet identity is accepted only for public checkout payments."}
+            Mainnet invoice management remains disabled for external wallets.
+            WizPay stays fail-closed and will not use another network.
           </p>
         </div>
-        {mainnetExternalOnly ? null : walletMode !== "circle" ? (
-          <Button onClick={onUseAppWallet}>Use App Wallet</Button>
-        ) : (
+        {!ready ? (
           <p className="text-sm text-amber-300">
-            {ready
-              ? "Sign in with Circle to manage invoices."
-              : "Loading Circle authentication..."}
+            Loading external wallet session...
           </p>
-        )}
+        ) : null}
       </CardContent>
     </Card>
   );

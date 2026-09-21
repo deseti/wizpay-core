@@ -1,13 +1,9 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
   CIRCUIT_BREAKER_THRESHOLD,
   CIRCUIT_BREAKER_WINDOW,
 } from './fx.constants';
-import {
-  isLegacyFxEnabled,
-  legacyFxDisabledMessage,
-} from './stablefx-cutover.guard';
 
 /**
  * Valid routing modes for the FX feature flag.
@@ -24,16 +20,12 @@ export interface OutcomeEntry {
 }
 
 /**
- * FxRoutingGuard controls routing between legacy (StableFXAdapter_V2)
- * and new (Circle StableFX RFQ) paths.
+ * FxRoutingGuard controls routing for FX operations on Arc Mainnet.
  *
- * Responsibilities:
- * - Read/write the active routing mode (feature flag)
- * - Maintain a rolling window of operation outcomes for circuit breaker logic
- * - Open the circuit when failure threshold is exceeded
- * - Emit operator alerts when circuit opens
- *
- * Requirements: 9.1, 9.2, 9.3, 9.4, 9.5, 9.6, 9.7
+ * Mainnet is provider-only: the active mode is always 'new'. The legacy
+ * backend execution path is retired, so requesting or selecting 'legacy'
+ * fails closed. The guard maintains a rolling window of operation outcomes
+ * for circuit breaker logic and emits operator alerts when the circuit opens.
  */
 @Injectable()
 export class FxRoutingGuard {
@@ -62,28 +54,21 @@ export class FxRoutingGuard {
   /**
    * Returns the active routing mode.
    *
-   * Reads from in-memory state (initialized from config on first call).
-   * Throws if the mode is unset, missing, or contains an invalid value.
+   * Always 'new' on Arc Mainnet. Throws when FX_ROUTING_MODE is set to
+   * 'legacy' or to any value other than 'new', because backend execution
+   * paths are retired.
    *
-   * @throws Error if mode is not exactly 'legacy' or 'new'
+   * @throws Error if mode is not exactly 'new' (or unset, which defaults to 'new')
    */
   getActiveMode(): FxMode {
     if (this.currentMode === undefined) {
       const configValue = this.configService.get<string>('FX_ROUTING_MODE');
-      if (configValue === 'legacy' && isLegacyFxEnabled()) {
-        this.currentMode = configValue;
-      } else if (configValue === 'legacy') {
-        this.currentMode = 'new';
-        this.logger.warn(
-          'FX_ROUTING_MODE="legacy" ignored because legacy FX is disabled by default. ' +
-            'Routing through official StableFX RFQ.',
-        );
-      } else if (configValue === 'new' || configValue === undefined) {
+      if (configValue === undefined || configValue === 'new') {
         this.currentMode = 'new';
       } else {
-        throw new Error(
+        throw new ServiceUnavailableException(
           `FX routing configuration is unavailable: mode is "${configValue ?? 'unset'}". ` +
-            `Expected "new" or an explicitly enabled legacy test mode.`,
+            `Only "new" is supported on Arc Mainnet; backend execution paths are retired.`,
         );
       }
     }
@@ -94,23 +79,19 @@ export class FxRoutingGuard {
   /**
    * Sets the active routing mode.
    *
-   * Validates that mode is exactly 'legacy' or 'new'.
-   * Logs the previous value, new value, operator identity, and timestamp.
-   * Resets the circuit breaker when mode is changed (operator acknowledgment).
+   * Only 'new' is accepted on Arc Mainnet. Logs the previous value, new
+   * value, operator identity, and timestamp. Resets the circuit breaker
+   * when mode is changed (operator acknowledgment).
    *
-   * @param mode - The new routing mode ('legacy' or 'new')
+   * @param mode - The new routing mode (must be 'new')
    * @param operatorId - Identity of the operator making the change
-   * @throws Error if mode is not exactly 'legacy' or 'new'
+   * @throws Error if mode is not exactly 'new'
    */
   setMode(mode: FxMode, operatorId: string): void {
-    if (mode !== 'legacy' && mode !== 'new') {
-      throw new Error(
-        `Invalid FX routing mode: "${mode}". Must be exactly "legacy" or "new".`,
+    if (mode !== 'new') {
+      throw new ServiceUnavailableException(
+        `Invalid FX routing mode: "${mode}". Only "new" is supported on Arc Mainnet.`,
       );
-    }
-
-    if (mode === 'legacy' && !isLegacyFxEnabled()) {
-      throw new Error(legacyFxDisabledMessage());
     }
 
     const previousMode = this.currentMode ?? 'unset';

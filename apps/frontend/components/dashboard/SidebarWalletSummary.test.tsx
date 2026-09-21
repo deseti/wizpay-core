@@ -4,68 +4,62 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SidebarWalletSummary } from "./SidebarWalletSummary";
 
 const state = vi.hoisted(() => ({
-  walletMode: "circle" as "circle" | "external",
-  activeAddress: "0x32F251fc36A1174901124589EAC2d4E391816F69",
-  arcAddress: "0x32F251fc36A1174901124589EAC2d4E391816F69",
-  sepoliaAddress: "0x32F251fc36A1174901124589EAC2d4E391816F69",
+  activeWalletAddress: "0x32F251fc36A1174901124589EAC2d4E391816F69" as
+    | `0x${string}`
+    | undefined,
+  activeWalletLabel: "External Wallet (MetaMask)",
   toast: vi.fn(),
 }));
 
-vi.mock("@/components/providers/CircleWalletProvider", () => ({
-  useCircleWallet: () => ({
-    arcWallet: state.arcAddress ? { address: state.arcAddress } : null,
-    primaryWallet: state.arcAddress ? { address: state.arcAddress } : null,
-    sepoliaWallet: state.sepoliaAddress ? { address: state.sepoliaAddress } : null,
-  }),
-}));
-vi.mock("@/hooks/useSmartWalletAddress", () => ({
-  useSmartWalletAddress: () => ({
-    smartWalletAddress: state.activeAddress,
-    isLoadingSmartWalletAddress: false,
-    walletLabel: "External Wallet (MetaMask)",
-    walletMode: state.walletMode,
+vi.mock("@/components/providers/external-wallet-context", () => ({
+  useExternalWallet: () => ({
+    activeWalletAddress: state.activeWalletAddress,
+    activeWalletLabel: state.activeWalletLabel,
   }),
 }));
 vi.mock("@/hooks/use-toast", () => ({ useToast: () => ({ toast: state.toast }) }));
 
 describe("SidebarWalletSummary", () => {
   beforeEach(() => {
-    state.walletMode = "circle";
-    state.activeAddress = "0x32F251fc36A1174901124589EAC2d4E391816F69";
-    state.arcAddress = state.activeAddress;
-    state.sepoliaAddress = state.activeAddress;
+    state.activeWalletAddress =
+      "0x32F251fc36A1174901124589EAC2d4E391816F69";
+    state.activeWalletLabel = "External Wallet (MetaMask)";
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
       value: { writeText: vi.fn().mockResolvedValue(undefined) },
     });
   });
 
-  it("renders exactly one canonical EVM Address and no network or Solana cards", () => {
+  it("renders the connected external wallet with its address and Mainnet scope", () => {
     render(<SidebarWalletSummary />);
-    expect(screen.getAllByText("EVM Address")).toHaveLength(1);
-    expect(screen.queryByText("Arc Testnet")).not.toBeInTheDocument();
-    expect(screen.queryByText("Ethereum Sepolia")).not.toBeInTheDocument();
-    expect(screen.queryByText(/Solana/i)).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Copy EVM Address" })).toHaveAttribute("title", state.activeAddress);
+    expect(screen.getByText("Connected Wallet")).toBeInTheDocument();
+    expect(
+      screen.getByText("External Wallet (MetaMask)"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/Arc Mainnet \(chain 5042\)/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Copy External Wallet (MetaMask)" }),
+    ).toHaveAttribute("title", state.activeWalletAddress);
   });
 
   it("copies the full canonical address even though the visible value is truncated", () => {
     render(<SidebarWalletSummary />);
-    fireEvent.click(screen.getByRole("button", { name: "Copy EVM Address" }));
-    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(state.activeAddress);
+    fireEvent.click(
+      screen.getByRole("button", { name: "Copy External Wallet (MetaMask)" }),
+    );
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
+      state.activeWalletAddress,
+    );
   });
 
-  it("preserves the connected External Wallet presentation", () => {
-    state.walletMode = "external";
-    render(<SidebarWalletSummary />);
-    expect(screen.getByText("External Wallet (MetaMask)")).toBeInTheDocument();
-    expect(screen.queryByText("EVM Address")).not.toBeInTheDocument();
-  });
-
-  it("fails closed instead of silently choosing a mismatched EVM address", () => {
-    state.sepoliaAddress = "0x1111111111111111111111111111111111111111";
-    render(<SidebarWalletSummary />);
-    expect(screen.queryByText("EVM Address")).not.toBeInTheDocument();
-    expect(screen.getByRole("alert")).toHaveTextContent("EVM addresses do not match");
+  it("renders nothing when no external wallet is connected", () => {
+    state.activeWalletAddress = undefined;
+    const { container } = render(<SidebarWalletSummary />);
+    expect(container.firstChild).toBeEmptyDOMElement();
+    expect(
+      screen.queryByRole("button", { name: /Copy / }),
+    ).not.toBeInTheDocument();
   });
 });

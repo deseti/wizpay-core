@@ -1,4 +1,9 @@
-import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  OnModuleDestroy,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Queue } from 'bullmq';
 import { TelegramService } from '../integrations/telegram.service';
@@ -57,7 +62,11 @@ export class QueueService implements OnModuleDestroy {
     else if (jobData.taskType === TaskType.BRIDGE)
       this.capabilities.assert('bridge');
     else if (jobData.taskType === TaskType.FX)
-      this.capabilities.assert('stableFx');
+      throw new ServiceUnavailableException({
+        code: 'FX_TASK_TYPE_RETIRED',
+        message:
+          'FX tasks are retired on Arc Mainnet. Convert through the external-wallet Uniswap V4 flow.',
+      });
     else if (jobData.taskType === TaskType.LIQUIDITY)
       this.capabilities.assert('liquidity');
     const queue = this.getOrCreateQueue(route.queueName);
@@ -102,9 +111,8 @@ export class QueueService implements OnModuleDestroy {
   /**
    * Enqueue a transaction status poll job.
    *
-   * Called by PayrollAgent after submitting each transfer to Circle.
-   * The poll job will be picked up by TransactionPollerWorker, which
-   * checks the Circle transaction status and either:
+   * The poll job will be picked up by the tx-poll worker, which
+   * reads the Arc Mainnet receipt and either:
    *   - Marks the tx as completed/failed and checks task finalization
    *   - Re-enqueues with a delay if the tx is still pending
    *

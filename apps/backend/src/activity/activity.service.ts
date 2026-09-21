@@ -5,18 +5,11 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import {
-  Prisma,
-  type Activity,
-  type AppWalletXylonetOperation,
-  type Task,
-  type TaskTransaction,
-  type TaskUnit,
-} from '@prisma/client';
+import { Prisma, type Activity } from '@prisma/client';
 import { getAddress, isAddress, isAddressEqual } from 'viem';
 import { PrismaService } from '../database/prisma.service';
-import type { AuthenticatedCirclePrincipal } from '../invoice/invoice-auth.service';
-import { W3sAuthService } from '../modules/wallet/w3s-auth.service';
+import type { InvoiceMerchantPrincipal } from '../invoice/invoice.types';
+import { ARC_MAINNET_CHAIN_ID } from '../config/arc-network.config';
 import {
   ACTIVITY_STATUSES,
   ACTIVITY_TYPES,
@@ -28,19 +21,7 @@ import {
 } from './activity.types';
 
 type JsonObject = Record<string, unknown>;
-type TaskWithRows = Task & {
-  transactions: TaskTransaction[];
-  units: TaskUnit[];
-};
-type ActivityOwnerPrincipal = Pick<
-  AuthenticatedCirclePrincipal,
-  'merchantUserId' | 'merchantWalletAddress'
->;
-
-const ARC_TOKENS: Record<string, { symbol: 'USDC' | 'EURC'; decimals: 6 }> = {
-  '0x3600000000000000000000000000000000000000': { symbol: 'USDC', decimals: 6 },
-  '0x89b50855aa3be2f677cd6303cec089b5f319d72a': { symbol: 'EURC', decimals: 6 },
-};
+export type ActivityOwnerPrincipal = InvoiceMerchantPrincipal;
 
 @Injectable()
 export class ActivityService {
@@ -49,17 +30,13 @@ export class ActivityService {
     string,
     Promise<ActivitySyncResult>
   >();
-  private static readonly CIRCLE_SOURCE = 'circle_w3s' as const;
+  private static readonly WALLET_SOURCE = 'external_wallet' as const;
   private static readonly SYNC_THROTTLE_MS = 60_000;
   private static readonly SYNC_LEASE_MS = 120_000;
   private static readonly READ_SESSION_MS = 12 * 60 * 60 * 1000;
-  private static readonly MAX_CIRCLE_PAGES = 3;
-  private static readonly MAX_CIRCLE_RECORDS = 150;
-  private readonly tokenMetadataFlights = new Map<string, Promise<Map<string, { symbol: string; address: string }>>>();
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly w3s: W3sAuthService,
   ) {}
 
   async authenticateRead(authorization?: string): Promise<ActivityOwnerPrincipal> {
@@ -78,13 +55,14 @@ export class ActivityService {
     return {
       merchantUserId: session.ownerUserId,
       merchantWalletAddress: getAddress(session.walletAddress),
+      merchantDisplayLabel: null,
     };
   }
 
   async sync(
-    principal: AuthenticatedCirclePrincipal,
+    principal: ActivityOwnerPrincipal,
   ): Promise<ActivitySyncResult> {
-    const key = `${principal.merchantUserId}:${ActivityService.CIRCLE_SOURCE}`;
+    const key = `${principal.merchantUserId}:${ActivityService.WALLET_SOURCE}`;
     const current = this.syncFlights.get(key);
     if (current) return current;
     const flight = this.runSyncWithReadSession(principal).finally(() => {
@@ -219,7 +197,7 @@ export class ActivityService {
   }
 
   private async runSyncWithReadSession(
-    principal: AuthenticatedCirclePrincipal,
+    principal: ActivityOwnerPrincipal,
   ): Promise<ActivitySyncResult> {
     const readSessionToken = await this.registerReadSession(principal);
     return {
@@ -229,10 +207,11 @@ export class ActivityService {
   }
 
   private async registerReadSession(
-    principal: AuthenticatedCirclePrincipal,
+    principal: ActivityOwnerPrincipal,
   ): Promise<string> {
-    // A Circle bearer proves ownership only while synchronizing.  Reads use a
-    // separate 256-bit opaque token, stored solely as a SHA-256 fingerprint.
+    // The external-wallet bearer proves ownership only while synchronizing.
+    // Reads use a separate 256-bit opaque token, stored solely as a
+    // SHA-256 fingerprint.
     const readSessionToken = randomBytes(32).toString('base64url');
     const ownerUserId = principal.merchantUserId;
     const walletAddress = getAddress(principal.merchantWalletAddress).toLowerCase();
@@ -251,9 +230,9 @@ export class ActivityService {
   }
 
   private async runSync(
-    principal: AuthenticatedCirclePrincipal,
+    principal: ActivityOwnerPrincipal,
   ): Promise<ActivitySyncSummary> {
-    const source = ActivityService.CIRCLE_SOURCE;
+    const source = ActivityService.WALLET_SOURCE;
     const now = new Date();
     const walletAddress = getAddress(
       principal.merchantWalletAddress,
@@ -319,19 +298,11 @@ export class ActivityService {
     }
 
     try {
-      await this.projectPersisted(principal);
-      const result = await this.projectCircle(
-        principal,
-        state.checkpointTransactionId ?? undefined,
-      );
+      const recordsAccepted = await this.projectPersisted(principal);
       const completedAt = new Date();
       await this.prisma.activitySyncState.updateMany({
         where: { id: state.id, leaseId },
         data: {
-          checkpointTransactionId:
-            result.checkpointTransactionId ??
-            state.checkpointTransactionId ??
-            null,
           leaseId: null,
           leaseExpiresAt: null,
           lastCompletedAt: completedAt,
@@ -343,12 +314,10 @@ export class ActivityService {
       return {
         source,
         status: 'synced',
-        pagesScanned: result.pagesScanned,
-        recordsScanned: result.recordsScanned,
-        recordsAccepted: result.recordsAccepted,
-        checkpointAdvanced:
-          Boolean(result.checkpointTransactionId) &&
-          result.checkpointTransactionId !== state.checkpointTransactionId,
+        pagesScanned: 0,
+        recordsScanned: 0,
+        recordsAccepted,
+        checkpointAdvanced: false,
         retryAfterMs: ActivityService.SYNC_THROTTLE_MS,
       };
     } catch {
@@ -363,7 +332,7 @@ export class ActivityService {
           ),
         },
       });
-      this.logger.warn('Circle activity synchronization deferred.');
+      this.logger.warn('External wallet activity synchronization deferred.');
       return this.emptySyncSummary(
         'failed',
         ActivityService.SYNC_THROTTLE_MS,
@@ -376,7 +345,7 @@ export class ActivityService {
     retryAfterMs: number,
   ): ActivitySyncSummary {
     return {
-      source: ActivityService.CIRCLE_SOURCE,
+      source: ActivityService.WALLET_SOURCE,
       status,
       pagesScanned: 0,
       recordsScanned: 0,
@@ -386,36 +355,25 @@ export class ActivityService {
     };
   }
 
-  async projectPersisted(principal: ActivityOwnerPrincipal) {
-    const [swaps, invoices, tasks] = await Promise.all([
-      this.prisma.appWalletXylonetOperation.findMany({
-        where: { applicationUserId: principal.merchantUserId },
-      }),
-      this.prisma.invoicePayment.findMany({
-        where: {
-          status: 'VERIFIED',
-          invoice: { merchantUserId: principal.merchantUserId },
-        },
-        include: { invoice: true },
-      }),
-      this.prisma.task.findMany({
-        where: { type: 'bridge' },
-        include: { transactions: true, units: true },
-      }),
-    ]);
+  /**
+   * Project Mainnet direct activity from backend-verified records only.
+   *
+   * On Arc Mainnet the backend observes transfers exclusively through its
+   * own receipt verification (invoice payments settled to the merchant
+   * wallet). There is no provider enrichment: every projection below is
+   * anchored to a verified on-chain receipt on chain 5042.
+   */
+  async projectPersisted(principal: ActivityOwnerPrincipal): Promise<number> {
+    const payments = await this.prisma.invoicePayment.findMany({
+      where: {
+        status: 'VERIFIED',
+        invoice: { merchantUserId: principal.merchantUserId },
+      },
+      include: { invoice: true },
+    });
 
-    for (const operation of swaps) {
-      if (
-        !this.sameWallet(
-          operation.walletAddress,
-          principal.merchantWalletAddress,
-        )
-      )
-        continue;
-      await this.projectVerifiedXylonetOperation(operation);
-    }
-
-    for (const payment of invoices) {
+    let accepted = 0;
+    for (const payment of payments) {
       const invoice = payment.invoice;
       if (
         !this.sameWallet(
@@ -424,6 +382,7 @@ export class ActivityService {
         )
       )
         continue;
+      if (invoice.chainId !== ARC_MAINNET_CHAIN_ID) continue;
       await this.upsert({
         ownerUserId: principal.merchantUserId,
         walletAddress: principal.merchantWalletAddress,
@@ -444,378 +403,9 @@ export class ActivityService {
         metadata: { invoicePublicId: invoice.publicId },
         occurredAt: payment.verifiedAt ?? payment.createdAt,
       });
-    }
-
-    const taskOwnershipUnambiguous =
-      await this.canonicalOwnerIsUnambiguous(principal);
-    for (const task of tasks) {
-      if (!taskOwnershipUnambiguous) continue;
-      const owner = this.taskOwner(task.metadata, task.payload);
-      if (!owner || !this.sameWallet(owner, principal.merchantWalletAddress))
-        continue;
-      if (task.type === 'bridge') await this.projectBridge(principal, task);
-    }
-  }
-
-  /** Project only an operation whose backend receipt verification made it final. */
-  async projectVerifiedXylonetOperation(
-    operation: AppWalletXylonetOperation,
-  ): Promise<void> {
-    if (
-      operation.lifecycleStage !== 'completed' ||
-      operation.terminalStatus !== 'confirmed'
-    )
-      return;
-    await this.upsert({
-      ownerUserId: operation.applicationUserId,
-      walletAddress: operation.walletAddress,
-      type: 'swap',
-      direction: 'outgoing',
-      status: 'completed',
-      source: 'xylonet_tower',
-      idempotencyKey: `xylonet:${operation.operationId}`,
-      sourceReferenceType: 'app_wallet_xylonet_operation',
-      sourceReferenceId: operation.operationId,
-      operationId: operation.operationId,
-      challengeId: operation.swapChallengeId ?? undefined,
-      transactionId: operation.swapTransactionId ?? undefined,
-      chainId: operation.chainId,
-      txHash: operation.swapTransactionHash ?? undefined,
-      inputTokenSymbol: operation.tokenIn,
-      inputTokenAddress: operation.tokenInAddress,
-      inputAmount: operation.amountIn,
-      outputTokenSymbol: operation.tokenOut,
-      outputTokenAddress: operation.tokenOutAddress,
-      outputAmount: operation.expectedOutput,
-      counterparty: operation.executorAddress,
-      occurredAt: operation.completedAt ?? operation.createdAt,
-    });
-  }
-
-  private async projectPayroll(
-    principal: ActivityOwnerPrincipal,
-    task: TaskWithRows,
-  ) {
-    const metadata = this.object(task.metadata);
-    const payload = this.object(task.payload);
-    const hashes = [...task.transactions, ...task.units]
-      .map((row: { txHash?: string | null }) => row.txHash)
-      .filter((hash: unknown): hash is string => this.isTxHash(hash));
-    const providerRows = task.transactions as Array<{ status: string }>;
-    if (!hashes.length && !providerRows.length) return;
-    await this.upsert({
-      ownerUserId: principal.merchantUserId,
-      walletAddress: principal.merchantWalletAddress,
-      type: 'payroll',
-      direction: 'outgoing',
-      status: this.taskStatus(task.status),
-      source: 'payroll_task',
-      idempotencyKey: `task:${task.id}`,
-      sourceReferenceType: 'task',
-      sourceReferenceId: task.id,
-      taskId: task.id,
-      chainId: 5042002,
-      txHash: hashes[0],
-      inputTokenSymbol:
-        this.string(metadata.sourceToken) ?? this.string(payload.sourceToken),
-      inputAmount:
-        this.string(metadata.totalAmount) ?? this.string(payload.totalAmount),
-      metadata: {
-        transactionCount: Math.max(hashes.length, providerRows.length),
-      },
-      occurredAt: task.updatedAt,
-    });
-  }
-
-  private async projectBridge(
-    principal: ActivityOwnerPrincipal,
-    task: TaskWithRows,
-  ) {
-    const bridge = await this.prisma.bridgeTransaction.findUnique({
-      where: { taskId: task.id },
-    });
-    if (!bridge) return;
-    const payload = this.object(bridge.payload);
-    const result = this.object(bridge.result);
-    const sourceHash = this.string(result.sourceTransactionHash);
-    if (!sourceHash) return; // reportSource verifies signer, CCTP event, token and amount.
-    await this.upsert({
-      ownerUserId: principal.merchantUserId,
-      walletAddress: principal.merchantWalletAddress,
-      type: 'bridge',
-      direction: 'outgoing',
-      status: bridge.status === 'completed' ? 'completed' : 'confirming',
-      source: 'circle_cctp_v2',
-      idempotencyKey: `bridge:${bridge.id}`,
-      sourceReferenceType: 'bridge_transaction',
-      sourceReferenceId: bridge.id,
-      taskId: task.id,
-      operationId: bridge.id,
-      chainId: this.number(payload.sourceChainId),
-      txHash: sourceHash,
-      inputTokenSymbol: 'USDC',
-      inputTokenAddress: this.string(payload.sourceUsdcAddress),
-      inputAmount: this.string(payload.amount),
-      outputTokenSymbol: 'USDC',
-      outputTokenAddress: this.string(payload.destinationUsdcAddress),
-      outputAmount:
-        this.string(result.mintAmount) ?? this.string(payload.amount),
-      feeAmount: this.string(result.feeExecuted),
-      counterparty: this.string(payload.recipientAddress),
-      metadata: {
-        sourceChainId: this.number(payload.sourceChainId) ?? 0,
-        destinationChainId: this.number(payload.destinationChainId) ?? 0,
-      },
-      occurredAt: bridge.updatedAt,
-    });
-  }
-
-  private async projectCircle(
-    principal: AuthenticatedCirclePrincipal,
-    checkpointTransactionId?: string,
-  ) {
-    const tokenMetadata = await this.resolveCircleTokenMetadata(principal);
-    await this.enrichStoredCircleActivities(principal, tokenMetadata);
-    let pageAfter = checkpointTransactionId;
-    const allTransactions: unknown[] = [];
-    const seenIds = new Set<string>();
-    let pagesScanned = 0;
-    let recordsScanned = 0;
-    let nextCheckpoint = checkpointTransactionId;
-    for (let page = 0; page < ActivityService.MAX_CIRCLE_PAGES; page += 1) {
-      const response = await this.w3s.listUserTransactions(
-        { walletId: principal.circleWalletId, pageAfter },
-        principal.userToken,
-      );
-      const transactions = this.circleTransactions(response);
-      pagesScanned += 1;
-      recordsScanned += transactions.length;
-      for (const transaction of transactions) {
-        const id = this.string(this.object(transaction).id);
-        if (!id || seenIds.has(id) || id === checkpointTransactionId) continue;
-        seenIds.add(id);
-        allTransactions.push(transaction);
-      }
-      if (transactions.length < 50) break;
-      const lastId = this.string(this.object(transactions.at(-1)).id);
-      if (!lastId || lastId === pageAfter) break;
-      pageAfter = lastId;
-      nextCheckpoint = lastId;
-      if (recordsScanned >= ActivityService.MAX_CIRCLE_RECORDS) break;
-      if (page === ActivityService.MAX_CIRCLE_PAGES - 1)
-        this.logger.warn(
-          'Circle activity reconciliation reached its bounded pagination limit.',
-        );
-    }
-    const lastAcceptedId = this.string(
-      this.object(allTransactions.at(-1)).id,
-    );
-    nextCheckpoint = lastAcceptedId ?? nextCheckpoint;
-    const payrollTransactionIds = await this.projectCirclePayroll(
-      principal,
-      allTransactions,
-    );
-    const transferCount = await this.projectCircleTransactions(
-      principal,
-      allTransactions,
-      payrollTransactionIds,
-      tokenMetadata,
-    );
-    return {
-      pagesScanned,
-      recordsScanned,
-      recordsAccepted: payrollTransactionIds.size + transferCount,
-      checkpointTransactionId: nextCheckpoint,
-    };
-  }
-
-  private async enrichStoredCircleActivities(
-    principal: AuthenticatedCirclePrincipal,
-    metadata: Map<string, { symbol: string; address: string }>,
-  ): Promise<void> {
-    if (!metadata.size) return;
-    const rows = await this.prisma.activity.findMany({
-      where: { ownerUserId: principal.merchantUserId, source: 'circle_w3s' },
-      take: 100,
-      orderBy: { createdAt: 'desc' },
-    });
-    for (const row of rows) {
-      const tokenId = this.string(this.object(row.metadata).circleTokenId);
-      const token = tokenId ? metadata.get(tokenId) : undefined;
-      if (!token || (row.inputTokenSymbol || row.outputTokenSymbol)) continue;
-      await this.prisma.activity.update({
-        where: { id: row.id },
-        data: row.direction === 'incoming'
-          ? { outputTokenSymbol: token.symbol, outputTokenAddress: token.address }
-          : { inputTokenSymbol: token.symbol, inputTokenAddress: token.address },
-      });
-    }
-  }
-
-  private async resolveCircleTokenMetadata(principal: AuthenticatedCirclePrincipal) {
-    const key = `${principal.merchantUserId}:${principal.circleWalletId}`;
-    const current = this.tokenMetadataFlights.get(key);
-    if (current) return current;
-    const flight = (async () => {
-      if (typeof this.w3s.listUserTokenBalances !== 'function') return new Map<string, { symbol: string; address: string }>();
-      const response = await this.w3s.listUserTokenBalances(principal.circleWalletId, principal.userToken);
-      const balanceRows = this.object(response).tokenBalances;
-      const rows: unknown[] = Array.isArray(balanceRows) ? balanceRows : [];
-      const metadata = new Map<string, { symbol: string; address: string }>();
-      for (const row of rows) {
-        const token = this.object(this.object(row).token);
-        const id = this.string(token.id);
-        const address = this.string(token.tokenAddress) ?? this.string(token.address);
-        const symbol = this.string(token.symbol);
-        if (!id || !address || !symbol || !isAddress(address)) continue;
-        const normalized = getAddress(address).toLowerCase();
-        const allowed = ARC_TOKENS[normalized];
-        if (!allowed || allowed.symbol !== symbol.toUpperCase()) continue;
-        metadata.set(id, { symbol: allowed.symbol, address: normalized });
-      }
-      return metadata;
-    })().finally(() => this.tokenMetadataFlights.delete(key));
-    this.tokenMetadataFlights.set(key, flight);
-    return flight;
-  }
-
-  private async projectCirclePayroll(
-    principal: AuthenticatedCirclePrincipal,
-    transactions: unknown[],
-  ) {
-    const claimed = new Set<string>();
-    if (!(await this.canonicalOwnerIsUnambiguous(principal))) return claimed;
-    const byId = new Map(
-      transactions.flatMap((value) => {
-        const transaction = this.object(value);
-        const id = this.string(transaction.id);
-        return id ? [[id, transaction] as const] : [];
-      }),
-    );
-    const tasks = await this.prisma.task.findMany({
-      where: { type: 'payroll' },
-      include: { transactions: true, units: true },
-    });
-    for (const task of tasks) {
-      const owner = this.taskOwner(task.metadata, task.payload);
-      if (
-        !owner ||
-        !this.sameWallet(owner, principal.merchantWalletAddress) ||
-        task.transactions.length === 0
-      )
-        continue;
-      const providerTransactions = task.transactions
-        .map((row) => byId.get(row.txId))
-        .filter((transaction): transaction is JsonObject => Boolean(transaction));
-      if (
-        providerTransactions.length === 0 ||
-        providerTransactions.some(
-          (transaction) =>
-            transaction.operation !== 'TRANSFER' ||
-            transaction.blockchain !== 'ARC-TESTNET' ||
-            transaction.walletId !== principal.circleWalletId ||
-            !this.sameWallet(
-              this.string(transaction.sourceAddress) ?? '',
-              principal.merchantWalletAddress,
-            ),
-        )
-      )
-        continue;
-      await this.projectPayroll(principal, task);
-      task.transactions
-        .filter((row) => byId.has(row.txId))
-        .forEach((row) => claimed.add(row.txId));
-    }
-    return claimed;
-  }
-
-  private circleTransactions(response: unknown): unknown[] {
-    const root = this.object(response);
-    const nested = this.object(root.data);
-    return (
-      Array.isArray(root.transactions)
-        ? root.transactions
-        : Array.isArray(nested.transactions)
-          ? nested.transactions
-          : []
-    ) as unknown[];
-  }
-
-  private async projectCircleTransactions(
-    principal: AuthenticatedCirclePrincipal,
-    transactions: unknown[],
-    excludedTransactionIds: Set<string>,
-    tokenMetadata: Map<string, { symbol: string; address: string }>,
-  ) {
-    let accepted = 0;
-    for (const value of transactions) {
-      const tx = this.object(value);
-      const id = this.string(tx.id);
-      const walletId = this.string(tx.walletId);
-      const source = this.string(tx.sourceAddress);
-      const destination = this.string(tx.destinationAddress);
-      if (id && excludedTransactionIds.has(id)) continue;
-      if (
-        !id ||
-        walletId !== principal.circleWalletId ||
-        tx.operation !== 'TRANSFER' ||
-        tx.blockchain !== 'ARC-TESTNET'
-      )
-        continue;
-      if (
-        !source ||
-        !destination ||
-        !isAddress(source) ||
-        !isAddress(destination)
-      )
-        continue;
-      const outgoing = this.sameWallet(source, principal.merchantWalletAddress);
-      const incoming = this.sameWallet(
-        destination,
-        principal.merchantWalletAddress,
-      );
-      if (outgoing === incoming) continue;
-      const amounts = Array.isArray(tx.amounts) ? tx.amounts : [];
-      if (amounts.length !== 1 || !this.string(String(amounts[0]))) continue;
-      const state = (this.string(tx.state) ?? '').toUpperCase();
-      const circleToken = this.circleToken(tx, tokenMetadata);
-      await this.upsert({
-        ownerUserId: principal.merchantUserId,
-        walletAddress: principal.merchantWalletAddress,
-        type: outgoing ? 'send' : 'receive',
-        direction: outgoing ? 'outgoing' : 'incoming',
-        status: this.circleStatus(state),
-        source: 'circle_w3s',
-        idempotencyKey: `circle-transaction:${id}`,
-        sourceReferenceType: 'circle_transaction',
-        sourceReferenceId: id,
-        transactionId: id,
-        chainId: tx.blockchain === 'ARC-TESTNET' ? 5042002 : undefined,
-        txHash: this.isTxHash(tx.txHash) ? String(tx.txHash) : undefined,
-        inputTokenSymbol: outgoing ? circleToken.symbol : undefined,
-        inputTokenAddress: outgoing ? circleToken.address : undefined,
-        inputAmount: outgoing ? String(amounts[0]) : undefined,
-        outputTokenSymbol: incoming ? circleToken.symbol : undefined,
-        outputTokenAddress: incoming ? circleToken.address : undefined,
-        outputAmount: incoming ? String(amounts[0]) : undefined,
-        counterparty: outgoing ? destination : source,
-        metadata: this.string(tx.tokenId)
-          ? { circleTokenId: this.string(tx.tokenId)! }
-          : undefined,
-        occurredAt: this.date(tx.createDate),
-      });
       accepted += 1;
     }
     return accepted;
-  }
-
-  private circleToken(tx: JsonObject, metadata = new Map<string, { symbol: string; address: string }>()): { symbol?: string; address?: string } {
-    const nested = this.object(tx.token);
-    const address = this.string(tx.tokenAddress) ?? this.string(nested.address) ?? this.string(nested.tokenAddress);
-    const configured = address && isAddress(address) ? ARC_TOKENS[getAddress(address).toLowerCase()] : undefined;
-    const resolved = this.string(tx.tokenId) ? metadata.get(this.string(tx.tokenId)!) : undefined;
-    const symbol = configured?.symbol ?? resolved?.symbol ?? this.string(tx.tokenSymbol) ?? this.string(nested.symbol);
-    return { symbol, address: address && isAddress(address) ? getAddress(address).toLowerCase() : resolved?.address };
   }
 
   private toPublic(row: Activity) {
@@ -849,48 +439,6 @@ export class ActivityService {
     };
   }
 
-  private taskOwner(metadata: unknown, payload: unknown) {
-    const meta = this.object(metadata);
-    const body = this.object(payload);
-    return (
-      this.string(meta.walletAddress) ??
-      this.string(meta.sourceAddress) ??
-      this.string(body.walletAddress) ??
-      this.string(body.sourceAddress)
-    );
-  }
-  private taskStatus(value: string): ActivityStatus {
-    if (value === 'executed') return 'completed';
-    if (value === 'failed') return 'failed';
-    if (value === 'partial') return 'recovery_required';
-    if (value === 'created' || value === 'assigned') return 'pending';
-    return 'confirming';
-  }
-  private xylonetStatus(
-    stage: string,
-    terminal: string | null,
-  ): ActivityStatus {
-    if (terminal === 'confirmed' || stage === 'completed') return 'completed';
-    if (terminal === 'cancelled' || terminal === 'rejected') return 'cancelled';
-    if (terminal === 'failed') return 'failed';
-    if (stage.includes('submitted')) return 'submitted';
-    if (stage.includes('confirm')) return 'confirming';
-    return 'pending';
-  }
-  private circleStatus(state: string): ActivityStatus {
-    if (
-      ['COMPLETE', 'COMPLETED', 'CONFIRMED', 'SUCCESS', 'SUCCEEDED'].includes(
-        state,
-      )
-    )
-      return 'completed';
-    if (['FAILED', 'DENIED', 'REJECTED'].includes(state)) return 'failed';
-    if (state === 'EXPIRED') return 'expired';
-    if (['CANCELLED', 'CANCELED'].includes(state)) return 'cancelled';
-    if (['SUBMITTED', 'SENT', 'INITIATED', 'QUEUED'].includes(state))
-      return 'submitted';
-    return 'confirming';
-  }
   private progressedStatus(
     current: string | undefined,
     next: ActivityStatus,
@@ -944,23 +492,6 @@ export class ActivityService {
       ? (value as JsonObject)
       : {};
   }
-  private string(value: unknown) {
-    return typeof value === 'string' && value.trim() ? value.trim() : undefined;
-  }
-  private number(value: unknown) {
-    return typeof value === 'number' && Number.isSafeInteger(value)
-      ? value
-      : undefined;
-  }
-  private date(value: unknown) {
-    const text = this.string(value);
-    if (!text) return undefined;
-    const date = new Date(text);
-    return Number.isNaN(date.getTime()) ? undefined : date;
-  }
-  private isTxHash(value: unknown): value is string {
-    return typeof value === 'string' && /^0x[0-9a-fA-F]{64}$/.test(value);
-  }
   private sameWallet(left: string, right: string) {
     return (
       isAddress(left) &&
@@ -973,20 +504,6 @@ export class ActivityService {
       ? getAddress(value).toLowerCase()
       : undefined;
   }
-  private async canonicalOwnerIsUnambiguous(principal: ActivityOwnerPrincipal) {
-    const wallets = await this.prisma.userWallet.findMany({
-      where: { blockchain: 'ARC-TESTNET' },
-      select: { userId: true, address: true },
-    });
-    const owners = new Set(
-      wallets
-        .filter((wallet) =>
-          this.sameWallet(wallet.address, principal.merchantWalletAddress),
-        )
-        .map((wallet) => wallet.userId),
-    );
-    return owners.size === 1 && owners.has(principal.merchantUserId);
-  }
   private safeMetadata(value?: Record<string, unknown>) {
     if (!value) return undefined;
     const allowed = [
@@ -994,7 +511,6 @@ export class ActivityService {
       'transactionCount',
       'sourceChainId',
       'destinationChainId',
-      'circleTokenId',
     ];
     return Object.fromEntries(
       allowed.flatMap((key) => {

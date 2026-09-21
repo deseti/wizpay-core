@@ -12,13 +12,12 @@ function LiquidityWorkspace() {
           <CircleOff className="h-5 w-5" />
         </div>
         <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">
-          Legacy liquidity is disabled
+          Liquidity is unavailable on Arc Mainnet
         </h1>
         <p className="mt-3 text-sm leading-6 text-muted-foreground/80">
-          The internal LP vault and SFX-LP deposit or withdrawal flow are not
-          available during the official Circle StableFX migration. FX execution
-          must use the official StableFX RFQ path once API authentication and
-          entitlement are available.
+          Liquidity provisioning is not available on Arc Mainnet. Payroll,
+          swaps, invoices, and direct transfers use the external-wallet
+          execution path when their Mainnet resources are available.
         </p>
       </div>
     </div>

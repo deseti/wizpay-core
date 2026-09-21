@@ -27,7 +27,7 @@ Do not use the local URL for production agents, integrations, or public document
 
 Nano WizPay Agent API is non-custodial. It never stores private keys, never signs user transactions, never executes user funds, and never custodies user funds.
 
-The API prepares routes and execution instructions. The agent, user wallet, frontend, SDK, raw calldata executor, or Circle CLI executes the returned calldata or commands.
+The API prepares routes and execution instructions. The agent, user wallet, frontend, SDK, raw calldata executor, or an external-wallet CLI executes the returned calldata or commands.
 
 Free read-only endpoints:
 
@@ -52,7 +52,7 @@ Prepare endpoints use a 402-style service fee flow:
 X-PAYMENT: <txHash>
 ```
 
-After payment verification, the API returns calldata and Circle CLI command options for the caller to execute.
+After payment verification, the API returns calldata and external-wallet CLI command options for the caller to execute.
 
 ## Production Endpoints
 
@@ -69,11 +69,10 @@ POST https://api.wizpay.xyz/payroll/prepare
 
 | Name | Address |
 | --- | --- |
-| WizPaySwapExecutor | `0x17685466759f9Cde06f0DCbB5464164ABe541eFA` |
-| XyloRouter | `0x73742278c31a76dBb0D2587d03ef92E6E2141023` |
-| WizPay Payroll Router | `0x87ACE45582f45cC81AC1E627E875AE84cbd75946` |
+| WizPayPayrollMainnet | `0x77AC7Cb6507D404b5530fC03e3D39BAaEdE10C34` |
+| WizPaySwapExecutorMainnet | `0x7A051F17B237750EF9D4E63fb75381B9F8755774` |
 | USDC | `0x3600000000000000000000000000000000000000` |
-| EURC | `0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a` |
+| EURC | `0xbEf5f6d51CB62b58e6A8f77868681825C6fe21c1` |
 | Service fee collector | `0x32F251fc36A1174901124589EAC2d4E391816F69` |
 
 Service fee:
@@ -159,7 +158,7 @@ Expected result before the service fee is paid:
   "error": "PAYMENT_REQUIRED",
   "amount": "0.003",
   "currency": "USDC",
-  "chain": "arc-testnet",
+  "chain": "arc-mainnet",
   "payTo": "0x32F251fc36A1174901124589EAC2d4E391816F69"
 }
 ```
@@ -179,7 +178,7 @@ curl -X POST https://api.wizpay.xyz/swap/prepare \
   }'
 ```
 
-The paid response returns calldata and Circle CLI commands for the caller to execute. WizPay does not sign or submit the user's swap transaction.
+The paid response returns calldata and external-wallet CLI commands for the caller to execute. WizPay does not sign or submit the user's swap transaction.
 
 ### Prepare Payroll Without Payment
 
@@ -213,7 +212,7 @@ Expected result before the service fee is paid:
   "error": "PAYMENT_REQUIRED",
   "amount": "0.003",
   "currency": "USDC",
-  "chain": "arc-testnet",
+  "chain": "arc-mainnet",
   "payTo": "0x32F251fc36A1174901124589EAC2d4E391816F69"
 }
 ```
@@ -244,13 +243,13 @@ curl -X POST https://api.wizpay.xyz/payroll/prepare \
   }'
 ```
 
-The paid response returns batch calldata and Circle CLI command options for the caller to execute. WizPay does not sign or submit payroll transactions.
+The paid response returns batch calldata and external-wallet CLI command options for the caller to execute. WizPay does not sign or submit payroll transactions.
 
 ## Payroll Execution Note
 
 Payroll prepare responses include batch calldata for SDK, frontend, and raw calldata executors.
 
-For Circle CLI demos, prefer the `routeAndPay` fallback commands from `circleCliFallback.commands`. Circle CLI may fail with overloaded array-based `batchRouteAndPay` functions, so demos should use the fallback command set when available.
+For CLI demos, prefer the `routeAndPay` fallback commands from the documented fallback command set. Overloaded array-based `batchRouteAndPay` functions may fail in some CLI environments, so demos should use the fallback command set when available.
 
 ## Safety Requirements for Agents
 
@@ -258,25 +257,14 @@ Agents integrating with Nano WizPay Agent API should:
 
 - Treat read-only responses as planning data, not completed execution.
 - Show the user the payment, route, token, recipient, and fee details before asking them to execute anything.
-- Require the user's wallet or Circle CLI environment to sign and submit transactions.
+- Require the user's wallet or external-wallet CLI environment to sign and submit transactions.
 - Never ask WizPay API to store, receive, or sign with private keys.
 - Never treat an unpaid prepare response as executable.
 - Never replace a missing official route with synthetic pricing or a legacy fallback.
 
 ## Production Proof
 
-Latest verified Arc testnet transactions:
-
-| Flow | Transaction |
-| --- | --- |
-| Swap service fee | [0xfc6355aebbb1622661202b3aa8955d863ca81e197d3f0e7f7fcf1fbec0d27b12](https://testnet.arcscan.app/tx/0xfc6355aebbb1622661202b3aa8955d863ca81e197d3f0e7f7fcf1fbec0d27b12) |
-| Swap approve | [0xd2c0f46016eedb9603488cd6126420b53bf6ad9660e6262462cd7d4d13a43c11](https://testnet.arcscan.app/tx/0xd2c0f46016eedb9603488cd6126420b53bf6ad9660e6262462cd7d4d13a43c11) |
-| Swap executeSwap | [0x1a8df7e5ef4fc04b4a859e784067ce470886498a1673882af60be97d506ac9f8](https://testnet.arcscan.app/tx/0x1a8df7e5ef4fc04b4a859e784067ce470886498a1673882af60be97d506ac9f8) |
-| Payroll service fee | [0xab1b9b62b8cbfc43c3a91fcd8571e75273128fef56ed46c05176d1ba073327ac](https://testnet.arcscan.app/tx/0xab1b9b62b8cbfc43c3a91fcd8571e75273128fef56ed46c05176d1ba073327ac) |
-| Payroll approve | [0xd6b8739f6980aff40cd5ee1bf8343e7ecc3598ed9bcd991c85234b2af61a23ef](https://testnet.arcscan.app/tx/0xd6b8739f6980aff40cd5ee1bf8343e7ecc3598ed9bcd991c85234b2af61a23ef) |
-| Payroll payout 1 | [0x1cc0c8e5173cc9782d255d953594e136c58337b2ca437f6890bfe22782fe14d6](https://testnet.arcscan.app/tx/0x1cc0c8e5173cc9782d255d953594e136c58337b2ca437f6890bfe22782fe14d6) |
-| Payroll payout 2 | [0x15aa1dcced9720df77219174c130229162882d4e94abf3d0f4204558dc869560](https://testnet.arcscan.app/tx/0x15aa1dcced9720df77219174c130229162882d4e94abf3d0f4204558dc869560) |
-| Payroll payout 3 | [0xa311ec6a9da90ff167d93b7f3fac995ed8817e881e41e885ff787d6b17bc53b1](https://testnet.arcscan.app/tx/0xa311ec6a9da90ff167d93b7f3fac995ed8817e881e41e885ff787d6b17bc53b1) |
+No Mainnet execution proof is recorded here. Mainnet receipts are reviewed through the authorized Mainnet explorer and backend reconciliation before any activation.
 
 ## Deprecated Agent Connect References
 

@@ -2,15 +2,13 @@
 
 import { ArrowRightLeft, Globe, Shield, Wallet, Zap } from "lucide-react";
 
-import { useHybridWallet } from "@/components/providers/HybridWalletProvider";
-import { WalletModeToggle } from "@/components/wallet/WalletModeToggle";
+import { useExternalWallet } from "@/components/providers/external-wallet-context";
 import { ReownConnectButton } from "@/components/wallet/ReownConnectButton";
 import { Card, CardContent } from "@/components/ui/card";
 import {
   getWalletModeDescription,
   getWalletModeLabel,
 } from "@/lib/wallet-mode";
-import { ACTIVE_ARC_NETWORK } from "@/lib/active-arc-network";
 
 const features = [
   { icon: Zap, label: "Multi-Token" },
@@ -19,17 +17,9 @@ const features = [
 ];
 
 export function ConnectWalletCard() {
-  const {
-    circleAuthError: authError,
-    circleInitializationPhase: initializationPhase,
-    circleLogin: login,
-    circleReady: ready,
-    externalConnectError,
-    walletMode,
-  } = useHybridWallet();
-  const title = getWalletModeLabel(walletMode);
-  const description = getWalletModeDescription(walletMode);
-  const mainnetExternalOnly = ACTIVE_ARC_NETWORK.key === "arc-mainnet";
+  const { externalConnectError } = useExternalWallet();
+  const title = getWalletModeLabel("external");
+  const description = getWalletModeDescription("external");
 
   return (
     <Card className="glass-card animate-scale-in relative mx-auto w-full max-w-xl overflow-hidden border-border/40">
@@ -49,13 +39,10 @@ export function ConnectWalletCard() {
             Welcome to WizPay
           </h1>
           <p className="mx-auto max-w-md text-sm leading-relaxed text-muted-foreground sm:text-base">
-            {mainnetExternalOnly
-              ? "Arc Mainnet uses connected external wallets only through Reown AppKit."
-              : "Choose how you want to transact. Keep the built-in Circle app wallet for Google or email login, or use an external wallet through Reown AppKit."}
+            Arc Mainnet uses connected external wallets only through Reown
+            AppKit on chain 5042.
           </p>
         </div>
-
-        <WalletModeToggle />
 
         <div className="w-full max-w-md rounded-2xl border border-border/40 bg-background/35 p-5 text-left shadow-lg shadow-black/10">
           <div className="space-y-1">
@@ -79,49 +66,18 @@ export function ConnectWalletCard() {
           </div>
 
           <div className="mt-6">
-            {walletMode === "circle" ? (
-              <button
-                id="circle-connect-btn"
-                onClick={login}
-                disabled={!ready}
-                className="glow-btn group relative inline-flex w-full items-center justify-center gap-2.5 rounded-2xl bg-gradient-to-r from-primary via-violet-500 to-primary px-8 py-4 text-base font-bold text-primary-foreground shadow-xl shadow-primary/25 transition-all hover:shadow-2xl hover:shadow-primary/40 hover:brightness-110 active:scale-[0.97]"
-              >
-                <Wallet className="h-5 w-5 transition-transform group-hover:scale-110 group-hover:rotate-[-6deg]" />
-                {ready
-                  ? "Sign In with Circle"
-                  : initializationPhase === "waiting_for_document"
-                    ? "Preparing secure wallet…"
-                    : initializationPhase === "loading_sdk"
-                      ? "Loading Circle security…"
-                      : initializationPhase === "restoring_session"
-                        ? "Restoring Circle session…"
-                        : "Circle wallet needs attention"}
-              </button>
-            ) : (
-              <ReownConnectButton className="glow-btn group relative inline-flex w-full items-center justify-center gap-2.5 rounded-2xl bg-gradient-to-r from-primary via-violet-500 to-primary px-8 py-4 text-base font-bold text-primary-foreground shadow-xl shadow-primary/25 transition-all hover:shadow-2xl hover:shadow-primary/40 hover:brightness-110 active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-70">
-                <Globe className="h-5 w-5 transition-transform group-hover:scale-110" />
-                Connect External Wallet
-              </ReownConnectButton>
-            )}
+            <ReownConnectButton className="glow-btn group relative inline-flex w-full items-center justify-center gap-2.5 rounded-2xl bg-gradient-to-r from-primary via-violet-500 to-primary px-8 py-4 text-base font-bold text-primary-foreground shadow-xl shadow-primary/25 transition-all hover:shadow-2xl hover:shadow-primary/40 hover:brightness-110 active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-70">
+              <Globe className="h-5 w-5 transition-transform group-hover:scale-110" />
+              Connect External Wallet
+            </ReownConnectButton>
           </div>
 
-          {walletMode === "external" ? (
-            <p className="mt-3 text-xs leading-relaxed text-amber-300/80">
-              Browser wallets, Coinbase Wallet, Safe, and WalletConnect mobile
-              wallets are available through Reown AppKit.
-            </p>
-          ) : null}
+          <p className="mt-3 text-xs leading-relaxed text-amber-300/80">
+            Browser wallets, Coinbase Wallet, Safe, and WalletConnect mobile
+            wallets are available through Reown AppKit.
+          </p>
 
-          {walletMode === "circle" && !ready && authError ? (
-            <p
-              role="alert"
-              className="mt-3 text-xs leading-relaxed text-amber-300/85"
-            >
-              {authError}
-            </p>
-          ) : null}
-
-          {walletMode === "external" && externalConnectError ? (
+          {externalConnectError ? (
             <p className="mt-3 text-xs leading-relaxed text-red-400/85">
               {externalConnectError}
             </p>
@@ -129,18 +85,6 @@ export function ConnectWalletCard() {
         </div>
 
         <div className="flex items-center gap-3 text-[11px] text-muted-foreground/70">
-          {!mainnetExternalOnly ? (
-            <>
-              <span className="flex items-center gap-1.5">
-                <Globe className="h-3.5 w-3.5" /> Social
-              </span>
-              <span className="h-3 w-px bg-border/60" />
-              <span className="flex items-center gap-1.5">
-                <Wallet className="h-3.5 w-3.5" /> Circle MPC
-              </span>
-              <span className="h-3 w-px bg-border/60" />
-            </>
-          ) : null}
           <span className="flex items-center gap-1.5">
             <ArrowRightLeft className="h-3.5 w-3.5" /> Reown AppKit
           </span>

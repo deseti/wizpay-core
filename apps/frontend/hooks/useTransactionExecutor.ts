@@ -1,27 +1,22 @@
 /**
- * @deprecated This hook is deprecated.
- *
- * Transaction execution has been moved to the NestJS backend.
- * Frontend no longer executes transactions directly via Circle/Viem wallet clients.
+ * @deprecated Transaction execution has been moved to the NestJS backend.
+ * Frontend no longer executes transactions directly.
  * Use `useTaskPolling` to submit tasks to `POST /tasks` instead.
  *
- * This file is kept for backward compatibility with any non-payroll flows
- * that may still need client-side wallet interaction (e.g., token approvals
- * during the transition period).
+ * This file is kept for backward compatibility with non-payroll flows
+ * that still need client-side external wallet interaction (e.g. token
+ * approvals). External self-custodial wallets only; no fallback execution.
  */
 "use client";
 
 import { encodeFunctionData, type Abi, type Address, type Hex } from "viem";
 import { usePublicClient, useSwitchChain, useWalletClient } from "wagmi";
 
-import { useCircleWallet } from "@/components/providers/CircleWalletProvider";
-import { useHybridWallet } from "@/components/providers/HybridWalletProvider";
+import { useExternalWallet } from "@/components/providers/external-wallet-context";
 import { writeContractTransaction } from "@/lib/web3-transactions";
 import { prepareWalletExecutionIntent } from "@/lib/execution-intent";
 import { requestExternalWalletChain } from "@/lib/external-wallet-policy";
-import { arcTestnet, CHAIN_BY_ID, ethereumSepolia } from "@/lib/wagmi";
-
-const CIRCLE_FEE_LEVEL = "MEDIUM";
+import { activeArcChain, CHAIN_BY_ID } from "@/lib/wagmi";
 
 export type ExecuteTransactionParams = {
   abi: Abi;
@@ -38,8 +33,6 @@ export type ExecuteTransactionParams = {
 };
 
 export type ExecuteTransactionResult = {
-  circleChallenge?: unknown;
-  circleResult?: unknown;
   hash: string;
   referenceId: string;
   startBlock: bigint;
@@ -50,7 +43,6 @@ export type ExecuteTransactionResult = {
 type SignTypedDataParams = {
   chainId?: number;
   memo?: string;
-  stablefxDiagnostics?: Record<string, unknown>;
   typedData: Record<string, unknown>;
 };
 
@@ -58,133 +50,22 @@ export type SignTypedDataResult = {
   chainId: number;
   signature: Hex;
   walletAddress?: Address;
-  walletId?: string;
-  walletMode: "circle" | "external";
+  walletMode: "external";
 };
 
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return typeof value === "object" && value !== null
-    ? (value as Record<string, unknown>)
-    : null;
-}
-
-function getNestedString(source: unknown, path: string[]) {
-  let current: unknown = source;
-
-  for (const key of path) {
-    const record = asRecord(current);
-
-    if (!record || typeof record[key] === "undefined") {
-      return null;
-    }
-
-    current = record[key];
-  }
-
-  return typeof current === "string" && current ? current : null;
-}
-
-function extractCircleTxHash(value: unknown): Hex | null {
-  const candidate =
-    getNestedString(value, ["data", "txHash"]) ??
-    getNestedString(value, ["data", "transactionHash"]) ??
-    getNestedString(value, ["txHash"]) ??
-    getNestedString(value, ["transactionHash"]);
-
-  return /^0x[a-fA-F0-9]{64}$/.test(candidate ?? "")
-    ? (candidate as Hex)
-    : null;
-}
-
-function extractCircleReference(value: unknown): string | null {
-  return (
-    getNestedString(value, ["data", "id"]) ??
-    getNestedString(value, ["data", "transactionId"]) ??
-    getNestedString(value, ["id"]) ??
-    getNestedString(value, ["transactionId"]) ??
-    getNestedString(value, ["challengeId"]) ??
-    getNestedString(value, ["challenge", "id"]) ??
-    null
-  );
-}
-
-function extractCircleSignature(value: unknown): Hex | null {
-  const candidate =
-    getNestedString(value, ["data", "signature"]) ??
-    getNestedString(value, ["signature"]) ??
-    getNestedString(value, ["data", "signatures", "0", "signature"]) ??
-    getNestedString(value, ["signatures", "0", "signature"]) ??
-    getNestedString(value, ["data", "signedData", "signature"]) ??
-    getNestedString(value, ["signedData", "signature"]) ??
-    getNestedString(value, ["data", "result", "signature"]) ??
-    getNestedString(value, ["result", "signature"]) ??
-    getNestedString(value, ["data", "output", "signature"]) ??
-    getNestedString(value, ["output", "signature"]);
-
-  if (/^0x[a-fA-F0-9]+$/.test(candidate ?? "")) {
-    return candidate as Hex;
-  }
-
-  if (/^[a-fA-F0-9]+$/.test(candidate ?? "")) {
-    return `0x${candidate}` as Hex;
-  }
-
-  return null;
-}
-
-function collectResponseKeys(value: unknown, path = ""): string[] {
-  const record = asRecord(value);
-
-  if (!record) {
-    return [];
-  }
-
-  return Object.entries(record).flatMap(([key, nested]) => {
-    const nextPath = path ? `${path}.${key}` : key;
-
-    if (key.toLowerCase().includes("signature")) {
-      return [nextPath];
-    }
-
-    return [nextPath, ...collectResponseKeys(nested, nextPath)];
-  });
-}
-
 export function useTransactionExecutor() {
-  const { activeWalletAddress, activeWalletChainId, walletMode } =
-    useHybridWallet();
-  const {
-    arcWallet,
-    createContractExecutionChallenge,
-    createTypedDataChallenge,
-    ensureSessionReady,
-    executeChallenge,
-    sepoliaWallet,
-  } = useCircleWallet();
-  const arcPublicClient = usePublicClient({ chainId: arcTestnet.id });
-  const sepoliaPublicClient = usePublicClient({ chainId: ethereumSepolia.id });
+  const { activeWalletAddress, activeWalletChainId } = useExternalWallet();
+  const arcPublicClient = usePublicClient({ chainId: activeArcChain.id });
   const { data: walletClient, refetch: refetchWalletClient } =
     useWalletClient();
   const { switchChainAsync } = useSwitchChain();
 
   const getPublicClientForChain = (chainId: number) => {
-    if (chainId === arcTestnet.id) {
+    if (chainId === activeArcChain.id) {
       return arcPublicClient;
     }
 
-    if (chainId === ethereumSepolia.id) {
-      return sepoliaPublicClient;
-    }
-
     return null;
-  };
-
-  const getCircleWalletForChain = (chainId: number) => {
-    if (chainId === ethereumSepolia.id) {
-      return sepoliaWallet;
-    }
-
-    return arcWallet;
   };
 
   const ensureExternalChain = async (targetChainId: number) => {
@@ -210,63 +91,10 @@ export function useTransactionExecutor() {
     return nextWalletClient;
   };
 
-  const executeWithCircle = async (
-    params: ExecuteTransactionParams,
-  ): Promise<ExecuteTransactionResult> => {
-    const chainId = params.chainId ?? arcTestnet.id;
-    const publicClient = getPublicClientForChain(chainId);
-    const startBlock = publicClient ? await publicClient.getBlockNumber() : 0n;
-
-    await ensureSessionReady();
-
-    const targetWallet = getCircleWalletForChain(chainId);
-
-    if (!targetWallet?.id) {
-      throw new Error(
-        `${getWalletLabelForChain(chainId)} is not ready yet. Refresh the session and try again.`,
-      );
-    }
-
-    const callData = encodeFunctionData({
-      abi: params.abi,
-      args: params.args,
-      functionName: params.functionName,
-    });
-
-    const challenge = await createContractExecutionChallenge({
-      walletId: targetWallet.id,
-      contractAddress: params.contractAddress,
-      callData,
-      feeLevel: CIRCLE_FEE_LEVEL,
-      idempotencyKey: params.idempotencyKey,
-      executionIntentId: params.executionIntentId,
-      memo: params.memo,
-      refId: params.refId,
-    });
-
-    const challengeResult = await executeChallenge(challenge.challengeId);
-    const txHash =
-      extractCircleTxHash(challengeResult) ??
-      extractCircleTxHash(challenge.raw);
-    const referenceId =
-      extractCircleReference(challengeResult) ??
-      extractCircleReference(challenge.raw) ??
-      challenge.challengeId;
-
-    return {
-      circleChallenge: challenge.raw,
-      circleResult: challengeResult,
-      hash: txHash ?? referenceId,
-      referenceId,
-      startBlock,
-      txHash,
-    };
-  };
-
   const executeWithViem = async (
     params: ExecuteTransactionParams,
   ): Promise<ExecuteTransactionResult> => {
-    const chainId = params.chainId ?? arcTestnet.id;
+    const chainId = params.chainId ?? activeArcChain.id;
     const chain = CHAIN_BY_ID[chainId];
     const publicClient = getPublicClientForChain(chainId);
 
@@ -319,61 +147,13 @@ export function useTransactionExecutor() {
   const executeTransaction = async (
     params: ExecuteTransactionParams,
   ): Promise<ExecuteTransactionResult> => {
-    if (walletMode === "circle") {
-      return executeWithCircle(params);
-    }
-
     return executeWithViem(params);
   };
 
   const signTypedDataWithMetadata = async ({
-    chainId = arcTestnet.id,
-    memo,
-    stablefxDiagnostics,
+    chainId = activeArcChain.id,
     typedData,
   }: SignTypedDataParams): Promise<SignTypedDataResult> => {
-    if (walletMode === "circle") {
-      await ensureSessionReady();
-
-      const targetWallet = getCircleWalletForChain(chainId);
-
-      if (!targetWallet?.id) {
-        throw new Error(
-          `${getWalletLabelForChain(chainId)} is not ready for signing yet.`,
-        );
-      }
-
-      const challenge = await createTypedDataChallenge({
-        walletId: targetWallet.id,
-        data: JSON.stringify(typedData),
-        memo,
-        ...(stablefxDiagnostics ? { stablefxDiagnostics } : {}),
-      });
-      const challengeResult = await executeChallenge(challenge.challengeId);
-      const signature =
-        extractCircleSignature(challengeResult) ??
-        extractCircleSignature(challenge.raw);
-
-      if (!signature) {
-        console.warn("[stablefx-swap]", {
-          provider: "stablefx",
-          step: "sign_quote",
-          circleResultKeys: collectResponseKeys(challengeResult),
-          circleChallengeKeys: collectResponseKeys(challenge.raw),
-          walletId: targetWallet.id,
-        });
-        throw new Error("Circle did not return a typed-data signature.");
-      }
-
-      return {
-        chainId,
-        signature,
-        walletAddress: targetWallet.address as Address | undefined,
-        walletId: targetWallet.id,
-        walletMode,
-      };
-    }
-
     if (!activeWalletAddress) {
       throw new Error("Connect an external wallet before signing typed data.");
     }
@@ -388,7 +168,7 @@ export function useTransactionExecutor() {
       chainId,
       signature: signature as Hex,
       walletAddress: activeWalletAddress,
-      walletMode,
+      walletMode: "external",
     };
   };
 
@@ -402,12 +182,4 @@ export function useTransactionExecutor() {
     signTypedData,
     signTypedDataWithMetadata,
   };
-}
-
-function getWalletLabelForChain(chainId: number) {
-  if (chainId === ethereumSepolia.id) {
-    return "Circle Sepolia wallet";
-  }
-
-  return "Circle Arc wallet";
 }

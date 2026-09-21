@@ -6,92 +6,7 @@ import {
   type PublicClient,
 } from "viem";
 import { ERC20_ABI } from "@/constants/erc20";
-import {
-  ARC_NATIVE_USDC_EVENT_ADDRESS,
-  extractCircleTransactionHash,
-  extractCircleTransactionId,
-  verifyCircleAppWalletTransfer,
-  verifyErc20Transfer,
-} from "@/lib/send-transaction";
-
-describe("Circle Send transaction correlation", () => {
-  it("uses challenge correlation IDs", () => {
-    expect(
-      extractCircleTransactionId({
-        data: { challenge: { correlationIds: ["circle-transaction-id"] } },
-      }),
-    ).toBe("circle-transaction-id");
-  });
-
-  it("does not mistake a challenge ID for a transaction ID", () => {
-    expect(
-      extractCircleTransactionId({ challengeId: "challenge-only" }),
-    ).toBeNull();
-  });
-
-  it("extracts only a valid direct transaction hash", () => {
-    const hash = `0x${"ab".repeat(32)}`;
-    expect(extractCircleTransactionHash({ data: { txHash: hash } })).toBe(hash);
-    expect(
-      extractCircleTransactionHash({ data: { txHash: "pending" } }),
-    ).toBeNull();
-  });
-
-  it("verifies Circle's Arc native USDC Transfer evidence without using the EntryPoint sender", async () => {
-    const sender = "0x56DE876C902AdA72CF8E7595715127cEA27d43E6";
-    const recipient = "0x32F251fc36A1174901124589EAC2d4E391816F69";
-    const event = {
-      type: "event",
-      name: "Transfer",
-      inputs: [
-        { indexed: true, name: "from", type: "address" },
-        { indexed: true, name: "to", type: "address" },
-        { indexed: false, name: "value", type: "uint256" },
-      ],
-    } as const;
-    const client = {
-      chain: { id: 5042002 },
-      waitForTransactionReceipt: vi
-        .fn()
-        .mockResolvedValue({
-          status: "success",
-          logs: [
-            {
-              address: ARC_NATIVE_USDC_EVENT_ADDRESS,
-              topics: encodeEventTopics({
-                abi: [event],
-                eventName: "Transfer",
-                args: { from: sender, to: recipient },
-              }),
-              data: encodeAbiParameters(
-                [{ type: "uint256" }],
-                [1_000_000_000_000_000_000n],
-              ),
-            },
-          ],
-        }),
-      getTransaction: vi
-        .fn()
-        .mockResolvedValue({
-          chainId: 5042002,
-          from: `0x${"1".repeat(40)}`,
-          to: `0x${"2".repeat(40)}`,
-          input: "0x",
-        }),
-    } as unknown as PublicClient;
-    await expect(
-      verifyCircleAppWalletTransfer({
-        amount: 1_000_000n,
-        hash: `0x${"a".repeat(64)}`,
-        publicClient: client,
-        recipient,
-        sender,
-        token: "0x3600000000000000000000000000000000000000",
-        tokenSymbol: "USDC",
-      }),
-    ).resolves.toBeTruthy();
-  });
-});
+import { verifyErc20Transfer } from "@/lib/send-transaction";
 
 describe("External Wallet Send receipt characterization", () => {
   const sender = "0x56DE876C902AdA72CF8E7595715127cEA27d43E6";
@@ -110,14 +25,17 @@ describe("External Wallet Send receipt characterization", () => {
 
   function client(overrides?: {
     amount?: bigint;
+    chainId?: number;
     logAddress?: `0x${string}`;
     recipient?: `0x${string}`;
+    sender?: `0x${string}`;
     status?: "success" | "reverted";
   }) {
     const amount = overrides?.amount ?? 1_000_000n;
     const eventRecipient = overrides?.recipient ?? recipient;
+    const eventSender = overrides?.sender ?? sender;
     return {
-      chain: { id: 5_042_002 },
+      chain: { id: 5_042 },
       waitForTransactionReceipt: vi.fn().mockResolvedValue({
         status: overrides?.status ?? "success",
         logs: [
@@ -126,14 +44,14 @@ describe("External Wallet Send receipt characterization", () => {
             topics: encodeEventTopics({
               abi: [event],
               eventName: "Transfer",
-              args: { from: sender, to: eventRecipient },
+              args: { from: eventSender, to: eventRecipient },
             }),
             data: encodeAbiParameters([{ type: "uint256" }], [amount]),
           },
         ],
       }),
       getTransaction: vi.fn().mockResolvedValue({
-        chainId: 5_042_002,
+        chainId: overrides?.chainId ?? 5_042,
         from: sender,
         to: token,
         input: encodeFunctionData({
@@ -145,7 +63,7 @@ describe("External Wallet Send receipt characterization", () => {
     } as unknown as PublicClient;
   }
 
-  it("accepts only matching transfer calldata and canonical Transfer evidence", async () => {
+  it("accepts only matching transfer calldata and canonical Transfer evidence on Arc Mainnet", async () => {
     await expect(
       verifyErc20Transfer({
         amount: 1_000_000n,
@@ -169,6 +87,7 @@ describe("External Wallet Send receipt characterization", () => {
       { logAddress: "0x2222222222222222222222222222222222222222" as const },
     ],
     ["failed receipt", { status: "reverted" as const }],
+    ["wrong chain", { chainId: 9_999 }],
   ])("rejects %s", async (_label, overrides) => {
     await expect(
       verifyErc20Transfer({

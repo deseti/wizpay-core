@@ -22,8 +22,6 @@ export interface RecipientDraft {
 
 export const ARC_CHAIN_ID = ACTIVE_ARC_NETWORK.chainId;
 export const EXPLORER_BASE_URL = ACTIVE_ARC_NETWORK.explorerBaseUrl;
-/** Compatibility identity exports; the shared registry remains authoritative. */
-export const ARC_TESTNET_CHAIN_ID = getArcNetworkByKey("arc-testnet").chainId;
 export const ARC_MAINNET_CHAIN_ID = getArcNetworkByKey("arc-mainnet").chainId;
 export const PREVIEW_SLIPPAGE_BPS = 200n;
 export const GAS_BUFFER_BPS = 1500n;
@@ -139,40 +137,26 @@ export function getFriendlyErrorMessage(error: unknown): string {
   }
 
   if (
-    message.includes("official_stablefx_auth_required") ||
-    message.includes(
-      "cross-currency send/payroll uses official circle stablefx rfq only",
-    )
+    message.includes("cross-currency") ||
+    message.includes("quote unavailable") ||
+    message.includes("execution-authorization")
   ) {
-    return "OFFICIAL_STABLEFX_AUTH_REQUIRED: Cross-currency Send uses official Circle StableFX RFQ only. StableFXAdapter and internal LP routing are disabled until StableFX authentication and entitlement are available.";
-  }
-
-  if (message.includes("standard circle rest api key prefix")) {
-    return "The selected network's Circle API credential is using the wrong key type. Configure the matching network-scoped server credential.";
+    return "Cross-currency execution is unavailable on Arc Mainnet until pool verification and execution authorization pass.";
   }
 
   if (
-    message.includes("accepted this api key for general apis") ||
-    message.includes("not enabled for stablefx yet") ||
-    message.includes("not permitted to use stablefx")
-  ) {
-    return "Circle accepted this API key for general APIs, but StableFX is not enabled on the current Circle account or key yet. Enable StableFX access in Circle Developer Console.";
-  }
-
-  if (
-    message.includes("stablefx api key") ||
     message.includes("missing_api_key") ||
     message.includes("401 unauthorized")
   ) {
-    return "Circle StableFX is not authorized for the selected network's StableFX credential. Configure the matching network-scoped server credential.";
+    return "The backend credential is missing or unauthorized for Arc Mainnet. Configure the Mainnet server credential.";
   }
 
   if (message.includes("exchange rate not set")) {
-    return "Swap failed. The selected token pair does not have an active route in StableFX.";
+    return "Swap failed. The selected token pair does not have an active Mainnet route.";
   }
 
   if (message.includes("insufficient liquidity")) {
-    return "Swap failed. StableFX does not have enough output-token liquidity for at least one recipient.";
+    return "Swap failed. There is not enough output-token liquidity for at least one recipient.";
   }
 
   if (message.includes("slippage")) {

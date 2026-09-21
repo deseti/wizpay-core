@@ -68,17 +68,17 @@ describe('MainnetUniswapV4Service', () => {
     expect(() => instance.execute(request())).toThrow(HttpException);
   });
 
-  it('rejects Testnet isolation, developer wallets, and Circle App Wallet', () => {
-    expect(() => service('arc-testnet').inspectQuote(request())).toThrow(
+  it('rejects non-Mainnet isolation and non-external wallet control', () => {
+    expect(() => service('arc-legacy').inspectQuote(request())).toThrow(
       HttpException,
     );
     expect(() =>
       service().inspectQuote(
-        request({ walletControl: 'developer-controlled' }),
+        request({ walletControl: 'custodial-wallet' }),
       ),
     ).toThrow(HttpException);
     expect(() =>
-      service().prepare(request({ walletControl: 'circle-app-wallet-uc' })),
+      service().prepare(request({ walletControl: 'managed-app-wallet' })),
     ).toThrow(HttpException);
   });
 

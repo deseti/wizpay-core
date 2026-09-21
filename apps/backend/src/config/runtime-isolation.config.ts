@@ -1,23 +1,14 @@
-import {
-  getArcCircleExecutionDefinition,
-  parseArcNetworkKey,
-  type ArcNetworkKey,
-} from '@wizpay/arc-network';
+import { parseArcNetworkKey } from '@wizpay/arc-network';
 import { assertDeploymentManifestIsolation } from './deployment-manifest.config';
 
 type Environment = Record<string, string | undefined>;
 
-const NETWORK_VARIABLES = Object.freeze({
-  'arc-testnet': {
-    databaseUrl: 'ARC_TESTNET_DATABASE_URL',
-    redisUrl: 'ARC_TESTNET_REDIS_URL',
-    queuePrefix: 'ARC_TESTNET_QUEUE_PREFIX',
-  },
-  'arc-mainnet': {
-    databaseUrl: 'ARC_MAINNET_DATABASE_URL',
-    redisUrl: 'ARC_MAINNET_REDIS_URL',
-    queuePrefix: 'ARC_MAINNET_QUEUE_PREFIX',
-  },
+const MAINNET_NETWORK = 'arc-mainnet' as const;
+
+const MAINNET_VARIABLES = Object.freeze({
+  databaseUrl: 'ARC_MAINNET_DATABASE_URL',
+  redisUrl: 'ARC_MAINNET_REDIS_URL',
+  queuePrefix: 'ARC_MAINNET_QUEUE_PREFIX',
 } as const);
 
 const FORBIDDEN_UNSCOPED_RUNTIME_KEYS = Object.freeze([
@@ -30,24 +21,22 @@ const FORBIDDEN_UNSCOPED_RUNTIME_KEYS = Object.freeze([
   'QUEUE_PREFIX',
 ]);
 
+const RUNTIME_IDENTITY_KEYS = Object.freeze([
+  'WIZPAY_API_NETWORK',
+  'WIZPAY_WORKER_NETWORK',
+]);
+
 export type RuntimeIsolationDiagnostic = Readonly<{
-  network: ArcNetworkKey;
-  environment: 'testnet' | 'mainnet';
+  network: typeof MAINNET_NETWORK;
+  environment: 'mainnet';
   database: Readonly<{ host: string; port: number; database: string }>;
   redis: Readonly<{ host: string; port: number; databaseIndex: number }>;
   queuePrefix: string;
-  manifest: 'arc-testnet-authoritative' | 'arc-mainnet-unavailable';
-  circle: Readonly<{
-    apiCredentialConfigured: boolean;
-    entitySecretConfigured: boolean;
-    walletSetConfigured: boolean;
-    blockchainAvailable: boolean;
-  }>;
-  transactionalCapabilityAvailable: boolean;
+  manifest: 'arc-mainnet-unavailable';
 }>;
 
 export type RuntimeIsolationConfiguration = Readonly<{
-  network: ArcNetworkKey;
+  network: typeof MAINNET_NETWORK;
   databaseUrl: string;
   redisUrl: string;
   redis: Readonly<{
@@ -75,78 +64,39 @@ export function resolveRuntimeIsolationConfiguration(
   environment: Environment,
 ): RuntimeIsolationConfiguration {
   const network = parseArcNetworkKey(environment.WIZPAY_ARC_NETWORK);
-  assertRuntimeIdentityAgreement(network, environment);
+  if (network !== MAINNET_NETWORK) {
+    fail(
+      `Unsupported Arc network: ${JSON.stringify(network)}. WizPay backend requires ${MAINNET_NETWORK}.`,
+    );
+  }
+  assertRuntimeIdentityAgreement(environment);
   assertNoUnscopedRuntimeConfiguration(environment);
+  assertNoRetiredNetworkConfiguration(environment);
+  assertNoCustodiedWalletConfiguration(environment);
 
-  const selected = NETWORK_VARIABLES[network];
   const manifest = assertDeploymentManifestIsolation(network, environment);
-  const oppositeNetwork =
-    network === 'arc-testnet' ? 'arc-mainnet' : 'arc-testnet';
-  const opposite = NETWORK_VARIABLES[oppositeNetwork];
-  const databaseUrl = requireExact(environment, selected.databaseUrl);
-  const redisUrl = requireExact(environment, selected.redisUrl);
+  if (manifest.network !== MAINNET_NETWORK) {
+    fail(
+      `Unsupported deployment manifest network: ${JSON.stringify(manifest.network)}. WizPay backend requires ${MAINNET_NETWORK}.`,
+    );
+  }
+
+  const databaseUrl = requireExact(environment, MAINNET_VARIABLES.databaseUrl);
+  const redisUrl = requireExact(environment, MAINNET_VARIABLES.redisUrl);
   const queuePrefix = requireQueuePrefix(
     environment,
-    selected.queuePrefix,
-    network,
+    MAINNET_VARIABLES.queuePrefix,
   );
 
-  const database = parseDatabaseTarget(databaseUrl, selected.databaseUrl);
-  const oppositeDatabaseUrl = readExact(environment, opposite.databaseUrl);
-  if (
-    oppositeDatabaseUrl &&
-    database.identity ===
-      parseDatabaseTarget(oppositeDatabaseUrl, opposite.databaseUrl).identity
-  ) {
-    fail('Arc Testnet and Arc Mainnet database targets must be distinct.');
-  }
-
-  const redis = parseRedisTarget(redisUrl, selected.redisUrl);
-  const oppositeRedisUrl = readExact(environment, opposite.redisUrl);
-  if (
-    oppositeRedisUrl &&
-    redis.identity ===
-      parseRedisTarget(oppositeRedisUrl, opposite.redisUrl).identity
-  ) {
-    fail('Arc Testnet and Arc Mainnet Redis targets must be distinct.');
-  }
-
-  const oppositePrefix = readExact(environment, opposite.queuePrefix);
-  if (oppositePrefix && oppositePrefix === queuePrefix) {
-    fail('Arc Testnet and Arc Mainnet queue prefixes must be distinct.');
-  }
-
-  const circleDefinition = getArcCircleExecutionDefinition(network);
-  const apiCredentialConfigured = hasExact(
-    environment,
-    circleDefinition.apiCredentialEnvironmentKey,
+  const database = parseDatabaseTarget(
+    databaseUrl,
+    MAINNET_VARIABLES.databaseUrl,
   );
-  const entitySecretConfigured = hasExact(
-    environment,
-    circleDefinition.entitySecretEnvironmentKey,
-  );
-  const walletSetConfigured = hasExact(
-    environment,
-    circleDefinition.walletSetIdEnvironmentKey,
-  );
-  const completeDeveloperConfiguration = [
-    circleDefinition.apiBaseUrlEnvironmentKey,
-    circleDefinition.apiCredentialEnvironmentKey,
-    circleDefinition.entitySecretEnvironmentKey,
-    circleDefinition.walletSetIdEnvironmentKey,
-    circleDefinition.walletIdEnvironmentKey,
-    circleDefinition.walletAddressEnvironmentKey,
-    circleDefinition.receiptConfirmationsEnvironmentKey,
-  ].every((key) => hasExact(environment, key));
-  const blockchainAvailable = circleDefinition.blockchain !== null;
-  const transactionalCapabilityAvailable =
-    blockchainAvailable &&
-    completeDeveloperConfiguration &&
-    network === 'arc-testnet';
+  const redis = parseRedisTarget(redisUrl, MAINNET_VARIABLES.redisUrl);
 
   const diagnostic: RuntimeIsolationDiagnostic = Object.freeze({
     network,
-    environment: network === 'arc-testnet' ? 'testnet' : 'mainnet',
+    environment: 'mainnet',
     database: Object.freeze({
       host: database.host,
       port: database.port,
@@ -158,17 +108,7 @@ export function resolveRuntimeIsolationConfiguration(
       databaseIndex: redis.databaseIndex,
     }),
     queuePrefix,
-    manifest:
-      manifest.network === 'arc-testnet'
-        ? 'arc-testnet-authoritative'
-        : 'arc-mainnet-unavailable',
-    circle: Object.freeze({
-      apiCredentialConfigured,
-      entitySecretConfigured,
-      walletSetConfigured,
-      blockchainAvailable,
-    }),
-    transactionalCapabilityAvailable,
+    manifest: 'arc-mainnet-unavailable',
   });
 
   return Object.freeze({
@@ -188,13 +128,10 @@ export function resolveRuntimeIsolationConfiguration(
   });
 }
 
-function assertRuntimeIdentityAgreement(
-  network: ArcNetworkKey,
-  environment: Environment,
-) {
-  for (const key of ['WIZPAY_API_NETWORK', 'WIZPAY_WORKER_NETWORK']) {
+function assertRuntimeIdentityAgreement(environment: Environment) {
+  for (const key of RUNTIME_IDENTITY_KEYS) {
     const value = readExact(environment, key);
-    if (value !== null && value !== network) {
+    if (value !== null && value !== MAINNET_NETWORK) {
       fail(`${key} conflicts with WIZPAY_ARC_NETWORK.`);
     }
   }
@@ -208,19 +145,33 @@ function assertNoUnscopedRuntimeConfiguration(environment: Environment) {
   }
 }
 
-function requireQueuePrefix(
-  environment: Environment,
-  key: string,
-  network: ArcNetworkKey,
-) {
+function assertNoRetiredNetworkConfiguration(environment: Environment) {
+  for (const key of Object.keys(environment)) {
+    if (key.toUpperCase().includes('TESTNET')) {
+      fail(`Legacy network configuration ${key} is not accepted.`);
+    }
+  }
+}
+
+function assertNoCustodiedWalletConfiguration(environment: Environment) {
+  for (const key of Object.keys(environment)) {
+    if (key.startsWith('CIRCLE')) {
+      fail(
+        `Arc Mainnet is external-wallet-only: custodied-wallet configuration ${key} is not accepted.`,
+      );
+    }
+  }
+}
+
+function requireQueuePrefix(environment: Environment, key: string) {
   const prefix = requireExact(environment, key);
   if (
     !/^[a-z0-9][a-z0-9:_-]{5,63}$/.test(prefix) ||
-    !prefix.includes(network) ||
+    !prefix.includes(MAINNET_NETWORK) ||
     ['default', 'bull', 'bullmq', 'queue', 'wizpay'].includes(prefix)
   ) {
     fail(
-      `Selected queue prefix ${key} must be non-generic and include ${network}.`,
+      `Selected queue prefix ${key} must be non-generic and include ${MAINNET_NETWORK}.`,
     );
   }
   return prefix;
@@ -248,7 +199,6 @@ function parseDatabaseTarget(value: string, key: string) {
     host: url.hostname.toLowerCase(),
     port,
     database,
-    identity: `${url.username.toLowerCase()}@${url.hostname.toLowerCase()}:${port}/${database}`,
   };
 }
 
@@ -283,7 +233,6 @@ function parseRedisTarget(value: string, key: string) {
     username,
     password,
     tls: url.protocol === 'rediss:',
-    identity: `${username.toLowerCase()}@${url.hostname.toLowerCase()}:${port}/${databaseIndex}`,
   };
 }
 
@@ -301,10 +250,6 @@ function readExact(environment: Environment, key: string): string | null {
     fail(`Runtime configuration ${key} must be a non-empty exact value.`);
   }
   return value;
-}
-
-function hasExact(environment: Environment, key: string) {
-  return readExact(environment, key) !== null;
 }
 
 function fail(message: string): never {

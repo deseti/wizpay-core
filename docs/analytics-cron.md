@@ -2,9 +2,9 @@
 
 ## Purpose
 
-The production GCP VM can refresh the backend-owned WizPay analytics cache with a 24-hour cron job. The cron calls the backend internal update endpoint and updates only the in-memory analytics cache metadata for the first implementation.
+The production VM can refresh the backend-owned WizPay analytics cache with a 24-hour cron job. The cron calls the backend internal update endpoint and updates only the in-memory analytics cache metadata for the first implementation.
 
-This job does not push to GitHub, does not deploy, does not run Vercel or GitHub scheduled jobs, and does not recompute volume from full Arcscan token-transfer pagination.
+This job does not push to GitHub, does not deploy, does not run scheduled jobs, and does not recompute volume from full explorer token-transfer pagination.
 
 ## Required Environment
 
@@ -12,8 +12,8 @@ Set `ANALYTICS_CRON_SECRET` in the backend runtime and in the VM cron environmen
 
 Optional backend environment variables:
 
-- `WIZPAY_ANALYTICS_CONTRACT_ADDRESS`: defaults to `0x87ACE45582f45cC81AC1E627E875AE84cbd75946`.
-- `ARCSCAN_API_BASE_URL`: defaults to `https://testnet.arcscan.app/api/v2`.
+- `WIZPAY_ANALYTICS_CONTRACT_ADDRESS`: no default. Configure the authorized Arc Mainnet contract address.
+- `ARCSCAN_API_BASE_URL`: no default. The official Arc Mainnet explorer endpoint remains unavailable until authorized phases supply it.
 
 ## Endpoint
 

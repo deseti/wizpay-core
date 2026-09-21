@@ -20,6 +20,7 @@ const emptyModuleShim = path.resolve(__dirname, "lib/shims/empty-module.js");
 const emptyModuleShimImport = "./lib/shims/empty-module.js";
 
 const nextConfig: NextConfig = {
+  outputFileTracingRoot: path.resolve(__dirname, "../.."),
   env: {
     NEXT_PUBLIC_WIZPAY_ARC_NETWORK: arcNetworkKey,
   },
@@ -34,7 +35,7 @@ const nextConfig: NextConfig = {
     ],
   },
   turbopack: {
-    root: __dirname,
+    root: path.resolve(__dirname, "../.."),
     resolveAlias: {
       "@react-native-async-storage/async-storage": emptyModuleShimImport,
       "pino-pretty": emptyModuleShimImport,

@@ -84,9 +84,9 @@ After manual review, update the final deployment manifest in a separate explicit
 
 ## 5. Canary activation
 
-Deployment does not activate the application. Complete receipt verification, manifest review, backend/frontend configuration review, and a new authorization cycle before enabling direct-USDC capabilities. Initial scope is direct Send, same-token USDC Payroll, Invoice, Payment Link, receipt verification, and durable execution intents only. Uniswap, EURC/cross-token payroll, StableFX, XyloNet, CCTP, Gateway, and Bridge remain disabled.
+Deployment does not activate the application. Complete receipt verification, manifest review, backend/frontend configuration review, and a new authorization cycle before enabling direct-USDC capabilities. Initial scope is direct Send, same-token USDC Payroll, Invoice, Payment Link, receipt verification, and durable execution intents only. Uniswap, EURC/cross-token payroll, legacy FX, legacy swap, CCTP, Gateway, and Bridge remain disabled.
 
-Use a separately authorized bounded canary. Confirm the application-selected network is `arc-mainnet`, no Testnet value appears, and all backend guards agree before any money-moving use.
+Use a separately authorized bounded canary. Confirm the application-selected network is `arc-mainnet`, no legacy network value appears, and all backend guards agree before any money-moving use.
 
 ## Abort conditions
 

@@ -51,7 +51,7 @@ export type ActivityProjection = {
 };
 
 export type ActivitySyncSummary = {
-  source: 'circle_w3s';
+  source: 'external_wallet';
   status: 'synced' | 'throttled' | 'in_flight' | 'failed';
   pagesScanned: number;
   recordsScanned: number;

@@ -24,8 +24,8 @@ describe('InvoicePaymentVerifierService', () => {
         key === 'INVOICE_PAYMENT_CONFIRMATIONS' ? '2' : undefined,
       ),
       getOrThrow: jest.fn(() => ({
-        chainId: 5_042_002,
-        rpcUrl: 'https://rpc.testnet.arc.io',
+        chainId: 5_042,
+        rpcUrl: 'https://rpc.mainnet.arc.io',
       })),
     } as unknown as ConfigService);
     client = validClient();
@@ -246,7 +246,7 @@ function input() {
 }
 function validTransaction() {
   return {
-    chainId: 5_042_002,
+    chainId: 5_042,
     from: PAYER,
     to: TOKEN,
     value: 0n,
@@ -285,7 +285,7 @@ function transferLog(
 }
 function validClient() {
   return {
-    getChainId: jest.fn().mockResolvedValue(5_042_002),
+    getChainId: jest.fn().mockResolvedValue(5_042),
     getTransaction: jest.fn().mockResolvedValue(validTransaction()),
     getTransactionReceipt: jest.fn().mockResolvedValue(validReceipt()),
     getBlockNumber: jest.fn().mockResolvedValue(101n),

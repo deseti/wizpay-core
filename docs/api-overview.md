@@ -5,7 +5,7 @@ description: "HTTP endpoints, external system interfaces, and operational constr
 
 # API & Integration Layer
 
-All endpoints are served by the NestJS backend behind an Nginx reverse proxy (`/api` → backend).
+All endpoints are served by the NestJS backend behind an Nginx reverse proxy (`/api` → backend). The active configuration is strict Arc Mainnet-only and external-wallet-only.
 
 ## Task Endpoints
 
@@ -78,27 +78,15 @@ Returns:
 
 ### `POST /tasks/swap/init`
 
-Create a legacy on-chain swap task.
-
-Required fields: `tokenIn`, `tokenOut`, `amountIn`, `recipient`.
-
-Default/prod behavior: rejected unless `WIZPAY_ENABLE_LEGACY_FX=true` is set
-for isolated non-production testing. Official StableFX RFQ should use the FX
-quote/execute endpoints.
+Swap tasks are disabled by default. Execution fails closed unless an authorized Mainnet route is configured and enabled.
 
 ### `POST /tasks/liquidity/init`
 
-Create a legacy LP liquidity task.
-
-Required fields: `operation` (`add` | `remove`), `token`, `amount`.
-
-Default/prod behavior: rejected unless `WIZPAY_ENABLE_LEGACY_LIQUIDITY=true` is
-set for isolated non-production testing. The user-facing liquidity page is
-disabled during the official StableFX migration.
+Liquidity tasks are disabled by default. Execution fails closed unless an authorized Mainnet route is configured and enabled.
 
 ### `POST /tasks/:taskId/units/:unitId/report`
 
-Report the result of a single task unit. Used by the frontend after client-side execution (PASSKEY mode).
+Report the result of a single task unit. Used by the frontend after client-side execution.
 
 ```json
 {
@@ -112,44 +100,34 @@ Atomically updates the unit, increments counters, recomputes task status, and re
 
 ### `POST /tasks/fx/quote`
 
-Get an FX quote. Required: `sourceCurrency`, `targetCurrency`, `sourceAmount`.
+FX quote requests fail closed unless an authorized Mainnet quote source is configured and enabled.
 
 ### `POST /tasks/fx/execute`
 
-Execute an FX trade. Required: `quoteId`, `signature`, `senderAddress`.
+FX execution fails closed unless an authorized Mainnet execution route is configured and enabled.
 
 ## Wallet Endpoints
 
-| Endpoint              | Method | Purpose                                     |
-| --------------------- | ------ | ------------------------------------------- |
-| `/wallets/initialize` | POST   | Create wallet set + wallets via Circle W3S  |
-| `/wallets/sync`       | POST   | Sync existing wallets from Circle           |
-| `/wallets/ensure`     | POST   | Get or create wallet for chain (EVM/SOLANA) |
-
-All require `userToken` in the request body.
+Wallet provisioning is external-wallet-only on Arc Mainnet. The backend does not hold signing keys, does not sign on behalf of users, and does not custody user funds.
 
 ## Bridge Endpoints
 
-`/bridge/intents` creates and retrieves External Wallet CCTP V2 lifecycle records. Stage endpoints bind and verify user-submitted approval and source burn evidence, recover the Circle attestation, lease one destination wallet authorization, bind its transaction hash, and strictly verify the destination mint. API retries return the existing binding; no bridge endpoint signs or submits a transaction.
+Bridge routes remain disabled for the initial Mainnet scope. Any bridge request fails closed unless an authorized Mainnet route is configured and enabled.
 
 ## External System Interfaces
 
 The backend communicates with these external systems:
 
-| System            | Adapter               | Protocol                   | Operations                                           |
-| ----------------- | --------------------- | -------------------------- | ---------------------------------------------------- |
-| Circle W3S        | `CircleService`       | REST                       | Wallet provisioning, transfers, FX trades, tx status |
-| Circle CCTP API   | `BridgeLifecycleService` | HTTPS                    | Sandbox attestation retrieval and validation        |
-| EVM RPCs          | `BlockchainService`   | JSON-RPC (viem)            | ERC-20 transfers, contract calls                     |
-| Solana RPC        | `SolanaService`       | JSON-RPC (@solana/web3.js) | SPL transfers, intent building                       |
-| DEX protocols     | `DexService`          | Varies                     | Swap preparation                                     |
-| Telegram          | `TelegramService`     | REST                       | Task status notifications                            |
+| System         | Adapter                | Protocol             | Operations                                |
+| -------------- | ---------------------- | -------------------- | ----------------------------------------- |
+| EVM RPCs       | `BlockchainService`    | JSON-RPC (viem)      | ERC-20 transfers, contract calls          |
+| DEX protocols  | `DexService`           | Varies               | Swap preparation (disabled by default)    |
+| Telegram       | `TelegramService`      | REST                 | Task status notifications                 |
 
 ## Constraints
 
-- **No direct frontend-to-chain calls in W3S mode.** All on-chain operations route through the backend.
+- **External-wallet-only.** All on-chain writes are signed and submitted by the connected external wallet. The backend never holds signing keys and never custodies funds.
+- **Arc Mainnet-only.** Only the authorized Arc Mainnet network is accepted. Any other network selector is rejected before execution.
 - **No concurrent task execution for the same wallet.** BullMQ processes jobs sequentially per queue (except payroll at concurrency 5). No explicit wallet-level locking exists.
-- **Circle rate limits apply.** The backend does not implement its own rate limiting against Circle APIs. High-throughput payroll runs may encounter Circle-side throttling.
-- **USDC-only, testnet-only bridge.** Only registry-approved Arc Testnet hub-and-spoke routes are accepted. Non-USDC, mainnet, Robinhood, Solana, and spoke-to-spoke requests fail closed.
-- **Passkey AA is EVM-only.** Solana operations in PASSKEY mode return unsigned intents. The backend cannot sign Solana transactions for passkey wallets.
-- **No webhook ingestion.** Settlement confirmation relies on polling (tx_poll queue), not on-chain event subscriptions or Circle webhooks.
+- **USDC-only initial scope.** Only authorized same-token USDC routes are eligible. Cross-token, liquidity, swap, and bridge requests fail closed unless an authorized Mainnet route is configured and enabled.
+- **No webhook ingestion.** Settlement confirmation relies on polling (tx_poll queue), not on-chain event subscriptions or provider webhooks.

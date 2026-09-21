@@ -6,10 +6,10 @@ import {
 } from './queue-runtime';
 
 describe('BullMQ runtime isolation', () => {
-  const testnet = config({
-    'arcNetwork.key': 'arc-testnet',
-    BULLMQ_PREFIX: 'wizpay:arc-testnet',
-    REDIS_HOST: 'redis-testnet.internal',
+  const secondary = config({
+    'arcNetwork.key': 'arc-legacy',
+    BULLMQ_PREFIX: 'wizpay:arc-legacy',
+    REDIS_HOST: 'redis-secondary.internal',
     REDIS_PORT: '6379',
     REDIS_DB: '2',
     REDIS_TLS: 'false',
@@ -24,9 +24,9 @@ describe('BullMQ runtime isolation', () => {
   });
 
   it('gives equal business identifiers independent Redis and key spaces', () => {
-    expect(selectedQueuePrefix(testnet)).not.toBe(selectedQueuePrefix(mainnet));
-    expect(selectedRedisConnection(testnet)).toMatchObject({
-      host: 'redis-testnet.internal',
+    expect(selectedQueuePrefix(secondary)).not.toBe(selectedQueuePrefix(mainnet));
+    expect(selectedRedisConnection(secondary)).toMatchObject({
+      host: 'redis-secondary.internal',
       port: 6379,
       db: 2,
     });
@@ -40,13 +40,13 @@ describe('BullMQ runtime isolation', () => {
 
   it('rejects jobs from the other network and legacy jobs without identity', () => {
     expect(() =>
-      assertSelectedJobNetwork(testnet, { network: 'arc-mainnet' }),
+      assertSelectedJobNetwork(secondary, { network: 'arc-mainnet' }),
     ).toThrow('does not match');
-    expect(() => assertSelectedJobNetwork(testnet, {} as never)).toThrow(
+    expect(() => assertSelectedJobNetwork(secondary, {} as never)).toThrow(
       'does not match',
     );
     expect(() =>
-      assertSelectedJobNetwork(mainnet, { network: 'arc-testnet' }),
+      assertSelectedJobNetwork(mainnet, { network: 'arc-legacy' as never }),
     ).toThrow('does not match');
   });
 });

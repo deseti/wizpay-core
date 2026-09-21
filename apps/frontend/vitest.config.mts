@@ -19,8 +19,8 @@ export default defineConfig({
     clearMocks: true,
     env: {
       NEXT_PUBLIC_WIZPAY_ARC_NETWORK:
-        process.env.NEXT_PUBLIC_WIZPAY_ARC_NETWORK ?? "arc-testnet",
-      WIZPAY_ARC_NETWORK: process.env.WIZPAY_ARC_NETWORK ?? "arc-testnet",
+        process.env.NEXT_PUBLIC_WIZPAY_ARC_NETWORK ?? "arc-mainnet",
+      WIZPAY_ARC_NETWORK: process.env.WIZPAY_ARC_NETWORK ?? "arc-mainnet",
     },
     environment: "jsdom",
     globals: true,

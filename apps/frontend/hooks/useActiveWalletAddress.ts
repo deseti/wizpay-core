@@ -3,7 +3,7 @@
 import type { Address } from "viem";
 import type { WalletMode } from "@/lib/wallet-mode";
 
-import { useHybridWallet } from "@/components/providers/HybridWalletProvider";
+import { useExternalWallet } from "@/components/providers/external-wallet-context";
 
 type ActiveWalletAddressResult = {
   isConnected: boolean;
@@ -13,7 +13,7 @@ type ActiveWalletAddressResult = {
 
 export function useActiveWalletAddress(): ActiveWalletAddressResult {
   const { activeWalletAddress, isActiveWalletConnected, walletMode } =
-    useHybridWallet();
+    useExternalWallet();
 
   return {
     isConnected: isActiveWalletConnected,

@@ -12,17 +12,17 @@ const MERCHANT = "0x32F251fc36A1174901124589EAC2d4E391816F69";
 const HASH = `0x${"a".repeat(64)}` as const;
 
 describe("invoice payment primitives", () => {
-  it("builds one exact ERC-20 transfer request with immutable invoice terms", () => {
+  it("builds one exact ERC-20 transfer request with immutable invoice terms on Arc Mainnet", () => {
     expect(
       buildInvoiceTransferRequest({
-        chainId: 5_042_002,
+        chainId: 5_042,
         tokenAddress: TOKEN,
         recipient: MERCHANT,
         amountUnits: "100000",
       }),
     ).toMatchObject({
       address: TOKEN,
-      chainId: 5_042_002,
+      chainId: 5_042,
       functionName: "transfer",
       args: [MERCHANT, 100000n],
     });
@@ -68,8 +68,8 @@ describe("invoice payment primitives", () => {
     ).toBeNull();
   });
 
-  it("persists an App Wallet challenge identity without persisting a bearer token", () => {
-    const recovery = {
+  it("fails closed for legacy non-external recovery records", () => {
+    const legacy = {
       version: 2 as const,
       method: "app" as const,
       publicId: "abcdefghijklmnopqrstuv",
@@ -80,12 +80,10 @@ describe("invoice payment primitives", () => {
       createdAt: new Date().toISOString(),
       stage: "awaiting_user_authorization" as const,
     };
-    writeInvoicePaymentRecovery(recovery, localStorage);
-    expect(readInvoicePaymentRecovery(recovery.publicId, localStorage)).toEqual(
-      recovery,
-    );
+    writeInvoicePaymentRecovery(legacy as never, localStorage);
     expect(
-      localStorage.getItem(`wizpay.invoice-payment.v1.${recovery.publicId}`),
-    ).not.toContain("circle-user-token");
+      readInvoicePaymentRecovery(legacy.publicId, localStorage),
+    ).toBeNull();
+    clearInvoicePaymentRecovery(legacy.publicId, localStorage);
   });
 });

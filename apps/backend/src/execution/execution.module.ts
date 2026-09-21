@@ -3,14 +3,12 @@ import { AdaptersModule } from '../adapters/adapters.module';
 import { AgentsModule } from '../agents/agents.module';
 import { TaskModule } from '../task/task.module';
 import { ExecutionRouterService } from './execution-router.service';
-import { PasskeyEngineService } from './passkey-engine.service';
 
 /**
- * ExecutionModule — owns the two-engine execution layer.
+ * ExecutionModule — owns the Mainnet execution layer.
  *
  * Provides:
- *  - ExecutionRouterService  (central dispatch: W3S vs PASSKEY)
- *  - PasskeyEngineService    (passkey-only execution engine)
+ *  - ExecutionRouterService  (central dispatch: external-wallet only)
  *
  * Exports:
  *  - ExecutionRouterService  (consumed by OrchestratorModule)
@@ -27,14 +25,14 @@ import { PasskeyEngineService } from './passkey-engine.service';
     TaskModule,
     /**
      * AgentsModule provides AgentRouterService which ExecutionRouterService
-     * uses for the W3S path.
+     * uses for the external-wallet path.
      *
      * forwardRef is required because AgentsModule → OrchestratorModule →
      * ExecutionModule → AgentsModule forms a cycle.
      */
     forwardRef(() => AgentsModule),
   ],
-  providers: [PasskeyEngineService, ExecutionRouterService],
+  providers: [ExecutionRouterService],
   exports: [ExecutionRouterService],
 })
 export class ExecutionModule {}

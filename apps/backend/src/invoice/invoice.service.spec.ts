@@ -3,12 +3,12 @@ import { InvoiceService } from './invoice.service';
 import { InvoiceVerificationError } from './invoice.types';
 
 const MERCHANT_A = {
-  merchantUserId: 'circle:user:a',
+  merchantUserId: 'wallet:merchant-a',
   merchantWalletAddress: '0x32F251fc36A1174901124589EAC2d4E391816F69' as const,
   merchantDisplayLabel: null,
 };
 const MERCHANT_B = {
-  merchantUserId: 'circle:user:b',
+  merchantUserId: 'wallet:merchant-b',
   merchantWalletAddress: '0x1111111111111111111111111111111111111111' as const,
   merchantDisplayLabel: null,
 };
@@ -27,12 +27,12 @@ describe('InvoiceService', () => {
       verifier as never,
       { assert: jest.fn() } as never,
       {
-        network: 'arc-testnet',
-        chainId: 5_042_002,
+        network: 'arc-mainnet',
+        chainId: 5_042,
         canonicalToken: jest.fn((symbol) =>
           symbol === 'USDC'
             ? '0x3600000000000000000000000000000000000000'
-            : '0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a',
+            : '0xbEf5f6d51CB62b58e6A8f77868681825C6fe21c1',
         ),
         decide: jest.fn().mockReturnValue({ kind: 'DIRECT_TRANSFER' }),
         assertExecutable: jest.fn((decision) => decision),
@@ -63,7 +63,7 @@ describe('InvoiceService', () => {
         data: expect.objectContaining({
           merchantUserId: MERCHANT_A.merchantUserId,
           merchantWalletAddress: MERCHANT_A.merchantWalletAddress,
-          chainId: 5_042_002,
+          chainId: 5_042,
           tokenAddress: '0x3600000000000000000000000000000000000000',
           tokenDecimals: 6,
           amountUnits: '100000',
@@ -86,7 +86,7 @@ describe('InvoiceService', () => {
       'EURC',
       '98.765432',
       '98765432',
-      '0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a',
+      '0xbEf5f6d51CB62b58e6A8f77868681825C6fe21c1',
     ],
   ] as const)(
     'converts an arbitrary valid %s amount into exact canonical base units',
@@ -394,7 +394,7 @@ function invoice(overrides: Record<string, unknown> = {}) {
     publicId: 'abcdefghijklmnopqrstuv',
     merchantUserId: MERCHANT_A.merchantUserId,
     merchantWalletAddress: MERCHANT_A.merchantWalletAddress,
-    chainId: 5_042_002,
+    chainId: 5_042,
     tokenAddress: '0x3600000000000000000000000000000000000000',
     tokenSymbol: 'USDC',
     tokenDecimals: 6,

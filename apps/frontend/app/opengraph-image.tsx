@@ -93,7 +93,7 @@ export default function OpenGraphImage() {
                     color: "#7dd3fc",
                   }}
                 >
-                  Arc Testnet
+                  Arc Mainnet
                 </div>
                 <div style={{ fontSize: "60px", fontWeight: 800, lineHeight: 1.04 }}>
                   WizPay

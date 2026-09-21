@@ -2,20 +2,13 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
 /**
- * ProductionModeGuardService enforces production mode constraints
- * for the StableFX migration.
+ * ProductionModeGuardService enforces Mainnet-only execution constraints.
  *
- * In production mode (NEXT_PUBLIC_USE_REAL_STABLEFX=true):
- * - fxMode MUST be "stablefx" (mapped to "new" internally)
- * - Runtime fallback to "legacy" mode is rejected
+ * Arc Mainnet is the only supported network:
+ * - fxMode MUST be "new" (provider-priced execution)
+ * - Backend "legacy" execution paths are retired and rejected
  * - The auto-update-rates scheduled job is disabled
- * - getExchangeRate on the deprecated StableFXAdapter_V2 is rejected
- *
- * In test/development mode:
- * - fxMode="legacy" is permitted
- * - StableFXAdapter_V2 and setExchangeRate remain functional
- *
- * Requirements: 8.1, 8.2, 8.3, 8.4, 8.5, 8.7
+ * - Reads and writes against the deprecated adapter pricing are rejected
  */
 @Injectable()
 export class ProductionModeGuardService {
@@ -24,33 +17,26 @@ export class ProductionModeGuardService {
   constructor(private readonly configService: ConfigService) {}
 
   /**
-   * Returns true when the system is deployed in production mode.
-   * Production mode is indicated by NEXT_PUBLIC_USE_REAL_STABLEFX=true.
+   * Returns true: the backend always runs in Mainnet production mode.
    */
   isProductionMode(): boolean {
-    const value = this.configService.get<string>(
-      'NEXT_PUBLIC_USE_REAL_STABLEFX',
-    );
-    return value === 'true';
+    return true;
   }
 
   /**
-   * Validates that the fxMode is not "legacy" in production mode.
+   * Validates that the fxMode is not "legacy".
    *
-   * In production (NEXT_PUBLIC_USE_REAL_STABLEFX=true), the system MUST
-   * use "stablefx" (or "new") mode exclusively. Any attempt to use "legacy"
+   * The system MUST use "new" mode exclusively. Any attempt to use "legacy"
    * mode is rejected with an explicit error.
    *
    * @param fxMode - The current FX routing mode
-   * @throws Error if fxMode is "legacy" while in production mode
+   * @throws Error if fxMode is "legacy"
    */
   validateFxModeForProduction(fxMode: string): void {
-    if (this.isProductionMode() && fxMode === 'legacy') {
+    if (fxMode === 'legacy') {
       throw new Error(
-        'Production mode violation: fxMode="legacy" is not permitted when ' +
-          'NEXT_PUBLIC_USE_REAL_STABLEFX=true. All FX operations must route ' +
-          'through Circle StableFX RFQ. Remove legacy fallback or set ' +
-          'NEXT_PUBLIC_USE_REAL_STABLEFX=false for test environments.',
+        'Production mode violation: fxMode="legacy" is not permitted on Arc Mainnet. ' +
+          'All FX operations must route through the Mainnet provider flow.',
       );
     }
   }
@@ -59,9 +45,8 @@ export class ProductionModeGuardService {
    * Enforces all production mode constraints.
    *
    * Checks:
-   * 1. If in production mode, fxMode must not be "legacy"
-   * 2. If in production mode, auto-update-rates must be disabled
-   * 3. If in production mode, getExchangeRate calls are rejected
+   * 1. fxMode must not be "legacy"
+   * 2. auto-update-rates must be disabled
    *
    * Call this at application startup or before FX operations to ensure
    * the system is correctly configured.
@@ -69,16 +54,9 @@ export class ProductionModeGuardService {
    * @throws Error if any production mode constraint is violated
    */
   enforceProductionMode(): void {
-    if (!this.isProductionMode()) {
-      this.logger.log(
-        '[production-mode-guard] Not in production mode — legacy operations permitted.',
-      );
-      return;
-    }
-
     this.logger.log(
-      '[production-mode-guard] Production mode active (NEXT_PUBLIC_USE_REAL_STABLEFX=true). ' +
-        'Enforcing StableFX-only constraints.',
+      '[production-mode-guard] Mainnet production mode active. ' +
+        'Enforcing provider-only constraints.',
     );
 
     // Validate that FX_ROUTING_MODE is not set to legacy
@@ -86,7 +64,7 @@ export class ProductionModeGuardService {
     if (fxRoutingMode === 'legacy') {
       throw new Error(
         'Production mode misconfiguration: FX_ROUTING_MODE="legacy" is not permitted ' +
-          'when NEXT_PUBLIC_USE_REAL_STABLEFX=true. Set FX_ROUTING_MODE="new" for production.',
+          'on Arc Mainnet. Set FX_ROUTING_MODE="new".',
       );
     }
 
@@ -94,7 +72,7 @@ export class ProductionModeGuardService {
     if (!this.isAutoUpdateRatesDisabled()) {
       throw new Error(
         'Production mode misconfiguration: auto-update-rates must be disabled ' +
-          'when NEXT_PUBLIC_USE_REAL_STABLEFX=true. Set AUTO_UPDATE_RATES_ENABLED=false.',
+          'on Arc Mainnet. Set AUTO_UPDATE_RATES_ENABLED=false.',
       );
     }
   }
@@ -102,63 +80,51 @@ export class ProductionModeGuardService {
   /**
    * Returns true when the auto-update-rates scheduled job should be disabled.
    *
-   * In production mode, the auto-update-rates job that calls setExchangeRate
-   * on StableFXAdapter_V2 MUST be disabled. No automated process should
-   * update internal exchange rates in production.
+   * On Mainnet the auto-update-rates job that writes internal exchange rates
+   * MUST be disabled. No automated process should update internal rates.
    *
    * The job is disabled when:
-   * - NEXT_PUBLIC_USE_REAL_STABLEFX=true (production mode), OR
-   * - AUTO_UPDATE_RATES_ENABLED is explicitly set to "false"
+   * - AUTO_UPDATE_RATES_ENABLED is explicitly set to "false", or
+   * - AUTO_UPDATE_RATES_ENABLED is unset (disabled by default on Mainnet)
    */
   isAutoUpdateRatesDisabled(): boolean {
-    // In production mode, auto-update-rates is always disabled
-    if (this.isProductionMode()) {
-      return true;
-    }
-
-    // Also respect explicit configuration
     const autoUpdateEnabled = this.configService.get<string>(
       'AUTO_UPDATE_RATES_ENABLED',
     );
-    return autoUpdateEnabled === 'false';
+    return autoUpdateEnabled !== 'true';
   }
 
   /**
-   * Guards against getExchangeRate calls on the deprecated StableFXAdapter_V2
-   * in production mode.
+   * Guards against getExchangeRate calls on the deprecated adapter
+   * on Mainnet.
    *
-   * In production mode, any attempt to read exchange rates from the deprecated
-   * contract is rejected. The system must use Circle StableFX RFQ exclusively.
+   * Any attempt to read exchange rates from the deprecated
+   * contract is rejected. The system must use Mainnet provider pricing.
    *
-   * @throws Error if called in production mode
+   * @throws Error always
    */
   guardGetExchangeRate(): void {
-    if (this.isProductionMode()) {
-      throw new Error(
-        'Production mode rejection: getExchangeRate on StableFXAdapter_V2 is ' +
-          'decommissioned. All FX pricing must come from Circle StableFX RFQ. ' +
-          'The internal pricing source has been decommissioned and no cached ' +
-          'or default rate is available.',
-      );
-    }
+    throw new Error(
+      'Production mode rejection: getExchangeRate on the deprecated adapter is ' +
+        'decommissioned. All FX pricing must come from the Mainnet provider flow. ' +
+        'The internal pricing source has been decommissioned and no cached ' +
+        'or default rate is available.',
+    );
   }
 
   /**
-   * Guards against setExchangeRate calls on the deprecated StableFXAdapter_V2
-   * in production mode.
+   * Guards against setExchangeRate calls on the deprecated adapter
+   * on Mainnet.
    *
-   * In production mode, no automated or manual process should update
-   * internal exchange rates.
+   * No automated or manual process should update internal exchange rates.
    *
-   * @throws Error if called in production mode
+   * @throws Error always
    */
   guardSetExchangeRate(): void {
-    if (this.isProductionMode()) {
-      throw new Error(
-        'Production mode rejection: setExchangeRate on StableFXAdapter_V2 is ' +
-          'disabled in production. The auto-update-rates job must not run. ' +
-          'All FX pricing comes exclusively from Circle StableFX RFQ.',
-      );
-    }
+    throw new Error(
+      'Production mode rejection: setExchangeRate on the deprecated adapter is ' +
+        'disabled. The auto-update-rates job must not run. ' +
+        'All FX pricing comes exclusively from the Mainnet provider flow.',
+    );
   }
 }

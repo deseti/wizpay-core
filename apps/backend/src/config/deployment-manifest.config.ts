@@ -1,26 +1,33 @@
-import { parseArcNetworkKey, type ArcNetworkKey } from '@wizpay/arc-network';
+import { parseArcNetworkKey } from '@wizpay/arc-network';
 
-export const ARC_DEPLOYMENT_MANIFESTS = Object.freeze({
-  'arc-testnet': Object.freeze({
-    network: 'arc-testnet' as const,
-    classification: 'authoritative' as const,
-    path: 'packages/contracts/deployments/arc-testnet-wizpay-v2.json',
-    executable: true,
-  }),
-  'arc-mainnet': Object.freeze({
-    network: 'arc-mainnet' as const,
-    classification: 'unavailable' as const,
-    path: 'packages/contracts/deployments/arc-mainnet-wizpay-v2.json',
-    executable: false,
-  }),
+export const ARC_MAINNET_DEPLOYMENT_MANIFEST = Object.freeze({
+  network: 'arc-mainnet' as const,
+  classification: 'unavailable' as const,
+  path: 'packages/contracts/deployments/arc-mainnet-wizpay-v2.json',
+  executable: false,
 });
 
-export function resolveArcDeploymentManifest(selector: unknown) {
-  return ARC_DEPLOYMENT_MANIFESTS[parseArcNetworkKey(selector)];
+export const ARC_DEPLOYMENT_MANIFESTS = Object.freeze({
+  'arc-mainnet': ARC_MAINNET_DEPLOYMENT_MANIFEST,
+});
+
+export type ArcDeploymentManifest =
+  typeof ARC_DEPLOYMENT_MANIFESTS[keyof typeof ARC_DEPLOYMENT_MANIFESTS];
+
+export function resolveArcDeploymentManifest(
+  selector: unknown,
+): ArcDeploymentManifest {
+  const network = parseArcNetworkKey(selector);
+  if (network !== 'arc-mainnet') {
+    throw new Error(
+      `Unsupported Arc network: ${JSON.stringify(network)}. WizPay backend requires arc-mainnet.`,
+    );
+  }
+  return ARC_DEPLOYMENT_MANIFESTS[network];
 }
 
 export function assertDeploymentManifestIsolation(
-  network: ArcNetworkKey,
+  network: 'arc-mainnet',
   environment: Record<string, string | undefined>,
 ) {
   for (const key of [

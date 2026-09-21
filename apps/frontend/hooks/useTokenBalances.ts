@@ -1,17 +1,10 @@
 "use client";
 
-import { useQuery } from "@tanstack/react-query";
 import { useReadContracts } from "wagmi";
 
-import { useCircleWallet } from "@/components/providers/CircleWalletProvider";
-import { useHybridWallet } from "@/components/providers/HybridWalletProvider";
 import { ERC20_ABI } from "@/constants/erc20";
 import { useActiveWalletAddress } from "@/hooks/useActiveWalletAddress";
-import { arcTestnet } from "@/lib/wagmi";
-import {
-  circleBalanceAmountToUnits,
-  selectCircleTransferToken,
-} from "@/services/circle-auth.service";
+import { activeArcChain } from "@/lib/wagmi";
 import { TOKEN_OPTIONS, type TokenSymbol } from "@/lib/wizpay";
 
 interface UseTokenBalancesOptions {
@@ -21,46 +14,26 @@ interface UseTokenBalancesOptions {
 
 /**
  * Fetches ERC-20 balances for all supported tokens (USDC, EURC)
- * for the connected wallet via multicall.
+ * for the connected external wallet via multicall on Arc Mainnet.
  */
 export function useTokenBalances({
   enabled = true,
   refetchInterval = 30_000,
 }: UseTokenBalancesOptions = {}) {
-  const { arcWallet, getWalletBalances, primaryWallet } = useCircleWallet();
-  const { walletMode } = useHybridWallet();
   const { walletAddress } = useActiveWalletAddress();
-  const circleWalletId = arcWallet?.id ?? primaryWallet?.id ?? null;
 
   const contracts = TOKEN_OPTIONS.map((token) => ({
     address: token.address,
     abi: ERC20_ABI,
-    chainId: arcTestnet.id,
+    chainId: activeArcChain.id,
     functionName: "balanceOf" as const,
     args: walletAddress ? [walletAddress] : undefined,
   }));
 
-  const circleBalancesQuery = useQuery({
-    queryKey: ["circle-wallet-balances", circleWalletId ?? "disconnected"],
-    enabled: enabled && walletMode === "circle" && Boolean(circleWalletId),
-    refetchInterval,
-    refetchIntervalInBackground: false,
-    refetchOnWindowFocus: false,
-    staleTime: 10_000,
-    queryFn: async () => {
-      if (!circleWalletId) {
-        return [];
-      }
-
-      return getWalletBalances(circleWalletId);
-    },
-  });
-
   const { data, isLoading, isError, error, refetch } = useReadContracts({
-    contracts:
-      enabled && walletMode === "external" && walletAddress ? contracts : [],
+    contracts: enabled && walletAddress ? contracts : [],
     query: {
-      enabled: enabled && walletMode === "external" && Boolean(walletAddress),
+      enabled: enabled && Boolean(walletAddress),
       refetchInterval,
       refetchIntervalInBackground: false,
       refetchOnWindowFocus: false,
@@ -69,19 +42,7 @@ export function useTokenBalances({
 
   const balances: Record<TokenSymbol, bigint> = { USDC: 0n, EURC: 0n };
 
-  if (walletMode === "circle") {
-    TOKEN_OPTIONS.forEach((token) => {
-      const balance = selectCircleTransferToken(circleBalancesQuery.data ?? [], {
-        blockchain: "ARC-TESTNET",
-        symbol: token.symbol,
-        tokenAddress: token.address,
-      });
-      const units = balance
-        ? circleBalanceAmountToUnits(balance.amount, token.decimals)
-        : null;
-      if (units !== null) balances[token.symbol] = units;
-    });
-  } else if (data) {
+  if (data) {
     TOKEN_OPTIONS.forEach((token, index) => {
       const result = data[index];
       if (result?.status === "success" && typeof result.result === "bigint") {
@@ -92,10 +53,10 @@ export function useTokenBalances({
 
   return {
     balances,
-    error: walletMode === "circle" ? circleBalancesQuery.error : error,
-    isError: walletMode === "circle" ? circleBalancesQuery.isError : isError,
-    isLoading: walletMode === "circle" ? circleBalancesQuery.isLoading : isLoading,
-    refetch: walletMode === "circle" ? circleBalancesQuery.refetch : refetch,
-    source: walletMode,
+    error,
+    isError,
+    isLoading,
+    refetch,
+    source: "external" as const,
   };
 }

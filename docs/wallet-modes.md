@@ -1,118 +1,39 @@
 ---
 title: "Wallet Modes"
-description: "Signing models: custodial W3S and client-controlled passkey."
+description: "Signing model: external-wallet-only on Arc Mainnet."
 ---
 
 # Wallet Modes
 
-WizPay supports two signing models. The mode determines **who holds the signing key** and **where transaction construction happens**.
+WizPay is external-wallet-only on Arc Mainnet. The connected external wallet holds the signing key and submits every on-chain write. The backend never holds signing keys, never signs on behalf of users, and never custodies funds.
 
 ## Mode Selection
 
-The wallet mode is read from `task.payload.walletMode` by `ExecutionRouterService`:
+`ExecutionRouterService` resolves the external-wallet execution path for Arc Mainnet. Any non-Mainnet selector is rejected before execution.
 
-```typescript
-if (walletMode === 'PASSKEY') → PasskeyEngineService
-else → AgentRouterService  // default: W3S
-```
-
-When `walletMode` is absent (all tasks created before the field was introduced), the system defaults to `W3S`. Zero breaking changes.
-
-## W3S (Custodial)
-
-Circle Wallet-as-a-Service. The backend has signing authority.
+## External Wallet (Non-Custodial)
 
 **Signing model:**
-- Backend holds a Circle API key and entity secret.
-- The entity secret allows the backend to sign transactions on behalf of developer-controlled wallets.
-- The user does not approve individual transactions.
+- The user connects an external wallet through the Reown connector.
+- The user approves and signs each transaction in their own wallet.
+- The backend prepares, validates, and reconciles; it does not sign.
 
 **Flow:**
-1. User authenticates (Google/Email) → receives Circle `userToken` + `encryptionKey`.
-2. Frontend sends `userToken` to backend with each wallet operation.
-3. Agent calls `CircleService.transfer()` → Circle signs and submits on-chain.
+1. User connects their external wallet in the frontend.
+2. Frontend submits the validated task payload to the backend.
+3. Backend validates the route, prepares execution, and returns instructions.
+4. User signs and submits the transaction in their wallet.
+5. Backend reconciles the receipt and finalizes task state.
 
 **Characteristics:**
-- Backend signs. No client-side signing.
-- `userToken` required for wallet identification.
-- `walletId` required per operation.
-- Supports EVM (ARC-TESTNET, ETH-SEPOLIA) and Solana (SOLANA-DEVNET).
-
-**Mobile session recovery:**
-
-On mobile browsers, Circle SDK sessions can silently expire when the browser is backgrounded or the device goes offline. The frontend provider layer handles this transparently:
-
-- `useMobileRecovery` listens to `visibilitychange`, `focus`, `pageshow`, and `online` events. On each trigger (throttled to prevent flooding) it calls `rearmSdkForSession` to re-attach the current auth token to the SDK instance.
-- `ensureSessionReady()` is called before every Circle-mode operation (transaction execution, bridge, typed data signing). If the session is stale, it re-arms the SDK and refreshes the wallet list before the operation proceeds.
-- If a Circle operation returns a recoverable session error (code `155706` or an invalid-device code), `withRecoveredSession` calls `ensureSessionReady` and retries the operation exactly once. The retry is transparent to the caller.
-
-**Wallet provisioning endpoints:**
-
-| Endpoint | Purpose |
-|---|---|
-| `POST /wallets/initialize` | Create wallet set + wallets for a user |
-| `POST /wallets/sync` | Sync existing wallets from Circle |
-| `POST /wallets/ensure` | Get or create wallet for a chain (EVM/SOLANA) |
-
-## PASSKEY (Client-Controlled)
-
-Circle modular Account Abstraction wallet. The **user** holds the signing key.
-
-**Signing model:**
-- User authenticates with a WebAuthn passkey (biometric or hardware key).
-- The backend has **no signing authority** over the user's wallet.
-- For operations requiring the user's signature, the backend returns unsigned intents.
-
-**Per-operation behavior:**
-
-| Operation | Backend Action | Client Action |
-|---|---|---|
-| **Bridge** | Records CCTP intent, returns parameters | User signs and submits burn tx via AA wallet |
-| **Payroll (EVM)** | Submits ERC-20 transfers from backend treasury (`BACKEND_PRIVATE_KEY`) | None — treasury pre-funded by company |
-| **Payroll (Solana)** | Builds unsigned SPL transfer intents | User signs and broadcasts each intent |
-| **Swap** | Prepares swap payload via `DexService` | User submits via AA wallet |
-
-**Characteristics:**
-- No Circle `userToken`, `tokenId`, or W3S session credentials.
-- No `walletId` required.
-- Passkey AA wallets are **EVM-only** (ARC-TESTNET, ETH-SEPOLIA).
-- Solana operations require client-side signing.
-
-## Comparison
-
-| Aspect | W3S | PASSKEY |
-|---|---|---|
-| Key holder | Backend (Circle entity secret) | User (passkey) |
-| Client signing | Never | Bridge, Solana payroll, swap |
-| Circle session | Required (`userToken`) | Not used |
-| `walletId` | Required | Not required |
-| Chains | EVM + Solana | EVM (AA) + Solana (client-sign) |
-| Bridge execution | Unsupported | External browser wallet signs direct CCTP V2 approval, burn, and destination mint |
-| Payroll execution | `CircleService.transfer()` | Treasury key (EVM) / unsigned intents (Solana) |
-| Default | Yes | Must be explicitly set |
-
-## External Signer Bridge
-
-External browser wallets are not a third `walletMode`. They are a bridge execution mode used when the source wallet is a connected EVM wallet or an injected Solana wallet.
-
-- The browser executes the burn, attestation, and mint flow with public Circle bridge tooling.
-- The backend still accepts a best-effort `POST /tasks` audit record for traceability.
-- These audit tasks require `walletAddress` but do not require `walletId`.
-- Solana support is provider-agnostic: any compatible injected Solana wallet can be used, not just Phantom.
-- `NEXT_PUBLIC_CIRCLE_API_PROXY_ENABLED=true` enables the same-origin `/api/circle/proxy` fallback when the deployed Next.js runtime serves that route. When the flag is unset, bridge clients use direct Circle API requests only.
-- Production reverse proxies must route `/api/circle/proxy` to the frontend Next.js app before any generic backend `/api/` rule; otherwise external `ETH-SEPOLIA -> ARC-TESTNET` transfers can silently fall back to slow full-finality burns.
+- Client-side signing for every on-chain write.
+- No backend signing authority.
+- Arc Mainnet only.
 
 ## Isolation
 
-The `ExecutionRouterService` is the **only** component aware of wallet modes.
+The `ExecutionRouterService` is the **only** component aware of execution paths.
 
-- Agents do not check `walletMode`. They receive tasks through the router and execute.
-- The orchestrator does not check `walletMode`. It calls the execution router.
-- Workers do not check `walletMode`. They call the orchestrator.
-
-Adding a new wallet mode requires:
-1. Extend the `WalletMode` type union in `task.types.ts`.
-2. Add a case in `ExecutionRouterService.resolveWalletMode()`.
-3. Implement the engine service.
-
-No changes to agents, orchestrator, or workers.
+- Agents do not check wallet paths. They receive tasks through the router and execute.
+- The orchestrator does not check wallet paths. It calls the execution router.
+- Workers do not check wallet paths. They call the orchestrator.

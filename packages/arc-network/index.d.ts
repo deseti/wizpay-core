@@ -1,29 +1,6 @@
-export type ArcNetworkKey = "arc-testnet" | "arc-mainnet";
+export type ArcNetworkKey = "arc-mainnet";
 
-export type CircleEnvironment = "testnet" | "mainnet";
-export type CircleBlockchain = "ARC-TESTNET";
-export type ArcCircleExecutionDefinition = Readonly<{
-  environment: CircleEnvironment;
-  blockchain: CircleBlockchain | null;
-  apiBaseUrlEnvironmentKey: string;
-  applicationIdEnvironmentKey: string;
-  apiCredentialEnvironmentKey: string;
-  entitySecretEnvironmentKey: string;
-  walletSetIdEnvironmentKey: string;
-  walletIdEnvironmentKey: string;
-  walletAddressEnvironmentKey: string;
-  receiptConfirmationsEnvironmentKey: string;
-  support: Readonly<{
-    walletCreation: boolean;
-    walletLookup: boolean;
-    transfer: boolean;
-    contractExecution: boolean;
-    typedData: boolean;
-  }>;
-  receiptVerification: Readonly<{ required: true; chainId: number }>;
-}>;
-
-export type ArcNetworkEnvironment = "testnet" | "mainnet";
+export type ArcNetworkEnvironment = "mainnet";
 
 export type ArcCapabilityName =
   | "send"
@@ -35,7 +12,6 @@ export type ArcCapabilityName =
   | "swap"
   | "crossTokenPayroll"
   | "crossTokenInvoice"
-  | "stableFx"
   | "nanoAgentApi";
 
 export type ArcCapabilities = Readonly<Record<ArcCapabilityName, boolean>>;
@@ -47,47 +23,30 @@ export type ArcCapabilityDependencyState = Readonly<{
   paymentLinkDirect?: boolean;
   bridge: boolean;
   swap: boolean;
-  stableFx: boolean;
   nanoAgentApi: boolean;
 }>;
 
 export type ArcOperationResourceReadiness = Readonly<{
   sendDirect: boolean;
-  sendDirectAppWallet: boolean;
   payrollDirect: boolean;
-  payrollDirectAppWallet: boolean;
   invoiceCreation: boolean;
   paymentLinkDirect: boolean;
-  paymentLinkDirectAppWallet: boolean;
   swapDirect: boolean;
   crossToken: boolean;
 }>;
 
-export type ArcNetworkDefinition =
-  | {
-      readonly key: "arc-testnet";
-      readonly name: "Arc Testnet";
-      readonly chainId: 5_042_002;
-      readonly environment: "testnet";
-      readonly nativeCurrency: Readonly<{
-        name: "USDC";
-        symbol: "USDC";
-        decimals: 18;
-      }>;
-      readonly testnet: true;
-    }
-  | {
-      readonly key: "arc-mainnet";
-      readonly name: "Arc Mainnet";
-      readonly chainId: 5_042;
-      readonly environment: "mainnet";
-      readonly nativeCurrency: Readonly<{
-        name: "USDC";
-        symbol: "USDC";
-        decimals: 18;
-      }>;
-      readonly testnet: false;
-    };
+export type ArcNetworkDefinition = {
+  readonly key: "arc-mainnet";
+  readonly name: "Arc Mainnet";
+  readonly chainId: 5_042;
+  readonly environment: "mainnet";
+  readonly nativeCurrency: Readonly<{
+    name: "USDC";
+    symbol: "USDC";
+    decimals: 18;
+  }>;
+  readonly testnet: false;
+};
 
 export type UnsupportedArcNetworkCode =
   | "UNSUPPORTED_ARC_NETWORK_KEY"
@@ -96,10 +55,7 @@ export type UnsupportedArcNetworkCode =
 export type ArcUnavailableReason =
   | "OFFICIAL_ARC_MAINNET_RPC_UNAVAILABLE"
   | "OFFICIAL_ARC_MAINNET_EXPLORER_UNAVAILABLE"
-  | "CIRCLE_ARC_MAINNET_USDC_NOT_YET_CONFIRMED"
-  | "CIRCLE_ARC_MAINNET_EURC_NOT_YET_CONFIRMED"
   | "WIZPAY_MAINNET_CONTRACT_NOT_DEPLOYED"
-  | "EXTERNAL_PROTOCOL_CONTRACT_NOT_RECORDED_FOR_ARC_TESTNET"
   | "UNISWAP_USDC_EURC_POOL_NOT_VERIFIED"
   | "UNISWAP_USDC_EURC_POOL_KEY_NOT_VERIFIED"
   | "UNISWAP_USDC_EURC_POOL_ID_NOT_VERIFIED"
@@ -277,9 +233,6 @@ export declare class ArcCapabilityConfigurationError extends Error {
 }
 
 export declare const ARC_CAPABILITY_NAMES: readonly ArcCapabilityName[];
-export declare const ARC_CIRCLE_EXECUTION_DEFINITIONS: Readonly<
-  Record<ArcNetworkKey, ArcCircleExecutionDefinition>
->;
 export declare const ARC_CAPABILITY_DEFINITIONS: Readonly<
   Record<ArcNetworkKey, ArcCapabilities>
 >;
@@ -303,12 +256,6 @@ export declare class UnsupportedArcNetworkError extends Error {
   constructor(code: UnsupportedArcNetworkCode, value: unknown);
 }
 
-export declare class CircleExecutionConfigurationError extends Error {
-  readonly name: "CircleExecutionConfigurationError";
-  readonly code: string;
-  constructor(code: string, message: string);
-}
-
 export declare class UnknownArcResourceError extends Error {
   readonly name: "UnknownArcResourceError";
   readonly code: "UNKNOWN_ARC_RESOURCE";
@@ -330,10 +277,7 @@ export declare class UnavailableArcResourceError extends Error {
   );
 }
 
-export declare const ARC_NETWORK_DEFINITIONS: readonly [
-  Extract<ArcNetworkDefinition, { readonly key: "arc-testnet" }>,
-  Extract<ArcNetworkDefinition, { readonly key: "arc-mainnet" }>,
-];
+export declare const ARC_NETWORK_DEFINITIONS: readonly [ArcNetworkDefinition];
 
 export declare const ARC_RPC_RESOURCES: Readonly<
   Record<ArcNetworkKey, ArcResource<{ readonly url: string }>>
@@ -399,12 +343,6 @@ export declare function assertValidArcNetworkDefinitions(
 ): true;
 
 export declare function parseArcNetworkKey(value: unknown): ArcNetworkKey;
-export declare function getArcCircleExecutionDefinition(
-  networkKey: ArcNetworkKey,
-): ArcCircleExecutionDefinition;
-export declare function requireArcCircleBlockchain(
-  networkKey: ArcNetworkKey,
-): CircleBlockchain;
 export declare function parseArcCapabilityName(
   value: unknown,
 ): ArcCapabilityName;

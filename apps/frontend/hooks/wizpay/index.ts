@@ -1,123 +1,128 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { usePublicClient, useWalletClient } from "wagmi";
-import { getAddress, isAddress, type Hex } from "viem";
-import type { QuoteSummary, WizPayState } from "@/lib/types";
+import { useCallback, useEffect, useMemo } from "react";
+import { usePublicClient } from "wagmi";
+import type { Hex } from "viem";
 
-import { ERC20_ABI } from "@/constants/erc20";
-import { useCircleWallet } from "@/components/providers/CircleWalletProvider";
+import type { QuoteSummary, WizPayState } from "@/lib/types";
 import { useWizPayState } from "./useWizPayState";
 import { useWizPayContract } from "./useWizPayContract";
 import { useWizPayHistory } from "./useWizPayHistory";
-import { useBatchPayroll, type PreSwapResult } from "./useBatchPayroll";
-import { isStableFxMode } from "@/lib/fx-config";
-import { arcTestnet } from "@/lib/wagmi";
-import { quoteUserSwap, USER_SWAP_CHAIN } from "@/lib/user-swap-service";
+import { useBatchPayroll } from "./useBatchPayroll";
+import { useActiveWalletAddress } from "@/hooks/useActiveWalletAddress";
+import { useCapability } from "@/components/providers/CapabilityProvider";
+import { resolvePayrollRoutePolicy } from "@/lib/payroll-route-policy";
+import { getMainnetUniswapV4UnavailableState } from "@/lib/mainnet-uniswap-v4";
+import { activeArcChain } from "@/lib/wagmi";
 import {
-  getUserSwapExpectedOutputValue,
-  getUserSwapMinimumOutputValue,
-  getUserSwapProvider,
-  parseUserSwapQuoteAmount,
-} from "@/lib/user-swap-quote-parser";
-import {
-  parseAmountToUnits,
-  PREVIEW_SLIPPAGE_BPS,
-  SUPPORTED_TOKENS,
   isTransactionHash,
+  SUPPORTED_TOKENS,
   type TokenSymbol,
 } from "@/lib/wizpay";
-import { useActiveWalletAddress } from "@/hooks/useActiveWalletAddress";
-import { BackendApiError } from "@/lib/backend-api";
-import { PayrollFxRecoveryError } from "@/lib/payroll-fx-recovery";
-import {
-  APP_WALLET_SWAP_CHAIN,
-  createAppWalletXylonetOperation,
-  getAppWalletXylonetOperation,
-  quoteAppWalletXylonetSwap,
-} from "@/lib/app-wallet-swap-service";
-import { runAppWalletXylonetLifecycle } from "@/lib/app-wallet-xylonet-lifecycle";
-import {
-  readVerifiedXylonetPayrollOutput,
-  validateXylonetPayrollQuote,
-  validateXylonetPayrollOperation,
-} from "@/lib/app-wallet-payroll-xylonet";
-import { resolvePayrollRoutePolicy } from "@/lib/payroll-route-policy";
-import {
-  beginExternalPayrollBatchSubmission,
-  clearExternalPayrollBatchSubmission,
-  getRecoveredExternalPayrollBatch,
-  recordExternalPayrollBatchConfirmation,
-  runExternalPayrollXylonetSwap,
-  type ExternalPayrollXylonetBinding,
-} from "@/lib/external-payroll-xylonet";
-import { WIZPAY_SWAP_EXECUTOR_V2_ABI } from "@/lib/external-xylonet-swap";
-import { useCapability } from "@/components/providers/CapabilityProvider";
-import { ACTIVE_ARC_NETWORK } from "@/lib/active-arc-network";
 
 const OFFICIAL_PAYROLL_QUOTE_UNAVAILABLE =
   "Official payroll route quote unavailable. Payroll cannot proceed.";
 
-type PayrollQuoteProvider = "stablefx" | "swapkit" | "xylonet";
+/**
+ * Local recovery ledger for external-wallet batch submission on Arc Mainnet.
+ *
+ * A confirmed transaction hash is persisted only after its receipt is verified
+ * as successful on-chain. Recovery never resumes from an unverified hash; it
+ * fails closed so an unconfirmed batch cannot be reported as settled and a
+ * confirmed batch cannot be submitted twice.
+ */
+const MAINNET_PAYROLL_BATCH_STORAGE_PREFIX =
+  "wizpay.mainnet.payroll.batch.v1:";
 
-// Human-readable label for the StableFX quote provider.
-const STABLEFX_PROVIDER_LABEL = "StableFX";
+type StoredMainnetPayrollBatch = {
+  status: "submitted" | "confirmed";
+  txHash: string | null;
+  updatedAt: string;
+};
 
-// Legacy fallback text for unsupported cross-currency execution providers.
-// StableFX payroll execution is now supported for both External Wallet and
-// App Wallet paths when a valid quote is ready.
-const STABLEFX_EXECUTION_PENDING_MESSAGE =
-  "StableFX quote ready, but cross-currency payroll execution is not available yet. Send is disabled until the StableFX execution provider is implemented.";
-const PAYROLL_FX_DEBUG = process.env.NEXT_PUBLIC_PAYROLL_FX_DEBUG === "true";
-
-function isPositiveDecimal(value: string) {
-  return parseFloat(value) > 0 && Number.isFinite(Number(value));
+function mainnetPayrollBatchKey(referenceId: string) {
+  return `${MAINNET_PAYROLL_BATCH_STORAGE_PREFIX}${referenceId}`;
 }
 
-function allocateQuoteOutput(
-  totalOutputUnits: bigint,
-  sourceAmounts: bigint[],
-) {
-  const totalSource = sourceAmounts.reduce((sum, amount) => sum + amount, 0n);
-
-  if (totalSource <= 0n) {
-    return sourceAmounts.map(() => 0n);
+function readStoredMainnetPayrollBatch(
+  referenceId: string,
+): StoredMainnetPayrollBatch | null {
+  if (typeof window === "undefined") {
+    return null;
   }
 
-  let allocated = 0n;
-
-  return sourceAmounts.map((amount, index) => {
-    if (index === sourceAmounts.length - 1) {
-      return totalOutputUnits - allocated;
+  try {
+    const raw = window.localStorage.getItem(
+      mainnetPayrollBatchKey(referenceId),
+    );
+    if (!raw) {
+      return null;
     }
 
-    const recipientOutput = (totalOutputUnits * amount) / totalSource;
-    allocated += recipientOutput;
-    return recipientOutput;
-  });
+    const parsed = JSON.parse(raw) as Partial<StoredMainnetPayrollBatch>;
+    if (parsed.status !== "submitted" && parsed.status !== "confirmed") {
+      return null;
+    }
+    if (parsed.txHash !== null && typeof parsed.txHash !== "string") {
+      return null;
+    }
+
+    return {
+      status: parsed.status,
+      txHash: parsed.txHash ?? null,
+      updatedAt:
+        typeof parsed.updatedAt === "string" ? parsed.updatedAt : "",
+    };
+  } catch {
+    return null;
+  }
 }
 
-function logOfficialQuoteDiagnostic(
-  label: string,
-  value: unknown,
-  error?: unknown,
+function writeStoredMainnetPayrollBatch(
+  referenceId: string,
+  value: StoredMainnetPayrollBatch,
 ) {
-  if (!PAYROLL_FX_DEBUG) return;
+  if (typeof window === "undefined") {
+    throw new Error("Payroll recovery storage is unavailable.");
+  }
 
-  if (error) {
-    console.debug(label, value, error);
+  window.localStorage.setItem(
+    mainnetPayrollBatchKey(referenceId),
+    JSON.stringify(value),
+  );
+}
+
+function removeStoredMainnetPayrollBatch(referenceId: string) {
+  if (typeof window === "undefined") {
     return;
   }
 
-  console.debug(label, value);
+  window.localStorage.removeItem(mainnetPayrollBatchKey(referenceId));
 }
 
+function logMainnetPayrollRoute(label: string, value: unknown) {
+  if (process.env.NODE_ENV === "production") {
+    return;
+  }
+
+  console.info(label, value);
+}
+
+/**
+ * useWizPay — Arc Mainnet-only payroll composer.
+ *
+ * Execution is strictly external self-custodial: the connected wallet (Reown
+ * AppKit, Wagmi, Viem; EOA or Safe) signs every approval and payroll batch.
+ * Same-token payroll submits directly. Cross-token payroll resolves through
+ * the Mainnet atomic payroll route and stays fail-closed with a clear message
+ * until the Mainnet pool reports available and executable.
+ */
 export function useWizPay(): WizPayState {
   const crossTokenCapability = useCapability("crossTokenPayroll");
-  // 1. Initialize UI / Local State
+
+  // 1. Composer state (recipient drafts, reference id, messaging).
   const state = useWizPayState();
-  const { referenceId, setStatusMessage } = state;
   const preparedRecipients = state.preparedRecipients;
 
-  // 1a. Derived Batch values
+  // 1a. Derived batch values.
   const batchAmount = useMemo(
     () => preparedRecipients.reduce((sum, r) => sum + r.amountUnits, 0n),
     [preparedRecipients],
@@ -127,21 +132,70 @@ export function useWizPay(): WizPayState {
     [preparedRecipients],
   );
 
-  // 2. Initialize Contract Interactions
+  // 2. Contract reads and user-signed execution.
   const contract = useWizPayContract({
     state,
     batchAmount,
     preparedRecipients,
   });
 
-  // 2a. External Wallet Swap adapter for cross-currency payroll
-  const { walletAddress, walletMode } = useActiveWalletAddress();
-  const { arcWallet, ensureSessionReady, executeChallenge, userToken } =
-    useCircleWallet();
-  const publicClient = usePublicClient({ chainId: arcTestnet.id });
-  const { data: walletClient } = useWalletClient();
+  // 2a. External self-custodial wallet identity. This is the only wallet
+  // source: every signature comes from the connected external wallet.
+  const { walletAddress } = useActiveWalletAddress();
+  const publicClient = usePublicClient({ chainId: activeArcChain.id });
 
-  // 2b. Determine the payroll route before scheduling any provider request.
+  // 2b. Resolve the Arc Mainnet payroll route before any quote, approval, or
+  // submission work. Same-token payroll is direct; cross-token payroll takes
+  // the external-wallet Mainnet atomic route when enabled.
+  const payrollRoutePolicy = useMemo(
+    () =>
+      resolvePayrollRoutePolicy({
+        network: "arc-mainnet",
+        sourceTokenAddress: contract.activeToken.address,
+        targetTokenAddresses: [state.recipients, ...state.pendingBatches]
+          .flat()
+          .filter((recipient) => recipient.amount.trim())
+          .map((recipient) => SUPPORTED_TOKENS[recipient.targetToken].address),
+        crossTokenEnabled: crossTokenCapability.enabled,
+      }),
+    [
+      contract.activeToken.address,
+      crossTokenCapability.enabled,
+      state.pendingBatches,
+      state.recipients,
+    ],
+  );
+
+  // 2c. Mainnet pool gate. The atomic cross-token route may only run while
+  // the Mainnet pool reports available and executable. Otherwise execution
+  // stays fail-closed with the gate message. No synthetic pricing or
+  // alternate route is substituted.
+  const mainnetSwapGate = useMemo(
+    () => getMainnetUniswapV4UnavailableState(),
+    [],
+  );
+  const atomicRouteBlocked =
+    payrollRoutePolicy.kind === "external-wallet-mainnet-atomic" &&
+    (!mainnetSwapGate.available || !mainnetSwapGate.executable);
+  const crossCurrencyExecutionBlocked =
+    payrollRoutePolicy.kind === "cross-token-disabled" || atomicRouteBlocked;
+  const crossCurrencyExecutionBlockedReason =
+    payrollRoutePolicy.kind === "cross-token-disabled"
+      ? payrollRoutePolicy.blockedReason
+      : atomicRouteBlocked
+        ? mainnetSwapGate.message
+        : null;
+
+  // No verified Mainnet quote source is wired, so a required official quote
+  // can never be ready while the pool gate is closed. Direct payroll needs no
+  // quote and is trivially ready.
+  const officialQuoteRequired = payrollRoutePolicy.requiresQuote;
+  const officialQuoteReady = !payrollRoutePolicy.requiresQuote;
+  const officialQuoteError =
+    crossCurrencyExecutionBlockedReason ??
+    (officialQuoteRequired ? OFFICIAL_PAYROLL_QUOTE_UNAVAILABLE : null);
+
+  // 2d. Single cross-token target (when exactly one) for row-level messaging.
   const crossCurrencyTarget = useMemo<TokenSymbol | null>(() => {
     const activeSymbol = contract.activeToken.symbol;
     const allRecipients = [state.recipients, ...state.pendingBatches].flat();
@@ -153,875 +207,60 @@ export function useWizPay(): WizPayState {
     return crossTargets.size === 1 ? Array.from(crossTargets)[0] : null;
   }, [contract.activeToken.symbol, state.recipients, state.pendingBatches]);
 
-  const crossCurrencyAmount = useMemo<string>(() => {
-    if (!crossCurrencyTarget) return "0";
-    const allRecipients = [state.recipients, ...state.pendingBatches].flat();
-    let totalUnits = 0n;
-
-    for (const r of allRecipients) {
-      if (r.targetToken === crossCurrencyTarget) {
-        try {
-          const parsedUnits = parseAmountToUnits(
-            r.amount,
-            contract.activeToken.decimals,
-          );
-          if (parsedUnits > 0n) totalUnits += parsedUnits;
-        } catch {
-          // Invalid draft amounts are handled by the normal row validation path.
-        }
+  // 3. Recovery bookkeeping for external-wallet batch submission. A stored
+  // hash is returned only after its on-chain receipt is verified as
+  // successful; an unverifiable hash fails closed instead of resubmitting.
+  const getRecoveredPayrollBatch = useCallback(
+    async (batchReferenceId: string) => {
+      const stored = readStoredMainnetPayrollBatch(batchReferenceId);
+      if (!stored || !stored.txHash || !isTransactionHash(stored.txHash)) {
+        return null;
       }
-    }
-
-    return totalUnits.toString();
-  }, [
-    contract.activeToken.decimals,
-    crossCurrencyTarget,
-    state.recipients,
-    state.pendingBatches,
-  ]);
-
-  const payrollRoutePolicy = useMemo(
-    () =>
-      resolvePayrollRoutePolicy({
-        walletMode,
-        network: ACTIVE_ARC_NETWORK.key,
-        sourceTokenAddress: contract.activeToken.address,
-        targetTokenAddresses: [state.recipients, ...state.pendingBatches]
-          .flat()
-          .filter((recipient) => recipient.amount.trim())
-          .map((recipient) => SUPPORTED_TOKENS[recipient.targetToken].address),
-        crossTokenEnabled: crossTokenCapability.enabled,
-      }),
-    [
-      contract.activeToken.symbol,
-      contract.activeToken.address,
-      crossTokenCapability.enabled,
-      state.pendingBatches,
-      state.recipients,
-      walletMode,
-    ],
-  );
-
-  const externalWalletAddress = useMemo(() => {
-    if (
-      walletMode !== "external" ||
-      !walletAddress ||
-      !isAddress(walletAddress)
-    ) {
-      return null;
-    }
-
-    return getAddress(walletAddress);
-  }, [walletAddress, walletMode]);
-
-  // Quote preview address is used only for App Wallet XyloNet requests.
-  const quotePreviewAddress = useMemo(() => {
-    if (!walletAddress || !isAddress(walletAddress)) {
-      return null;
-    }
-
-    return getAddress(walletAddress);
-  }, [walletAddress]);
-
-  const [officialQuote, setOfficialQuote] = useState<{
-    targetToken: TokenSymbol | null;
-    provider: PayrollQuoteProvider | null;
-    expectedOutput: string | null;
-    expectedOutputUnits: bigint | null;
-    minimumOutput: string | null;
-    minimumOutputUnits: bigint | null;
-    loading: boolean;
-    error: string | null;
-  }>({
-    targetToken: null,
-    provider: null,
-    expectedOutput: null,
-    expectedOutputUnits: null,
-    minimumOutput: null,
-    minimumOutputUnits: null,
-    loading: false,
-    error: null,
-  });
-
-  useEffect(() => {
-    let cancelled = false;
-
-    if (
-      !payrollRoutePolicy.requiresQuote ||
-      !crossCurrencyTarget ||
-      contract.activeToken.symbol === crossCurrencyTarget ||
-      !quotePreviewAddress ||
-      !isPositiveDecimal(crossCurrencyAmount)
-    ) {
-      queueMicrotask(() => {
-        if (cancelled) return;
-        setOfficialQuote({
-          targetToken: null,
-          provider: null,
-          expectedOutput: null,
-          expectedOutputUnits: null,
-          minimumOutput: null,
-          minimumOutputUnits: null,
-          loading: false,
-          error: null,
-        });
-      });
-      return () => {
-        cancelled = true;
-      };
-    }
-
-    const payrollProvider = "xylonet";
-
-    queueMicrotask(() => {
-      if (cancelled) return;
-      setOfficialQuote((prev) => ({
-        ...prev,
-        targetToken: crossCurrencyTarget,
-        loading: true,
-        error: null,
-      }));
-    });
-    logOfficialQuoteDiagnostic(
-      "[official-payroll-route] XyloNet quote request",
-      {
-        tokenIn: contract.activeToken.symbol,
-        tokenOut: crossCurrencyTarget,
-        amountIn: crossCurrencyAmount,
-        walletAddress: quotePreviewAddress,
-      },
-    );
-
-    const quotePromise =
-      payrollRoutePolicy.kind === "app-wallet-xylonet"
-        ? arcWallet?.id && userToken
-          ? quoteAppWalletXylonetSwap(
-              {
-                idempotencyKey: crypto.randomUUID(),
-                walletId: arcWallet.id,
-                walletAddress: quotePreviewAddress,
-                chain: APP_WALLET_SWAP_CHAIN,
-                tokenIn: contract.activeToken.symbol,
-                tokenOut: crossCurrencyTarget,
-                amountIn: crossCurrencyAmount,
-                slippageBps: Number(PREVIEW_SLIPPAGE_BPS),
-              },
-              userToken,
-            )
-          : Promise.reject(
-              new Error("App Wallet payroll provider is unavailable."),
-            )
-        : quoteUserSwap({
-            tokenIn: contract.activeToken.symbol,
-            tokenOut: crossCurrencyTarget,
-            amountIn: crossCurrencyAmount,
-            fromAddress: quotePreviewAddress,
-            toAddress: quotePreviewAddress,
-            chain: USER_SWAP_CHAIN,
-            slippageBps: Number(PREVIEW_SLIPPAGE_BPS),
-          });
-
-    quotePromise
-      .then((result) => {
-        if (cancelled) return;
-        const provider = getUserSwapProvider(result);
-        const normalizedProvider: PayrollQuoteProvider | null =
-          provider === "stablefx" ||
-          provider === "swapkit" ||
-          provider === "xylonet"
-            ? provider
-            : null;
-        if (normalizedProvider !== payrollProvider) {
-          throw new Error(
-            `Payroll quote provider mismatch: selected ${payrollProvider}, received ${normalizedProvider}.`,
-          );
-        }
-        const expectedOutputValue = getUserSwapExpectedOutputValue(result);
-        const minimumOutputValue = getUserSwapMinimumOutputValue(result);
-        const expectedOutputParsed = parseUserSwapQuoteAmount(
-          expectedOutputValue,
-          crossCurrencyTarget,
-        );
-        const minimumOutputParsed = parseUserSwapQuoteAmount(
-          minimumOutputValue,
-          crossCurrencyTarget,
-        );
-        const expectedOutput = expectedOutputParsed?.displayAmount ?? null;
-        const minimumOutput = minimumOutputParsed?.displayAmount ?? null;
-        const expectedOutputUnits = expectedOutputParsed?.units ?? null;
-        const minimumOutputUnits = minimumOutputParsed?.units ?? null;
-
-        logOfficialQuoteDiagnostic(
-          "[official-payroll-route] quoteUserSwap response",
-          {
-            provider: normalizedProvider,
-            rawExpectedOutput: expectedOutputParsed?.rawAmount ?? null,
-            rawMinimumOutput: minimumOutputParsed?.rawAmount ?? null,
-            expectedOutput,
-            expectedOutputUnits: expectedOutputUnits?.toString() ?? null,
-            minimumOutput,
-            minimumOutputUnits: minimumOutputUnits?.toString() ?? null,
-          },
-        );
-
-        setOfficialQuote({
-          targetToken: crossCurrencyTarget,
-          provider: normalizedProvider,
-          expectedOutput,
-          expectedOutputUnits,
-          minimumOutput,
-          minimumOutputUnits,
-          loading: false,
-          error: expectedOutputUnits
-            ? null
-            : OFFICIAL_PAYROLL_QUOTE_UNAVAILABLE,
-        });
-      })
-      .catch((error) => {
-        if (cancelled) return;
-        logOfficialQuoteDiagnostic(
-          "[official-payroll-route] quoteUserSwap error",
-          error instanceof BackendApiError
-            ? {
-                status: error.status,
-                body: error.responseBody ?? {
-                  error: error.message,
-                  code: error.code,
-                  details: error.details,
-                },
-              }
-            : error,
-          error,
-        );
-        setOfficialQuote({
-          targetToken: crossCurrencyTarget,
-          provider: null,
-          expectedOutput: null,
-          expectedOutputUnits: null,
-          minimumOutput: null,
-          minimumOutputUnits: null,
-          loading: false,
-          error: OFFICIAL_PAYROLL_QUOTE_UNAVAILABLE,
-        });
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    crossCurrencyTarget,
-    crossCurrencyAmount,
-    quotePreviewAddress,
-    contract.activeToken.symbol,
-    walletMode,
-    arcWallet?.id,
-    userToken,
-    payrollRoutePolicy.kind,
-    payrollRoutePolicy.requiresQuote,
-  ]);
-
-  // Build official quote summary override for cross-currency
-  const officialQuoteSummary = useMemo<QuoteSummary | null>(() => {
-    if (!crossCurrencyTarget) return null;
-
-    const sourceDecimals = contract.activeToken.decimals;
-    const targetDecimals = SUPPORTED_TOKENS[crossCurrencyTarget].decimals;
-    const allRecipients = [state.recipients, ...state.pendingBatches].flat();
-    const crossRecipients = allRecipients.filter(
-      (r) => r.targetToken === crossCurrencyTarget && r.amount.trim(),
-    );
-
-    if (!officialQuote.expectedOutputUnits) {
-      return {
-        estimatedAmountsOut: allRecipients
-          .filter((r) => r.amount.trim())
-          .map(() => 0n),
-        totalEstimatedOut: 0n,
-        totalFees: 0n,
-      };
-    }
-
-    const crossSourceAmounts = crossRecipients.map((recipient) =>
-      parseAmountToUnits(recipient.amount, sourceDecimals),
-    );
-    const crossEstimatedAmounts = allocateQuoteOutput(
-      officialQuote.expectedOutputUnits,
-      crossSourceAmounts,
-    );
-    const crossRecipientOutput = new Map<string, bigint>();
-    crossRecipients.forEach((recipient, index) => {
-      crossRecipientOutput.set(
-        recipient.id,
-        crossEstimatedAmounts[index] ?? 0n,
-      );
-    });
-
-    const estimatedAmountsOut: bigint[] = allRecipients
-      .filter((r) => r.amount.trim())
-      .map((r) => {
-        if (r.targetToken === contract.activeToken.symbol) {
-          // Same-token: 1:1
-          return parseAmountToUnits(r.amount, sourceDecimals);
-        }
-        return crossRecipientOutput.get(r.id) ?? 0n;
-      });
-
-    const totalEstimatedOut = estimatedAmountsOut.reduce(
-      (sum, a) => sum + a,
-      0n,
-    );
-
-    // Fees: difference between input and output for cross-currency portion
-    const crossInputTotal = crossRecipients.reduce(
-      (sum, r) => sum + parseAmountToUnits(r.amount, sourceDecimals),
-      0n,
-    );
-    const normalizedExpectedOutput =
-      targetDecimals === sourceDecimals
-        ? officialQuote.expectedOutputUnits
-        : 0n;
-    const totalFees =
-      crossInputTotal > normalizedExpectedOutput
-        ? crossInputTotal - normalizedExpectedOutput
-        : 0n;
-
-    return { estimatedAmountsOut, totalEstimatedOut, totalFees };
-  }, [
-    crossCurrencyTarget,
-    officialQuote.expectedOutputUnits,
-    contract.activeToken.decimals,
-    contract.activeToken.symbol,
-    state.recipients,
-    state.pendingBatches,
-  ]);
-
-  const externalPayrollBindingRef =
-    useRef<ExternalPayrollXylonetBinding | null>(null);
-
-  const executePreSwap = useCallback(
-    async (params: {
-      sourceToken: TokenSymbol;
-      targetToken: TokenSymbol;
-      amount: string;
-      routingAmount: string;
-      minimumRequiredOutput: string;
-    }): Promise<PreSwapResult> => {
-      if (!externalWalletAddress) {
-        throw new Error("Wallet address is not available for swap.");
-      }
-      if (!publicClient || !walletClient) {
+      if (!publicClient) {
         throw new Error(
-          "External browser wallet is not ready for payroll swap.",
+          "Arc Mainnet public client is not ready to verify payroll recovery. " +
+            "Retry once the network client is available; no new transaction was submitted.",
         );
       }
-      const assertExternalWallet = () => {
-        const accountAddress = walletClient.account?.address;
-        if (walletClient.chain?.id !== arcTestnet.id) {
-          throw new Error("Switch the external wallet to Arc Testnet.");
-        }
-        if (
-          !accountAddress ||
-          accountAddress.toLowerCase() !== externalWalletAddress.toLowerCase()
-        ) {
-          throw new Error(
-            "The connected external wallet does not match the payroll payer.",
-          );
-        }
-      };
-      assertExternalWallet();
 
-      const binding: ExternalPayrollXylonetBinding = {
-        referenceId,
-        walletAddress: externalWalletAddress,
-        chainId: arcTestnet.id,
-        tokenIn: params.sourceToken,
-        tokenOut: params.targetToken,
-        tokenInAddress: SUPPORTED_TOKENS[params.sourceToken].address,
-        tokenOutAddress: SUPPORTED_TOKENS[params.targetToken].address,
-        amountIn: params.routingAmount,
-        minimumRequiredOutput: params.minimumRequiredOutput,
-        recipients: [state.recipients, ...state.pendingBatches]
-          .flat()
-          .filter((recipient) => recipient.amount.trim())
-          .map((recipient) => ({
-            id: recipient.id,
-            address: recipient.address,
-            targetToken: recipient.targetToken,
-            sourceAmount: parseAmountToUnits(
-              recipient.amount,
-              contract.activeToken.decimals,
-            ).toString(),
-          })),
-      };
-      externalPayrollBindingRef.current = binding;
-
-      const result = await runExternalPayrollXylonetSwap({
-        binding,
-        storage: window.localStorage,
-        quote: () =>
-          quoteUserSwap({
-            tokenIn: params.sourceToken,
-            tokenOut: params.targetToken,
-            amountIn: params.routingAmount,
-            fromAddress: externalWalletAddress,
-            toAddress: externalWalletAddress,
-            chain: USER_SWAP_CHAIN,
-            slippageBps: Number(PREVIEW_SLIPPAGE_BPS),
-          }),
-        actions: {
-          assertWallet: assertExternalWallet,
-          readAllowance: async (token, owner, spender) =>
-            (await publicClient.readContract({
-              address: token,
-              abi: ERC20_ABI,
-              functionName: "allowance",
-              args: [owner, spender],
-            })) as bigint,
-          submitApproval: (token, spender, amount) =>
-            walletClient.writeContract({
-              address: token,
-              abi: ERC20_ABI,
-              functionName: "approve",
-              args: [spender, amount],
-              account: externalWalletAddress,
-              chain: arcTestnet,
-            }),
-          submitSwap: (quote) =>
-            walletClient.writeContract({
-              address: quote.executor,
-              abi: WIZPAY_SWAP_EXECUTOR_V2_ABI,
-              functionName: "executeSwap",
-              args: [
-                quote.router,
-                quote.tokenIn,
-                quote.tokenOut,
-                quote.amountIn,
-                quote.minimumAmountOut,
-                quote.recipient,
-                quote.deadline,
-              ],
-              account: externalWalletAddress,
-              chain: arcTestnet,
-            }),
-          waitForReceipt: (hash) =>
-            publicClient.waitForTransactionReceipt({
-              hash,
-              confirmations: 1,
-            }),
-        },
+      const receipt = await publicClient.getTransactionReceipt({
+        hash: stored.txHash as Hex,
       });
-
-      return {
-        settledToken: params.targetToken,
-        txHash: result.txHash,
-        provider: "xylonet",
-        outputToken: params.targetToken,
-        verifiedActualOutput: result.verifiedActualOutput,
-      };
-    },
-    [
-      contract.activeToken.decimals,
-      externalWalletAddress,
-      publicClient,
-      referenceId,
-      state.pendingBatches,
-      state.recipients,
-      walletClient,
-    ],
-  );
-
-  const executeAppWalletPreSwap = useCallback(
-    async (params: {
-      sourceToken: TokenSymbol;
-      targetToken: TokenSymbol;
-      amount: string;
-      routingAmount: string;
-      minimumRequiredOutput: string;
-    }): Promise<PreSwapResult> => {
-      if (!walletAddress) {
-        throw new Error(
-          "App Wallet address is not available for XyloNet payroll swap.",
-        );
-      }
-      if (!arcWallet?.id) {
-        throw new Error("Arc App Wallet is not ready for payroll swap.");
-      }
-      await ensureSessionReady();
-      if (!userToken) {
-        throw new Error("Circle User-Controlled session is unavailable.");
-      }
-
-      const provider = "xylonet" as const;
-      if (officialQuote.provider !== provider) {
-        throw new Error(
-          `Payroll provider mismatch: selected ${provider}, quoted ${officialQuote.provider ?? "none"}.`,
-        );
-      }
-      const request = {
-        idempotencyKey: crypto.randomUUID(),
-        walletId: arcWallet.id,
-        walletAddress,
-        chain: APP_WALLET_SWAP_CHAIN,
-        tokenIn: params.sourceToken,
-        tokenOut: params.targetToken,
-        amountIn: params.amount,
-        slippageBps: Number(PREVIEW_SLIPPAGE_BPS),
-      } as const;
-      const quote = await quoteAppWalletXylonetSwap(request, userToken);
-      validateXylonetPayrollQuote(quote, {
-        sourceToken: params.sourceToken,
-        targetToken: params.targetToken,
-        amountIn: params.amount,
-        walletAddress,
-      });
-      const operation = await createAppWalletXylonetOperation(
-        request,
-        userToken,
-      );
-      validateXylonetPayrollOperation(operation, {
-        sourceToken: params.sourceToken,
-        targetToken: params.targetToken,
-        amountIn: params.amount,
-        walletAddress,
-      });
-
-      let latestOperation = operation;
-      let completed;
-      try {
-        completed = await runAppWalletXylonetLifecycle({
-          initialOperation: operation,
-          userToken,
-          executeChallenge,
-          onOperation: (next) => {
-            latestOperation = next;
-          },
-          onRequestStatus: (status) => {
-            setStatusMessage(
-              status === "idle" ? null : `XyloNet Payroll swap: ${status}...`,
-            );
-          },
-        });
-      } catch (error) {
-        if (
-          latestOperation.lifecycleStage === "swap_submitted" ||
-          latestOperation.lifecycleStage === "output_verified" ||
-          latestOperation.lifecycleStage === "completed"
-        ) {
-          throw new PayrollFxRecoveryError(
-            error instanceof Error ? error.message : String(error),
-            {
-              settlementTxHash: latestOperation.swapTransactionHash ?? null,
-              xylonetOperationId: latestOperation.operationId,
-              step: "xylonet_swap_submitted",
-            },
-          );
-        }
-        throw error;
-      }
-      if (
-        !completed.swapTransactionHash ||
-        !isTransactionHash(completed.swapTransactionHash)
-      ) {
-        throw new Error(
-          completed.failureReason ??
-            "XyloNet Payroll swap did not reach confirmed completion.",
-        );
-      }
-      const verifiedActualOutput = readVerifiedXylonetPayrollOutput(completed, {
-        sourceToken: params.sourceToken,
-        targetToken: params.targetToken,
-        amountIn: params.amount,
-        walletAddress,
-      });
-      return {
-        settledToken: params.targetToken,
-        txHash: completed.swapTransactionHash as Hex,
-        provider,
-        outputToken: completed.tokenOut,
-        verifiedActualOutput,
-      };
-    },
-    [
-      arcWallet,
-      ensureSessionReady,
-      executeChallenge,
-      officialQuote.provider,
-      setStatusMessage,
-      userToken,
-      walletAddress,
-    ],
-  );
-
-  const resumeAppWalletXylonetSwap = useCallback(
-    async (params: {
-      operationId: string;
-      sourceToken: TokenSymbol;
-      targetToken: TokenSymbol;
-      amount: string;
-      minimumRequiredOutput: string;
-    }): Promise<PreSwapResult> => {
-      if (!userToken || !walletAddress) {
-        throw new Error("Circle User-Controlled session is unavailable.");
-      }
-      const operation = await getAppWalletXylonetOperation(
-        params.operationId,
-        userToken,
-      );
-      const completed = await runAppWalletXylonetLifecycle({
-        initialOperation: operation,
-        userToken,
-        executeChallenge,
-        onRequestStatus: (status) => {
-          setStatusMessage(
-            status === "idle" ? null : `XyloNet Payroll swap: ${status}...`,
-          );
-        },
-      });
-      if (
-        !completed.swapTransactionHash ||
-        !isTransactionHash(completed.swapTransactionHash)
-      ) {
-        throw new Error(
-          completed.failureReason ??
-            "XyloNet Payroll swap did not reach confirmed completion.",
-        );
-      }
-      const verifiedActualOutput = readVerifiedXylonetPayrollOutput(completed, {
-        sourceToken: params.sourceToken,
-        targetToken: params.targetToken,
-        amountIn: params.amount,
-        walletAddress,
-      });
-      return {
-        settledToken: params.targetToken,
-        txHash: completed.swapTransactionHash as Hex,
-        provider: "xylonet",
-        outputToken: completed.tokenOut,
-        verifiedActualOutput,
-      };
-    },
-    [executeChallenge, setStatusMessage, userToken, walletAddress],
-  );
-
-  const getPreSwapPayoutAmounts = useCallback(
-    (targetToken: TokenSymbol) => {
-      if (
-        !crossCurrencyTarget ||
-        targetToken !== crossCurrencyTarget ||
-        !officialQuote.expectedOutputUnits ||
-        (payrollRoutePolicy.kind === "external-wallet-xylonet" &&
-          !officialQuote.minimumOutputUnits)
-      ) {
+      if (receipt.status !== "success") {
         return null;
       }
 
-      const allRecipients = [state.recipients, ...state.pendingBatches].flat();
-      const crossRecipients = allRecipients.filter(
-        (recipient) =>
-          recipient.targetToken === targetToken && recipient.amount.trim(),
-      );
-      const sourceAmounts = crossRecipients.map((recipient) =>
-        parseAmountToUnits(recipient.amount, contract.activeToken.decimals),
-      );
-      const allocatedAmounts = allocateQuoteOutput(
-        payrollRoutePolicy.kind === "external-wallet-xylonet"
-          ? officialQuote.minimumOutputUnits!
-          : officialQuote.expectedOutputUnits,
-        sourceAmounts,
-      );
-      const payoutAmounts = new Map<string, string>();
-
-      crossRecipients.forEach((recipient, index) => {
-        payoutAmounts.set(
-          recipient.id,
-          allocatedAmounts[index]?.toString() ?? "0",
-        );
-      });
-
-      return payoutAmounts;
-    },
-    [
-      contract.activeToken.decimals,
-      crossCurrencyTarget,
-      officialQuote.expectedOutputUnits,
-      officialQuote.minimumOutputUnits,
-      payrollRoutePolicy.kind,
-      state.recipients,
-      state.pendingBatches,
-    ],
-  );
-
-  // ── Cross-currency quote and execution availability ─────────────────
-  // Only App Wallet cross-token payroll enters the XyloNet quote lifecycle.
-  // Same-token payroll stays direct; External cross-token payroll fails locally.
-  const officialQuotePreviewEnabled = payrollRoutePolicy.requiresQuote;
-  const appWalletCrossCurrencyExecutionSupported = true;
-
-  const officialQuoteRequired = payrollRoutePolicy.requiresQuote;
-  // officialQuoteReady means the preview quote resolved with a usable output.
-  // It drives the "They Receive" preview and proportional row allocation for
-  // BOTH providers. Execution readiness is gated separately below.
-  const officialQuoteReady = Boolean(
-    officialQuoteRequired &&
-    officialQuote.expectedOutputUnits &&
-    (payrollRoutePolicy.kind !== "external-wallet-xylonet" ||
-      officialQuote.minimumOutputUnits) &&
-    !officialQuote.loading &&
-    !officialQuote.error,
-  );
-
-  // Active provider behind the cross-currency quote.
-  const officialQuoteProvider = officialQuote.provider;
-  const officialQuoteProviderLabel =
-    officialQuoteProvider === "stablefx"
-      ? STABLEFX_PROVIDER_LABEL
-      : officialQuoteProvider === "xylonet"
-        ? "XyloNet Direct"
-        : null;
-
-  // StableFX payroll execution is available for both wallet modes:
-  // External Wallet uses the browser-wallet executePreSwap path, and App
-  // Wallet uses treasury-mediated settlement through PayrollFxSettlementService.
-  const isStablefxCrossCurrency =
-    officialQuoteRequired && officialQuoteProvider === "stablefx";
-  const stablefxPayrollExecutionSupported = true;
-  const crossCurrencyExecutionBlocked =
-    payrollRoutePolicy.kind === "cross-token-disabled" ||
-    (isStablefxCrossCurrency && !stablefxPayrollExecutionSupported);
-  const crossCurrencyExecutionBlockedReason = crossCurrencyExecutionBlocked
-    ? (payrollRoutePolicy.blockedReason ?? STABLEFX_EXECUTION_PENDING_MESSAGE)
-    : null;
-
-  // Determine if App Wallet cross-currency should block Send
-  const appWalletCrossCurrencyBlocked =
-    walletMode === "circle" &&
-    Boolean(crossCurrencyTarget) &&
-    !appWalletCrossCurrencyExecutionSupported;
-
-  const appWalletCrossCurrencyMessage = appWalletCrossCurrencyBlocked
-    ? "App Wallet cross-currency payroll execution is not available yet. Use External Wallet for route-swap payroll."
-    : null;
-
-  // A genuine quote problem (error, or resolved with no usable output).
-  // A successful quote — including a StableFX quote — is NOT an issue here;
-  // StableFX execution gating is handled by crossCurrencyExecutionBlocked.
-  const officialQuoteIssue = officialQuoteRequired
-    ? officialQuote.loading
-      ? null
-      : (officialQuote.error ??
-        (officialQuote.expectedOutputUnits
-          ? null
-          : crossCurrencyTarget
-            ? `Official quote unavailable for ${contract.activeToken.symbol} -> ${crossCurrencyTarget} aggregate amount.`
-            : OFFICIAL_PAYROLL_QUOTE_UNAVAILABLE))
-    : null;
-
-  // Row diagnostics for cross-currency recipients
-  const officialQuoteDiagnostics = (() => {
-    // App Wallet cross-currency: show execution-blocked message on cross rows
-    if (appWalletCrossCurrencyBlocked) {
-      if (officialQuote.loading) {
-        return preparedRecipients.map((recipient) =>
-          recipient.targetToken !== contract.activeToken.symbol
-            ? "Loading official payroll route quote..."
-            : null,
-        );
-      }
-      if (officialQuote.error || !officialQuote.expectedOutputUnits) {
-        return preparedRecipients.map((recipient) =>
-          recipient.targetToken !== contract.activeToken.symbol
-            ? (officialQuote.error ??
-              `Official quote unavailable for ${contract.activeToken.symbol} -> ${crossCurrencyTarget}.`)
-            : null,
-        );
-      }
-      // Quote succeeded but execution not available
-      return preparedRecipients.map((recipient) =>
-        recipient.targetToken !== contract.activeToken.symbol
-          ? appWalletCrossCurrencyMessage
-          : null,
-      );
-    }
-
-    // Quote and policy diagnostics for cross-currency rows.
-    if (officialQuoteIssue) {
-      return preparedRecipients.map((recipient) =>
-        recipient.targetToken !== contract.activeToken.symbol
-          ? officialQuoteIssue
-          : null,
-      );
-    }
-    if (officialQuoteRequired && officialQuote.loading) {
-      return preparedRecipients.map((recipient) =>
-        recipient.targetToken !== contract.activeToken.symbol
-          ? "Loading official payroll route quote..."
-          : null,
-      );
-    }
-    // Reserved for unsupported cross-currency execution providers while the
-    // preview amounts remain populated.
-    if (crossCurrencyExecutionBlocked) {
-      return preparedRecipients.map((recipient) =>
-        recipient.targetToken !== contract.activeToken.symbol
-          ? crossCurrencyExecutionBlockedReason
-          : null,
-      );
-    }
-    if (officialQuoteRequired) {
-      return preparedRecipients.map((recipient) =>
-        recipient.targetToken !== contract.activeToken.symbol
-          ? null // Quote succeeded — no diagnostic needed
-          : null,
-      );
-    }
-
-    return null;
-  })();
-
-  const getRecoveredPayrollBatch = useCallback(
-    async (batchReferenceId: string) => {
-      const binding = externalPayrollBindingRef.current;
-      if (!binding || !publicClient) return null;
-      return getRecoveredExternalPayrollBatch({
-        binding,
-        storage: window.localStorage,
-        referenceId: batchReferenceId,
-        waitForReceipt: (hash) =>
-          publicClient.waitForTransactionReceipt({
-            hash,
-            confirmations: 1,
-          }),
-      });
+      return stored.txHash;
     },
     [publicClient],
   );
 
   const recordPayrollBatchConfirmation = useCallback(
     async (batchReferenceId: string, txHash: string) => {
-      const binding = externalPayrollBindingRef.current;
-      if (!binding) {
-        throw new Error(
-          "External Wallet payroll recovery binding is unavailable.",
-        );
-      }
       if (!isTransactionHash(txHash)) {
-        throw new Error("External Wallet payroll transaction hash is invalid.");
+        throw new Error("Payroll transaction hash is invalid.");
       }
       if (!publicClient) {
         throw new Error(
-          "Arc public client is unavailable for payroll confirmation.",
+          "Arc Mainnet public client is not ready to confirm payroll. " +
+            "Retry once the network client is available.",
         );
       }
-      await recordExternalPayrollBatchConfirmation({
-        binding,
-        storage: window.localStorage,
-        referenceId: batchReferenceId,
-        txHash: txHash as Hex,
-        waitForReceipt: (hash) =>
-          publicClient.waitForTransactionReceipt({
-            hash,
-            confirmations: 1,
-          }),
+
+      const receipt = await publicClient.waitForTransactionReceipt({
+        hash: txHash as Hex,
+        confirmations: 1,
+      });
+      if (receipt.status !== "success") {
+        throw new Error(
+          "Payroll batch transaction reverted on Arc Mainnet. No payout was recorded.",
+        );
+      }
+
+      writeStoredMainnetPayrollBatch(batchReferenceId, {
+        status: "confirmed",
+        txHash,
+        updatedAt: new Date().toISOString(),
       });
     },
     [publicClient],
@@ -1029,16 +268,13 @@ export function useWizPay(): WizPayState {
 
   const beginPayrollBatchSubmission = useCallback(
     async (batchReferenceId: string) => {
-      const binding = externalPayrollBindingRef.current;
-      if (!binding) {
-        throw new Error(
-          "External Wallet payroll recovery binding is unavailable.",
-        );
+      if (readStoredMainnetPayrollBatch(batchReferenceId)) {
+        return;
       }
-      beginExternalPayrollBatchSubmission({
-        binding,
-        storage: window.localStorage,
-        referenceId: batchReferenceId,
+      writeStoredMainnetPayrollBatch(batchReferenceId, {
+        status: "submitted",
+        txHash: null,
+        updatedAt: new Date().toISOString(),
       });
     },
     [],
@@ -1046,17 +282,15 @@ export function useWizPay(): WizPayState {
 
   const clearPayrollBatchSubmission = useCallback(
     async (batchReferenceId: string) => {
-      const binding = externalPayrollBindingRef.current;
-      if (!binding) return;
-      clearExternalPayrollBatchSubmission({
-        binding,
-        storage: window.localStorage,
-        referenceId: batchReferenceId,
-      });
+      removeStoredMainnetPayrollBatch(batchReferenceId);
     },
     [],
   );
 
+  // 4. Batch orchestration. No off-chain pre-swap is wired: same-token
+  // payroll submits directly, and cross-token payroll executes atomically
+  // inside the Mainnet payroll contract once the pool gate passes. Until
+  // then the blocked gates below keep Send disabled with a clear reason.
   const batchPayroll = useBatchPayroll({
     activeToken: contract.activeToken,
     approveBatchAmount: contract.requestApproval,
@@ -1068,46 +302,61 @@ export function useWizPay(): WizPayState {
     setStatusMessage: state.setStatusMessage,
     setErrorMessage: state.setErrorMessage,
     submitCurrentBatch: contract.handleSubmit,
-    executePreSwap:
-      payrollRoutePolicy.kind === "app-wallet-xylonet"
-        ? executeAppWalletPreSwap
-        : payrollRoutePolicy.kind === "external-wallet-xylonet"
-          ? executePreSwap
-          : undefined,
-    resumeAppWalletXylonetSwap:
-      payrollRoutePolicy.kind === "app-wallet-xylonet"
-        ? resumeAppWalletXylonetSwap
-        : undefined,
-    getPreSwapPayoutAmounts: getPreSwapPayoutAmounts,
     officialQuoteRequired,
     officialQuoteReady,
-    officialQuoteError: appWalletCrossCurrencyBlocked
-      ? appWalletCrossCurrencyMessage
-      : officialQuoteIssue,
+    officialQuoteError,
     crossCurrencyExecutionBlocked,
     crossCurrencyExecutionBlockedReason,
-    getRecoveredPayrollBatch:
-      payrollRoutePolicy.kind === "external-wallet-xylonet"
-        ? getRecoveredPayrollBatch
-        : undefined,
-    recordPayrollBatchConfirmation:
-      payrollRoutePolicy.kind === "external-wallet-xylonet"
-        ? recordPayrollBatchConfirmation
-        : undefined,
-    beginPayrollBatchSubmission:
-      payrollRoutePolicy.kind === "external-wallet-xylonet"
-        ? beginPayrollBatchSubmission
-        : undefined,
-    clearPayrollBatchSubmission:
-      payrollRoutePolicy.kind === "external-wallet-xylonet"
-        ? clearPayrollBatchSubmission
-        : undefined,
+    getRecoveredPayrollBatch,
+    recordPayrollBatchConfirmation,
+    beginPayrollBatchSubmission,
+    clearPayrollBatchSubmission,
   });
 
-  // 3. Initialize History
+  // 5. History.
   const history = useWizPayHistory({
     activeToken: contract.activeToken,
   });
+
+  // 6. Composer preview while the cross-token route is blocked: zeroed
+  // amounts with per-row reasons instead of estimated outputs.
+  const blockedQuoteSummary = useMemo<QuoteSummary>(
+    () => ({
+      estimatedAmountsOut: preparedRecipients.map(() => 0n),
+      totalEstimatedOut: 0n,
+      totalFees: 0n,
+    }),
+    [preparedRecipients],
+  );
+
+  const quotePreviewBlocked = officialQuoteRequired;
+  const quoteSummary = quotePreviewBlocked
+    ? blockedQuoteSummary
+    : contract.quoteSummary;
+
+  const rowDiagnostics = useMemo<(string | null)[]>(() => {
+    if (!crossCurrencyExecutionBlocked) {
+      return contract.rowDiagnostics;
+    }
+    return preparedRecipients.map((recipient) =>
+      recipient.targetToken !== contract.activeToken.symbol
+        ? (crossCurrencyExecutionBlockedReason ??
+          OFFICIAL_PAYROLL_QUOTE_UNAVAILABLE)
+        : null,
+    );
+  }, [
+    contract.activeToken.symbol,
+    contract.rowDiagnostics,
+    crossCurrencyExecutionBlocked,
+    crossCurrencyExecutionBlockedReason,
+    preparedRecipients,
+  ]);
+
+  const hasRouteIssue = crossCurrencyExecutionBlocked;
+  const swapProviderLabel =
+    payrollRoutePolicy.kind === "external-wallet-mainnet-atomic"
+      ? "Arc Mainnet atomic"
+      : null;
 
   const isBusy =
     (batchPayroll.isRunning && !batchPayroll.fxStatus?.recoverableError) ||
@@ -1148,152 +397,86 @@ export function useWizPay(): WizPayState {
 
   const primaryActionText =
     state.submitState === "simulating"
-      ? isStableFxMode
-        ? "Preparing Circle Trade..."
-        : "Preparing Circle Challenge..."
+      ? "Preparing payroll..."
       : state.submitState === "wallet"
-        ? isStableFxMode
-          ? "Sign Circle Permit..."
-          : "Confirm in Circle..."
+        ? "Confirm in wallet..."
         : state.submitState === "confirming"
-          ? isStableFxMode
-            ? "Settling with Circle..."
-            : "Waiting for Circle..."
+          ? "Waiting for Arc Mainnet confirmation..."
           : state.submitState === "confirmed"
-            ? isStableFxMode
-              ? "Trades Settled"
-              : "Batch Sent"
-            : isStableFxMode
-              ? "Settle with Circle"
-              : "Send";
+            ? "Batch Sent"
+            : "Send";
 
   const approvalText =
     state.approvalState === "signing"
-      ? isStableFxMode
-        ? "Approve in Wallet..."
-        : "Approve in Circle..."
+      ? "Approve in wallet..."
       : state.approvalState === "confirming"
-        ? "Confirming Approval..."
+        ? "Confirming approval..."
         : state.approvalState === "confirmed" && !contract.needsApproval
-          ? isStableFxMode
-            ? "Permit2 Approved"
-            : "Approval Confirmed"
-          : isStableFxMode
-            ? `Approve ${state.selectedToken} via Permit2`
-            : `Approve ${state.selectedToken} via Circle`;
+          ? "Approval confirmed"
+          : `Approve ${state.selectedToken}`;
 
-  // ── Dev-only App Wallet gating diagnostic ──────────────────────────
+  // ── Dev-only Mainnet route diagnostic ────────────────────────────
   useEffect(() => {
-    if (!PAYROLL_FX_DEBUG) return;
-    const allRecipients = [state.recipients, ...state.pendingBatches].flat();
-    const targetTokens = Array.from(
-      new Set(allRecipients.map((r) => r.targetToken)),
-    );
+    if (process.env.NODE_ENV === "production") {
+      return;
+    }
     const canSend = batchPayroll.isSupported && Boolean(batchPayroll.execute);
     const disabledReasons: string[] = [];
     if (isBusy) disabledReasons.push("isBusy");
     if (batchPayroll.isRunning) disabledReasons.push("smartBatchRunning");
     if (contract.insufficientBalance)
       disabledReasons.push("insufficientBalance");
-    if (!canSend)
-      disabledReasons.push(
-        "!canSend (smartBatchAvailable=" +
-          String(batchPayroll.isSupported) +
-          ")",
-      );
+    if (!canSend) disabledReasons.push("!canSend");
 
-    console.debug("[app-wallet-gating-diagnostic]", {
-      walletMode,
-      walletAddress: walletAddress ?? null,
+    logMainnetPayrollRoute("[mainnet-payroll-route] gating diagnostic", {
+      walletConnected: Boolean(walletAddress),
       activeToken: contract.activeToken.symbol,
-      recipientCount: allRecipients.length,
-      targetTokens,
       crossCurrencyTarget: crossCurrencyTarget ?? null,
+      routeKind: payrollRoutePolicy.kind,
+      quoteRequired: officialQuoteRequired,
+      quoteReady: officialQuoteReady,
+      quoteError: officialQuoteError,
+      executionBlocked: crossCurrencyExecutionBlocked,
+      blockedReason: crossCurrencyExecutionBlockedReason,
       batchAmount: batchAmount.toString(),
-      currentBalance: contract.currentBalance.toString(),
-      currentAllowance: contract.currentAllowance.toString(),
-      insufficientBalance: contract.insufficientBalance,
-      officialQuoteRequired,
-      officialQuotePreviewEnabled,
-      officialQuoteReady,
-      officialQuoteLoading: officialQuote.loading,
-      officialQuoteError: officialQuote.error ?? null,
-      officialQuoteIssue: officialQuoteIssue ?? null,
-      appWalletCrossCurrencyBlocked,
-      appWalletCrossCurrencyExecutionSupported,
-      "batchPayroll.isSupported": batchPayroll.isSupported,
-      smartBatchAvailable: batchPayroll.isSupported,
-      handleSmartBatchSubmitExists: Boolean(batchPayroll.execute),
       canSend,
       isBusy,
       disabledReasons:
         disabledReasons.length > 0
           ? disabledReasons
           : ["none — button should be enabled"],
-      theyReceiveSource: officialQuotePreviewEnabled
-        ? officialQuote.expectedOutputUnits
-          ? "official quote"
-          : officialQuote.loading
-            ? "loading"
-            : "unavailable"
-        : "same-token (no quote needed)",
     });
   }, [
-    walletMode,
-    walletAddress,
-    contract.activeToken.symbol,
-    contract.currentBalance,
-    contract.currentAllowance,
-    contract.insufficientBalance,
-    state.recipients,
-    state.pendingBatches,
     batchAmount,
-    crossCurrencyTarget,
-    officialQuoteRequired,
-    officialQuotePreviewEnabled,
-    officialQuoteReady,
-    officialQuote.loading,
-    officialQuote.error,
-    officialQuote.expectedOutputUnits,
-    officialQuoteIssue,
-    appWalletCrossCurrencyBlocked,
-    appWalletCrossCurrencyExecutionSupported,
-    batchPayroll.isSupported,
-    batchPayroll.isRunning,
     batchPayroll.execute,
+    batchPayroll.isRunning,
+    batchPayroll.isSupported,
+    contract.activeToken.symbol,
+    contract.insufficientBalance,
+    crossCurrencyExecutionBlocked,
+    crossCurrencyExecutionBlockedReason,
+    crossCurrencyTarget,
     isBusy,
+    officialQuoteError,
+    officialQuoteReady,
+    officialQuoteRequired,
+    payrollRoutePolicy.kind,
+    walletAddress,
   ]);
 
-  // 4. Return unified state matching the previous monolithic footprint
+  // 7. Return unified state matching the previous monolithic footprint.
   return {
     ...state,
     preparedRecipients,
     ...contract,
     ...history,
-    // Override quote state for the App Wallet XyloNet lifecycle and surface
-    // local policy diagnostics for unsupported External cross-token rows.
-    ...(officialQuotePreviewEnabled || crossCurrencyExecutionBlocked
+    ...(quotePreviewBlocked || crossCurrencyExecutionBlocked
       ? {
-          quoteSummary: officialQuotePreviewEnabled
-            ? (officialQuoteSummary ?? {
-                estimatedAmountsOut: preparedRecipients.map(() => 0n),
-                totalEstimatedOut: 0n,
-                totalFees: 0n,
-              })
-            : contract.quoteSummary,
-          quoteLoading: officialQuotePreviewEnabled
-            ? officialQuote.loading
-            : contract.quoteLoading,
-          quoteRefreshing: officialQuotePreviewEnabled
-            ? officialQuote.loading
-            : contract.quoteRefreshing,
-          rowDiagnostics:
-            officialQuoteDiagnostics ?? preparedRecipients.map(() => null),
-          hasRouteIssue: Boolean(
-            officialQuoteIssue ||
-            appWalletCrossCurrencyBlocked ||
-            crossCurrencyExecutionBlocked,
-          ),
+          quoteSummary,
+          quoteLoading: false,
+          quoteRefreshing: false,
+          rowDiagnostics,
+          hasRouteIssue,
         }
       : {}),
     batchAmount,
@@ -1309,8 +492,8 @@ export function useWizPay(): WizPayState {
     smartBatchReason: batchPayroll.availabilityReason,
     smartBatchButtonText,
     smartBatchHelperText,
-    // Cross-currency quote provider label (e.g. "StableFX"), null otherwise.
-    swapProviderLabel: officialQuoteProviderLabel,
+    // Cross-currency route label ("Arc Mainnet atomic"), null for direct.
+    swapProviderLabel,
     smartBatchSubmissionHashes: batchPayroll.submissionHashes,
     payrollTaskId: batchPayroll.taskId,
     payrollTask: batchPayroll.task,

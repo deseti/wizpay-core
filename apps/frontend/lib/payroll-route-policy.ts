@@ -1,16 +1,8 @@
-import type { WalletMode } from "@/lib/wallet-mode";
-
 export const CROSS_TOKEN_DISABLED_MESSAGE =
-  "Cross-token payments are unavailable on the selected Arc network.";
+  "Cross-token payments are unavailable on Arc Mainnet.";
 
 export type PayrollRoutePolicy =
   | { kind: "direct"; requiresQuote: false; blockedReason: null }
-  | { kind: "app-wallet-xylonet"; requiresQuote: true; blockedReason: null }
-  | {
-      kind: "external-wallet-xylonet";
-      requiresQuote: true;
-      blockedReason: null;
-    }
   | {
       kind: "external-wallet-mainnet-atomic";
       requiresQuote: true;
@@ -23,8 +15,7 @@ export type PayrollRoutePolicy =
     };
 
 export function resolvePayrollRoutePolicy(input: {
-  walletMode: WalletMode;
-  network: "arc-testnet" | "arc-mainnet";
+  network: "arc-mainnet";
   sourceTokenAddress: string;
   targetTokenAddresses: readonly string[];
   crossTokenEnabled: boolean;
@@ -37,36 +28,15 @@ export function resolvePayrollRoutePolicy(input: {
   if (!hasCrossTokenRecipient) {
     return { kind: "direct", requiresQuote: false, blockedReason: null };
   }
-  if (input.network === "arc-mainnet") {
-    if (!input.crossTokenEnabled || input.walletMode !== "external") {
-      return {
-        kind: "cross-token-disabled",
-        requiresQuote: false,
-        blockedReason: CROSS_TOKEN_DISABLED_MESSAGE,
-      };
-    }
-    return {
-      kind: "external-wallet-mainnet-atomic",
-      requiresQuote: true,
-      blockedReason: null,
-    };
-  }
-  if (input.network !== "arc-testnet" || !input.crossTokenEnabled) {
+  if (!input.crossTokenEnabled) {
     return {
       kind: "cross-token-disabled",
       requiresQuote: false,
       blockedReason: CROSS_TOKEN_DISABLED_MESSAGE,
     };
   }
-  if (input.walletMode === "circle") {
-    return {
-      kind: "app-wallet-xylonet",
-      requiresQuote: true,
-      blockedReason: null,
-    };
-  }
   return {
-    kind: "external-wallet-xylonet",
+    kind: "external-wallet-mainnet-atomic",
     requiresQuote: true,
     blockedReason: null,
   };

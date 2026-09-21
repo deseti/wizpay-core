@@ -18,7 +18,7 @@ import {
   formatTokenAmount,
   SUPPORTED_TOKENS,
   TOKEN_OPTIONS,
-  ARC_TESTNET_CHAIN_ID,
+  ARC_MAINNET_CHAIN_ID,
 } from "@/lib/wizpay";
 import type { PreparedRecipient } from "@/lib/types";
 import type { RecipientDraft, TokenSymbol } from "@/lib/wizpay";
@@ -116,7 +116,7 @@ export function RecipientRow({
                 key={`${recipient.id}-${token.symbol}`}
                 value={token.symbol}
               >
-                <span className="flex items-center gap-2"><TokenIcon chainId={ARC_TESTNET_CHAIN_ID} address={token.address} symbol={token.symbol} size={20} />{token.symbol}</span>
+                <span className="flex items-center gap-2"><TokenIcon chainId={ARC_MAINNET_CHAIN_ID} address={token.address} symbol={token.symbol} size={20} />{token.symbol}</span>
               </SelectItem>
             ))}
           </SelectContent>

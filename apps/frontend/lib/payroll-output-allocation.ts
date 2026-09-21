@@ -16,10 +16,10 @@ export function allocateVerifiedPayrollOutput(
 ) {
   const totalOutput = readPositiveBaseUnits(
     verifiedActualOutput,
-    "Verified XyloNet output",
+    "Verified payroll output",
   );
   if (recipients.length === 0) {
-    throw new Error("XyloNet output has no Payroll recipients.");
+    throw new Error("Verified payroll output has no recipients.");
   }
 
   const weights = recipients.map((recipient) =>
@@ -36,7 +36,7 @@ export function allocateVerifiedPayrollOutput(
         : (totalOutput * weights[index]) / totalWeight;
     if (amount <= 0n) {
       throw new Error(
-        "Verified XyloNet output is below the safe distributable amount.",
+        "Verified payroll output is below the safe distributable amount.",
       );
     }
     allocated += amount;
@@ -44,7 +44,7 @@ export function allocateVerifiedPayrollOutput(
   });
 
   if (allocated !== totalOutput) {
-    throw new Error("Verified XyloNet output allocation is inconsistent.");
+    throw new Error("Verified payroll output allocation is inconsistent.");
   }
   return result;
 }

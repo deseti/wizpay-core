@@ -2,12 +2,9 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowRightLeft, ShieldCheck } from "lucide-react";
-import { formatUnits, type Hex } from "viem";
+import { formatUnits } from "viem";
 import { usePublicClient, useReadContract, useWalletClient } from "wagmi";
-import { useQueryClient } from "@tanstack/react-query";
 
-import { useCircleWallet } from "@/components/providers/CircleWalletProvider";
-import { ExternalBridgePanel } from "@/components/dashboard/ExternalBridgePanel";
 import {
   SwapSuccessDialog,
   type SwapSuccessResult,
@@ -31,18 +28,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { ERC20_ABI } from "@/constants/erc20";
-import { WIZPAY_SWAP_EXECUTOR_V2_ADDRESS } from "@/constants/addresses";
 import { useActiveWalletAddress } from "@/hooks/useActiveWalletAddress";
 import { useToast } from "@/hooks/use-toast";
-import {
-  APP_WALLET_SWAP_CHAIN,
-  createAppWalletXylonetOperation,
-  getAppWalletXylonetOperation,
-  pollAppWalletXylonetOperation,
-  quoteAppWalletXylonetSwap,
-  type AppWalletSwapQuoteResponse,
-  type AppWalletXylonetOperationResponse,
-} from "@/lib/app-wallet-swap-service";
 import {
   ARC_GAS_FALLBACK_UNITS,
   calculateArcMaxAmount,
@@ -51,23 +38,11 @@ import {
   sumGasReserves,
 } from "@/lib/arc-gas-reserve";
 import {
-  appWalletSwapExecutionState,
-  clearAppWalletSwapRecovery,
-  readAppWalletSwapRecovery,
-  writeAppWalletSwapRecovery,
-} from "@/lib/app-wallet-swap-recovery";
-import {
-  WIZPAY_SWAP_EXECUTOR_V2_ABI,
-  createSwapSubmissionLock,
-  validateExternalXylonetQuote,
-  verifyExternalXylonetReceipt,
-} from "@/lib/external-xylonet-swap";
-import { runAppWalletXylonetLifecycle } from "@/lib/app-wallet-xylonet-lifecycle";
-import {
   quoteUserSwap,
+  USER_SWAP_CHAIN,
   type UserSwapQuoteResponse,
 } from "@/lib/user-swap-service";
-import { arcTestnet } from "@/lib/wagmi";
+import { activeArcChain } from "@/lib/wagmi";
 import {
   PREVIEW_SLIPPAGE_BPS,
   SUPPORTED_TOKENS,
@@ -77,19 +52,16 @@ import {
   type TokenSymbol,
 } from "@/lib/wizpay";
 import { useCapability } from "@/components/providers/CapabilityProvider";
-import { ACTIVE_ARC_NETWORK } from "@/lib/active-arc-network";
 import { WIZPAY_SWAP_EXECUTOR_MAINNET_ABI } from "@/constants/generated/wizpay-swap-executor-mainnet.abi";
 import {
-  ARC_MAINNET_UNISWAP_V4_CHAIN_ID,
   WIZPAY_SWAP_EXECUTOR_MAINNET_ADDRESS,
   applySlippage,
   calculateMinHopPriceX36,
-  encodeExecuteSwap,
   encodeUserControlledApprovals,
   mainnetUniswapV4TransactionValue,
 } from "@/lib/mainnet-uniswap-v4-protocol";
+import { getMainnetUniswapV4UnavailableState } from "@/lib/mainnet-uniswap-v4";
 
-type QuoteState = AppWalletSwapQuoteResponse | UserSwapQuoteResponse;
 type RequestStatus =
   | "idle"
   | "quoting"
@@ -97,13 +69,8 @@ type RequestStatus =
   | "approving"
   | "signing"
   | "executing"
-  | "confirming";
-
-const submitExternalSwap = createSwapSubmissionLock();
-
-function sameAddress(left: string | undefined, right: string | undefined) {
-  return Boolean(left && right && left.toLowerCase() === right.toLowerCase());
-}
+  | "confirming"
+  | "completed";
 
 function readPositiveAmount(value: unknown): bigint | null {
   if (typeof value !== "string" || !/^\d+$/.test(value)) return null;
@@ -111,77 +78,49 @@ function readPositiveAmount(value: unknown): bigint | null {
   return amount > 0n ? amount : null;
 }
 
-function assertAppWalletQuote(input: {
-  quote: AppWalletSwapQuoteResponse;
-  walletAddress: string;
-  tokenIn: TokenSymbol;
-  tokenOut: TokenSymbol;
-  amountIn: string;
-}) {
-  const expectedExecutor = WIZPAY_SWAP_EXECUTOR_V2_ADDRESS;
-  if (
-    input.quote.provider !== "xylonet" ||
-    input.quote.sourceChain !== APP_WALLET_SWAP_CHAIN ||
-    input.quote.tokenIn !== input.tokenIn ||
-    input.quote.tokenOut !== input.tokenOut ||
-    input.quote.amountIn !== input.amountIn ||
-    !sameAddress(input.quote.walletAddress, input.walletAddress) ||
-    !sameAddress(input.quote.recipientAddress, input.walletAddress) ||
-    !sameAddress(input.quote.executorAddress, expectedExecutor) ||
-    !readPositiveAmount(input.quote.expectedOutput) ||
-    !readPositiveAmount(input.quote.minimumOutput)
-  )
-    throw new Error(
-      "App Wallet XyloNet quote does not match the current swap request.",
-    );
-  if (
-    !input.quote.expiresAt ||
-    Date.parse(input.quote.expiresAt) <= Date.now()
-  ) {
-    throw new Error("App Wallet XyloNet quote has expired.");
+function readQuoteAmountOut(quote: UserSwapQuoteResponse | null): bigint | null {
+  if (!quote) return null;
+  const raw =
+    (quote as { expectedOutput?: unknown }).expectedOutput ??
+    quote.expectedAmountOut ??
+    quote.minimumAmountOut ??
+    quote.minAmountOut;
+  if (typeof raw === "bigint") return raw > 0n ? raw : null;
+  if (typeof raw === "string" && /^\d+$/.test(raw)) {
+    const parsed = BigInt(raw);
+    return parsed > 0n ? parsed : null;
   }
+  return null;
 }
 
 export function SwapScreen() {
   const swapCapability = useCapability("swap");
-  const bridgeCapability = useCapability("bridge");
-  if (!swapCapability.enabled && !bridgeCapability.enabled) {
+  if (!swapCapability.enabled) {
     return (
       <p role="alert" className="text-sm text-amber-300">
         {swapCapability.unavailableMessage}
       </p>
     );
   }
-  return (
-    <SwapWorkspace
-      swapCapability={swapCapability}
-      bridgeCapability={bridgeCapability}
-    />
-  );
+  return <SwapWorkspace swapCapability={swapCapability} />;
 }
 
 function SwapWorkspace({
   swapCapability,
-  bridgeCapability,
 }: {
   swapCapability: ReturnType<typeof useCapability>;
-  bridgeCapability: ReturnType<typeof useCapability>;
 }) {
-  const queryClient = useQueryClient();
-  const { walletAddress, walletMode } = useActiveWalletAddress();
-  const { arcWallet, executeChallenge, userToken } = useCircleWallet();
+  const { walletAddress } = useActiveWalletAddress();
   const { data: walletClient } = useWalletClient();
-  const publicClient = usePublicClient({ chainId: arcTestnet.id });
+  const publicClient = usePublicClient({ chainId: activeArcChain.id });
   const { balances, isLoading: balancesLoading } = useTokenBalances();
   const { toast } = useToast();
 
   const [tokenIn, setTokenIn] = useState<TokenSymbol>("USDC");
   const [tokenOut, setTokenOut] = useState<TokenSymbol>("EURC");
   const [amountIn, setAmountIn] = useState("");
-  const [quote, setQuote] = useState<QuoteState | null>(null);
+  const [quote, setQuote] = useState<UserSwapQuoteResponse | null>(null);
   const [quoteKey, setQuoteKey] = useState<string | null>(null);
-  const [operation, setOperation] =
-    useState<AppWalletXylonetOperationResponse | null>(null);
   const [status, setStatus] = useState<RequestStatus>("idle");
   const [error, setError] = useState<string | null>(null);
   const [swapSuccess, setSwapSuccess] = useState<SwapSuccessResult | null>(
@@ -202,72 +141,12 @@ function SwapWorkspace({
     "estimate" | "fallback"
   >("fallback");
   const [estimatingMax, setEstimatingMax] = useState(false);
-  const [screenMode, setScreenMode] = useState<"swap" | "bridge">("swap");
   const showQuoteSkeleton = useDelayedLoading(status === "quoting");
   const quoteSequence = useRef(0);
-  const operationIdempotencyKey = useRef<string | null>(null);
   const transactionActive = useRef(false);
-  const isExternal = walletMode === "external";
-  const isCircle = walletMode === "circle";
-  const arcWalletId = arcWallet?.id;
 
-  const recoveryScope = useMemo(
-    () =>
-      isCircle && arcWalletId && walletAddress
-        ? { circleWalletId: arcWalletId, walletAddress }
-        : null,
-    [arcWalletId, isCircle, walletAddress],
-  );
-
-  function persistOperation(next: AppWalletXylonetOperationResponse) {
-    setOperation(next);
-    writeAppWalletSwapRecovery(
-      typeof window === "undefined" ? undefined : window.localStorage,
-      next,
-    );
-  }
-
-  useEffect(() => {
-    if (!recoveryScope || !userToken) {
-      queueMicrotask(() => setOperation(null));
-      return;
-    }
-    const pointer = readAppWalletSwapRecovery(
-      window.localStorage,
-      recoveryScope,
-    );
-    if (!pointer) return;
-    const controller = new AbortController();
-    void getAppWalletXylonetOperation(pointer.operationId, userToken)
-      .then((restored) => {
-        if (controller.signal.aborted) return;
-        if (
-          restored.circleWalletId !== recoveryScope.circleWalletId ||
-          !sameAddress(restored.walletAddress, recoveryScope.walletAddress)
-        ) {
-          clearAppWalletSwapRecovery(window.localStorage, recoveryScope);
-          setError(
-            "The saved swap recovery record did not match the active wallet and was rejected.",
-          );
-          return;
-        }
-        setAmountIn(
-          formatUnits(
-            BigInt(restored.amountIn),
-            SUPPORTED_TOKENS[restored.tokenIn].decimals,
-          ),
-        );
-        setTokenIn(restored.tokenIn);
-        setTokenOut(restored.tokenOut);
-        persistOperation(restored);
-      })
-      .catch(() =>
-        setError(
-          "Swap status is temporarily unavailable. No new swap can be created until the existing attempt is reconciled.",
-        ),
-      );
-    return () => controller.abort();
-  }, [recoveryScope, userToken]);
+  const poolGate = useMemo(() => getMainnetUniswapV4UnavailableState(), []);
+  const poolBlocked = !poolGate.available || !poolGate.executable;
 
   function setTransactionStatus(next: SwapProgressRequestStatus) {
     setProgressStatus(next);
@@ -278,14 +157,9 @@ function SwapWorkspace({
     () => parseAmountToUnits(amountIn, SUPPORTED_TOKENS[tokenIn].decimals),
     [amountIn, tokenIn],
   );
-  const effectiveScreenMode = isExternal ? screenMode : "swap";
   const requestKey =
-    effectiveScreenMode === "swap" &&
-    walletAddress &&
-    amountUnits > 0n &&
-    tokenIn !== tokenOut
+    walletAddress && amountUnits > 0n && tokenIn !== tokenOut
       ? [
-          walletMode,
           walletAddress.toLowerCase(),
           tokenIn,
           tokenOut,
@@ -295,10 +169,10 @@ function SwapWorkspace({
   const { data: externalBalance = 0n } = useReadContract({
     address: SUPPORTED_TOKENS[tokenIn].address,
     abi: ERC20_ABI,
-    chainId: arcTestnet.id,
+    chainId: activeArcChain.id,
     functionName: "balanceOf",
     args: walletAddress ? [walletAddress] : undefined,
-    query: { enabled: Boolean(isExternal && walletAddress) },
+    query: { enabled: Boolean(walletAddress) },
   });
 
   useEffect(() => {
@@ -307,41 +181,25 @@ function SwapWorkspace({
       setQuoteKey(null);
       setError(null);
     });
-    operationIdempotencyKey.current = null;
-    if (!requestKey || !walletAddress || (!isCircle && !isExternal)) return;
+    if (!requestKey || !walletAddress) return;
 
     const controller = new AbortController();
     const sequence = ++quoteSequence.current;
     const timer = setTimeout(async () => {
       setStatus("quoting");
       try {
-        const next = isCircle
-          ? await quoteAppWalletXylonetSwap(
-              {
-                idempotencyKey: crypto.randomUUID(),
-                walletId: arcWallet?.id ?? "",
-                walletAddress,
-                chain: APP_WALLET_SWAP_CHAIN,
-                tokenIn,
-                tokenOut,
-                amountIn: amountUnits.toString(),
-                slippageBps: Number(PREVIEW_SLIPPAGE_BPS),
-              },
-              userToken ?? "",
-              { signal: controller.signal },
-            )
-          : await quoteUserSwap(
-              {
-                tokenIn,
-                tokenOut,
-                amountIn: amountUnits.toString(),
-                fromAddress: walletAddress,
-                toAddress: walletAddress,
-                chain: "ARC-TESTNET",
-                slippageBps: Number(PREVIEW_SLIPPAGE_BPS),
-              },
-              { signal: controller.signal },
-            );
+        const next = await quoteUserSwap(
+          {
+            tokenIn,
+            tokenOut,
+            amountIn: amountUnits.toString(),
+            fromAddress: walletAddress,
+            toAddress: walletAddress,
+            chain: USER_SWAP_CHAIN,
+            slippageBps: Number(PREVIEW_SLIPPAGE_BPS),
+          },
+          { signal: controller.signal },
+        );
         if (sequence !== quoteSequence.current) return;
         setQuote(next);
         setQuoteKey(requestKey);
@@ -357,150 +215,44 @@ function SwapWorkspace({
       clearTimeout(timer);
       controller.abort();
     };
-  }, [
-    amountUnits,
-    arcWallet?.id,
-    isCircle,
-    isExternal,
-    requestKey,
-    tokenIn,
-    tokenOut,
-    userToken,
-    walletAddress,
-  ]);
+  }, [amountUnits, requestKey, tokenIn, tokenOut, walletAddress]);
 
   const quoteCurrent = Boolean(quote && requestKey && quoteKey === requestKey);
-  const quotedGasReserveUnits =
-    quoteCurrent &&
-    quote &&
-    "sourceChain" in quote &&
-    typeof quote.gasReserveUnits === "string" &&
-    /^\d+$/.test(quote.gasReserveUnits)
-      ? BigInt(quote.gasReserveUnits)
-      : null;
-  const effectiveGasReserveUnits = quotedGasReserveUnits ?? gasReserveUnits;
-  const effectiveGasReserveSource =
-    quotedGasReserveUnits !== null &&
-    quote &&
-    "sourceChain" in quote &&
-    quote.gasReserveSource === "estimate"
-      ? "estimate"
-      : gasReserveSource;
-  const expectedOutput = quoteCurrent
-    ? readPositiveAmount(quote?.expectedOutput)
-    : null;
-  const minimumOutput = quoteCurrent
-    ? readPositiveAmount(
-        quote?.minimumOutput ??
-          (quote as UserSwapQuoteResponse | null)?.minimumAmountOut,
-      )
-    : null;
+  const expectedOutput = quoteCurrent ? readQuoteAmountOut(quote) : null;
+  const minimumOutput = useMemo(() => {
+    if (!expectedOutput) return null;
+    try {
+      return applySlippage(expectedOutput, Number(PREVIEW_SLIPPAGE_BPS));
+    } catch {
+      return null;
+    }
+  }, [expectedOutput]);
   const blockedReason = !walletAddress
-    ? "Connect an App Wallet or external wallet."
-    : !isCircle && !isExternal
-      ? "Select App Wallet or External Wallet mode."
-      : isExternal && walletClient?.chain?.id !== arcTestnet.id
-        ? "Switch the external wallet to Arc Testnet."
-        : isCircle && (!arcWallet?.id || !userToken)
-          ? "Circle User-Controlled App Wallet session is not ready."
-          : isExternal && !walletClient
-            ? "Connect an external browser wallet."
-            : null;
+    ? "Connect an external wallet."
+    : walletClient && walletClient.chain?.id !== activeArcChain.id
+      ? "Switch the external wallet to Arc Mainnet (chain 5042)."
+      : !walletClient
+        ? "Connect an external browser wallet."
+        : poolBlocked
+          ? poolGate.message
+          : null;
 
-  async function executeAppWalletSwap() {
-    if (
-      !quote ||
-      !("sourceChain" in quote) ||
-      !walletAddress ||
-      !arcWallet?.id ||
-      !userToken ||
-      !requestKey
-    ) {
-      throw new Error("A current App Wallet XyloNet quote is required.");
+  async function executeMainnetSwap() {
+    if (!quote || !walletAddress || !walletClient || !publicClient) {
+      throw new Error("A current Mainnet quote is required.");
     }
-    assertAppWalletQuote({
-      quote,
-      walletAddress,
-      tokenIn,
-      tokenOut,
-      amountIn: amountUnits.toString(),
-    });
-    const idempotencyKey =
-      operationIdempotencyKey.current ?? crypto.randomUUID();
-    operationIdempotencyKey.current = idempotencyKey;
-    const created = await createAppWalletXylonetOperation(
-      {
-        idempotencyKey,
-        walletId: arcWallet.id,
-        walletAddress,
-        chain: APP_WALLET_SWAP_CHAIN,
-        tokenIn,
-        tokenOut,
-        amountIn: amountUnits.toString(),
-        slippageBps: Number(PREVIEW_SLIPPAGE_BPS),
-      },
-      userToken,
-    );
-    persistOperation(created);
-    const completed = await runAppWalletXylonetLifecycle({
-      initialOperation: created,
-      userToken,
-      executeChallenge,
-      onOperation: persistOperation,
-      onRequestStatus: (next) => {
-        if (next === "idle") return;
-        setTransactionStatus(
-          next === "approving"
-            ? "approving"
-            : next === "confirming" || next === "settling"
-              ? "confirming"
-              : next === "signing"
-                ? "signing"
-                : "executing",
-        );
-      },
-    });
-    persistOperation(completed);
-    const verifiedOutput = readPositiveAmount(completed.verifiedActualOutput);
-    if (
-      completed.lifecycleStage !== "completed" ||
-      completed.terminalStatus !== "confirmed" ||
-      !completed.swapTransactionHash ||
-      !verifiedOutput
-    ) {
-      throw new Error(
-        completed.failureReason ?? "App Wallet swap did not complete.",
-      );
-    }
-    return {
-      hash: completed.swapTransactionHash as Hex,
-      inputAmount: BigInt(completed.amountIn),
-      outputAmount: verifiedOutput,
-      inputToken: completed.tokenIn,
-      outputToken: completed.tokenOut,
-    };
-  }
-
-  async function executeMainnetExecutorSwap() {
-    if (!walletAddress || !walletClient || !publicClient) {
-      throw new Error("A current External Wallet Mainnet quote is required.");
+    if (poolBlocked) {
+      throw new Error(poolGate.message);
     }
     const tokenInAddress = SUPPORTED_TOKENS[tokenIn].address;
     const tokenOutAddress = SUPPORTED_TOKENS[tokenOut].address;
     const deadline = Math.floor(Date.now() / 1_000) + 600;
-    const amountOut = quote
-      ? BigInt(
-          String(
-            ("expectedOutput" in quote ? quote.expectedOutput : undefined) ??
-              ("expectedAmountOut" in quote
-                ? quote.expectedAmountOut
-                : undefined) ??
-              "0",
-          ),
-        )
-      : 0n;
-    if (amountOut <= 0n) {
+    const amountOut = readQuoteAmountOut(quote);
+    if (!amountOut || amountOut <= 0n) {
       throw new Error("A current Arc Mainnet Swap Executor quote is required.");
+    }
+    if (amountUnits <= 0n) {
+      throw new Error("Enter a positive swap amount.");
     }
     const minAmountOut = applySlippage(amountOut, Number(PREVIEW_SLIPPAGE_BPS));
     const minHopPriceX36 = calculateMinHopPriceX36(
@@ -522,7 +274,7 @@ function SwapWorkspace({
         functionName: "approve",
         args: [WIZPAY_SWAP_EXECUTOR_MAINNET_ADDRESS, amountUnits],
         account: walletAddress,
-        chain: arcTestnet,
+        chain: activeArcChain,
       });
       const approvalReceipt = await publicClient.waitForTransactionReceipt({
         hash: approvalHash,
@@ -547,7 +299,7 @@ function SwapWorkspace({
       ],
       value: mainnetUniswapV4TransactionValue(tokenInAddress, amountUnits),
       account: walletAddress,
-      chain: arcTestnet,
+      chain: activeArcChain,
     });
     setTransactionStatus("confirming");
     const receipt = await publicClient.waitForTransactionReceipt({ hash });
@@ -561,88 +313,6 @@ function SwapWorkspace({
     };
   }
 
-  async function executeExternalWalletSwap() {
-    if (ACTIVE_ARC_NETWORK.key === "arc-mainnet") {
-      return submitExternalSwap(executeMainnetExecutorSwap);
-    }
-    if (
-      !quote ||
-      "sourceChain" in quote ||
-      !walletAddress ||
-      !walletClient ||
-      !publicClient
-    ) {
-      throw new Error("A current External Wallet XyloNet quote is required.");
-    }
-    return submitExternalSwap(async () => {
-      const validated = validateExternalXylonetQuote(quote, {
-        walletAddress,
-        chainId: walletClient.chain?.id ?? 0,
-        tokenIn,
-        tokenOut,
-        tokenInAddress: SUPPORTED_TOKENS[tokenIn].address,
-        tokenOutAddress: SUPPORTED_TOKENS[tokenOut].address,
-        amountIn: amountUnits,
-      });
-      const allowance = await publicClient.readContract({
-        address: validated.tokenIn,
-        abi: ERC20_ABI,
-        functionName: "allowance",
-        args: [walletAddress, validated.executor],
-      });
-      if (allowance < validated.amountIn) {
-        setApprovalRequired(true);
-        setTransactionStatus("approving");
-        const approvalHash = await walletClient.writeContract({
-          address: validated.tokenIn,
-          abi: ERC20_ABI,
-          functionName: "approve",
-          args: [validated.executor, validated.amountIn],
-          account: walletAddress,
-          chain: arcTestnet,
-        });
-        const approvalReceipt = await publicClient.waitForTransactionReceipt({
-          hash: approvalHash,
-        });
-        if (approvalReceipt.status !== "success")
-          throw new Error("Executor approval transaction reverted.");
-      } else {
-        setApprovalRequired(false);
-      }
-      setTransactionStatus("signing");
-      const hash = await walletClient.writeContract({
-        address: validated.executor,
-        abi: WIZPAY_SWAP_EXECUTOR_V2_ABI,
-        functionName: "executeSwap",
-        args: [
-          validated.router,
-          validated.tokenIn,
-          validated.tokenOut,
-          validated.amountIn,
-          validated.minimumAmountOut,
-          validated.recipient,
-          validated.deadline,
-        ],
-        account: walletAddress,
-        chain: arcTestnet,
-      });
-      setTransactionStatus("executing");
-      setTransactionStatus("confirming");
-      const receipt = await publicClient.waitForTransactionReceipt({ hash });
-      const outputAmount = verifyExternalXylonetReceipt({
-        receipt,
-        expected: { ...validated, walletAddress },
-      });
-      return {
-        hash,
-        inputAmount: validated.amountIn,
-        outputAmount,
-        inputToken: tokenIn,
-        outputToken: tokenOut,
-      };
-    });
-  }
-
   async function handleSwap() {
     swapCapability.assertEnabled();
     setError(null);
@@ -650,26 +320,22 @@ function SwapWorkspace({
       setError(blockedReason);
       return;
     }
+    if (poolBlocked) {
+      setError(poolGate.message);
+      return;
+    }
     if (!quoteCurrent || !quote) {
-      setError("Wait for a current XyloNet quote.");
+      setError("Wait for a current Mainnet quote.");
       return;
     }
     if (transactionActive.current) return;
     const currentInputBalance = balances[tokenIn];
-    let currentReserve = effectiveGasReserveUnits;
-    if (
-      isCircle &&
-      "sourceChain" in quote &&
-      typeof quote.gasReserveUnits === "string" &&
-      /^\d+$/.test(quote.gasReserveUnits)
-    )
-      currentReserve = BigInt(quote.gasReserveUnits);
     if (
       !hasArcGasForAmount({
         amountUnits,
         inputBalance: currentInputBalance,
         nativeUsdcBalance: balances.USDC,
-        reserveUnits: currentReserve,
+        reserveUnits: gasReserveUnits,
         tokenIsUsdc: tokenIn === "USDC",
       })
     ) {
@@ -678,16 +344,11 @@ function SwapWorkspace({
     }
     transactionActive.current = true;
     setProgressFailure(null);
-    setApprovalRequired(isCircle ? true : null);
+    setApprovalRequired(null);
     setProgressOpen(true);
     setTransactionStatus("preparing");
     try {
-      const completed = isCircle
-        ? await executeAppWalletSwap()
-        : await executeExternalWalletSwap();
-      if (isCircle) {
-        await queryClient.invalidateQueries({ queryKey: ["unified-activity"] });
-      }
+      const completed = await executeMainnetSwap();
       setSwapSuccess({
         inputAmount: formatTokenAmount(
           completed.inputAmount,
@@ -699,30 +360,25 @@ function SwapWorkspace({
           SUPPORTED_TOKENS[completed.outputToken].decimals,
         ),
         outputToken: completed.outputToken,
-        walletMode: isCircle ? "App Wallet" : "External Wallet",
-        network: arcTestnet.name,
+        walletMode: "External Wallet",
+        network: activeArcChain.name,
         transactionHash: completed.hash,
-        explorerUrl: arcTestnet.blockExplorers
-          ? `${arcTestnet.blockExplorers.default.url}/tx/${completed.hash}`
+        explorerUrl: activeArcChain.blockExplorers
+          ? `${activeArcChain.blockExplorers.default.url}/tx/${completed.hash}`
           : undefined,
       });
       setProgressOpen(false);
       setSuccessOpen(true);
       toast({
         title: "Swap confirmed",
-        description: `${completed.inputToken} to ${completed.outputToken} completed through XyloNet.`,
+        description: `${completed.inputToken} to ${completed.outputToken} completed on Arc Mainnet.`,
       });
     } catch (cause) {
       const message = getFriendlyErrorMessage(cause);
       setError(message);
-      if (isCircle) {
-        setProgressOpen(false);
-        setProgressFailure(null);
-      } else {
-        setProgressFailure(message);
-      }
+      setProgressFailure(message);
       const statusUnavailable =
-        /failed to fetch|network|temporarily unavailable|timeout|timed out/i.test(
+        /failed to fetch|network|temporarily unavailable|timeout|timed out|unavailable/i.test(
           message,
         );
       toast({
@@ -746,81 +402,16 @@ function SwapWorkspace({
       source: "fallback",
     };
     try {
-      if (isCircle && arcWallet?.id && userToken) {
-        const maxQuote = await quoteAppWalletXylonetSwap(
-          {
-            idempotencyKey: crypto.randomUUID(),
-            walletId: arcWallet.id,
-            walletAddress,
-            chain: APP_WALLET_SWAP_CHAIN,
-            tokenIn,
-            tokenOut,
-            amountIn: inputBalance.toString(),
-            slippageBps: Number(PREVIEW_SLIPPAGE_BPS),
-          },
-          userToken,
-        );
-        reserve = {
-          reserveUnits:
-            typeof maxQuote.gasReserveUnits === "string" &&
-            /^\d+$/.test(maxQuote.gasReserveUnits)
-              ? BigInt(maxQuote.gasReserveUnits)
-              : ARC_GAS_FALLBACK_UNITS,
-          source:
-            maxQuote.gasReserveSource === "estimate" ? "estimate" : "fallback",
-        };
-      } else if (publicClient) {
-        const maxQuote = await quoteUserSwap({
-          tokenIn,
-          tokenOut,
-          amountIn: inputBalance.toString(),
-          fromAddress: walletAddress,
-          toAddress: walletAddress,
-          chain: "ARC-TESTNET",
-          slippageBps: Number(PREVIEW_SLIPPAGE_BPS),
-        });
-        const validated = validateExternalXylonetQuote(maxQuote, {
-          walletAddress,
-          chainId: arcTestnet.id,
-          tokenIn,
-          tokenOut,
-          tokenInAddress: SUPPORTED_TOKENS[tokenIn].address,
-          tokenOutAddress: SUPPORTED_TOKENS[tokenOut].address,
-          amountIn: inputBalance,
-        });
-        const allowance = await publicClient.readContract({
-          address: validated.tokenIn,
-          abi: ERC20_ABI,
-          functionName: "allowance",
-          args: [walletAddress, validated.executor],
-        });
+      if (publicClient) {
         const gasPrice = await publicClient.getGasPrice();
         const fees: Array<bigint | null> = [];
-        if (allowance < validated.amountIn)
-          fees.push(
-            (await publicClient.estimateContractGas({
-              account: walletAddress,
-              address: validated.tokenIn,
-              abi: ERC20_ABI,
-              functionName: "approve",
-              args: [validated.executor, validated.amountIn],
-            })) * gasPrice,
-          );
         fees.push(
           (await publicClient.estimateContractGas({
             account: walletAddress,
-            address: validated.executor,
-            abi: WIZPAY_SWAP_EXECUTOR_V2_ABI,
-            functionName: "executeSwap",
-            args: [
-              validated.router,
-              validated.tokenIn,
-              validated.tokenOut,
-              validated.amountIn,
-              validated.minimumAmountOut,
-              validated.recipient,
-              validated.deadline,
-            ],
+            address: SUPPORTED_TOKENS[tokenIn].address,
+            abi: ERC20_ABI,
+            functionName: "transfer",
+            args: [walletAddress, inputBalance],
           })) * gasPrice,
         );
         reserve = sumGasReserves(fees);
@@ -841,47 +432,14 @@ function SwapWorkspace({
     setEstimatingMax(false);
   }
 
-  async function checkRecoveredSwap() {
-    if (!operation || !userToken) return;
-    try {
-      const next = await pollAppWalletXylonetOperation(
-        operation.operationId,
-        userToken,
-      );
-      persistOperation(next);
-      setError(null);
-    } catch {
-      setError(
-        "Swap status is temporarily unavailable. No new swap can be created until the existing attempt is reconciled.",
-      );
-    }
-  }
-
-  function startOverRecoveredSwap() {
-    if (
-      !recoveryScope ||
-      !["failed", "success"].includes(appWalletSwapExecutionState(operation))
-    )
-      return;
-    clearAppWalletSwapRecovery(window.localStorage, recoveryScope);
-    operationIdempotencyKey.current = null;
-    setOperation(null);
-    setError(null);
-    setAmountIn("");
-  }
-
   function handleDismissProgressFailure() {
     setProgressOpen(false);
     setProgressFailure(null);
   }
 
   function handleStartAnotherSwap() {
-    if (recoveryScope)
-      clearAppWalletSwapRecovery(window.localStorage, recoveryScope);
-    operationIdempotencyKey.current = null;
     setSuccessOpen(false);
     setSwapSuccess(null);
-    setOperation(null);
     setError(null);
     setProgressOpen(false);
     setProgressFailure(null);
@@ -890,9 +448,7 @@ function SwapWorkspace({
   }
 
   const busy = status !== "idle";
-  const inputBalance = isExternal ? externalBalance : balances[tokenIn];
-  const recoveryState = appWalletSwapExecutionState(operation);
-  const recoveryLocked = isCircle && recoveryState !== "idle";
+  const inputBalance = externalBalance;
   const insufficient =
     amountUnits > inputBalance ||
     (amountUnits > 0n &&
@@ -900,13 +456,13 @@ function SwapWorkspace({
         amountUnits,
         inputBalance,
         nativeUsdcBalance: balances.USDC,
-        reserveUnits: effectiveGasReserveUnits,
+        reserveUnits: gasReserveUnits,
         tokenIsUsdc: tokenIn === "USDC",
       }));
   const disabled =
     !swapCapability.enabled ||
     busy ||
-    recoveryLocked ||
+    poolBlocked ||
     Boolean(blockedReason) ||
     !quoteCurrent ||
     !expectedOutput ||
@@ -914,48 +470,8 @@ function SwapWorkspace({
     insufficient ||
     balancesLoading;
 
-  const modeSelector = isExternal ? (
-    <div
-      aria-label="Swap or Bridge mode"
-      className="mb-5 grid w-full max-w-sm grid-cols-2 rounded-xl border border-border/40 bg-background/30 p-1"
-    >
-      <Button
-        type="button"
-        variant={screenMode === "swap" ? "default" : "ghost"}
-        onClick={() => setScreenMode("swap")}
-      >
-        Swap
-      </Button>
-      <Button
-        type="button"
-        variant={screenMode === "bridge" ? "default" : "ghost"}
-        onClick={() => setScreenMode("bridge")}
-        disabled={!bridgeCapability.enabled}
-      >
-        Bridge
-      </Button>
-    </div>
-  ) : null;
-
-  if (effectiveScreenMode === "bridge" && isExternal && walletAddress) {
-    if (!bridgeCapability.enabled) {
-      return (
-        <p role="alert" className="text-sm text-amber-300">
-          {bridgeCapability.unavailableMessage}
-        </p>
-      );
-    }
-    return (
-      <div>
-        {modeSelector}
-        <ExternalBridgePanel walletAddress={walletAddress} />
-      </div>
-    );
-  }
-
   return (
     <div>
-      {modeSelector}
       <div className="grid gap-6 lg:grid-cols-[1.4fr_0.6fr]">
         <Card className="glass-card border-border/40">
           <CardHeader>
@@ -992,9 +508,9 @@ function SwapWorkspace({
                 disabled={progressOpen}
               />
               <p className="text-xs text-muted-foreground">
-                Max leaves at least {formatUnits(effectiveGasReserveUnits, 6)}{" "}
-                USDC available for network fees
-                {effectiveGasReserveSource === "fallback"
+                Max leaves at least {formatUnits(gasReserveUnits, 6)} USDC
+                available for network fees
+                {gasReserveSource === "fallback"
                   ? " when a live estimate is unavailable"
                   : ""}
                 .
@@ -1022,7 +538,7 @@ function SwapWorkspace({
                     <SelectItem value="USDC">
                       <span className="flex items-center gap-2">
                         <TokenIcon
-                          chainId={arcTestnet.id}
+                          chainId={activeArcChain.id}
                           address={SUPPORTED_TOKENS.USDC.address}
                           symbol="USDC"
                           size={28}
@@ -1033,7 +549,7 @@ function SwapWorkspace({
                     <SelectItem value="EURC">
                       <span className="flex items-center gap-2">
                         <TokenIcon
-                          chainId={arcTestnet.id}
+                          chainId={activeArcChain.id}
                           address={SUPPORTED_TOKENS.EURC.address}
                           symbol="EURC"
                           size={28}
@@ -1077,7 +593,7 @@ function SwapWorkspace({
                     <SelectItem value="EURC">
                       <span className="flex items-center gap-2">
                         <TokenIcon
-                          chainId={arcTestnet.id}
+                          chainId={activeArcChain.id}
                           address={SUPPORTED_TOKENS.EURC.address}
                           symbol="EURC"
                           size={28}
@@ -1088,7 +604,7 @@ function SwapWorkspace({
                     <SelectItem value="USDC">
                       <span className="flex items-center gap-2">
                         <TokenIcon
-                          chainId={arcTestnet.id}
+                          chainId={activeArcChain.id}
                           address={SUPPORTED_TOKENS.USDC.address}
                           symbol="USDC"
                           size={28}
@@ -1103,11 +619,11 @@ function SwapWorkspace({
             <div className="rounded-xl border border-border/30 bg-background/20 p-4 text-sm">
               <div className="flex justify-between">
                 <span className="text-muted-foreground">Provider</span>
-                <span>XyloNet</span>
+                <span>Mainnet Swap Executor</span>
               </div>
               <div className="mt-2 flex justify-between">
                 <span className="text-muted-foreground">Executor</span>
-                <span>WizPaySwapExecutorV2</span>
+                <span>WizPaySwapExecutorMainnet</span>
               </div>
               <div className="mt-2 flex justify-between">
                 <span className="text-muted-foreground">Expected output</span>
@@ -1135,85 +651,36 @@ function SwapWorkspace({
               </div>
             </div>
             <div className="rounded-xl border border-sky-500/25 bg-sky-500/5 px-4 py-3 text-sm text-sky-100">
-              {isCircle
-                ? "Circle User-Controlled Wallet signs approval and swap challenges. No custodial intermediary or backend signer is used."
-                : "Your connected browser wallet signs approval and the canonical executor transaction directly."}
+              Your connected external wallet signs approval and the Mainnet
+              executor transaction directly on Arc Mainnet.
             </div>
-            {isCircle && operation && !progressOpen && !successOpen ? (
-              <section
-                role="status"
-                className={`rounded-xl border p-4 ${recoveryState === "failed" ? "border-destructive/30 bg-destructive/10" : recoveryState === "timeout" || error ? "border-amber-500/30 bg-amber-500/10" : "border-primary/25 bg-primary/10"}`}
+            {poolBlocked ? (
+              <div
+                role="alert"
+                className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-200"
               >
-                <h3 className="font-medium">
-                  {recoveryState === "failed"
-                    ? "Swap failed"
-                    : recoveryState === "success"
-                      ? "Swap completed"
-                      : recoveryState === "timeout" || error
-                        ? "Swap status unavailable"
-                        : "Swap in progress"}
-                </h3>
-                <p className="mt-1 text-sm text-muted-foreground">
-                  {recoveryState === "failed"
-                    ? "The transaction was confirmed as failed and no funds were transferred by this operation."
-                    : recoveryState === "success"
-                      ? "The confirmed transaction and output were verified."
-                      : recoveryState === "timeout" || error
-                        ? "We could not confirm the current status yet. No new swap can be created until the existing attempt is reconciled."
-                        : "The transaction is still being confirmed. Status checks are read-only."}
-                </p>
-                <div className="mt-3 flex gap-2">
-                  {recoveryState === "failed" ? (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={startOverRecoveredSwap}
-                    >
-                      Start over
-                    </Button>
-                  ) : recoveryState === "success" ? (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={startOverRecoveredSwap}
-                    >
-                      Start another
-                    </Button>
-                  ) : (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => void checkRecoveredSwap()}
-                    >
-                      Check status
-                    </Button>
-                  )}
-                </div>
-              </section>
+                {poolGate.message}
+              </div>
             ) : null}
-            {progressOpen &&
-            recoveryState !== "failed" &&
-            recoveryState !== "timeout" ? (
+            {progressOpen ? (
               <SwapProgress
-                walletMode={isCircle ? "circle" : "external"}
                 tokenIn={tokenIn}
                 tokenOut={tokenOut}
                 amount={amountIn}
                 requestStatus={progressStatus}
-                lifecycleStage={operation?.lifecycleStage}
                 approvalRequired={approvalRequired}
                 failure={progressFailure}
                 onDismissFailure={handleDismissProgressFailure}
               />
             ) : null}
-            {blockedReason || (error && !operation) ? (
+            {blockedReason || (error ? (
               <div
                 role="alert"
                 className="rounded-xl border border-destructive/25 bg-destructive/5 px-4 py-3 text-sm text-destructive"
               >
                 {error ?? blockedReason}
               </div>
-            ) : null}
+            ) : null)}
             {insufficient ? (
               <div role="alert" className="text-sm text-amber-300">
                 {amountUnits > inputBalance
@@ -1232,17 +699,8 @@ function SwapWorkspace({
               onClick={() => void handleSwap()}
             >
               <ShieldCheck className="mr-2 h-4 w-4" />
-              {busy
-                ? status
-                : isCircle
-                  ? "Confirm XyloNet swap"
-                  : "Swap with XyloNet"}
+              {busy ? status : "Swap on Arc Mainnet"}
             </Button>
-            {operation ? (
-              <p className="text-xs text-muted-foreground">
-                App Wallet lifecycle: {operation.lifecycleStage}
-              </p>
-            ) : null}
           </CardContent>
         </Card>
         <Card className="glass-card border-border/40">
@@ -1250,10 +708,13 @@ function SwapWorkspace({
             <CardTitle>Locked route</CardTitle>
           </CardHeader>
           <CardContent className="space-y-3 text-sm text-muted-foreground">
-            <p>USDC and EURC swaps on Arc Testnet use XyloNet only.</p>
             <p>
-              Provider failures stop execution. No alternate provider or signer
-              is selected.
+              USDC and EURC swaps on Arc Mainnet (chain 5042) use the Mainnet
+              Swap Executor only.
+            </p>
+            <p>
+              Pool unavailability stops execution. No alternate provider or
+              signer is selected.
             </p>
           </CardContent>
         </Card>

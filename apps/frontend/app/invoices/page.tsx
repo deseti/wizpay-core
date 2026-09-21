@@ -71,7 +71,7 @@ export default function InvoicesPage() {
     <DashboardAppFrame>
       <InvoicePageHeader
         title="Invoices"
-        description="Create and track fixed Arc Testnet payment requests."
+        description="Create and track fixed Arc Mainnet payment requests."
         create
       />
       {!session.userToken ? (

@@ -56,14 +56,6 @@ class ArcCapabilityConfigurationError extends Error {
   }
 }
 
-class CircleExecutionConfigurationError extends Error {
-  constructor(code, message) {
-    super(message);
-    this.name = "CircleExecutionConfigurationError";
-    this.code = code;
-  }
-}
-
 function deepFreeze(value) {
   if (value && typeof value === "object" && !Object.isFrozen(value)) {
     Object.freeze(value);
@@ -121,9 +113,9 @@ function assertContractAddress(address) {
 }
 
 function assertValidDefinitionShape(entries) {
-  if (!Array.isArray(entries) || entries.length !== 2) {
+  if (!Array.isArray(entries) || entries.length !== 1) {
     throw new ArcNetworkInvariantError(
-      "Arc network definitions must contain exactly testnet and mainnet.",
+      "Arc network definitions must contain exactly Arc Mainnet.",
     );
   }
 
@@ -148,13 +140,12 @@ function assertValidDefinitionShape(entries) {
     }
 
     if (
-      (entry.environment !== "testnet" && entry.environment !== "mainnet") ||
-      entry.key !== `arc-${entry.environment}` ||
-      entry.name !==
-        `Arc ${entry.environment === "testnet" ? "Testnet" : "Mainnet"}` ||
+      entry.environment !== "mainnet" ||
+      entry.key !== "arc-mainnet" ||
+      entry.name !== "Arc Mainnet" ||
       !Number.isSafeInteger(entry.chainId) ||
-      entry.chainId <= 0 ||
-      entry.testnet !== (entry.environment === "testnet") ||
+      entry.chainId !== 5_042 ||
+      entry.testnet !== false ||
       entry.nativeCurrency?.name !== "USDC" ||
       entry.nativeCurrency?.symbol !== "USDC" ||
       entry.nativeCurrency?.decimals !== 18
@@ -172,14 +163,6 @@ function assertValidDefinitionShape(entries) {
 }
 
 const definitions = [
-  {
-    key: "arc-testnet",
-    name: "Arc Testnet",
-    chainId: 5_042_002,
-    environment: "testnet",
-    nativeCurrency: { name: "USDC", symbol: "USDC", decimals: 18 },
-    testnet: true,
-  },
   {
     key: "arc-mainnet",
     name: "Arc Mainnet",
@@ -203,32 +186,14 @@ const ARC_NETWORK_BY_CHAIN_ID = new Map(
 );
 
 const ARC_RPC_RESOURCES = deepFreeze({
-  "arc-testnet": available({ url: "https://rpc.testnet.arc.io" }),
   "arc-mainnet": available({ url: "https://rpc.mainnet.arc.io" }),
 });
 
 const ARC_EXPLORER_RESOURCES = deepFreeze({
-  "arc-testnet": available({ baseUrl: "https://testnet.arcscan.app" }),
   "arc-mainnet": available({ baseUrl: "https://explorer.arc.io" }),
 });
 
 const ARC_TOKEN_RESOURCES = deepFreeze({
-  "arc-testnet": {
-    USDC: available({
-      symbol: "USDC",
-      address: assertContractAddress(
-        "0x3600000000000000000000000000000000000000",
-      ),
-      decimals: 6,
-    }),
-    EURC: available({
-      symbol: "EURC",
-      address: assertContractAddress(
-        "0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a",
-      ),
-      decimals: 6,
-    }),
-  },
   "arc-mainnet": {
     USDC: available({
       symbol: "USDC",
@@ -252,31 +217,7 @@ const ARC_TOKEN_RESOURCES = deepFreeze({
 });
 
 const ARC_WIZPAY_CONTRACT_RESOURCES = deepFreeze({
-  "arc-testnet": {
-    wizpay: available({
-      contract: "WizPay",
-      address: assertContractAddress(
-        "0x87ACE45582f45cC81AC1E627E875AE84cbd75946",
-      ),
-      deploymentSource:
-        "packages/contracts/deployments/arc-testnet-wizpay-v2.json",
-    }),
-    "wizpay-swap-executor-v2": available({
-      contract: "WizPaySwapExecutorV2",
-      address: assertContractAddress(
-        "0x7B5573759576AD3AD9F9E3b4425ad68FD2b525ed",
-      ),
-      deploymentSource:
-        "packages/contracts/deployments/arc-testnet-wizpay-swap-executor-v2.json",
-    }),
-    // WizPaySwapExecutorMainnet is an Arc Mainnet-only contract; unavailable on testnet.
-    "wizpay-swap-executor-mainnet": unavailable(
-      "WIZPAY_MAINNET_SWAP_EXECUTOR_NOT_DEPLOYED",
-    ),
-  },
   "arc-mainnet": {
-    // Runtime payroll resource expected by consumers. Arc Mainnet payroll is
-    // WizPayPayrollMainnet, not WizPayMainnetV2.
     wizpay: available({
       contract: "WizPayPayrollMainnet",
       address: assertContractAddress(
@@ -299,32 +240,7 @@ const ARC_WIZPAY_CONTRACT_RESOURCES = deepFreeze({
   },
 });
 
-const TESTNET_EXTERNAL_PROTOCOL_CONTRACT_UNAVAILABLE = unavailable(
-  "EXTERNAL_PROTOCOL_CONTRACT_NOT_RECORDED_FOR_ARC_TESTNET",
-);
-
 const ARC_PROTOCOL_CONTRACT_RESOURCES = deepFreeze({
-  "arc-testnet": {
-    "uniswap-v3": {
-      v3CoreFactory: TESTNET_EXTERNAL_PROTOCOL_CONTRACT_UNAVAILABLE,
-      multicall: TESTNET_EXTERNAL_PROTOCOL_CONTRACT_UNAVAILABLE,
-      quoter: TESTNET_EXTERNAL_PROTOCOL_CONTRACT_UNAVAILABLE,
-      nonfungiblePositionManager:
-        TESTNET_EXTERNAL_PROTOCOL_CONTRACT_UNAVAILABLE,
-      tickLens: TESTNET_EXTERNAL_PROTOCOL_CONTRACT_UNAVAILABLE,
-      swapRouter02: TESTNET_EXTERNAL_PROTOCOL_CONTRACT_UNAVAILABLE,
-    },
-    "uniswap-v4": {
-      poolManager: TESTNET_EXTERNAL_PROTOCOL_CONTRACT_UNAVAILABLE,
-      positionManager: TESTNET_EXTERNAL_PROTOCOL_CONTRACT_UNAVAILABLE,
-      stateView: TESTNET_EXTERNAL_PROTOCOL_CONTRACT_UNAVAILABLE,
-      quoter: TESTNET_EXTERNAL_PROTOCOL_CONTRACT_UNAVAILABLE,
-    },
-    "universal-router": {
-      universalRouter: TESTNET_EXTERNAL_PROTOCOL_CONTRACT_UNAVAILABLE,
-      permit2: TESTNET_EXTERNAL_PROTOCOL_CONTRACT_UNAVAILABLE,
-    },
-  },
   "arc-mainnet": {
     "uniswap-v3": {
       v3CoreFactory: published({
@@ -398,7 +314,6 @@ const ARC_PROTOCOL_CONTRACT_RESOURCES = deepFreeze({
 });
 
 const ARC_PROTOCOL_CAPABILITY_RESOURCES = deepFreeze({
-  "arc-testnet": { uniswap: {} },
   "arc-mainnet": {
     uniswap: {
       "usdc-eurc-pool": unavailable("UNISWAP_USDC_EURC_POOL_NOT_VERIFIED"),
@@ -452,68 +367,6 @@ const ARC_MAINNET_UNISWAP_V4_PUBLICATION = deepFreeze({
     "https://github.com/Uniswap/sdks/blob/main/sdks/universal-router-sdk/src/utils/constants.ts",
 });
 
-// Circle Wallets supported-blockchain documentation checked 2026-09-10:
-// https://developers.circle.com/wallets/supported-blockchains
-// It explicitly lists ARC-TESTNET. It does not publish an Arc Mainnet Wallets
-// chain code, so Mainnet remains unavailable rather than using an inferred enum.
-const ARC_CIRCLE_EXECUTION_DEFINITIONS = deepFreeze({
-  "arc-testnet": {
-    environment: "testnet",
-    blockchain: "ARC-TESTNET",
-    apiBaseUrlEnvironmentKey: "CIRCLE_TESTNET_API_BASE_URL",
-    applicationIdEnvironmentKey: "CIRCLE_TESTNET_APP_ID",
-    apiCredentialEnvironmentKey: "CIRCLE_TESTNET_API_KEY",
-    entitySecretEnvironmentKey: "CIRCLE_TESTNET_ENTITY_SECRET",
-    walletSetIdEnvironmentKey: "CIRCLE_TESTNET_WALLET_SET_ID",
-    walletIdEnvironmentKey: "CIRCLE_TESTNET_WALLET_ID",
-    walletAddressEnvironmentKey: "CIRCLE_TESTNET_WALLET_ADDRESS",
-    receiptConfirmationsEnvironmentKey: "CIRCLE_TESTNET_RECEIPT_CONFIRMATIONS",
-    support: {
-      walletCreation: true,
-      walletLookup: true,
-      transfer: true,
-      contractExecution: true,
-      typedData: true,
-    },
-    receiptVerification: { required: true, chainId: 5_042_002 },
-  },
-  "arc-mainnet": {
-    environment: "mainnet",
-    blockchain: null,
-    apiBaseUrlEnvironmentKey: "CIRCLE_MAINNET_API_BASE_URL",
-    applicationIdEnvironmentKey: "CIRCLE_MAINNET_APP_ID",
-    apiCredentialEnvironmentKey: "CIRCLE_MAINNET_API_KEY",
-    entitySecretEnvironmentKey: "CIRCLE_MAINNET_ENTITY_SECRET",
-    walletSetIdEnvironmentKey: "CIRCLE_MAINNET_WALLET_SET_ID",
-    walletIdEnvironmentKey: "CIRCLE_MAINNET_WALLET_ID",
-    walletAddressEnvironmentKey: "CIRCLE_MAINNET_WALLET_ADDRESS",
-    receiptConfirmationsEnvironmentKey: "CIRCLE_MAINNET_RECEIPT_CONFIRMATIONS",
-    support: {
-      walletCreation: false,
-      walletLookup: false,
-      transfer: false,
-      contractExecution: false,
-      typedData: false,
-    },
-    receiptVerification: { required: true, chainId: 5_042 },
-  },
-});
-
-function getArcCircleExecutionDefinition(networkKey) {
-  return ARC_CIRCLE_EXECUTION_DEFINITIONS[parseArcNetworkKey(networkKey)];
-}
-
-function requireArcCircleBlockchain(networkKey) {
-  const definition = getArcCircleExecutionDefinition(networkKey);
-  if (!definition.blockchain) {
-    throw new CircleExecutionConfigurationError(
-      "CIRCLE_BLOCKCHAIN_UNSUPPORTED",
-      "Circle Wallets support for the selected Arc network is unverified.",
-    );
-  }
-  return definition.blockchain;
-}
-
 const ARC_CAPABILITY_NAMES = Object.freeze([
   "send",
   "sameTokenPayroll",
@@ -524,30 +377,14 @@ const ARC_CAPABILITY_NAMES = Object.freeze([
   "swap",
   "crossTokenPayroll",
   "crossTokenInvoice",
-  "stableFx",
   "nanoAgentApi",
 ]);
-
-const ARC_TESTNET_CAPABILITIES = deepFreeze({
-  send: true,
-  sameTokenPayroll: true,
-  invoice: true,
-  paymentLink: true,
-  liquidity: true,
-  bridge: true,
-  swap: true,
-  crossTokenPayroll: true,
-  crossTokenInvoice: false,
-  stableFx: false,
-  nanoAgentApi: false,
-});
 
 const ARC_MAINNET_CAPABILITIES = deepFreeze(
   Object.fromEntries(ARC_CAPABILITY_NAMES.map((name) => [name, false])),
 );
 
 const ARC_CAPABILITY_DEFINITIONS = deepFreeze({
-  "arc-testnet": ARC_TESTNET_CAPABILITIES,
   "arc-mainnet": ARC_MAINNET_CAPABILITIES,
 });
 
@@ -561,7 +398,6 @@ const ARC_MAINNET_CAPABILITY_ENV_KEYS = deepFreeze({
   swap: "WIZPAY_ARC_MAINNET_CAPABILITY_SWAP",
   crossTokenPayroll: "WIZPAY_ARC_MAINNET_CAPABILITY_CROSS_TOKEN_PAYROLL",
   crossTokenInvoice: "WIZPAY_ARC_MAINNET_CAPABILITY_CROSS_TOKEN_INVOICE",
-  stableFx: "WIZPAY_ARC_MAINNET_CAPABILITY_STABLE_FX",
   nanoAgentApi: "WIZPAY_ARC_MAINNET_CAPABILITY_NANO_AGENT_API",
 });
 
@@ -611,20 +447,6 @@ function assertKnownCapabilityEnvironmentKeys(environment) {
 function resolveArcCapabilities(networkKey, environment = {}) {
   const key = parseArcNetworkKey(networkKey);
   assertKnownCapabilityEnvironmentKeys(environment);
-
-  if (key === "arc-testnet") {
-    for (const envKey of Object.values(ARC_MAINNET_CAPABILITY_ENV_KEYS)) {
-      if (environment[envKey] === undefined) continue;
-      const enabled = parseStrictCapabilityBoolean(envKey, environment[envKey]);
-      if (enabled) {
-        throw new ArcCapabilityConfigurationError(
-          "CONTRADICTORY_CAPABILITY_CONFIGURATION",
-          `${envKey} cannot configure Arc Testnet capabilities.`,
-        );
-      }
-    }
-    return ARC_TESTNET_CAPABILITIES;
-  }
 
   const capabilities = { ...ARC_MAINNET_CAPABILITIES };
   for (const capability of ARC_CAPABILITY_NAMES) {
@@ -683,27 +505,14 @@ function getArcOperationResourceReadiness(networkKey) {
       "available" ||
     ARC_WIZPAY_CONTRACT_RESOURCES[key]["wizpay-swap-executor-mainnet"]
       ?.status === "available";
-  const circle = ARC_CIRCLE_EXECUTION_DEFINITIONS[key];
   const swapDirect = rpc && usdc && eurc && swapExecutor;
   return deepFreeze({
     sendDirect: rpc && explorer && usdc,
-    sendDirectAppWallet: rpc && explorer && usdc && circle.support.transfer,
     payrollDirect: rpc && usdc && payrollContract,
-    payrollDirectAppWallet:
-      rpc && usdc && payrollContract && circle.support.contractExecution,
     invoiceCreation: usdc,
     paymentLinkDirect: rpc && usdc,
-    paymentLinkDirectAppWallet:
-      rpc &&
-      usdc &&
-      (circle.support.transfer || circle.support.contractExecution),
     swapDirect,
-    // External-wallet Mainnet swap/payroll does not depend on Circle
-    // contractExecution. Testnet cross-token App Wallet still does.
-    crossToken:
-      swapDirect &&
-      payrollContract &&
-      (key === "arc-mainnet" || circle.support.contractExecution),
+    crossToken: swapDirect && payrollContract,
   });
 }
 
@@ -745,7 +554,6 @@ function validateArcCapabilityDependencies(capabilities, resources) {
   );
   requireResource("bridge", "bridge");
   requireResource("swap", "swap");
-  requireResource("stableFx", "stableFx");
   requireResource("nanoAgentApi", "nanoAgentApi");
   if (capabilities.crossTokenPayroll && !capabilities.swap) {
     throw new ArcCapabilityConfigurationError(
@@ -976,7 +784,6 @@ function requireAvailableArcResource(resource) {
 }
 
 module.exports = {
-  ARC_CIRCLE_EXECUTION_DEFINITIONS,
   ARC_EXPLORER_RESOURCES,
   ARC_CAPABILITY_DEFINITIONS,
   ARC_CAPABILITY_NAMES,
@@ -990,13 +797,11 @@ module.exports = {
   ARC_WIZPAY_CONTRACT_RESOURCES,
   ArcNetworkInvariantError,
   ArcCapabilityConfigurationError,
-  CircleExecutionConfigurationError,
   UnavailableArcResourceError,
   UnknownArcResourceError,
   UnsupportedArcNetworkError,
   assertValidArcNetworkDefinitions,
   getArcExplorerResource,
-  getArcCircleExecutionDefinition,
   getArcNetworkByChainId,
   getArcNetworkByKey,
   getArcMainnetUniswapV4Readiness,
@@ -1010,7 +815,6 @@ module.exports = {
   parseArcCapabilityName,
   parseArcNetworkKey,
   requireAvailableArcResource,
-  requireArcCircleBlockchain,
   resolveArcCapabilities,
   validateArcCapabilityDependencies,
 };

@@ -6,18 +6,8 @@ import {
   CIRCUIT_BREAKER_WINDOW,
 } from './fx.constants';
 
-describe('FxRoutingGuard', () => {
+describe('FxRoutingGuard (Mainnet-only)', () => {
   let service: FxRoutingGuard;
-  let configService: ConfigService;
-  const originalLegacyFxFlag = process.env.WIZPAY_ENABLE_LEGACY_FX;
-
-  afterEach(() => {
-    if (originalLegacyFxFlag === undefined) {
-      delete process.env.WIZPAY_ENABLE_LEGACY_FX;
-    } else {
-      process.env.WIZPAY_ENABLE_LEGACY_FX = originalLegacyFxFlag;
-    }
-  });
 
   function createService(fxRoutingMode?: string) {
     const module = Test.createTestingModule({
@@ -39,20 +29,11 @@ describe('FxRoutingGuard', () => {
   }
 
   describe('getActiveMode()', () => {
-    it('returns "new" when legacy config is set without explicit test flag', async () => {
-      delete process.env.WIZPAY_ENABLE_LEGACY_FX;
-      const module = await createService('legacy');
+    it('returns "new" when config is unset (Mainnet default)', async () => {
+      const module = await createService(undefined);
       service = module.get(FxRoutingGuard);
 
       expect(service.getActiveMode()).toBe('new');
-    });
-
-    it('returns "legacy" when config is set to "legacy" with explicit test flag', async () => {
-      process.env.WIZPAY_ENABLE_LEGACY_FX = 'true';
-      const module = await createService('legacy');
-      service = module.get(FxRoutingGuard);
-
-      expect(service.getActiveMode()).toBe('legacy');
     });
 
     it('returns "new" when config is set to "new"', async () => {
@@ -62,206 +43,77 @@ describe('FxRoutingGuard', () => {
       expect(service.getActiveMode()).toBe('new');
     });
 
-    it('defaults to "new" when config is unset', async () => {
-      const module = await createService(undefined);
+    it('fails closed when config is set to "legacy"', async () => {
+      const module = await createService('legacy');
       service = module.get(FxRoutingGuard);
 
-      expect(service.getActiveMode()).toBe('new');
+      expect(() => service.getActiveMode()).toThrow();
     });
 
-    it('throws when config contains an invalid value', async () => {
-      const module = await createService('invalid');
+    it('fails closed for unknown routing modes', async () => {
+      const module = await createService('provider-x');
       service = module.get(FxRoutingGuard);
 
-      expect(() => service.getActiveMode()).toThrow(
-        /FX routing configuration is unavailable/,
-      );
-    });
-
-    it('throws when config is empty string', async () => {
-      const module = await createService('');
-      service = module.get(FxRoutingGuard);
-
-      expect(() => service.getActiveMode()).toThrow(
-        /FX routing configuration is unavailable/,
-      );
-    });
-
-    it('caches the mode after first successful read', async () => {
-      const module = await createService('new');
-      service = module.get(FxRoutingGuard);
-      configService = module.get(ConfigService);
-
-      service.getActiveMode();
-      service.getActiveMode();
-
-      // ConfigService.get should only be called once (cached after first read)
-      expect(configService.get).toHaveBeenCalledTimes(1);
+      expect(() => service.getActiveMode()).toThrow();
     });
   });
 
   describe('setMode()', () => {
-    beforeEach(async () => {
-      process.env.WIZPAY_ENABLE_LEGACY_FX = 'true';
-      const module = await createService('legacy');
+    it('accepts "new" and resets the circuit breaker', async () => {
+      const module = await createService('new');
       service = module.get(FxRoutingGuard);
-    });
 
-    it('changes the active mode to "new"', () => {
-      service.getActiveMode(); // initialize
-      service.setMode('new', 'operator-1');
-
-      expect(service.getActiveMode()).toBe('new');
-    });
-
-    it('changes the active mode to "legacy"', () => {
-      service.getActiveMode(); // initialize
-      service.setMode('new', 'operator-1');
-      service.setMode('legacy', 'operator-2');
-
-      expect(service.getActiveMode()).toBe('legacy');
-    });
-
-    it('throws for invalid mode values', () => {
-      expect(() => service.setMode('invalid' as any, 'operator-1')).toThrow(
-        /Invalid FX routing mode/,
-      );
-    });
-
-    it('resets the circuit breaker when mode is changed', () => {
-      service.getActiveMode(); // initialize
-      service.setMode('new', 'operator-1');
-
-      // Trigger circuit breaker
       for (let i = 0; i < CIRCUIT_BREAKER_THRESHOLD; i++) {
         service.recordOutcome('new', false);
       }
       expect(service.isCircuitOpen()).toBe(true);
 
-      // Operator changes mode — resets circuit
-      service.setMode('new', 'operator-2');
+      service.setMode('new', 'operator-1');
       expect(service.isCircuitOpen()).toBe(false);
+      expect(service.getActiveMode()).toBe('new');
+    });
+
+    it('rejects "legacy" mode on Mainnet', async () => {
+      const module = await createService('new');
+      service = module.get(FxRoutingGuard);
+
+      expect(() => service.setMode('legacy', 'operator-1')).toThrow();
     });
   });
 
-  describe('recordOutcome()', () => {
-    beforeEach(async () => {
+  describe('circuit breaker', () => {
+    it('opens after the failure threshold within the window', async () => {
       const module = await createService('new');
       service = module.get(FxRoutingGuard);
+
+      for (let i = 0; i < CIRCUIT_BREAKER_THRESHOLD; i++) {
+        service.recordOutcome('new', false);
+      }
+
+      expect(service.isCircuitOpen()).toBe(true);
+      expect(service.getOutcomes()).toHaveLength(CIRCUIT_BREAKER_THRESHOLD);
     });
 
-    it('appends outcomes to the rolling window', () => {
-      service.recordOutcome('new', true);
-      service.recordOutcome('new', false);
+    it('stays closed on success', async () => {
+      const module = await createService('new');
+      service = module.get(FxRoutingGuard);
 
-      expect(service.getOutcomes()).toHaveLength(2);
+      for (let i = 0; i < CIRCUIT_BREAKER_WINDOW; i++) {
+        service.recordOutcome('new', true);
+      }
+
+      expect(service.isCircuitOpen()).toBe(false);
     });
 
-    it('caps the rolling window at CIRCUIT_BREAKER_WINDOW entries', () => {
+    it('caps the rolling window', async () => {
+      const module = await createService('new');
+      service = module.get(FxRoutingGuard);
+
       for (let i = 0; i < CIRCUIT_BREAKER_WINDOW + 5; i++) {
         service.recordOutcome('new', true);
       }
 
       expect(service.getOutcomes()).toHaveLength(CIRCUIT_BREAKER_WINDOW);
-    });
-
-    it('records timestamp, success, and operationId for each entry', () => {
-      service.recordOutcome('new', true);
-
-      const outcomes = service.getOutcomes();
-      expect(outcomes[0]).toHaveProperty('timestamp');
-      expect(outcomes[0]).toHaveProperty('success', true);
-      expect(outcomes[0]).toHaveProperty('operationId');
-      expect(outcomes[0].operationId).toMatch(/^op_/);
-    });
-  });
-
-  describe('isCircuitOpen()', () => {
-    beforeEach(async () => {
-      const module = await createService('new');
-      service = module.get(FxRoutingGuard);
-    });
-
-    it('returns false when no outcomes recorded', () => {
-      expect(service.isCircuitOpen()).toBe(false);
-    });
-
-    it('returns false when failures are below threshold', () => {
-      service.recordOutcome('new', false);
-      service.recordOutcome('new', false);
-      service.recordOutcome('new', true);
-
-      expect(service.isCircuitOpen()).toBe(false);
-    });
-
-    it('returns true when failures reach threshold', () => {
-      for (let i = 0; i < CIRCUIT_BREAKER_THRESHOLD; i++) {
-        service.recordOutcome('new', false);
-      }
-
-      expect(service.isCircuitOpen()).toBe(true);
-    });
-
-    it('returns true when failures exceed threshold', () => {
-      for (let i = 0; i < CIRCUIT_BREAKER_THRESHOLD + 2; i++) {
-        service.recordOutcome('new', false);
-      }
-
-      expect(service.isCircuitOpen()).toBe(true);
-    });
-
-    it('does not open circuit for legacy mode failures', () => {
-      for (let i = 0; i < CIRCUIT_BREAKER_THRESHOLD + 5; i++) {
-        service.recordOutcome('legacy', false);
-      }
-
-      expect(service.isCircuitOpen()).toBe(false);
-    });
-
-    it('opens circuit when failures accumulate across mixed outcomes', () => {
-      // Mix of successes and failures, but enough failures to trigger
-      service.recordOutcome('new', true);
-      service.recordOutcome('new', false);
-      service.recordOutcome('new', true);
-      service.recordOutcome('new', false);
-      service.recordOutcome('new', false);
-
-      expect(service.isCircuitOpen()).toBe(true);
-    });
-
-    it('stays open until operator resets via setMode', () => {
-      for (let i = 0; i < CIRCUIT_BREAKER_THRESHOLD; i++) {
-        service.recordOutcome('new', false);
-      }
-      expect(service.isCircuitOpen()).toBe(true);
-
-      // Recording more successes does not close the circuit
-      for (let i = 0; i < 10; i++) {
-        service.recordOutcome('new', true);
-      }
-      expect(service.isCircuitOpen()).toBe(true);
-
-      // Only operator action resets it
-      service.setMode('new', 'operator-reset');
-      expect(service.isCircuitOpen()).toBe(false);
-    });
-
-    it('can re-open after being reset if failures recur', () => {
-      // Open circuit
-      for (let i = 0; i < CIRCUIT_BREAKER_THRESHOLD; i++) {
-        service.recordOutcome('new', false);
-      }
-      expect(service.isCircuitOpen()).toBe(true);
-
-      // Reset
-      service.setMode('new', 'operator-1');
-      expect(service.isCircuitOpen()).toBe(false);
-
-      // Trigger again
-      for (let i = 0; i < CIRCUIT_BREAKER_THRESHOLD; i++) {
-        service.recordOutcome('new', false);
-      }
-      expect(service.isCircuitOpen()).toBe(true);
     });
   });
 });

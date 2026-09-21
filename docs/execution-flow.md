@@ -5,7 +5,7 @@ description: "Step-by-step request lifecycle from payload ingestion to on-chain 
 
 # Execution Flow
 
-Every request follows the same pipeline: **Payload → Validation → Queue → Execution → Settlement**.
+Every request follows the same pipeline: **Payload → Validation → Queue → Execution → Settlement**. The active configuration is strict Arc Mainnet-only and external-wallet-only.
 
 ## Step-by-Step
 
@@ -15,26 +15,21 @@ The frontend submits a structured payload to one of the task endpoints:
 
 | Endpoint                     | Task Type | Purpose                                 |
 | ---------------------------- | --------- | --------------------------------------- |
-| `POST /tasks`                | Any       | Generic task creation (bridge, generic) |
+| `POST /tasks`                | Any       | Generic task creation                   |
 | `POST /tasks/payroll/init`   | Payroll   | Validate + batch before execution       |
-| `POST /tasks/swap/init`      | Swap      | Legacy swap task, disabled by default   |
-| `POST /tasks/liquidity/init` | Liquidity | Legacy LP task, disabled by default     |
-| `POST /tasks/fx/execute`     | FX        | Execute FX trade                        |
+| `POST /tasks/swap/init`      | Swap      | Disabled by default                     |
+| `POST /tasks/liquidity/init` | Liquidity | Disabled by default                     |
+| `POST /tasks/fx/execute`     | FX        | Disabled by default                     |
 
 ### 2. Validation
 
 `TaskController` validates the request body using `class-validator` (whitelist mode, strict). Type-specific validation:
 
 - **Payroll** — `PayrollValidationService` checks recipient addresses, amounts, token compatibility. Invalid entries reject the entire payload.
-- **Bridge** — `OrchestratorService.normalizeBridgePayload()` validates chains, addresses, amounts. Rejects same-chain bridges, non-USDC tokens, and invalid execution modes. For `bridgeExecutionMode: "external_signer"`, `walletAddress` is required while `walletId` is optional.
-- **Swap** — Requires `tokenIn`, `tokenOut`, `amountIn`, `recipient`.
+- **Bridge** — Bridge routes remain disabled for the initial Mainnet scope and fail closed before execution.
+- **Swap** — Swap routes remain disabled by default and fail closed unless an authorized Mainnet route is configured.
 
-Legacy swap and liquidity endpoints are disabled by default during the official
-StableFX cutover. `WIZPAY_ENABLE_LEGACY_FX=true` or
-`WIZPAY_ENABLE_LEGACY_LIQUIDITY=true` must only be used for isolated
-non-production testing. Official StableFX RFQ failures are terminal for the
-request; the backend must not fall back to synthetic pricing or internal
-reserves.
+Swap, liquidity, FX, and bridge endpoints fail closed by default. They must not fall back to synthetic pricing or internal reserves.
 
 ### 3. Task Creation
 
@@ -101,19 +96,14 @@ This makes BullMQ retries safe. Re-processing an already-completed task is a no-
 
 The orchestrator routes through two layers:
 
-1. `ExecutionRouterService` — checks `walletMode`:
-   - `W3S` (default) → `AgentRouterService`
-   - `PASSKEY` → `PasskeyEngineService`
-
+1. `ExecutionRouterService` — resolves the external-wallet execution path for Arc Mainnet.
 2. `AgentRouterService` — dispatches to the type-specific agent.
 
-The agent executes the domain operation and returns an `AgentExecutionResult`.
-
-External-wallet bridge tasks are a narrow exception: the browser can execute the bridge first, then submit `POST /tasks` with `bridgeExecutionMode: "external_signer"` so the backend stores validation output and audit metadata without requiring a Circle `walletId`.
+The agent executes the domain operation and returns an `AgentExecutionResult`. The backend never holds signing keys; on-chain writes are signed and submitted by the connected external wallet.
 
 ### 8. Settlement
 
-**Sync path** (swap, bridge, FX, liquidity):
+**Sync path** (swap, bridge, FX, liquidity — disabled by default):
 
 ```
 Agent returns → OrchestratorService marks task EXECUTED
@@ -139,7 +129,7 @@ Finalization logic:
 
 ## End-to-End Example: Payroll
 
-A company pays 50 employees in USDC on ARC-TESTNET.
+A company pays 50 employees in USDC on Arc Mainnet.
 
 **1. Init** — Frontend calls `POST /tasks/payroll/init` with 50 recipients.
 
@@ -153,13 +143,13 @@ A company pays 50 employees in USDC on ARC-TESTNET.
 
 **6. Agent** — `PayrollAgent` iterates batch 0 (25 recipients):
 
-- For each: `CircleService.transfer()` → `TaskService.appendTransaction()` → `QueueService.enqueueTransactionPoll()`
+- For each: submit transfer through the external-wallet execution path → `TaskService.appendTransaction()` → `QueueService.enqueueTransactionPoll()`
 - Then batch 1 (25 recipients): same flow.
 - Agent returns. Task stays `in_progress`.
 
 **7. Polling** — `TxPollWorker` processes 50 poll jobs over the next 30–120 seconds:
 
-- Each job calls Circle API for tx status.
+- Each job checks on-chain status.
 - `completed` → update `TaskTransaction`, check if all terminal.
 - Still pending → re-enqueue with delay.
 
@@ -172,29 +162,11 @@ A company pays 50 employees in USDC on ARC-TESTNET.
 
 ---
 
-## External Wallet CCTP V2 Bridge
-
-**1.** The Swap page validates an Arc Testnet hub-and-spoke route and creates a durable `/bridge/intents` record.
-
-**2.** The connected browser wallet switches to the source testnet, approves the registered TokenMessenger V2 only when needed, and submits `depositForBurn`.
-
-**3.** The backend verifies the source receipt and exact `DepositForBurn` event, then polls Circle's sandbox attestation API and validates the returned CCTP message against the persisted intent.
-
-**4.** The same connected browser wallet switches to the destination testnet and submits `receiveMessage` to the registered MessageTransmitter V2.
-
-**5.** The backend verifies the successful destination receipt, exact `receiveMessage(message, attestation)` calldata, the V2 `MessageReceived` event from the configured `MessageTransmitterV2`, the consumed nonce, and the matching configured-USDC mint transfer before marking the lifecycle complete.
-
-Transaction hashes are stored immediately in browser recovery storage and then bound to the backend intent. Reload restoration continues attestation polling or verifies an already-submitted destination transaction. When a new destination wallet authorization is still required, the UI offers the precise `Complete mint on <network>` action only after the backend proves the nonce is unused. A confirmed source burn is never submitted again.
-
----
-
 ## Design Tradeoffs
 
-### Why async settlement for payroll but not for bridge?
+### Why async settlement for payroll?
 
 **Payroll** involves N independent transfers. Each transfer is a separate on-chain transaction with its own confirmation timeline. Blocking the worker for all N confirmations would hold the queue slot for minutes. Instead, the agent submits all transfers rapidly and delegates confirmation to the `tx_poll` queue. This keeps worker concurrency high.
-
-**Bridge** is not a worker task. It is a browser-signed, persisted state machine (approval → burn → attestation → mint) with backend receipt validation at each transition.
 
 ### Why an idempotency guard instead of BullMQ's built-in deduplication?
 
@@ -207,4 +179,4 @@ Centralized execution ensures:
 - Every task passes through the same idempotency guard
 - Every status transition is logged
 - Error handling is uniform (best-effort status update + re-throw)
-- Adding new wallet modes requires changes in `ExecutionRouterService` only — not in every worker
+- Adding new execution paths requires changes in `ExecutionRouterService` only — not in every worker

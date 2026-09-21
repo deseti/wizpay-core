@@ -2,8 +2,7 @@
 
 import type { Address } from "viem";
 
-import { useCircleWallet } from "@/components/providers/CircleWalletProvider";
-import { useHybridWallet } from "@/components/providers/HybridWalletProvider";
+import { useExternalWallet } from "@/components/providers/external-wallet-context";
 import type { WalletMode } from "@/lib/wallet-mode";
 
 interface UseSmartWalletAddressResult {
@@ -15,15 +14,9 @@ interface UseSmartWalletAddressResult {
 }
 
 export function useSmartWalletAddress(): UseSmartWalletAddressResult {
-  const { authenticated } = useCircleWallet();
-  const {
-    activeWalletAddress,
-    activeWalletLabel,
-    isReady,
-    walletMode,
-  } = useHybridWallet();
-  const isLoadingSmartWalletAddress =
-    !isReady || (walletMode === "circle" && authenticated && !activeWalletAddress);
+  const { activeWalletAddress, activeWalletLabel, isReady, walletMode } =
+    useExternalWallet();
+  const isLoadingSmartWalletAddress = !isReady;
 
   return {
     smartWalletAddress: activeWalletAddress,

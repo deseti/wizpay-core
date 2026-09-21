@@ -1,5 +1,14 @@
 import { bootstrap } from './main';
 
+const mainnetEnv = {
+  WIZPAY_ARC_NETWORK: 'arc-mainnet',
+  ARC_MAINNET_DATABASE_URL:
+    'postgresql://wizpay_mainnet:secret@127.0.0.1:15432/wizpay_arc_mainnet',
+  ARC_MAINNET_REDIS_URL: 'redis://127.0.0.1:6379/1',
+  ARC_MAINNET_QUEUE_PREFIX: 'wizpay:arc-mainnet',
+  PORT: '0',
+};
+
 describe('backend startup Arc readiness order', () => {
   it('fails before creating or listening when Mainnet isolation env is incomplete', async () => {
     const createApplication = jest.fn();
@@ -10,7 +19,19 @@ describe('backend startup Arc readiness order', () => {
     expect(createApplication).not.toHaveBeenCalled();
   });
 
-  it('validates readiness before listen for explicit Arc Testnet', async () => {
+  it('fails before creating when the Arc network selector is not Mainnet', async () => {
+    const createApplication = jest.fn();
+
+    await expect(
+      bootstrap(createApplication, {
+        ...mainnetEnv,
+        WIZPAY_ARC_NETWORK: 'unknown',
+      }),
+    ).rejects.toThrow();
+    expect(createApplication).not.toHaveBeenCalled();
+  });
+
+  it('validates readiness before listen for explicit Arc Mainnet', async () => {
     const events: string[] = [];
     const app = {
       enableShutdownHooks: jest.fn(() => events.push('configure')),
@@ -24,14 +45,7 @@ describe('backend startup Arc readiness order', () => {
       return app as never;
     });
 
-    await bootstrap(createApplication, {
-      WIZPAY_ARC_NETWORK: 'arc-testnet',
-      ARC_TESTNET_DATABASE_URL:
-        'postgresql://wizpay_testnet:secret@127.0.0.1:15432/wizpay_arc_testnet',
-      ARC_TESTNET_REDIS_URL: 'redis://127.0.0.1:6379/1',
-      ARC_TESTNET_QUEUE_PREFIX: 'wizpay:arc-testnet',
-      PORT: '0',
-    });
+    await bootstrap(createApplication, { ...mainnetEnv });
     expect(events[0]).toBe('create');
     expect(events.at(-1)).toBe('listen');
   });

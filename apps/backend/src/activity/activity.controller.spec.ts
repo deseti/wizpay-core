@@ -5,7 +5,7 @@ import { ActivityController } from './activity.controller';
 describe('ActivityController authentication', () => {
   it('uses only the database-backed read authenticator for GET', async () => {
     const auth = {
-      authenticateCirclePrincipal: jest.fn(),
+      authenticate: jest.fn(),
     };
     const activity = {
       authenticateRead: jest.fn(async () => {
@@ -19,7 +19,7 @@ describe('ActivityController authentication', () => {
     await expect(controller.list(undefined)).rejects.toBeInstanceOf(
       UnauthorizedException,
     );
-    expect(auth.authenticateCirclePrincipal).not.toHaveBeenCalled();
+    expect(auth.authenticate).not.toHaveBeenCalled();
     expect(activity.sync).not.toHaveBeenCalled();
     expect(activity.list).not.toHaveBeenCalled();
   });
@@ -30,7 +30,7 @@ describe('ActivityController authentication', () => {
       merchantWalletAddress: '0x1111111111111111111111111111111111111111',
     };
     const auth = {
-      authenticateCirclePrincipal: jest.fn(),
+      authenticate: jest.fn(),
     };
     const activity = {
       authenticateRead: jest.fn(async () => principal),
@@ -52,23 +52,22 @@ describe('ActivityController authentication', () => {
       type: undefined,
       status: undefined,
     });
-    expect(auth.authenticateCirclePrincipal).not.toHaveBeenCalled();
+    expect(auth.authenticate).not.toHaveBeenCalled();
   });
 
-  it('uses canonical Circle authentication only for explicit sync', async () => {
+  it('uses external wallet authentication only for explicit sync', async () => {
     const principal = {
       merchantUserId: 'user-a',
       merchantWalletAddress: '0x1111111111111111111111111111111111111111',
-      circleWalletId: 'wallet-a',
-      userToken: 'token-a',
+      merchantDisplayLabel: null,
     };
     const auth = {
-      authenticateCirclePrincipal: jest.fn(async () => principal),
+      authenticate: jest.fn(async () => principal),
     };
     const summary = {
-      source: 'circle_w3s',
+      source: 'external_wallet',
       status: 'synced',
-      pagesScanned: 1,
+      pagesScanned: 0,
       recordsScanned: 0,
       recordsAccepted: 0,
       checkpointAdvanced: false,
@@ -83,9 +82,7 @@ describe('ActivityController authentication', () => {
     await expect(controller.sync('Bearer valid')).resolves.toEqual({
       data: summary,
     });
-    expect(auth.authenticateCirclePrincipal).toHaveBeenCalledWith(
-      'Bearer valid',
-    );
+    expect(auth.authenticate).toHaveBeenCalledWith('Bearer valid');
     expect(activity.sync).toHaveBeenCalledWith(principal);
   });
 });

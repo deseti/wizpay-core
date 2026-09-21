@@ -125,7 +125,7 @@ describe("frontend Uniswap V4 protocol helpers", () => {
     );
   });
 
-  it("rejects developer-controlled wallets and Testnet chain IDs", () => {
+  it("rejects custodial wallets and non-Mainnet chain IDs", () => {
     expect(() =>
       validateMainnetUniswapV4Quote({
         chainId: 5_042,
@@ -135,7 +135,7 @@ describe("frontend Uniswap V4 protocol helpers", () => {
         amountOut: "864736",
         gasEstimate: "37217",
         slippageBps: 50,
-        walletControl: "developer-controlled" as never,
+        walletControl: "custodial" as never,
         recipient: USER,
         walletAddress: USER,
         deadline: 2_000_000_300,
@@ -144,7 +144,7 @@ describe("frontend Uniswap V4 protocol helpers", () => {
     ).toThrow(/user-controlled/);
     expect(() =>
       validateMainnetUniswapV4Quote({
-        chainId: 5_042_002,
+        chainId: 9_999,
         tokenIn: ARC_MAINNET_UNISWAP_V4_USDC,
         tokenOut: ARC_MAINNET_UNISWAP_V4_EURC,
         amountIn: 1_000_000n,

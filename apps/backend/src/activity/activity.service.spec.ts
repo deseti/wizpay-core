@@ -8,8 +8,6 @@ const principal = (user: string, wallet: `0x${string}`) => ({
   merchantUserId: user,
   merchantWalletAddress: wallet,
   merchantDisplayLabel: null,
-  circleWalletId: `wallet-${user}`,
-  userToken: 'test-token',
 });
 
 describe('ActivityService privacy and idempotency', () => {
@@ -24,7 +22,7 @@ describe('ActivityService privacy and idempotency', () => {
       id: 'sync-1',
       ownerUserId: 'user-a',
       walletAddress: walletA,
-      source: 'circle_w3s',
+      source: 'external_wallet',
       checkpointTransactionId: null,
       leaseId: null,
       leaseExpiresAt: null,
@@ -76,13 +74,7 @@ describe('ActivityService privacy and idempotency', () => {
           return row;
         }),
       },
-      appWalletXylonetOperation: { findMany: jest.fn(async () => []) },
       invoicePayment: { findMany: jest.fn(async () => []) },
-      task: { findMany: jest.fn(async () => []) },
-      bridgeTransaction: { findUnique: jest.fn(async () => null) },
-      userWallet: {
-        findMany: jest.fn(async () => [{ userId: 'user-a', address: walletA }]),
-      },
       activityAuthSession: {
         findFirst: jest.fn(async ({ where }: any) =>
           sessions.find(
@@ -112,10 +104,7 @@ describe('ActivityService privacy and idempotency', () => {
         findUnique: jest.fn(async () => ({ ...syncState })),
       },
     };
-    service = new ActivityService(prisma, {
-      listUserTransactions: jest.fn(async () => ({ transactions: [] })),
-      listUserTokenBalances: jest.fn(async () => ({ tokenBalances: [] })),
-    } as never);
+    service = new ActivityService(prisma);
   });
 
   it('lists only the authenticated owner and a new user gets an empty page', async () => {
@@ -125,9 +114,9 @@ describe('ActivityService privacy and idempotency', () => {
       type: 'send',
       direction: 'outgoing',
       status: 'submitted',
-      source: 'circle_w3s',
-      idempotencyKey: 'circle:1',
-      sourceReferenceType: 'circle_transaction',
+      source: 'external_wallet',
+      idempotencyKey: 'wallet:1',
+      sourceReferenceType: 'wallet_transfer',
       sourceReferenceId: '1',
     });
     await expect(
@@ -169,35 +158,27 @@ describe('ActivityService privacy and idempotency', () => {
     });
   });
 
-  it('keeps GET-style list reads database-only when Circle is unavailable', async () => {
-    const w3s = {
-      listUserTransactions: jest.fn(async () => {
-        throw new Error('Circle unavailable');
-      }),
-    };
-    service = new ActivityService(prisma, w3s as never);
+  it('keeps GET-style list reads database-only without provider calls', async () => {
     await service.upsert({
       ownerUserId: 'user-a',
       walletAddress: walletA,
       type: 'send',
       status: 'completed',
-      source: 'circle_w3s',
-      idempotencyKey: 'circle:stored',
-      sourceReferenceType: 'circle_transaction',
+      source: 'external_wallet',
+      idempotencyKey: 'wallet:stored',
+      sourceReferenceType: 'wallet_transfer',
       sourceReferenceId: 'stored',
     });
     await expect(
       service.list(principal('user-a', walletA), {}),
     ).resolves.toMatchObject({ items: [{ sourceReferenceId: 'stored' }] });
-    expect(w3s.listUserTransactions).not.toHaveBeenCalled();
     expect(prisma.activity.upsert).toHaveBeenCalledTimes(1);
   });
 
-  it('issues a 256-bit opaque read session bound to the canonical owner and never returns the Circle bearer', async () => {
+  it('issues a 256-bit opaque read session bound to the canonical owner and never returns the wallet bearer', async () => {
     const result = await service.sync(principal('user-a', walletA));
     expect(result.readSessionToken).toMatch(/^[A-Za-z0-9_-]{43}$/);
-    expect(result.readSessionToken).not.toBe('test-token');
-    expect(JSON.stringify(result)).not.toContain('test-token');
+    expect(result).toMatchObject({ source: 'external_wallet' });
     const write = prisma.activityAuthSession.create.mock.calls[0][0];
     expect(write.data.sessionHash).toMatch(/^[0-9a-f]{64}$/);
     expect(JSON.stringify(write)).not.toContain(result.readSessionToken);
@@ -206,6 +187,7 @@ describe('ActivityService privacy and idempotency', () => {
     ).resolves.toEqual({
       merchantUserId: 'user-a',
       merchantWalletAddress: walletA,
+      merchantDisplayLabel: null,
     });
   });
 
@@ -224,7 +206,7 @@ describe('ActivityService privacy and idempotency', () => {
       id: 'sync-user-b',
       ownerUserId: where.ownerUserId_source.ownerUserId,
       walletAddress: walletB,
-      source: 'circle_w3s',
+      source: 'external_wallet',
       checkpointTransactionId: null,
       leaseId: null,
       leaseExpiresAt: null,
@@ -236,7 +218,11 @@ describe('ActivityService privacy and idempotency', () => {
     ).resolves.toMatchObject({ merchantUserId: 'user-b' });
     await expect(
       service.getOwned(
-        { merchantUserId: 'user-b', merchantWalletAddress: walletB },
+        {
+          merchantUserId: 'user-b',
+          merchantWalletAddress: walletB,
+          merchantDisplayLabel: null,
+        },
         'activity-1',
       ),
     ).rejects.toBeInstanceOf(NotFoundException);
@@ -253,9 +239,9 @@ describe('ActivityService privacy and idempotency', () => {
       walletAddress: walletA,
       type: 'swap',
       status: 'pending',
-      source: 'xylonet_tower',
-      idempotencyKey: 'xylonet:1',
-      sourceReferenceType: 'app_wallet_xylonet_operation',
+      source: 'external_wallet',
+      idempotencyKey: 'wallet:1',
+      sourceReferenceType: 'wallet_transfer',
       sourceReferenceId: '1',
     });
     await expect(
@@ -269,9 +255,9 @@ describe('ActivityService privacy and idempotency', () => {
       walletAddress: '0x1111111111111111111111111111111111111111',
       type: 'swap' as const,
       status: 'pending' as const,
-      source: 'xylonet_tower',
-      idempotencyKey: 'xylonet:1',
-      sourceReferenceType: 'app_wallet_xylonet_operation',
+      source: 'external_wallet',
+      idempotencyKey: 'wallet:1',
+      sourceReferenceType: 'wallet_transfer',
       sourceReferenceId: '1',
     };
     await service.upsert(base);
@@ -293,9 +279,9 @@ describe('ActivityService privacy and idempotency', () => {
       ownerUserId: 'user-a',
       walletAddress: walletA,
       type: 'send' as const,
-      source: 'circle_w3s',
-      idempotencyKey: 'circle:recoverable',
-      sourceReferenceType: 'circle_transaction',
+      source: 'external_wallet',
+      idempotencyKey: 'wallet:recoverable',
+      sourceReferenceType: 'wallet_transfer',
       sourceReferenceId: 'recoverable',
     };
     await service.upsert({ ...base, status: 'recovery_required' });
@@ -311,9 +297,9 @@ describe('ActivityService privacy and idempotency', () => {
       walletAddress: walletA,
       type: 'send' as const,
       status: 'pending' as const,
-      source: 'circle_w3s',
-      idempotencyKey: 'circle:1',
-      sourceReferenceType: 'circle_transaction',
+      source: 'external_wallet',
+      idempotencyKey: 'wallet:1',
+      sourceReferenceType: 'wallet_transfer',
       sourceReferenceId: '1',
     };
     await service.upsert(base);
@@ -346,203 +332,80 @@ describe('ActivityService privacy and idempotency', () => {
     expect(dto).not.toHaveProperty('ownerUserId');
     expect(dto).not.toHaveProperty('walletAddress');
     expect(dto).not.toHaveProperty('userToken');
-    expect(JSON.stringify(dto)).not.toContain('test-token');
     expect(JSON.stringify(dto)).not.toMatch(
       /credential|signature|typedData|permit2|providerResponse/i,
     );
   });
 
-  it('does not grant task ownership from recipient or destination fields', async () => {
-    prisma.task.findMany.mockResolvedValueOnce([
+  it('projects only verified Mainnet invoice payments for the canonical wallet', async () => {
+    const txHash = `0x${'c'.repeat(64)}`;
+    prisma.invoicePayment.findMany.mockResolvedValue([
       {
-        id: 'task-1',
-        type: 'payroll',
-        status: 'executed',
-        metadata: {},
-        payload: { recipient: walletA, destinationAddress: walletA },
-        transactions: [{ status: 'completed', txHash: `0x${'b'.repeat(64)}` }],
-        units: [],
-        updatedAt: new Date(),
+        id: 'payment-1',
+        transactionHash: txHash,
+        status: 'VERIFIED',
+        payerAddress: walletB,
+        verifiedAt: new Date('2026-08-31T00:00:00Z'),
+        createdAt: new Date('2026-08-31T00:00:00Z'),
+        invoice: {
+          merchantUserId: 'user-a',
+          merchantWalletAddress: walletA,
+          chainId: 5042,
+          tokenSymbol: 'USDC',
+          tokenAddress: '0x3600000000000000000000000000000000000000',
+          amountUnits: '1000000',
+          publicId: 'abcdefghijklmnopqrstuv',
+        },
+      },
+      {
+        id: 'payment-foreign-chain',
+        transactionHash: `0x${'d'.repeat(64)}`,
+        status: 'VERIFIED',
+        payerAddress: walletB,
+        verifiedAt: new Date('2026-08-31T00:00:00Z'),
+        createdAt: new Date('2026-08-31T00:00:00Z'),
+        invoice: {
+          merchantUserId: 'user-a',
+          merchantWalletAddress: walletA,
+          chainId: 1,
+          tokenSymbol: 'USDC',
+          tokenAddress: '0x3600000000000000000000000000000000000000',
+          amountUnits: '1000000',
+          publicId: 'foreign-public-id-1234',
+        },
       },
     ]);
-    await service.projectPersisted(principal('user-a', walletA));
-    expect(rows).toHaveLength(0);
+    const accepted = await service.projectPersisted(
+      principal('user-a', walletA),
+    );
+    expect(accepted).toBe(1);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      type: 'invoice_payment',
+      direction: 'incoming',
+      status: 'completed',
+      source: 'invoice_receipt',
+      chainId: 5042,
+      txHash,
+    });
   });
 
-  it('imports only Circle transfers bound to the authenticated canonical wallet', async () => {
-    const w3s = {
-      listUserTransactions: jest.fn(async () => ({
-        transactions: [
-          {
-            id: 'out',
-            operation: 'TRANSFER',
-            walletId: 'wallet-user-a',
-            blockchain: 'ARC-TESTNET',
-            sourceAddress: walletA.toUpperCase().replace('0X', '0x'),
-            destinationAddress: walletB,
-            amounts: ['1.25'],
-            tokenId: 'token-id',
-            state: 'COMPLETE',
-          },
-          {
-            id: 'in',
-            operation: 'TRANSFER',
-            walletId: 'wallet-user-a',
-            blockchain: 'ARC-TESTNET',
-            sourceAddress: walletB,
-            destinationAddress: walletA,
-            amounts: ['2'],
-            tokenId: 'token-id',
-            state: 'CONFIRMED',
-          },
-          {
-            id: 'foreign',
-            operation: 'TRANSFER',
-            walletId: 'wallet-user-a',
-            sourceAddress: walletB,
-            destinationAddress: '0x3333333333333333333333333333333333333333',
-            amounts: ['9'],
-          },
-        ],
-      })),
-    };
-    service = new ActivityService(prisma, w3s as never);
-    await service.sync(principal('user-a', walletA));
-    expect(rows.map((row) => row.type)).toEqual(['send', 'receive']);
-    expect(rows.map((row) => row.ownerUserId)).toEqual(['user-a', 'user-a']);
-    expect(rows[0].inputAmount).toBe('1.25');
-  });
-
-  it('single-flights concurrent sync and throttles the next provider scan', async () => {
-    let release!: () => void;
-    const w3s = {
-      listUserTransactions: jest.fn(
-        () =>
-          new Promise<{ transactions: never[] }>((resolve) => {
-            release = () => resolve({ transactions: [] });
-          }),
-      ),
-    };
-    service = new ActivityService(prisma, w3s as never);
+  it('single-flights concurrent sync and throttles the next scan', async () => {
     const first = service.sync(principal('user-a', walletA));
     const second = service.sync(principal('user-a', walletA));
-    for (let attempt = 0; !release && attempt < 10; attempt += 1)
-      await new Promise((resolve) => setImmediate(resolve));
-    expect(release).toBeDefined();
-    release();
     const [firstSummary, secondSummary] = await Promise.all([first, second]);
     expect(firstSummary.status).toBe('synced');
     expect(secondSummary).toEqual(firstSummary);
-    expect(w3s.listUserTransactions).toHaveBeenCalledTimes(1);
 
     await expect(
       service.sync(principal('user-a', walletA)),
     ).resolves.toMatchObject({ status: 'throttled', pagesScanned: 0 });
-    expect(w3s.listUserTransactions).toHaveBeenCalledTimes(1);
   });
 
-  it('continues after the persisted checkpoint and deduplicates provider pages', async () => {
-    prisma.activitySyncState.upsert.mockResolvedValueOnce({
-      id: 'sync-1',
-      ownerUserId: 'user-a',
-      walletAddress: walletA,
-      source: 'circle_w3s',
-      checkpointTransactionId: 'known',
-      leaseId: null,
-      leaseExpiresAt: null,
-      nextAllowedAt: null,
+  it('reports the Mainnet source on every sync summary', async () => {
+    await expect(service.sync(principal('user-a', walletA))).resolves.toMatchObject({
+      source: 'external_wallet',
+      status: 'synced',
     });
-    const duplicate = {
-      id: 'new-id',
-      operation: 'TRANSFER',
-      walletId: 'wallet-user-a',
-      blockchain: 'ARC-TESTNET',
-      sourceAddress: walletA,
-      destinationAddress: walletB,
-      amounts: ['1'],
-      state: 'COMPLETE',
-      txHash: `0x${'D'.repeat(64)}`,
-    };
-    const w3s = {
-      listUserTransactions: jest.fn(async () => ({
-        transactions: [
-          { ...duplicate, id: 'known' },
-          duplicate,
-          { ...duplicate },
-        ],
-      })),
-    };
-    service = new ActivityService(prisma, w3s as never);
-    const summary = await service.sync(principal('user-a', walletA));
-    expect(w3s.listUserTransactions).toHaveBeenCalledWith(
-      { walletId: 'wallet-user-a', pageAfter: 'known' },
-      'test-token',
-    );
-    expect(summary).toMatchObject({
-      recordsScanned: 3,
-      recordsAccepted: 1,
-      checkpointAdvanced: true,
-    });
-    expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({
-      transactionId: 'new-id',
-      txHash: `0x${'d'.repeat(64)}`,
-    });
-  });
-
-  it('stores only a one-way read-session fingerprint, never the Circle token', async () => {
-    const w3s = {
-      listUserTransactions: jest.fn(async () => ({ transactions: [] })),
-    };
-    service = new ActivityService(prisma, w3s as never);
-    await service.sync(principal('user-a', walletA));
-    const write = prisma.activityAuthSession.create.mock.calls[0][0];
-    expect(write.data.sessionHash).toMatch(/^[0-9a-f]{64}$/);
-    expect(JSON.stringify(write)).not.toContain('test-token');
-  });
-
-  it('projects a Circle-proven payroll once and does not duplicate its transfers as Sends', async () => {
-    const txHash = `0x${'c'.repeat(64)}`;
-    prisma.task.findMany.mockImplementation(async ({ where }: any) =>
-      where.type === 'payroll'
-        ? [
-            {
-              id: 'payroll-1',
-              type: 'payroll',
-              status: 'executed',
-              metadata: { walletAddress: walletA, totalAmount: '1000000' },
-              payload: {},
-              transactions: [
-                {
-                  txId: 'payroll-tx',
-                  status: 'completed',
-                  txHash,
-                },
-              ],
-              units: [],
-              updatedAt: new Date('2026-08-31T00:00:00Z'),
-            },
-          ]
-        : [],
-    );
-    service = new ActivityService(prisma, {
-      listUserTransactions: jest.fn(async () => ({
-        transactions: [
-          {
-            id: 'payroll-tx',
-            operation: 'TRANSFER',
-            walletId: 'wallet-user-a',
-            blockchain: 'ARC-TESTNET',
-            sourceAddress: walletA,
-            destinationAddress: walletB,
-            amounts: ['1'],
-            state: 'COMPLETE',
-          },
-        ],
-      })),
-    } as never);
-    await service.sync(principal('user-a', walletA));
-    expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ type: 'payroll', taskId: 'payroll-1' });
   });
 });

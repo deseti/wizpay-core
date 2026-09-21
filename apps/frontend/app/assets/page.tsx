@@ -12,7 +12,7 @@ import { useTokenBalances } from "@/hooks/useTokenBalances";
 import { useWizPay } from "@/hooks/wizpay";
 import {
   ARC_CHAIN_ID,
-  ARC_TESTNET_CHAIN_ID,
+  ARC_MAINNET_CHAIN_ID,
   formatTokenAmount,
   getExplorerTxUrl,
   TOKEN_OPTIONS,
@@ -57,7 +57,7 @@ function TokenDetailCard({
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
             <TokenIcon
-              chainId={ARC_TESTNET_CHAIN_ID}
+              chainId={ARC_MAINNET_CHAIN_ID}
               address={address}
               symbol={symbol}
               size={40}
@@ -156,7 +156,7 @@ function TokenDetailCard({
                   </div>
                   <p className="flex items-center gap-1.5 text-xs font-mono">
                     <TokenIcon
-                      chainId={ARC_TESTNET_CHAIN_ID}
+                      chainId={ARC_MAINNET_CHAIN_ID}
                       address={address}
                       symbol={symbol}
                       size={20}
@@ -219,7 +219,7 @@ function AssetsContent() {
             Assets
           </h1>
           <p className="text-sm text-muted-foreground/70">
-            Your token balances and activity on Arc Testnet.
+            Your token balances and activity on Arc Mainnet.
           </p>
         </div>
         {walletAddress && (
@@ -261,7 +261,7 @@ function AssetsContent() {
                 Network
               </p>
               <p className="mt-2 text-sm font-medium text-cyan-300">
-                Arc Testnet
+                Arc Mainnet
               </p>
             </div>
           </div>
@@ -272,7 +272,7 @@ function AssetsContent() {
         <EmptyStateView
           icon={<Wallet className="h-7 w-7 text-primary/60" />}
           title="No Assets Yet"
-          description="Fund your wallet with supported Arc Testnet tokens to get started."
+          description="Fund your wallet with supported Arc Mainnet tokens to get started."
         />
       ) : (
         <div className="grid gap-4">

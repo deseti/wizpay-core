@@ -1,16 +1,11 @@
-import { FxRetryService, EnsureFreshQuoteResult } from './fx-retry.service';
-import { StableFXRfqClient } from './stablefx-rfq-client.service';
+import { FxRetryService } from './fx-retry.service';
 import { QuoteRequest, RfqQuote } from './fx.types';
 
 describe('FxRetryService', () => {
   let service: FxRetryService;
-  let rfqClient: jest.Mocked<Pick<StableFXRfqClient, 'requestQuote'>>;
 
   beforeEach(() => {
-    rfqClient = {
-      requestQuote: jest.fn(),
-    };
-    service = new FxRetryService(rfqClient as unknown as StableFXRfqClient);
+    service = new FxRetryService();
   });
 
   // ─────────────────────────────────────────────────────────────────────────────
@@ -75,185 +70,51 @@ describe('FxRetryService', () => {
   });
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // ensureFreshQuote() - quote still valid
+  // ensureFreshQuote()
   // ─────────────────────────────────────────────────────────────────────────────
 
-  describe('ensureFreshQuote() - quote still valid', () => {
-    it('reuses original quote when not expired', async () => {
-      const futureDate = new Date(Date.now() + 60_000).toISOString();
-      const previousQuote = makeQuote({
-        quoteId: 'quote-123',
-        expiresAt: futureDate,
-      });
-      const params = makeQuoteRequest();
+  describe('ensureFreshQuote()', () => {
+    const params: QuoteRequest = {
+      fromCurrency: 'USDC',
+      toCurrency: 'EURC',
+      fromAmount: '1000',
+      tenor: 'instant',
+    };
 
-      const result = await service.ensureFreshQuote(previousQuote, params);
-
-      expect(result.quote).toBe(previousQuote);
-      expect(result.wasRefreshed).toBe(false);
-      expect(result.expiredQuoteId).toBeUndefined();
-    });
-
-    it('does not call rfqClient.requestQuote when quote is still valid', async () => {
-      const futureDate = new Date(Date.now() + 60_000).toISOString();
-      const previousQuote = makeQuote({ expiresAt: futureDate });
-      const params = makeQuoteRequest();
-
-      await service.ensureFreshQuote(previousQuote, params);
-
-      expect(rfqClient.requestQuote).not.toHaveBeenCalled();
-    });
-  });
-
-  // ─────────────────────────────────────────────────────────────────────────────
-  // ensureFreshQuote() - quote expired
-  // ─────────────────────────────────────────────────────────────────────────────
-
-  describe('ensureFreshQuote() - quote expired', () => {
-    it('requests fresh quote when previous quote is expired', async () => {
-      const pastDate = new Date(Date.now() - 60_000).toISOString();
-      const previousQuote = makeQuote({
-        quoteId: 'expired-quote-001',
-        expiresAt: pastDate,
-      });
-      const params = makeQuoteRequest();
-      const freshQuote = makeQuote({
-        quoteId: 'fresh-quote-002',
+    it('reuses a still-valid quote without refresh', async () => {
+      const quote = makeQuote({
         expiresAt: new Date(Date.now() + 60_000).toISOString(),
       });
 
-      rfqClient.requestQuote.mockResolvedValue(freshQuote);
+      const result = await service.ensureFreshQuote(quote, params);
 
-      const result = await service.ensureFreshQuote(previousQuote, params);
-
-      expect(rfqClient.requestQuote).toHaveBeenCalledWith(params);
-      expect(result.quote).toBe(freshQuote);
-      expect(result.wasRefreshed).toBe(true);
+      expect(result).toEqual({ quote, wasRefreshed: false });
     });
 
-    it('returns the expired quote ID in the result', async () => {
-      const pastDate = new Date(Date.now() - 60_000).toISOString();
-      const previousQuote = makeQuote({
-        quoteId: 'expired-quote-abc',
-        expiresAt: pastDate,
-      });
-      const params = makeQuoteRequest();
-      const freshQuote = makeQuote({
-        quoteId: 'fresh-quote-xyz',
-        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    it('fails closed when the quote expired instead of refreshing it', async () => {
+      const quote = makeQuote({
+        quoteId: 'quote-expired',
+        expiresAt: new Date(Date.now() - 60_000).toISOString(),
       });
 
-      rfqClient.requestQuote.mockResolvedValue(freshQuote);
-
-      const result = await service.ensureFreshQuote(previousQuote, params);
-
-      expect(result.expiredQuoteId).toBe('expired-quote-abc');
-    });
-
-    it('passes original quote request params to requestQuote', async () => {
-      const pastDate = new Date(Date.now() - 60_000).toISOString();
-      const previousQuote = makeQuote({ expiresAt: pastDate });
-      const params: QuoteRequest = {
-        fromCurrency: 'EURC',
-        toCurrency: 'USDC',
-        fromAmount: '500.00',
-        tenor: 'hourly',
-      };
-      const freshQuote = makeQuote({
-        quoteId: 'fresh-quote',
-        expiresAt: new Date(Date.now() + 60_000).toISOString(),
-      });
-
-      rfqClient.requestQuote.mockResolvedValue(freshQuote);
-
-      await service.ensureFreshQuote(previousQuote, params);
-
-      expect(rfqClient.requestQuote).toHaveBeenCalledWith(params);
-    });
-  });
-
-  // ─────────────────────────────────────────────────────────────────────────────
-  // ensureFreshQuote() - logging
-  // ─────────────────────────────────────────────────────────────────────────────
-
-  describe('ensureFreshQuote() - logging', () => {
-    let logSpy: jest.SpyInstance;
-
-    beforeEach(() => {
-      logSpy = jest.spyOn((service as any).logger, 'log');
-    });
-
-    it('logs both expired and new quote IDs when refreshing', async () => {
-      const pastDate = new Date(Date.now() - 60_000).toISOString();
-      const previousQuote = makeQuote({
-        quoteId: 'old-quote-id',
-        expiresAt: pastDate,
-      });
-      const params = makeQuoteRequest();
-      const freshQuote = makeQuote({
-        quoteId: 'new-quote-id',
-        expiresAt: new Date(Date.now() + 60_000).toISOString(),
-        rate: '1.085',
-      });
-
-      rfqClient.requestQuote.mockResolvedValue(freshQuote);
-
-      await service.ensureFreshQuote(previousQuote, params);
-
-      // Verify the log contains both quote IDs
-      const logCalls = logSpy.mock.calls.map((call) => call[0]);
-      const freshQuoteLog = logCalls.find(
-        (msg: string) =>
-          msg.includes('old-quote-id') && msg.includes('new-quote-id'),
+      await expect(service.ensureFreshQuote(quote, params)).rejects.toMatchObject(
+        {
+          response: { code: 'FX_QUOTE_REFRESH_UNAVAILABLE' },
+        },
       );
-      expect(freshQuoteLog).toBeDefined();
-      expect(freshQuoteLog).toContain('expiredQuoteId=old-quote-id');
-      expect(freshQuoteLog).toContain('newQuoteId=new-quote-id');
-    });
-
-    it('logs reuse message when quote is still valid', async () => {
-      const futureDate = new Date(Date.now() + 60_000).toISOString();
-      const previousQuote = makeQuote({
-        quoteId: 'valid-quote-id',
-        expiresAt: futureDate,
-      });
-      const params = makeQuoteRequest();
-
-      await service.ensureFreshQuote(previousQuote, params);
-
-      const logCalls = logSpy.mock.calls.map((call) => call[0]);
-      const reuseLog = logCalls.find(
-        (msg: string) =>
-          msg.includes('valid-quote-id') && msg.includes('reusing'),
-      );
-      expect(reuseLog).toBeDefined();
     });
   });
+
+  function makeQuote(overrides: Partial<RfqQuote> = {}): RfqQuote {
+    return {
+      quoteId: 'quote-123',
+      rate: '0.92',
+      fromAmount: '1000',
+      toAmount: '920',
+      fee: '1.5',
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      tenor: 'instant',
+      ...overrides,
+    };
+  }
 });
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Test Helpers
-// ─────────────────────────────────────────────────────────────────────────────
-
-function makeQuote(overrides: Partial<RfqQuote> = {}): RfqQuote {
-  return {
-    quoteId: 'test-quote-id',
-    rate: '1.08',
-    fromAmount: '100.00',
-    toAmount: '108.00',
-    fee: '0.50',
-    expiresAt: new Date(Date.now() + 30_000).toISOString(),
-    tenor: 'instant',
-    ...overrides,
-  };
-}
-
-function makeQuoteRequest(overrides: Partial<QuoteRequest> = {}): QuoteRequest {
-  return {
-    fromCurrency: 'USDC',
-    toCurrency: 'EURC',
-    fromAmount: '100.00',
-    tenor: 'instant',
-    ...overrides,
-  };
-}

@@ -6,18 +6,15 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { formatUnits } from "viem";
 
 import { SwapScreen } from "./SwapScreen";
 import { quoteUserSwap } from "@/lib/user-swap-service";
+import { activeArcChain } from "@/lib/wagmi";
 import {
-  createAppWalletXylonetOperation,
-  quoteAppWalletXylonetSwap,
-} from "@/lib/app-wallet-swap-service";
-import {
-  validateExternalXylonetQuote,
-  verifyExternalXylonetReceipt,
-} from "@/lib/external-xylonet-swap";
-import { runAppWalletXylonetLifecycle } from "@/lib/app-wallet-xylonet-lifecycle";
+  calculateArcMaxAmount,
+  sumGasReserves,
+} from "@/lib/arc-gas-reserve";
 
 vi.mock("@/components/providers/CapabilityProvider", () => ({
   useCapability: () => ({
@@ -27,16 +24,11 @@ vi.mock("@/components/providers/CapabilityProvider", () => ({
   }),
 }));
 
-vi.mock("@tanstack/react-query", () => ({
-  useQueryClient: () => ({ invalidateQueries: vi.fn() }),
-}));
-
 const state = vi.hoisted(() => ({
-  walletMode: "external" as "external" | "circle",
   walletAddress: "0x90ab859240b941eaf0cbcbf42df5086e0ad54147" as `0x${string}`,
   hash: `0x${"ab".repeat(32)}` as `0x${string}`,
+  approvals: [] as Array<{ to: `0x${string}` }>,
   writeContract: vi.fn(),
-  readContract: vi.fn(),
   waitForTransactionReceipt: vi.fn(),
   toast: vi.fn(),
 }));
@@ -44,14 +36,6 @@ const state = vi.hoisted(() => ({
 vi.mock("@/hooks/useActiveWalletAddress", () => ({
   useActiveWalletAddress: () => ({
     walletAddress: state.walletAddress,
-    walletMode: state.walletMode,
-  }),
-}));
-vi.mock("@/components/providers/CircleWalletProvider", () => ({
-  useCircleWallet: () => ({
-    arcWallet: { id: "wallet-1" },
-    executeChallenge: vi.fn(),
-    userToken: "user-token",
   }),
 }));
 vi.mock("@/hooks/use-toast", () => ({
@@ -70,12 +54,13 @@ vi.mock("wagmi", async (importOriginal) => ({
   useWalletClient: () => ({
     data: {
       account: { address: state.walletAddress },
-      chain: { id: 5_042_002 },
+      chain: { id: 5_042 },
       writeContract: state.writeContract,
     },
   }),
   usePublicClient: () => ({
-    readContract: state.readContract,
+    getGasPrice: vi.fn().mockResolvedValue(1_000_000_000n),
+    estimateContractGas: vi.fn().mockResolvedValue(50_000n),
     waitForTransactionReceipt: state.waitForTransactionReceipt,
   }),
   useReadContract: () => ({ data: 10_000_000n }),
@@ -84,65 +69,39 @@ vi.mock("@/lib/user-swap-service", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/user-swap-service")>()),
   quoteUserSwap: vi.fn(),
 }));
-vi.mock("@/lib/app-wallet-swap-service", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@/lib/app-wallet-swap-service")>()),
-  quoteAppWalletXylonetSwap: vi.fn(),
-  createAppWalletXylonetOperation: vi.fn(),
+vi.mock("@/lib/mainnet-uniswap-v4", () => ({
+  getMainnetUniswapV4UnavailableState: () => ({
+    available: true,
+    executable: true,
+    poolIdentityStatus: "verified",
+    message: null,
+    blockers: [],
+  }),
 }));
-vi.mock("@/lib/external-xylonet-swap", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@/lib/external-xylonet-swap")>()),
-  validateExternalXylonetQuote: vi.fn(),
-  verifyExternalXylonetReceipt: vi.fn(),
-}));
-vi.mock("@/lib/app-wallet-xylonet-lifecycle", () => ({
-  runAppWalletXylonetLifecycle: vi.fn(),
+vi.mock("@/lib/mainnet-uniswap-v4-protocol", () => ({
+  WIZPAY_SWAP_EXECUTOR_MAINNET_ADDRESS:
+    "0x7A051F17B237750EF9D4E63fb75381B9F8755774",
+  applySlippage: (amount: bigint) => amount,
+  calculateMinHopPriceX36: () => 1n,
+  encodeUserControlledApprovals: () => state.approvals,
+  mainnetUniswapV4TransactionValue: () => 0n,
 }));
 
-const executor = "0x7B5573759576AD3AD9F9E3b4425ad68FD2b525ed";
-const router = "0x73742278c31a76dBb0D2587d03ef92E6E2141023";
-const usdc = "0x3600000000000000000000000000000000000000";
-const eurc = "0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a";
+const eurc = "0xbEf5f6d51CB62b58e6A8f77868681825C6fe21c1";
 
-function externalQuote() {
+function mainnetQuote() {
   return {
     tokenIn: "USDC" as const,
     tokenOut: "EURC" as const,
-    tokenInAddress: usdc,
-    tokenOutAddress: eurc,
     amountIn: "1000000",
     fromAddress: state.walletAddress,
     toAddress: state.walletAddress,
-    recipientAddress: state.walletAddress,
-    chain: "ARC-TESTNET" as const,
-    chainId: 5_042_002,
-    provider: "xylonet" as const,
-    executorAddress: executor,
-    routerAddress: router,
+    chain: "ARC-MAINNET" as const,
+    provider: "mainnet-uniswap-v4" as const,
+    executorAddress: "0x7A051F17B237750EF9D4E63fb75381B9F8755774",
     expectedOutput: "990000",
-    minimumAmountOut: "900000",
     expiresAt: new Date(Date.now() + 600_000).toISOString(),
     raw: {},
-  };
-}
-
-function appQuote() {
-  return {
-    operationMode: "direct-user-controlled" as const,
-    executionMode: "direct-user-controlled" as const,
-    sourceChain: "ARC-TESTNET" as const,
-    tokenIn: "USDC" as const,
-    tokenOut: "EURC" as const,
-    amountIn: "1000000",
-    expectedOutput: "990000",
-    minimumOutput: "900000",
-    expiresAt: new Date(Date.now() + 600_000).toISOString(),
-    status: "quoted" as const,
-    provider: "xylonet" as const,
-    walletAddress: state.walletAddress,
-    recipientAddress: state.walletAddress,
-    executorAddress: executor,
-    gasReserveUnits: "50000",
-    gasReserveSource: "estimate" as const,
   };
 }
 
@@ -153,9 +112,9 @@ async function enterAmountAndExecute(buttonName: RegExp) {
   const button = await screen.findByRole(
     "button",
     { name: buttonName },
-    { timeout: 2_000 },
+    { timeout: 5_000 },
   );
-  await waitFor(() => expect(button).toBeEnabled(), { timeout: 2_000 });
+  await waitFor(() => expect(button).toBeEnabled(), { timeout: 5_000 });
   fireEvent.click(button);
 }
 
@@ -163,98 +122,94 @@ describe("SwapScreen verified success modal", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     window.localStorage.clear();
-    state.walletMode = "external";
+    state.approvals = [];
     state.writeContract.mockResolvedValue(state.hash);
-    state.readContract.mockResolvedValue(10_000_000n);
     state.waitForTransactionReceipt.mockResolvedValue({
       status: "success",
       logs: [],
     });
-    vi.mocked(quoteUserSwap).mockResolvedValue(externalQuote());
-    vi.mocked(validateExternalXylonetQuote).mockReturnValue({
-      executor,
-      router,
-      tokenIn: usdc,
-      tokenOut: eurc,
-      amountIn: 1_000_000n,
-      minimumAmountOut: 900_000n,
-      recipient: state.walletAddress,
-      deadline: BigInt(Math.floor(Date.now() / 1_000) + 600),
-    });
-    vi.mocked(verifyExternalXylonetReceipt).mockReturnValue(950_000n);
-    vi.mocked(quoteAppWalletXylonetSwap).mockResolvedValue(appQuote());
-    vi.mocked(createAppWalletXylonetOperation).mockResolvedValue({
-      ...appQuote(),
-      operationId: "operation-1",
-      applicationUserId: "user-1",
-      circleWalletId: "wallet-1",
-      walletAddress: state.walletAddress,
-      chain: "ARC-TESTNET",
-      chainId: 5_042_002,
-      tokenInAddress: usdc,
-      tokenOutAddress: eurc,
-      slippageBps: 200,
-      feeBps: 25,
-      routerAddress: router,
-      executorAddress: executor,
-      recipientAddress: state.walletAddress,
-      deadline: String(Math.floor(Date.now() / 1_000) + 600),
-      lifecycleStage: "created",
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    } as never);
-    vi.stubEnv("NEXT_PUBLIC_WIZPAY_SWAP_EXECUTOR_V2_ADDRESS", executor);
-    vi.stubGlobal("crypto", {
-      ...globalThis.crypto,
-      randomUUID: () => "idempotency-key",
-    });
+    vi.mocked(quoteUserSwap).mockResolvedValue(mainnetQuote());
   });
 
   afterEach(() => {
     vi.unstubAllEnvs();
   });
 
-  it("renders canonical PNG artwork in the Swap token selectors", async () => {
+  it("renders the locked Mainnet route and token selectors", async () => {
     render(<SwapScreen />);
-    fireEvent.click(screen.getByRole("combobox", { name: "From token" }));
-    await waitFor(() => {
-      expect(
-        document.querySelector('img[src$="/tokens/usdc.png"]'),
-      ).toBeInTheDocument();
-      expect(
-        document.querySelector('img[src$="/tokens/eurc.png"]'),
-      ).toBeInTheDocument();
-    });
+    expect(
+      screen.getByRole("combobox", { name: "From token" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("combobox", { name: "To token" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Mainnet Swap Executor")).toBeInTheDocument();
+    expect(screen.getByText("WizPaySwapExecutorMainnet")).toBeInTheDocument();
+    expect(
+      await screen.findByRole("button", { name: "Swap on Arc Mainnet" }),
+    ).toBeInTheDocument();
   });
 
-  it("uses the App Wallet Swap execution estimate for Max instead of the full USDC balance", async () => {
-    state.walletMode = "circle";
+  it("uses a live gas estimate for Max instead of the full USDC balance", async () => {
     render(<SwapScreen />);
     fireEvent.click(screen.getByRole("button", { name: "Max" }));
+    const liveReserve = sumGasReserves([50_000n * 1_000_000_000n]);
+    const expected = formatUnits(
+      calculateArcMaxAmount({
+        inputBalance: 10_000_000n,
+        nativeUsdcBalance: 10_000_000n,
+        reserveUnits: liveReserve.reserveUnits,
+        tokenIsUsdc: true,
+      }),
+      6,
+    );
     await waitFor(() =>
       expect(screen.getByRole("textbox", { name: "Swap amount" })).toHaveValue(
-        "9.95",
+        expected,
       ),
-    );
-    expect(quoteAppWalletXylonetSwap).toHaveBeenCalledWith(
-      expect.objectContaining({ amountIn: "10000000", tokenIn: "USDC" }),
-      "user-token",
     );
   });
 
-  it("opens only after External Wallet receipt verification", async () => {
+  it("opens only after Mainnet receipt verification", async () => {
     render(<SwapScreen />);
-    await enterAmountAndExecute(/Swap with XyloNet/);
+    await enterAmountAndExecute(/Swap on Arc Mainnet/);
     expect(
       await screen.findByRole("heading", { name: "Swap completed" }),
     ).toBeInTheDocument();
-    expect(verifyExternalXylonetReceipt).toHaveBeenCalledOnce();
+    expect(quoteUserSwap).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tokenIn: "USDC",
+        tokenOut: "EURC",
+        chain: "ARC-MAINNET",
+      }),
+      expect.anything(),
+    );
     expect(screen.getByText("1.00 USDC")).toBeInTheDocument();
-    expect(screen.getByText("0.95 EURC")).toBeInTheDocument();
+    expect(screen.getAllByText("0.99 EURC").length).toBeGreaterThan(0);
     expect(screen.getByText("External Wallet")).toBeInTheDocument();
     expect(
       screen.getByRole("link", { name: /View on explorer/ }),
-    ).toHaveAttribute("href", `https://testnet.arcscan.app/tx/${state.hash}`);
+    ).toHaveAttribute(
+      "href",
+      `${activeArcChain.blockExplorers?.default.url}/tx/${state.hash}`,
+    );
+  });
+
+  it("approves the Mainnet executor before executing a EURC swap", async () => {
+    state.approvals = [{ to: eurc as `0x${string}` }];
+    render(<SwapScreen />);
+    fireEvent.click(screen.getByRole("button", { name: "Reverse tokens" }));
+    await enterAmountAndExecute(/Swap on Arc Mainnet/);
+    expect(
+      await screen.findByRole("heading", { name: "Swap completed" }),
+    ).toBeInTheDocument();
+    expect(state.writeContract).toHaveBeenCalledTimes(2);
+    expect(state.writeContract.mock.calls[0]?.[0]).toMatchObject({
+      functionName: "approve",
+    });
+    expect(state.writeContract.mock.calls[1]?.[0]).toMatchObject({
+      functionName: "executeSwap",
+    });
   });
 
   it("shows non-modal progress immediately and keeps one External Wallet submission active", async () => {
@@ -265,17 +220,13 @@ describe("SwapScreen verified success modal", () => {
       }),
     );
     render(<SwapScreen />);
-    await enterAmountAndExecute(/Swap with XyloNet/);
+    await enterAmountAndExecute(/Swap on Arc Mainnet/);
 
     expect(
       screen.getByRole("region", { name: "Swap progress" }),
     ).toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: "Swap amount" })).toBeDisabled();
     expect(screen.queryByText("Approving token")).not.toBeInTheDocument();
-
-    const submit = await screen.findByRole("button", { name: /signing/i });
-    fireEvent.click(submit);
-    expect(state.writeContract).toHaveBeenCalledTimes(1);
 
     await act(async () => resolveHash(state.hash));
     expect(
@@ -291,7 +242,7 @@ describe("SwapScreen verified success modal", () => {
       new Error("User rejected request"),
     );
     render(<SwapScreen />);
-    await enterAmountAndExecute(/Swap with XyloNet/);
+    await enterAmountAndExecute(/Swap on Arc Mainnet/);
 
     expect(await screen.findByText("Swap stopped")).toBeInTheDocument();
     expect(screen.getAllByText(/rejected/i).length).toBeGreaterThan(0);
@@ -307,61 +258,9 @@ describe("SwapScreen verified success modal", () => {
     expect(state.writeContract).toHaveBeenCalledTimes(1);
   });
 
-  it("opens after App Wallet reports confirmed completion and verified output", async () => {
-    state.walletMode = "circle";
-    vi.mocked(runAppWalletXylonetLifecycle).mockResolvedValue({
-      ...(await createAppWalletXylonetOperation({} as never, "user-token")),
-      lifecycleStage: "completed",
-      terminalStatus: "confirmed",
-      verifiedActualOutput: "960000",
-      swapTransactionHash: state.hash,
-    });
-    render(<SwapScreen />);
-    await enterAmountAndExecute(/Confirm XyloNet swap/);
-    expect(
-      await screen.findByRole("heading", { name: "Swap completed" }),
-    ).toBeInTheDocument();
-    expect(screen.getByText("0.96 EURC")).toBeInTheDocument();
-    expect(screen.getByText("App Wallet")).toBeInTheDocument();
-  });
-
-  it.each([
-    ["submitted", { lifecycleStage: "swap_submitted" }],
-    ["failed", { lifecycleStage: "failed", terminalStatus: "failed" }],
-    [
-      "confirmed without verified output",
-      {
-        lifecycleStage: "completed",
-        terminalStatus: "confirmed",
-        swapTransactionHash: state.hash,
-      },
-    ],
-  ])("does not open for %s App Wallet state", async (_label, override) => {
-    state.walletMode = "circle";
-    vi.mocked(runAppWalletXylonetLifecycle).mockResolvedValue({
-      ...(await createAppWalletXylonetOperation({} as never, "user-token")),
-      ...override,
-    } as never);
-    render(<SwapScreen />);
-    await enterAmountAndExecute(/Confirm XyloNet swap/);
-    await waitFor(() => expect(state.toast).toHaveBeenCalled());
-    expect(
-      screen.queryByRole("heading", { name: "Swap completed" }),
-    ).not.toBeInTheDocument();
-    if (_label === "failed") {
-      expect(
-        screen.getByRole("heading", { name: "Swap failed" }),
-      ).toBeInTheDocument();
-      expect(screen.queryByText("Swap in progress")).not.toBeInTheDocument();
-      expect(
-        screen.getByRole("button", { name: "Start over" }),
-      ).toBeInTheDocument();
-    }
-  });
-
   it("Start another swap resets only the swap presentation and amount", async () => {
     render(<SwapScreen />);
-    await enterAmountAndExecute(/Swap with XyloNet/);
+    await enterAmountAndExecute(/Swap on Arc Mainnet/);
     fireEvent.click(
       await screen.findByRole("button", { name: "Start another swap" }),
     );

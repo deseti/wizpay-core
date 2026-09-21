@@ -61,8 +61,7 @@ export class ActivityController {
 
   @Post('sync')
   async sync(@Headers('authorization') authorization?: string) {
-    const principal =
-      await this.auth.authenticateCirclePrincipal(authorization);
+    const principal = await this.auth.authenticate(authorization);
     return { data: await this.activity.sync(principal) };
   }
 }

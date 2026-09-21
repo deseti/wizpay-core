@@ -8,12 +8,10 @@ import { encodeFunctionData } from 'viem';
 import { HttpExceptionCompatibilityFilter } from '../common/http-exception.compatibility-filter';
 import { CapabilityController } from './capability.controller';
 import { CapabilityService } from './capability.service';
-import { W3sAuthController } from '../modules/wallet/w3s-auth.controller';
-import { W3sAuthService } from '../modules/wallet/w3s-auth.service';
 import { PaymentRoutingService } from '../routing/payment-routing.service';
 
-const TESTNET_USDC = '0x3600000000000000000000000000000000000000';
-const TESTNET_EURC = '0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a';
+const MAINNET_USDC = '0x3600000000000000000000000000000000000000';
+const MAINNET_EURC = '0xbEf5f6d51CB62b58e6A8f77868681825C6fe21c1';
 const WIZPAY = '0x1111111111111111111111111111111111111111';
 
 function config(capabilities = resolveArcCapabilities('arc-mainnet', {})) {
@@ -21,8 +19,8 @@ function config(capabilities = resolveArcCapabilities('arc-mainnet', {})) {
     arcNetwork: {
       key: 'arc-mainnet',
       tokens: {
-        USDC: { address: TESTNET_USDC },
-        EURC: { address: TESTNET_EURC },
+        USDC: { address: MAINNET_USDC },
+        EURC: { address: MAINNET_EURC },
       },
       contracts: { wizpay: { address: WIZPAY } },
     },
@@ -52,7 +50,7 @@ function responseRecord(body: unknown): Record<string, unknown> {
   return body;
 }
 
-describe('CapabilityService', () => {
+describe('CapabilityService (Arc Mainnet only)', () => {
   it('fails closed for unknown access and disabled capabilities', () => {
     const service = capabilityService();
     expect(() => service.assert('Send')).toThrow('Unknown feature capability.');
@@ -70,8 +68,8 @@ describe('CapabilityService', () => {
     );
     expect(() =>
       service.assertPayroll({
-        sourceTokenAddress: TESTNET_USDC.toUpperCase().replace('0X', '0x'),
-        recipients: [{ targetTokenAddress: TESTNET_EURC.toLowerCase() }],
+        sourceTokenAddress: MAINNET_USDC.toUpperCase().replace('0X', '0x'),
+        recipients: [{ targetTokenAddress: MAINNET_EURC.toLowerCase() }],
       }),
     ).toThrow(
       'Cross-token payments are unavailable on the selected Arc network.',
@@ -81,23 +79,7 @@ describe('CapabilityService', () => {
     );
   });
 
-  it('guards generic challenge creation by stable operation context', () => {
-    const service = capabilityService();
-    expect(() =>
-      service.assertW3sAction('createContractExecutionChallenge', {
-        refId: 'INV-operation',
-        contractAddress: TESTNET_USDC,
-        callData: `0xa9059cbb${'0'.repeat(128)}`,
-      }),
-    ).toThrow('This feature is unavailable on the selected Arc network.');
-    expect(() =>
-      service.assertW3sAction('createContractExecutionChallenge', {
-        refId: 'unclassified',
-      }),
-    ).toThrow('Explicit token context is required for contract execution.');
-  });
-
-  it('decodes payroll challenge calldata so casing and references cannot hide cross-token execution', () => {
+  it('decodes Mainnet payroll calldata so casing and references cannot hide cross-token execution', () => {
     const service = capabilityService(
       config({
         ...resolveArcCapabilities('arc-mainnet', {}),
@@ -127,8 +109,8 @@ describe('CapabilityService', () => {
       abi: mainnetPayrollAbi,
       functionName: 'executeCrossTokenPayroll',
       args: [
-        TESTNET_USDC,
-        TESTNET_EURC.toLowerCase() as `0x${string}`,
+        MAINNET_USDC,
+        MAINNET_EURC.toLowerCase() as `0x${string}`,
         ['0x2222222222222222222222222222222222222222'],
         [1n],
         2n,
@@ -139,8 +121,8 @@ describe('CapabilityService', () => {
       ],
     });
     expect(() =>
-      service.assertW3sAction('createContractExecutionChallenge', {
-        refId: 'PAYROLL-spoofed',
+      (service as unknown as Record<string, (params: unknown) => void>)
+        .assertPayrollCall({
         contractAddress: WIZPAY.toUpperCase().replace('0X', '0x'),
         callData,
       }),
@@ -149,19 +131,13 @@ describe('CapabilityService', () => {
     );
   });
 
-  it('preserves validated Testnet payroll approval challenges', () => {
-    const value = new ConfigService({
-      arcNetwork: {
-        key: 'arc-testnet',
-        tokens: {
-          USDC: { address: TESTNET_USDC },
-          EURC: { address: TESTNET_EURC },
-        },
-        contracts: { wizpay: { address: WIZPAY } },
-      },
-      arcCapabilities: resolveArcCapabilities('arc-testnet', {}),
-    });
-    const service = capabilityService(value);
+  it('preserves validated Mainnet payroll approval challenges', () => {
+    const service = capabilityService(
+      config({
+        ...resolveArcCapabilities('arc-mainnet', {}),
+        sameTokenPayroll: true,
+      }),
+    );
     const approveAbi = [
       {
         type: 'function',
@@ -182,16 +158,16 @@ describe('CapabilityService', () => {
       });
 
     expect(() =>
-      service.assertW3sAction('createContractExecutionChallenge', {
-        refId: 'PAYROLL-APPROVE-test',
-        contractAddress: TESTNET_USDC,
+      (service as unknown as Record<string, (params: unknown) => void>)
+        .assertPayrollApproval({
+        contractAddress: MAINNET_USDC,
         callData: approval(WIZPAY),
       }),
     ).not.toThrow();
     expect(() =>
-      service.assertW3sAction('createContractExecutionChallenge', {
-        refId: 'PAYROLL-APPROVE-spoofed',
-        contractAddress: TESTNET_USDC,
+      (service as unknown as Record<string, (params: unknown) => void>)
+        .assertPayrollApproval({
+        contractAddress: MAINNET_USDC,
         callData: approval('0x3333333333333333333333333333333333333333'),
       }),
     ).toThrow('Explicit token context is required for payroll approval.');
@@ -200,16 +176,14 @@ describe('CapabilityService', () => {
 
 describe('capability HTTP boundary', () => {
   let app: INestApplication;
-  const dispatch = jest.fn();
 
   beforeAll(async () => {
     const module = await Test.createTestingModule({
-      controllers: [CapabilityController, W3sAuthController],
+      controllers: [CapabilityController],
       providers: [
         CapabilityService,
         PaymentRoutingService,
         { provide: ConfigService, useValue: config() },
-        { provide: W3sAuthService, useValue: { dispatch } },
       ],
     }).compile();
     app = module.createNestApplication();
@@ -234,22 +208,5 @@ describe('capability HTTP boundary', () => {
     expect(JSON.stringify(response.body)).not.toMatch(
       /secret|environment|WIZPAY_/i,
     );
-  });
-
-  it('rejects disabled challenge requests before Circle dispatch', async () => {
-    const response = await request(httpServer(app))
-      .post('/w3s/action')
-      .send({
-        action: 'createTransferChallenge',
-        refId: 'SEND-test',
-        tokenAddress: TESTNET_USDC,
-      })
-      .expect(503);
-    // Arc Mainnet is external-wallet-only: the explicit Mainnet network
-    // boundary rejects before capability routing and before Circle dispatch.
-    expect(responseRecord(response.body).code).toBe(
-      'CIRCLE_BLOCKCHAIN_UNSUPPORTED',
-    );
-    expect(dispatch).not.toHaveBeenCalled();
   });
 });

@@ -1,18 +1,13 @@
 import { BadRequestException, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { CircleAgentWalletSwapExecutor } from './executors/circle-agent-wallet-swap.executor';
 import { OfficialSwapOrchestrator } from './official-swap.orchestrator';
-import type {
-  OfficialSwapExecuteRequest,
-  OfficialSwapQuoteRequest,
-} from './official-swap.types';
 
-describe('OfficialSwapOrchestrator', () => {
+describe('OfficialSwapOrchestrator (Mainnet fail-closed)', () => {
   const request = {
     sellToken: 'USDC',
     buyToken: 'EURC',
     sellAmount: '10',
-    chain: 'ARC-TESTNET',
+    chain: 'ARC-MAINNET',
   };
 
   function createSubject(env: Record<string, string | undefined> = {}) {
@@ -20,17 +15,19 @@ describe('OfficialSwapOrchestrator', () => {
       get: jest.fn((key: string) => env[key]),
     } as unknown as ConfigService;
 
-    const executor = {
-      quote: jest.fn(),
-      execute: jest.fn(),
-    } as unknown as jest.Mocked<CircleAgentWalletSwapExecutor>;
-    const orchestrator = new OfficialSwapOrchestrator(configService, executor);
+    return new OfficialSwapOrchestrator(configService);
+  }
 
-    return { executor, orchestrator };
+  function enabledSubject(env: Record<string, string | undefined> = {}) {
+    return createSubject({
+      WIZPAY_OFFICIAL_SWAP_ENABLED: 'true',
+      WIZPAY_OFFICIAL_SWAP_EXECUTOR: 'mainnet-uniswap-v4',
+      ...env,
+    });
   }
 
   it('fails quote closed when official swap is disabled by default', async () => {
-    const { orchestrator } = createSubject();
+    const orchestrator = createSubject();
 
     await expect(orchestrator.quote(request)).rejects.toMatchObject({
       response: {
@@ -43,7 +40,7 @@ describe('OfficialSwapOrchestrator', () => {
   });
 
   it('fails execute closed when official swap is disabled by default', async () => {
-    const { orchestrator } = createSubject();
+    const orchestrator = createSubject();
 
     await expect(
       orchestrator.execute({
@@ -58,64 +55,18 @@ describe('OfficialSwapOrchestrator', () => {
     });
   });
 
-  it('rejects execute requests without minOutput before execution policy checks', async () => {
-    const { orchestrator } = createSubject();
-
-    await expect(
-      orchestrator.execute({ ...request, minOutput: '' }),
-    ).rejects.toMatchObject({
-      response: {
-        code: 'MIN_OUTPUT_REQUIRED',
-      },
-    });
-    await expect(
-      orchestrator.execute({ ...request, minOutput: '' }),
-    ).rejects.toThrow(BadRequestException);
-  });
-
-  it('rejects execute requests without walletAddress before execution policy checks', async () => {
-    const { orchestrator } = createSubject();
-
-    await expect(
-      orchestrator.execute({ ...request, minOutput: '9.9' }),
-    ).rejects.toMatchObject({
-      response: {
-        code: 'WALLET_ADDRESS_REQUIRED',
-      },
-    });
-  });
-
-  it('rejects unsupported chains when official swap is enabled', async () => {
-    const { orchestrator } = createSubject({
-      WIZPAY_OFFICIAL_SWAP_ENABLED: 'true',
-    });
-
-    await expect(
-      orchestrator.quote({ ...request, chain: 'ETH-SEPOLIA' }),
-    ).rejects.toMatchObject({
-      response: {
-        code: 'UNSUPPORTED_CHAIN',
-      },
-    });
-  });
-
-  it('rejects missing executor when official swap is enabled', async () => {
-    const { orchestrator } = createSubject({
-      WIZPAY_OFFICIAL_SWAP_ENABLED: 'true',
-    });
+  it('fails quote closed without backend submission when enabled', async () => {
+    const orchestrator = enabledSubject();
 
     await expect(orchestrator.quote(request)).rejects.toMatchObject({
       response: {
-        code: 'OFFICIAL_SWAP_EXECUTOR_UNAVAILABLE',
+        code: 'OFFICIAL_SWAP_QUOTE_FAILED',
       },
     });
   });
 
-  it('blocks real execution unless testnet CLI is explicitly allowed', async () => {
-    const { orchestrator } = createSubject({
-      WIZPAY_OFFICIAL_SWAP_ENABLED: 'true',
-      WIZPAY_OFFICIAL_SWAP_EXECUTOR: 'circle-agent-wallet',
-    });
+  it('fails execute closed without backend submission when enabled', async () => {
+    const orchestrator = enabledSubject();
 
     await expect(
       orchestrator.execute({
@@ -125,59 +76,53 @@ describe('OfficialSwapOrchestrator', () => {
       }),
     ).rejects.toMatchObject({
       response: {
-        code: 'OFFICIAL_SWAP_TESTNET_CLI_DISABLED',
+        code: 'OFFICIAL_SWAP_EXECUTION_FAILED',
       },
     });
   });
 
-  it('delegates quote when enabled, executor selected, and testnet CLI allowed', async () => {
-    const { executor, orchestrator } = createSubject({
-      WIZPAY_OFFICIAL_SWAP_ENABLED: 'true',
-      WIZPAY_OFFICIAL_SWAP_EXECUTOR: 'circle-agent-wallet',
-      WIZPAY_OFFICIAL_SWAP_ALLOW_TESTNET_CLI: 'true',
-    });
-    const quoteResponse = {
-      status: 'QUOTE_READY' as const,
-      sellToken: 'USDC',
-      buyToken: 'EURC',
-      sellAmount: '10',
-      chain: 'ARC-TESTNET' as const,
-      estimatedOutput: '9.6',
-      minOutput: '0.000001',
-    };
-    executor.quote.mockResolvedValue(quoteResponse);
+  it('requires minOutput and walletAddress before execution guards', async () => {
+    const orchestrator = enabledSubject();
 
     await expect(
-      orchestrator.quote(request as OfficialSwapQuoteRequest),
-    ).resolves.toBe(quoteResponse);
+      orchestrator.execute({ ...request, minOutput: '  ' }),
+    ).rejects.toThrow(BadRequestException);
+    await expect(
+      orchestrator.execute({ ...request, minOutput: '9.9' }),
+    ).rejects.toThrow(BadRequestException);
   });
 
-  it('delegates execute when enabled, executor selected, and testnet CLI allowed', async () => {
-    const { executor, orchestrator } = createSubject({
-      WIZPAY_OFFICIAL_SWAP_ENABLED: 'true',
-      WIZPAY_OFFICIAL_SWAP_EXECUTOR: 'circle-agent-wallet',
-      WIZPAY_OFFICIAL_SWAP_ALLOW_TESTNET_CLI: 'true',
-    });
-    const executeRequest = {
-      ...request,
-      minOutput: '9.9',
-      walletAddress: '0x90ab859240b941eaf0cbcbf42df5086e0ad54147',
-    } satisfies OfficialSwapExecuteRequest;
-    const executeResponse = {
-      operationId: 'op-1',
-      status: 'COMPLETE' as const,
-      sellToken: 'USDC',
-      buyToken: 'EURC',
-      sellAmount: '10',
-      minOutput: '9.9',
-      chain: 'ARC-TESTNET' as const,
-      txHashes: [],
-      operations: [],
-    };
-    executor.execute.mockResolvedValue(executeResponse);
+  it('rejects non-Mainnet chains', async () => {
+    const orchestrator = enabledSubject();
 
     await expect(
-      orchestrator.execute(executeRequest),
-    ).resolves.toBe(executeResponse);
+      orchestrator.quote({ ...request, chain: 'ARC-LEGACY' }),
+    ).rejects.toMatchObject({
+      response: {
+        code: 'UNSUPPORTED_CHAIN',
+      },
+    });
+  });
+
+  it('rejects unavailable executors', async () => {
+    const orchestrator = enabledSubject({
+      WIZPAY_OFFICIAL_SWAP_EXECUTOR: 'legacy-executor',
+    });
+
+    await expect(orchestrator.quote(request)).rejects.toMatchObject({
+      response: {
+        code: 'OFFICIAL_SWAP_EXECUTOR_UNAVAILABLE',
+      },
+    });
+  });
+
+  it('returns a not-implemented status payload', () => {
+    const orchestrator = enabledSubject();
+
+    expect(orchestrator.getStatus('op-1')).toMatchObject({
+      operationId: 'op-1',
+      status: 'NOT_IMPLEMENTED',
+      chain: 'ARC-MAINNET',
+    });
   });
 });

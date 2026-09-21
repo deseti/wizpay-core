@@ -1,7 +1,7 @@
 import { formatUnits, getAddress, isAddress } from "viem";
 
 import { TOKEN_BY_ADDRESS } from "@/constants/erc20";
-import { arcTestnet } from "@/lib/wagmi";
+import { activeArcChain } from "@/lib/wagmi";
 import type { TokenSymbol } from "@/lib/wizpay";
 
 export type EvmPaymentPrefill = {
@@ -23,7 +23,7 @@ function parseChainId(raw: string | undefined) {
   if (!raw) return undefined;
   if (!/^\d+$/.test(raw)) throw new Error("QR payload contains a malformed chain ID.");
   const chainId = Number(raw);
-  if (!Number.isSafeInteger(chainId) || chainId !== arcTestnet.id) {
+  if (!Number.isSafeInteger(chainId) || chainId !== activeArcChain.id) {
     throw new Error("This QR code requests an unsupported network.");
   }
   return chainId;

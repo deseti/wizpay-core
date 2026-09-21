@@ -19,13 +19,13 @@ import {
  * TxPollWorker bootstraps and manages the BullMQ Worker for the "tx_poll" queue.
  *
  * This worker processes transaction status poll jobs:
- *   - Checks Circle transaction status
+ *   - Reads the Arc Mainnet transaction receipt
  *   - Updates task transaction records
  *   - Re-enqueues pending transactions
  *   - Finalizes task status when all transactions complete
  *
  * Concurrency is set high (10) since each poll job is a single lightweight
- * HTTP call to Circle + a DB update. No heavy computation.
+ * RPC receipt read + a DB update. No heavy computation.
  */
 @Injectable()
 export class TxPollWorker implements OnModuleInit, OnModuleDestroy {

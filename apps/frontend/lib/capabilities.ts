@@ -6,7 +6,7 @@ import type {
 import { backendFetch } from "@/lib/backend-api";
 
 export const CAPABILITY_UNAVAILABLE_MESSAGE =
-  "This feature is unavailable on the selected Arc network.";
+  "This feature is unavailable on Arc Mainnet.";
 
 export type CapabilityResponse = Readonly<{
   network: ArcNetworkKey;
@@ -15,9 +15,9 @@ export type CapabilityResponse = Readonly<{
 
 export async function fetchEffectiveCapabilities(): Promise<CapabilityResponse> {
   const response = await backendFetch<CapabilityResponse>("/capabilities");
-  if (response.network !== process.env.NEXT_PUBLIC_WIZPAY_ARC_NETWORK) {
+  if (response.network !== "arc-mainnet") {
     throw new Error(
-      "Backend capability network does not match the selected Arc network.",
+      "Backend capability network does not match Arc Mainnet.",
     );
   }
   const expected = [
@@ -30,7 +30,6 @@ export async function fetchEffectiveCapabilities(): Promise<CapabilityResponse> 
     "swap",
     "crossTokenPayroll",
     "crossTokenInvoice",
-    "stableFx",
     "nanoAgentApi",
   ] satisfies ArcCapabilityName[];
   const keys = Object.keys(response.capabilities);

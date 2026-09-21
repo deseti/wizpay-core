@@ -22,16 +22,6 @@ const {
   cancelExecutionIntent: vi.fn(),
   prepareWalletExecutionIntent: vi.fn(),
 }));
-const circle = vi.hoisted(() => ({
-  authenticated: true,
-  authMethod: "email" as "email" | "google" | "passkey" | null,
-  userToken: "circle-user-token" as string | null,
-  payerAddress: "0x2222222222222222222222222222222222222222",
-  login: vi.fn(),
-  ensureSessionReady: vi.fn(),
-  createContractExecutionChallenge: vi.fn(),
-  executeChallenge: vi.fn(),
-}));
 let account = {
   address: "0x1111111111111111111111111111111111111111" as `0x${string}`,
   chainId: 1,
@@ -42,24 +32,6 @@ vi.mock("wagmi", () => ({
   useAccount: () => account,
   useSwitchChain: () => ({ switchChainAsync }),
   useWriteContract: () => ({ writeContractAsync }),
-}));
-vi.mock("@/components/providers/CircleWalletProvider", () => ({
-  useCircleWallet: () => ({
-    authenticated: circle.authenticated,
-    authMethod: circle.authMethod,
-    userToken: circle.userToken,
-    login: circle.login,
-    ensureSessionReady: circle.ensureSessionReady,
-    createContractExecutionChallenge: circle.createContractExecutionChallenge,
-    executeChallenge: circle.executeChallenge,
-    arcWallet: {
-      id: "arc-wallet-1",
-      address: circle.payerAddress,
-      blockchain: "ARC-TESTNET",
-    },
-    sepoliaWallet: { id: "sepolia-wallet-1", address: circle.payerAddress },
-    primaryWallet: { id: "arc-wallet-1", address: circle.payerAddress },
-  }),
 }));
 vi.mock("@/lib/invoice-api", async (original) => ({
   ...(await original<typeof import("@/lib/invoice-api")>()),
@@ -80,6 +52,10 @@ describe("useInvoicePayment", () => {
     writeContractAsync.mockReset();
     switchChainAsync.mockReset();
     vi.mocked(verifyPublicInvoicePayment).mockReset();
+    vi.stubGlobal("crypto", {
+      ...globalThis.crypto,
+      randomUUID: () => "idempotency-key",
+    });
     acquireExecutionIntent.mockReset().mockResolvedValue({
       id: "11111111-1111-4111-8111-111111111111",
       idempotencyKey: "22222222-2222-4222-8222-222222222222",
@@ -92,19 +68,6 @@ describe("useInvoicePayment", () => {
     bindKnownExecutionIntentHash.mockReset().mockResolvedValue({});
     cancelExecutionIntent.mockReset().mockResolvedValue({});
     prepareWalletExecutionIntent.mockReset().mockResolvedValue({});
-    circle.authenticated = true;
-    circle.authMethod = "email";
-    circle.userToken = "circle-user-token";
-    circle.payerAddress = "0x2222222222222222222222222222222222222222";
-    circle.login.mockReset();
-    circle.ensureSessionReady.mockReset().mockResolvedValue(undefined);
-    circle.createContractExecutionChallenge.mockReset().mockResolvedValue({
-      challengeId: "challenge-1",
-      raw: {},
-    });
-    circle.executeChallenge.mockReset().mockResolvedValue({
-      transactionHash: `0x${"c".repeat(64)}`,
-    });
     account = {
       address: "0x1111111111111111111111111111111111111111",
       chainId: 1,
@@ -119,7 +82,7 @@ describe("useInvoicePayment", () => {
     });
   });
 
-  it("switches to Arc, requests one exact transfer, locks duplicate submission, and verifies backend authority", async () => {
+  it("switches to Arc Mainnet, requests one exact transfer, locks duplicate submission, and verifies backend authority", async () => {
     const onInvoice = vi.fn();
     const { result } = renderHook(() =>
       useInvoicePayment(invoice(), onInvoice),
@@ -127,14 +90,17 @@ describe("useInvoicePayment", () => {
     await act(async () => {
       await Promise.all([result.current.pay(), result.current.pay()]);
     });
-    expect(switchChainAsync).toHaveBeenCalledWith({ chainId: 5_042_002 });
+    expect(switchChainAsync).toHaveBeenCalledWith({ chainId: 5_042 });
     expect(acquireExecutionIntent).toHaveBeenCalledWith(
-      expect.objectContaining({ operation: "INVOICE_SETTLEMENT" }),
+      expect.objectContaining({
+        network: "arc-mainnet",
+        operation: "INVOICE_SETTLEMENT",
+      }),
     );
     expect(writeContractAsync).toHaveBeenCalledTimes(1);
     expect(writeContractAsync.mock.calls[0][0]).toMatchObject({
       address: invoice().token.address,
-      chainId: 5_042_002,
+      chainId: 5_042,
       functionName: "transfer",
       args: [invoice().receivingAddress, 100000n],
     });
@@ -201,7 +167,7 @@ describe("useInvoicePayment", () => {
     localStorage.clear();
     account = {
       address: invoice().receivingAddress,
-      chainId: 5_042_002,
+      chainId: 5_042,
       isConnected: true,
     };
     const secondOnInvoice = vi.fn();
@@ -270,44 +236,17 @@ describe("useInvoicePayment", () => {
     expect(bindKnownExecutionIntentHash).toHaveBeenCalledTimes(1);
   });
 
-  it("routes App Wallet selection through one user-controlled contract execution and the shared verifier", async () => {
-    const onInvoice = vi.fn();
-    vi.mocked(verifyPublicInvoicePayment).mockResolvedValue({
-      ...invoice(),
-      status: "PAID",
-      paymentStatus: "VERIFIED",
-      transactionHash: `0x${"c".repeat(64)}`,
-    });
-    const { result } = renderHook(() =>
-      useInvoicePayment(invoice(), onInvoice),
-    );
-
+  it("rejects non-external payer selection without submitting", async () => {
+    const { result } = renderHook(() => useInvoicePayment(invoice(), vi.fn()));
     act(() => result.current.selectMethod("app"));
+    expect(result.current.error).toContain(
+      "external wallet payments only",
+    );
+    expect(result.current.method).toBe("external");
     await act(async () => {
-      await Promise.all([result.current.pay(), result.current.pay()]);
+      await result.current.pay();
     });
-
-    expect(circle.ensureSessionReady).toHaveBeenCalledTimes(1);
-    expect(circle.createContractExecutionChallenge).toHaveBeenCalledTimes(1);
-    expect(circle.createContractExecutionChallenge).toHaveBeenCalledWith(
-      expect.objectContaining({
-        walletId: "arc-wallet-1",
-        contractAddress: invoice().token.address,
-        callData: `0xa9059cbb${invoice().receivingAddress.slice(2).toLowerCase().padStart(64, "0")}${BigInt(invoice().amountUnits).toString(16).padStart(64, "0")}`,
-        feeLevel: "MEDIUM",
-        idempotencyKey: expect.any(String),
-        refId: expect.stringMatching(/^INV-/),
-      }),
-    );
-    expect(circle.executeChallenge).toHaveBeenCalledTimes(1);
-    expect(writeContractAsync).not.toHaveBeenCalled();
-    expect(verifyPublicInvoicePayment).toHaveBeenCalledWith(
-      invoice().publicId,
-      `0x${"c".repeat(64)}`,
-    );
-    expect(onInvoice).toHaveBeenCalledWith(
-      expect.objectContaining({ status: "PAID" }),
-    );
+    expect(writeContractAsync).toHaveBeenCalledTimes(1);
   });
 
   it("keeps a Payment Link caller distinct from a normal invoice settlement", async () => {
@@ -325,38 +264,7 @@ describe("useInvoicePayment", () => {
     );
   });
 
-  it("opens App Wallet authentication without creating a challenge when unauthenticated", async () => {
-    circle.authenticated = false;
-    circle.authMethod = null;
-    circle.userToken = null;
-    const { result } = renderHook(() => useInvoicePayment(invoice(), vi.fn()));
-    act(() => result.current.selectMethod("app"));
-
-    await act(async () => {
-      await result.current.pay();
-    });
-
-    expect(circle.login).toHaveBeenCalledTimes(1);
-    expect(circle.createContractExecutionChallenge).not.toHaveBeenCalled();
-    expect(circle.executeChallenge).not.toHaveBeenCalled();
-    expect(result.current.stage).toBe("authenticating_app_wallet");
-  });
-
-  it("rejects App Wallet self-payment before creating a signature challenge", async () => {
-    circle.payerAddress = invoice().receivingAddress;
-    const { result } = renderHook(() => useInvoicePayment(invoice(), vi.fn()));
-    act(() => result.current.selectMethod("app"));
-
-    await act(async () => {
-      await result.current.pay();
-    });
-
-    expect(result.current.stage).toBe("terminal_error");
-    expect(result.current.error).toContain("merchant's receiving wallet");
-    expect(circle.createContractExecutionChallenge).not.toHaveBeenCalled();
-  });
-
-  it("restores an App Wallet hash and hands it to verification without another challenge", async () => {
+  it("ignores legacy non-external recovery records without verifying", async () => {
     localStorage.setItem(
       `wizpay.invoice-payment.v1.${invoice().publicId}`,
       JSON.stringify({
@@ -365,7 +273,7 @@ describe("useInvoicePayment", () => {
         publicId: invoice().publicId,
         authMethod: "email",
         walletId: "arc-wallet-1",
-        payerAddress: circle.payerAddress,
+        payerAddress: account.address,
         challengeId: "challenge-1",
         transactionHash: `0x${"d".repeat(64)}`,
         createdAt: new Date().toISOString(),
@@ -377,13 +285,9 @@ describe("useInvoicePayment", () => {
     );
 
     await waitFor(() =>
-      expect(verifyPublicInvoicePayment).toHaveBeenCalledWith(
-        invoice().publicId,
-        `0x${"d".repeat(64)}`,
-      ),
+      expect(writeContractAsync).not.toHaveBeenCalled(),
     );
-    expect(circle.createContractExecutionChallenge).not.toHaveBeenCalled();
-    expect(circle.executeChallenge).not.toHaveBeenCalled();
+    expect(verifyPublicInvoicePayment).not.toHaveBeenCalled();
   });
 });
 
@@ -394,7 +298,7 @@ function invoice(): PublicInvoice {
     merchantDisplayLabel: null,
     receivingAddress: "0x32F251fc36A1174901124589EAC2d4E391816F69",
     receivingAddressShort: "0x32F2...6F69",
-    chain: { id: 5_042_002, name: "Arc Testnet" },
+    chain: { id: 5_042, name: "Arc Mainnet" },
     token: {
       symbol: "USDC",
       name: "USD Coin",

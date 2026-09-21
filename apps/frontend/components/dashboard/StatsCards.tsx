@@ -19,7 +19,7 @@ import {
 } from "@/components/ui/select";
 import {
   formatTokenAmount,
-  ARC_TESTNET_CHAIN_ID,
+  ARC_MAINNET_CHAIN_ID,
   SUPPORTED_TOKENS,
   TOKEN_OPTIONS,
   type TokenSymbol,
@@ -91,7 +91,7 @@ export function StatsCards({
             <SelectContent>
               {TOKEN_OPTIONS.map((token) => (
                 <SelectItem key={token.symbol} value={token.symbol}>
-                  <span className="flex items-center gap-2"><TokenIcon chainId={ARC_TESTNET_CHAIN_ID} address={token.address} symbol={token.symbol} size={28} />{token.symbol} - {token.name}</span>
+                  <span className="flex items-center gap-2"><TokenIcon chainId={ARC_MAINNET_CHAIN_ID} address={token.address} symbol={token.symbol} size={28} />{token.symbol} - {token.name}</span>
                 </SelectItem>
               ))}
             </SelectContent>
@@ -128,7 +128,7 @@ export function StatsCards({
             </p>
           )}
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <TokenIcon chainId={ARC_TESTNET_CHAIN_ID} address={SUPPORTED_TOKENS[activeToken.symbol].address} symbol={activeToken.symbol} size={28} />
+            <TokenIcon chainId={ARC_MAINNET_CHAIN_ID} address={SUPPORTED_TOKENS[activeToken.symbol].address} symbol={activeToken.symbol} size={28} />
             <Badge
               variant="outline"
               className="text-emerald-300/80 border-emerald-500/20 bg-emerald-500/5"

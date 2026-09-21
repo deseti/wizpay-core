@@ -60,7 +60,7 @@ test("rejects wrong authority, chain, type, resource value, publication, and pro
   const value = await fixture();
   assert.throws(() => validateResource({ ...value.resource, authoritativeSource: { ...value.resource.authoritativeSource, authority: "Circle" } }, "chainId", value.options), /not supported/);
   for (const changed of [
-    { network: { ...value.record.network, chainId: "5042002" } },
+    { network: { ...value.record.network, chainId: "9999" } },
     { resource: { ...value.record.resource, type: "canonicalUsdc" } },
     { resource: { ...value.record.resource, value: { value: 1 } } },
     { publication: { reference: "", publishedAt: null, releaseId: null } },

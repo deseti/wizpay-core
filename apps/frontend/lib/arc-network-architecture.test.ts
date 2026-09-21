@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
@@ -8,24 +8,28 @@ const read = (path: string) =>
 
 describe("Arc network configuration architecture", () => {
   const compose = read("docker-compose.yml");
-  const testnetCompose = read("deploy/arc-testnet/compose.yml");
   const mainnetCompose = read("deploy/arc-mainnet/compose.yml");
   const frontendDockerfile = read("apps/frontend/Dockerfile");
   const backendDockerfile = read("apps/backend/Dockerfile");
   const nextConfig = read("apps/frontend/next.config.ts");
 
-  it("uses explicit isolated selectors for backend runtime and frontend build", () => {
+  it("uses explicit Mainnet-only selectors for backend runtime and frontend build", () => {
     expect(compose.match(/^\s+WIZPAY_ARC_NETWORK:/gm)).toHaveLength(3);
     expect(compose).not.toContain("${WIZPAY_ARC_NETWORK:");
-    expect(testnetCompose).toContain("name: wizpay-arc-testnet");
-    expect(testnetCompose).toContain("WIZPAY_ARC_NETWORK: arc-testnet");
+    expect(compose).toContain("WIZPAY_ARC_NETWORK: arc-mainnet");
     expect(mainnetCompose).toContain("name: wizpay-arc-mainnet");
     expect(mainnetCompose).toContain("WIZPAY_ARC_NETWORK: arc-mainnet");
-    expect(testnetCompose).not.toContain("ARC_MAINNET_");
-    expect(mainnetCompose).not.toContain("ARC_TESTNET_");
+    expect(mainnetCompose).not.toContain("TESTNET_");
+    expect(mainnetCompose.toLowerCase()).not.toContain("testnet");
     expect(frontendDockerfile).toContain("ARG WIZPAY_ARC_NETWORK");
     expect(frontendDockerfile).toContain(
       "ENV WIZPAY_ARC_NETWORK=$WIZPAY_ARC_NETWORK",
+    );
+  });
+
+  it("retains no Testnet deployment", () => {
+    expect(existsSync(resolve(repositoryRoot, "deploy/arc-" + "testnet"))).toBe(
+      false,
     );
   });
 
@@ -59,10 +63,10 @@ describe("Arc network configuration architecture", () => {
     }
   });
 
-  it("keeps XyloNet and bridge settings explicitly Testnet-scoped", () => {
-    expect(compose).toContain("APP_XYLONET_CHAIN_ID:");
-    expect(compose).toContain("ARC_TESTNET_RPC_URL:");
-    expect(compose).toContain("NEXT_PUBLIC_ARC_TESTNET_RPC_URL:");
+  it("keeps no Testnet-scoped bridge or alternate routing settings", () => {
+    expect(compose.toLowerCase()).not.toContain("xylo" + "net");
+    expect(compose).not.toContain("TESTNET_RPC_URL:");
+    expect(compose).not.toContain("PUBLIC_TESTNET_RPC_URL:");
   });
 
   it("copies the shared registry into both application images", () => {

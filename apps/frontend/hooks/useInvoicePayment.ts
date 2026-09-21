@@ -1,11 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { encodeFunctionData, getAddress, type Address, type Hex } from "viem";
+import { getAddress, type Address, type Hex } from "viem";
 import { useAccount, useSwitchChain, useWriteContract } from "wagmi";
-import { useCircleWallet } from "@/components/providers/CircleWalletProvider";
 import { BackendApiError } from "@/lib/backend-api";
-import { resolveCanonicalAppWalletEvmAddress } from "@/lib/canonical-app-wallet";
 import {
   verifyPublicInvoicePayment,
   type PublicInvoice,
@@ -16,21 +14,8 @@ import {
   isInvoiceSelfPayment,
   readInvoicePaymentRecovery,
   writeInvoicePaymentRecovery,
-  type AppWalletInvoicePaymentRecovery,
   type ExternalInvoicePaymentRecovery,
 } from "@/lib/invoice-payment";
-import {
-  extractSingleCorrelationId,
-  getUserChallengeStatus,
-  getUserTransactionStatus,
-  isCircleComplete,
-  isCircleTerminalFailure,
-  type CircleTransaction,
-} from "@/lib/send-operation";
-import {
-  extractCircleTransactionHash,
-  extractCircleTransactionId,
-} from "@/lib/send-transaction";
 import {
   acquireExecutionIntent,
   bindKnownExecutionIntentHash,
@@ -39,6 +24,7 @@ import {
   prepareWalletExecutionIntent,
 } from "@/lib/execution-intent";
 import { ACTIVE_ARC_NETWORK } from "@/lib/active-arc-network";
+import { assertFrontendTransactionsAvailable } from "@/lib/arc-network";
 import {
   assertSelectedArcWalletChain,
   requestExternalWalletChain,
@@ -47,7 +33,6 @@ import {
 export type InvoicePayerMethod = "app" | "external";
 export type InvoicePaymentStage =
   | "ready"
-  | "authenticating_app_wallet"
   | "connecting_wallet"
   | "preparing_payment"
   | "switching_network"
@@ -65,23 +50,29 @@ export type InvoicePaymentStage =
 const MAX_AUTOMATIC_CHECKS = 24;
 const CHECK_INTERVAL_MS = 5_000;
 const MANUAL_THROTTLE_MS = 5_000;
+const MAINNET_ONLY_MESSAGE =
+  "Arc Mainnet supports external wallet payments only.";
+
+function assertArcMainnetInvoice(invoice: PublicInvoice) {
+  if (ACTIVE_ARC_NETWORK.key !== "arc-mainnet") {
+    throw new TerminalInvoicePaymentError(MAINNET_ONLY_MESSAGE);
+  }
+  assertFrontendTransactionsAvailable(ACTIVE_ARC_NETWORK);
+  if (invoice.chain.id !== ACTIVE_ARC_NETWORK.chainId) {
+    throw new TerminalInvoicePaymentError(
+      `This invoice targets an unsupported network (chain ${invoice.chain.id}). Arc Mainnet (chain ${ACTIVE_ARC_NETWORK.chainId}) is required.`,
+    );
+  }
+}
 
 export function useInvoicePayment(
   invoice: PublicInvoice,
   onInvoice: (invoice: PublicInvoice) => void,
 ) {
-  const circle = useCircleWallet();
   const { address, chainId, isConnected } = useAccount();
   const { switchChainAsync } = useSwitchChain();
   const { writeContractAsync } = useWriteContract();
-  const mainnetExternalOnly = ACTIVE_ARC_NETWORK.key === "arc-mainnet";
-  const [method, setMethod] = useState<InvoicePayerMethod>(() => {
-    if (mainnetExternalOnly || typeof window === "undefined") return "external";
-    return readInvoicePaymentRecovery(invoice.publicId, window.localStorage)
-      ?.method === "app"
-      ? "app"
-      : "external";
-  });
+  const [method, setMethod] = useState<InvoicePayerMethod>("external");
   const [stage, setStage] = useState<InvoicePaymentStage>(() =>
     statusStage(invoice),
   );
@@ -89,8 +80,6 @@ export function useInvoicePayment(
   const [transactionHash, setTransactionHash] = useState<Hex | null>(
     () => invoice.transactionHash,
   );
-  const [appRecovery, setAppRecovery] =
-    useState<AppWalletInvoicePaymentRecovery | null>(null);
   const [externalRecovery, setExternalRecovery] =
     useState<ExternalInvoicePaymentRecovery | null>(null);
   const [checking, setChecking] = useState(false);
@@ -101,17 +90,9 @@ export function useInvoicePayment(
   const signed = useRef(false);
   const attempts = useRef(0);
   const timer = useRef<number | null>(null);
-  const circleTimer = useRef<number | null>(null);
   const lastManualCheck = useRef(0);
   const verifyRef = useRef<
     ((hash: Hex, manual?: boolean) => Promise<void>) | null
-  >(null);
-  const checkAppRef = useRef<
-    | ((
-        recovery: AppWalletInvoicePaymentRecovery,
-        manual?: boolean,
-      ) => Promise<void>)
-    | null
   >(null);
 
   const verify = useCallback(
@@ -132,10 +113,9 @@ export function useInvoicePayment(
         if (updated.status === "PAID") {
           setStage("paid");
           setError(null);
-          setAppRecovery(null);
+          setExternalRecovery(null);
           clearInvoicePaymentRecovery(invoice.publicId, window.localStorage);
           if (timer.current) window.clearTimeout(timer.current);
-          if (circleTimer.current) window.clearTimeout(circleTimer.current);
           return;
         }
         setStage(statusStage(updated));
@@ -163,183 +143,9 @@ export function useInvoicePayment(
     [invoice.publicId, onInvoice],
   );
 
-  const persistAppRecovery = useCallback(
-    (next: AppWalletInvoicePaymentRecovery) => {
-      setAppRecovery(next);
-      writeInvoicePaymentRecovery(next, window.localStorage);
-    },
-    [],
-  );
-
-  const checkAppStatus = useCallback(
-    async (candidate: AppWalletInvoicePaymentRecovery, manual = false) => {
-      if (candidate.transactionHash) {
-        await verify(candidate.transactionHash, manual);
-        return;
-      }
-      if (inFlight.current) return;
-      const now = Date.now();
-      if (manual && now - lastManualCheck.current < MANUAL_THROTTLE_MS) return;
-      if (manual) lastManualCheck.current = now;
-      inFlight.current = true;
-      setChecking(true);
-      let resolvedHash: Hex | null = null;
-      let next = candidate;
-      try {
-        const identity = canonicalCircleIdentity(circle);
-        if (!circle.authenticated) {
-          setStage("authenticating_app_wallet");
-          setError("Sign in to the same App Wallet to resume this payment.");
-          return;
-        }
-        if (!identity.address || identity.mismatch || !identity.walletId) {
-          throw new TerminalInvoicePaymentError(
-            "The canonical Arc App Wallet could not be resolved safely.",
-          );
-        }
-        if (
-          identity.walletId !== candidate.walletId ||
-          identity.address !== candidate.payerAddress
-        ) {
-          throw new TerminalInvoicePaymentError(
-            "The signed-in App Wallet does not match the wallet that started this payment.",
-          );
-        }
-        if (!circle.userToken) {
-          setStage("recoverable_error");
-          setError(
-            "This passkey payment can resume only from the browser session that created it.",
-          );
-          return;
-        }
-
-        setError(null);
-        setStage("resolving_transaction");
-        let transactionId = candidate.transactionId ?? null;
-        if (!transactionId) {
-          const challenge = await getUserChallengeStatus(
-            candidate.challengeId,
-            circle.userToken,
-          );
-          if (challenge?.id && challenge.id !== candidate.challengeId)
-            throw new TerminalInvoicePaymentError(
-              "Circle challenge identity mismatch.",
-            );
-          transactionId = extractSingleCorrelationId(challenge);
-          if (isCircleTerminalFailure(challenge?.status)) {
-            throw new TerminalInvoicePaymentError(
-              `Circle authorization ended in ${String(challenge?.status).toLowerCase()} state.`,
-            );
-          }
-          if (!transactionId) {
-            const authorizationCompleted =
-              candidate.stage !== "awaiting_user_authorization";
-            next = {
-              ...candidate,
-              stage:
-                authorizationCompleted ||
-                (challenge?.status ?? "").toUpperCase() === "COMPLETE"
-                  ? "resolving_transaction"
-                  : "awaiting_user_authorization",
-            };
-            persistAppRecovery(next);
-            setStage(
-              next.stage === "awaiting_user_authorization"
-                ? "awaiting_signature"
-                : "resolving_transaction",
-            );
-            if (
-              next.stage === "resolving_transaction" &&
-              attempts.current < MAX_AUTOMATIC_CHECKS
-            ) {
-              attempts.current += 1;
-              circleTimer.current = window.setTimeout(
-                () => void checkAppRef.current?.(next),
-                CHECK_INTERVAL_MS,
-              );
-            }
-            return;
-          }
-          next = {
-            ...candidate,
-            transactionId,
-            stage: "resolving_transaction",
-          };
-          persistAppRecovery(next);
-        }
-
-        const transaction = await getUserTransactionStatus(
-          transactionId,
-          circle.userToken,
-        );
-        assertAppWalletTransactionIdentity(next, transaction);
-        if (isCircleTerminalFailure(transaction?.state)) {
-          throw new TerminalInvoicePaymentError(
-            `Circle transaction ended in ${String(transaction?.state).toLowerCase()} state.`,
-          );
-        }
-        const hash = extractCircleTransactionHash(transaction);
-        if (hash && isCircleComplete(transaction?.state)) {
-          next = {
-            ...next,
-            transactionHash: hash,
-            stage: "confirming_onchain",
-          };
-          persistAppRecovery(next);
-          if (!next.executionIntentId || !next.executionIntentKey) {
-            throw new TerminalInvoicePaymentError(
-              "The durable payment intent cannot be recovered safely.",
-            );
-          }
-          await bindExecutionIntentTransactionHash(
-            next.executionIntentId,
-            hash,
-            next.executionIntentKey,
-          );
-          setTransactionHash(hash);
-          setStage("confirming_onchain");
-          resolvedHash = hash;
-          attempts.current = 0;
-          return;
-        }
-        next = { ...next, stage: "resolving_transaction" };
-        persistAppRecovery(next);
-        setStage("resolving_transaction");
-        if (attempts.current < MAX_AUTOMATIC_CHECKS) {
-          attempts.current += 1;
-          circleTimer.current = window.setTimeout(
-            () => void checkAppRef.current?.(next),
-            CHECK_INTERVAL_MS,
-          );
-        }
-      } catch (cause) {
-        const terminal = cause instanceof TerminalInvoicePaymentError;
-        setError(
-          cause instanceof Error
-            ? cause.message
-            : "Circle transaction status is temporarily unavailable.",
-        );
-        setStage(terminal ? "terminal_error" : "recoverable_error");
-        if (!terminal && attempts.current < MAX_AUTOMATIC_CHECKS) {
-          attempts.current += 1;
-          circleTimer.current = window.setTimeout(
-            () => void checkAppRef.current?.(next),
-            CHECK_INTERVAL_MS,
-          );
-        }
-      } finally {
-        inFlight.current = false;
-        setChecking(false);
-        if (resolvedHash) void verifyRef.current?.(resolvedHash);
-      }
-    },
-    [circle, persistAppRecovery, verify],
-  );
-
   useEffect(() => {
     verifyRef.current = verify;
-    checkAppRef.current = checkAppStatus;
-  }, [checkAppStatus, verify]);
+  }, [verify]);
 
   useEffect(() => {
     const start = window.setTimeout(() => {
@@ -351,7 +157,7 @@ export function useInvoicePayment(
         setTransactionHash(invoice.transactionHash);
         setSubmissionLocked(true);
         setStage("paid");
-        setAppRecovery(null);
+        setExternalRecovery(null);
         clearInvoicePaymentRecovery(invoice.publicId, window.localStorage);
       } else if (invoice.status === "EXPIRED") {
         setSubmissionLocked(true);
@@ -374,20 +180,6 @@ export function useInvoicePayment(
             "The wallet may have broadcast this payment without returning its transaction hash. WizPay will not request another payment automatically. Bind the known hash to reconcile it, or cancel only after confirming that no transaction was broadcast.",
           );
         }
-      } else if (recovery?.method === "app" && !mainnetExternalOnly) {
-        signed.current = true;
-        setMethod("app");
-        setSubmissionLocked(true);
-        setAppRecovery(recovery);
-        if (recovery.transactionHash) {
-          setTransactionHash(recovery.transactionHash);
-          setStage("confirming_onchain");
-          void verify(recovery.transactionHash);
-        } else if (recovery.stage === "awaiting_user_authorization") {
-          setStage("awaiting_signature");
-        } else {
-          void checkAppStatus(recovery);
-        }
       } else if (invoice.status === "VERIFYING") {
         setSubmissionLocked(true);
         setStage("recoverable_error");
@@ -399,18 +191,16 @@ export function useInvoicePayment(
     return () => {
       window.clearTimeout(start);
       if (timer.current) window.clearTimeout(timer.current);
-      if (circleTimer.current) window.clearTimeout(circleTimer.current);
     };
   }, [
-    checkAppStatus,
     invoice.publicId,
     invoice.status,
     invoice.transactionHash,
-    mainnetExternalOnly,
     verify,
   ]);
 
   async function payExternal() {
+    assertArcMainnetInvoice(invoice);
     if (!isConnected || !address) {
       setStage("connecting_wallet");
       throw new Error("Connect an External Wallet to pay this invoice.");
@@ -428,7 +218,7 @@ export function useInvoicePayment(
       switchChain: switchChainAsync,
     });
     const intent = await acquireExecutionIntent({
-      network: ACTIVE_ARC_NETWORK.key,
+      network: "arc-mainnet",
       operation: invoice.settlementOperation ?? "INVOICE_SETTLEMENT",
       sourceWallet: address,
       recipient: invoice.receivingAddress,
@@ -491,142 +281,15 @@ export function useInvoicePayment(
     await verify(hash);
   }
 
-  async function payAppWallet() {
-    if (mainnetExternalOnly) {
-      throw new TerminalInvoicePaymentError(
-        "Arc Mainnet supports external wallet payments only.",
-      );
-    }
-    if (!circle.authenticated) {
-      setStage("authenticating_app_wallet");
-      circle.login();
-      return;
-    }
-    setStage("preparing_payment");
-    await circle.ensureSessionReady();
-    const identity = canonicalCircleIdentity(circle);
-    if (identity.mismatch) {
-      throw new TerminalInvoicePaymentError(
-        "The canonical Arc App Wallet could not be resolved safely.",
-      );
-    }
-    if (!identity.address || !identity.walletId)
-      throw new Error("The Arc App Wallet is not ready yet.");
-    if (isInvoiceSelfPayment(identity.address, invoice.receivingAddress)) {
-      throw new TerminalInvoicePaymentError(
-        "This invoice cannot be paid from the merchant's receiving wallet.",
-      );
-    }
-    if (!circle.authMethod)
-      throw new Error("The App Wallet authentication method is unavailable.");
-    const transfer = buildInvoiceTransferRequest({
-      chainId: invoice.chain.id,
-      tokenAddress: invoice.token.address,
-      recipient: invoice.receivingAddress,
-      amountUnits: invoice.amountUnits,
-    });
-    const intent = await acquireExecutionIntent({
-      network: ACTIVE_ARC_NETWORK.key,
-      operation: invoice.settlementOperation ?? "INVOICE_SETTLEMENT",
-      sourceWallet: identity.address,
-      recipient: invoice.receivingAddress,
-      tokenIn: invoice.token.address,
-      tokenOut: invoice.token.address,
-      amountUnits: invoice.amountUnits,
-      externalReference: invoice.publicId,
-    });
-    const challenge = intent.circleChallengeId
-      ? {
-          challengeId: intent.circleChallengeId,
-          raw: { challengeId: intent.circleChallengeId },
-        }
-      : await circle.createContractExecutionChallenge({
-          walletId: identity.walletId,
-          contractAddress: transfer.address,
-          callData: encodeFunctionData({
-            abi: transfer.abi,
-            functionName: transfer.functionName,
-            args: transfer.args,
-          }),
-          feeLevel: "MEDIUM",
-          idempotencyKey: intent.idempotencyKey,
-          refId: `INV-${invoice.publicId}`,
-          executionIntentId: intent.id,
-        });
-    const recovery: AppWalletInvoicePaymentRecovery = {
-      version: 2,
-      method: "app",
-      publicId: invoice.publicId,
-      executionIntentId: intent.id,
-      executionIntentKey: intent.idempotencyKey,
-      authMethod: circle.authMethod,
-      walletId: identity.walletId,
-      payerAddress: identity.address,
-      challengeId: challenge.challengeId,
-      transactionId: extractCircleTransactionId(challenge.raw) ?? undefined,
-      transactionHash: extractCircleTransactionHash(challenge.raw) ?? undefined,
-      createdAt: new Date().toISOString(),
-      stage: "awaiting_user_authorization",
-    };
-    signed.current = true;
-    setSubmissionLocked(true);
-    persistAppRecovery(recovery);
-    inFlight.current = false;
-    await authorizeAppWallet(recovery);
-  }
-
-  async function authorizeAppWallet(recovery = appRecovery): Promise<void> {
-    if (!recovery || inFlight.current) return;
-    inFlight.current = true;
-    setChecking(true);
-    setError(null);
-    setStage("awaiting_signature");
-    try {
-      const result = await circle.executeChallenge(recovery.challengeId);
-      const hash =
-        extractCircleTransactionHash(result) ?? recovery.transactionHash;
-      const next: AppWalletInvoicePaymentRecovery = {
-        ...recovery,
-        transactionId:
-          extractCircleTransactionId(result) ?? recovery.transactionId,
-        transactionHash: hash,
-        stage: hash ? "confirming_onchain" : "authorization_completed",
-      };
-      persistAppRecovery(next);
-      if (hash) {
-        if (next.executionIntentId)
-          await bindExecutionIntentTransactionHash(
-            next.executionIntentId,
-            hash,
-            next.executionIntentKey ?? "",
-          );
-        setTransactionHash(hash);
-        setStage("transaction_submitted");
-      } else setStage("resolving_transaction");
-      inFlight.current = false;
-      setChecking(false);
-      if (hash) await verify(hash);
-      else await checkAppStatus(next);
-    } catch (cause) {
-      setError(
-        cause instanceof Error
-          ? cause.message
-          : "App Wallet authorization was not completed.",
-      );
-      setStage("recoverable_error");
-    } finally {
-      inFlight.current = false;
-      setChecking(false);
-    }
-  }
-
   async function pay() {
     if (inFlight.current || signed.current || invoice.status !== "OPEN") return;
     inFlight.current = true;
     try {
       setError(null);
-      if (method === "app") await payAppWallet();
-      else await payExternal();
+      if (method !== "external") {
+        throw new TerminalInvoicePaymentError(MAINNET_ONLY_MESSAGE);
+      }
+      await payExternal();
     } catch (cause) {
       const terminal = cause instanceof TerminalInvoicePaymentError;
       const message =
@@ -711,8 +374,8 @@ export function useInvoicePayment(
 
   function selectMethod(next: InvoicePayerMethod) {
     if (submissionLocked || signed.current || invoice.status !== "OPEN") return;
-    if (mainnetExternalOnly && next !== "external") {
-      setError("Arc Mainnet supports external wallet payments only.");
+    if (next !== "external") {
+      setError(MAINNET_ONLY_MESSAGE);
       return;
     }
     setMethod(next);
@@ -722,21 +385,14 @@ export function useInvoicePayment(
 
   return {
     address,
-    appAuthenticated: circle.authenticated,
-    appWalletAddress: canonicalCircleIdentity(circle).address,
+    appAuthenticated: false,
+    appWalletAddress: null as Address | null,
     authenticateAppWallet: () => {
-      if (mainnetExternalOnly) {
-        setError("Arc Mainnet supports external wallet payments only.");
-        return;
-      }
-      if (submissionLocked && !appRecovery) return;
-      setStage("authenticating_app_wallet");
-      circle.login();
+      setError(MAINNET_ONLY_MESSAGE);
     },
     checking,
-    canContinueAppAuthorization:
-      appRecovery?.stage === "awaiting_user_authorization",
-    continueAppAuthorization: () => authorizeAppWallet(),
+    canContinueAppAuthorization: false,
+    continueAppAuthorization: () => Promise.resolve(),
     error,
     isConnected,
     externalRecoveryNeedsHash: Boolean(
@@ -753,54 +409,8 @@ export function useInvoicePayment(
     checkStatus: () =>
       transactionHash
         ? verify(transactionHash, true)
-        : appRecovery
-          ? checkAppStatus(appRecovery, true)
-          : Promise.resolve(),
+        : Promise.resolve(),
   };
-}
-
-function canonicalCircleIdentity(circle: ReturnType<typeof useCircleWallet>): {
-  address: Address | null;
-  mismatch: boolean;
-  walletId: string | null;
-} {
-  const canonical = resolveCanonicalAppWalletEvmAddress(
-    circle.arcWallet?.address,
-    circle.sepoliaWallet?.address,
-    circle.primaryWallet?.address,
-  );
-  const arcWalletIsCanonical =
-    circle.arcWallet?.blockchain === "ARC-TESTNET" &&
-    Boolean(circle.arcWallet.id);
-  return {
-    address: canonical.address,
-    mismatch: canonical.mismatch,
-    walletId: arcWalletIsCanonical ? (circle.arcWallet?.id ?? null) : null,
-  };
-}
-
-function assertAppWalletTransactionIdentity(
-  recovery: AppWalletInvoicePaymentRecovery,
-  transaction: CircleTransaction | null,
-) {
-  if (!transaction) return;
-  if (transaction.operation && transaction.operation !== "CONTRACT_EXECUTION")
-    throw new TerminalInvoicePaymentError(
-      "Circle transaction operation mismatch.",
-    );
-  if (transaction.blockchain && transaction.blockchain !== "ARC-TESTNET")
-    throw new TerminalInvoicePaymentError("Circle transaction chain mismatch.");
-  if (transaction.walletId && transaction.walletId !== recovery.walletId)
-    throw new TerminalInvoicePaymentError(
-      "Circle transaction wallet mismatch.",
-    );
-  if (
-    transaction.sourceAddress &&
-    getAddress(transaction.sourceAddress) !== recovery.payerAddress
-  )
-    throw new TerminalInvoicePaymentError(
-      "Circle transaction sender mismatch.",
-    );
 }
 
 class TerminalInvoicePaymentError extends Error {}

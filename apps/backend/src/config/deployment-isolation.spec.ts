@@ -4,54 +4,36 @@ import { resolve } from 'node:path';
 const root = resolve(__dirname, '../../../..');
 const read = (path: string) => readFileSync(resolve(root, path), 'utf8');
 
-describe('Arc deployment isolation files', () => {
-  const testnet = read('deploy/arc-testnet/compose.yml');
+describe('Arc Mainnet deployment isolation files', () => {
   const mainnet = read('deploy/arc-mainnet/compose.yml');
   const packageJson = read('apps/backend/package.json');
   const prismaConfig = read('apps/backend/prisma.config.ts');
 
-  it('uses distinct project, network, PostgreSQL, and Redis volume identities', () => {
-    for (const identity of [
-      'wizpay-arc-testnet',
-      'wizpay-arc-testnet-postgres',
-      'wizpay-arc-testnet-redis',
-    ]) {
-      expect(testnet).toContain(identity);
-      expect(mainnet).not.toContain(identity);
-    }
+  it('uses distinct Mainnet project, network, PostgreSQL, and Redis volume identities', () => {
     for (const identity of [
       'wizpay-arc-mainnet',
       'wizpay-arc-mainnet-postgres',
       'wizpay-arc-mainnet-redis',
     ]) {
       expect(mainnet).toContain(identity);
-      expect(testnet).not.toContain(identity);
     }
-    expect(testnet).not.toContain('container_name:');
     expect(mainnet).not.toContain('container_name:');
   });
 
-  it('never mixes scoped runtime or Circle configuration variables', () => {
-    expect(testnet).toContain('ARC_TESTNET_DATABASE_URL');
-    expect(testnet).toContain('CIRCLE_TESTNET_WALLET_SET_ID');
-    expect(testnet).not.toContain('ARC_MAINNET_');
-    expect(testnet).not.toContain('CIRCLE_MAINNET_');
+  it('scopes Mainnet runtime configuration to Mainnet variables only', () => {
+    expect(mainnet).toContain('WIZPAY_ARC_NETWORK: arc-mainnet');
     expect(mainnet).toContain('ARC_MAINNET_DATABASE_URL');
-    // Arc Mainnet is external-wallet-only: no Circle Mainnet configuration
-    // may be required or referenced by the Mainnet deployment.
-    expect(mainnet).not.toContain('CIRCLE_MAINNET_');
-    expect(mainnet).not.toContain('ARC_TESTNET_');
-    expect(mainnet).not.toContain('CIRCLE_TESTNET_');
+    expect(mainnet).toContain('ARC_MAINNET_REDIS_URL');
+    expect(mainnet).toContain('ARC_MAINNET_QUEUE_PREFIX');
+    expect(mainnet).not.toMatch(/testnet/i);
   });
 
-  it('documents Mainnet Circle unavailability in the env template', () => {
+  it('keeps the Mainnet deployment external-wallet-only', () => {
+    expect(mainnet).not.toMatch(/circle_/i);
     const mainnetTemplate = read('deploy/arc-mainnet/environment.template');
-    const testnetTemplate = read('deploy/arc-testnet/environment.template');
-    // No CIRCLE_MAINNET_* variable definitions may remain; the explanatory
-    // comment below names the family only in prose.
-    expect(mainnetTemplate).not.toMatch(/^CIRCLE_MAINNET_/m);
+    expect(mainnetTemplate).toContain('WIZPAY_ARC_NETWORK=arc-mainnet');
     expect(mainnetTemplate).toContain('external-wallet-only');
-    expect(testnetTemplate).toContain('CIRCLE_TESTNET_WALLET_SET_ID');
+    expect(mainnetTemplate).toContain('ARC_MAINNET_QUEUE_PREFIX');
   });
 
   it('keeps the Mainnet manifest empty of addresses and receipts', () => {
@@ -77,9 +59,10 @@ describe('Arc deployment isolation files', () => {
     expect(JSON.stringify(manifest)).not.toMatch(/0x[0-9a-f]{40}/i);
   });
 
-  it('requires explicit matching networks for migration commands', () => {
-    expect(packageJson).toContain('prisma:migrate:arc-testnet');
+  it('requires an explicit matching Mainnet network for migration commands', () => {
     expect(packageJson).toContain('prisma:migrate:arc-mainnet');
+    expect(prismaConfig).toContain('ARC_MAINNET_DATABASE_URL');
+    expect(prismaConfig).not.toMatch(/testnet/i);
     expect(prismaConfig).toContain('migrationNetwork !== selectedNetwork');
     expect(prismaConfig).toContain('process.env.DATABASE_URL !== undefined');
   });

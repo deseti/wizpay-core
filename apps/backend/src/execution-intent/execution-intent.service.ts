@@ -77,7 +77,7 @@ export const EXECUTION_INTENT_TRANSITIONS: Readonly<
 });
 
 export type ExecutionIntentAcquireInput = Readonly<{
-  network: 'arc-testnet' | 'arc-mainnet';
+  network: 'arc-mainnet';
   operation: ExecutionIntentOperation;
   ownerId?: string | null;
   sourceWallet: string;
@@ -91,7 +91,7 @@ export type ExecutionIntentAcquireInput = Readonly<{
 }>;
 
 type CanonicalAcquireInput = Readonly<{
-  network: 'arc-testnet' | 'arc-mainnet';
+  network: 'arc-mainnet';
   operation: ExecutionIntentOperation;
   ownerId: string | null;
   sourceWallet: Address;

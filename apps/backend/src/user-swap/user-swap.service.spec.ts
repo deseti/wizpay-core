@@ -7,22 +7,16 @@ const baseRequest = {
   amountIn: '1000000',
   fromAddress: wallet,
   toAddress: wallet,
-  chain: 'ARC-TESTNET',
+  chain: 'ARC-MAINNET',
   slippageBps: 200,
 };
 
-describe('UserSwapService', () => {
-  const xylonet = {
-    quote: jest.fn((request) =>
-      Promise.resolve({
-        ...request,
-        provider: 'xylonet',
-        raw: {},
-      }),
-    ),
+describe('UserSwapService (Mainnet Uniswap V4 only)', () => {
+  const mainnetSwap = {
+    inspectQuote: jest.fn(() => ({ status: 'executor-prepared' })),
   };
   const service = new UserSwapService(
-    xylonet as never,
+    mainnetSwap as never,
     { assert: jest.fn() } as never,
   );
 
@@ -31,10 +25,17 @@ describe('UserSwapService', () => {
   it.each([
     ['USDC', 'EURC'],
     ['EURC', 'USDC'],
-  ])('routes %s to %s to XyloNet only', async (tokenIn, tokenOut) => {
+  ])('routes %s to %s to Mainnet Uniswap V4 only', async (tokenIn, tokenOut) => {
     const result = await service.quote({ ...baseRequest, tokenIn, tokenOut });
-    expect(result.provider).toBe('xylonet');
-    expect(xylonet.quote).toHaveBeenCalledTimes(1);
+    expect(result.provider).toBe('uniswap-v4');
+    expect(result.chain).toBe('ARC-MAINNET');
+    expect(mainnetSwap.inspectQuote).toHaveBeenCalledTimes(1);
+    expect(mainnetSwap.inspectQuote).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chainId: 5_042,
+        walletControl: 'external-wallet',
+      }),
+    );
   });
 
   it('rejects recipient mismatch before calling the provider', async () => {
@@ -46,7 +47,7 @@ describe('UserSwapService', () => {
     ).rejects.toMatchObject({
       response: { code: 'USER_SWAP_INVALID_REQUEST' },
     });
-    expect(xylonet.quote).not.toHaveBeenCalled();
+    expect(mainnetSwap.inspectQuote).not.toHaveBeenCalled();
   });
 
   it('rejects chain and token mismatches before calling the provider', async () => {
@@ -56,15 +57,15 @@ describe('UserSwapService', () => {
     await expect(
       service.quote({ ...baseRequest, tokenOut: 'USDC' }),
     ).rejects.toBeDefined();
-    expect(xylonet.quote).not.toHaveBeenCalled();
+    expect(mainnetSwap.inspectQuote).not.toHaveBeenCalled();
   });
 
-  it('does not route Arc Mainnet requests into XyloNet', async () => {
+  it('rejects non-canonical amounts before calling the provider', async () => {
     await expect(
-      service.quote({ ...baseRequest, chain: 'ARC-MAINNET' }),
+      service.quote({ ...baseRequest, amountIn: '1.5' }),
     ).rejects.toMatchObject({
       response: { code: 'USER_SWAP_INVALID_REQUEST' },
     });
-    expect(xylonet.quote).not.toHaveBeenCalled();
+    expect(mainnetSwap.inspectQuote).not.toHaveBeenCalled();
   });
 });

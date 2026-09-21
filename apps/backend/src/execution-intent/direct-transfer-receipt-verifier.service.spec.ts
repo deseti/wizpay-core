@@ -34,7 +34,7 @@ describe('DirectTransferReceiptVerifierService', () => {
         amountUnits: '1000000',
       }),
     ).resolves.toMatchObject({
-      network: 'arc-testnet',
+      network: 'arc-mainnet',
       transactionHash: hash,
       sourceWallet: sender,
       recipient,
@@ -125,7 +125,7 @@ function createVerifier(
 ) {
   const config = {
     getOrThrow: jest.fn().mockReturnValue({
-      key: 'arc-testnet',
+      key: 'arc-mainnet',
       chainId: 5_042_002,
       rpcUrl: 'http://127.0.0.1:1',
     }),

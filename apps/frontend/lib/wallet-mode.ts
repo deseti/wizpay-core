@@ -1,18 +1,16 @@
-export type WalletMode = "circle" | "external";
+export type WalletMode = "external";
 
-export const DEFAULT_WALLET_MODE: WalletMode = "circle";
+export const DEFAULT_WALLET_MODE: WalletMode = "external";
 export const WALLET_MODE_STORAGE_KEY = "wizpay.wallet.mode";
 
 export function parseWalletMode(value: string | null | undefined): WalletMode {
-  return value === "external" ? "external" : DEFAULT_WALLET_MODE;
+  return "external";
 }
 
 export function getWalletModeLabel(mode: WalletMode): string {
-  return mode === "circle" ? "App Wallet (Circle)" : "External Wallet";
+  return "External Wallet";
 }
 
 export function getWalletModeDescription(mode: WalletMode): string {
-  return mode === "circle"
-    ? "Circle user-controlled wallet with user-approved confirmations"
-    : "External wallet such as Rabby, MetaMask, Coinbase Wallet, Safe, or a WalletConnect mobile wallet";
+  return "External wallet such as Rabby, MetaMask, Coinbase Wallet, Safe, or a WalletConnect mobile wallet";
 }

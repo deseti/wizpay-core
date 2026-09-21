@@ -10,7 +10,7 @@ import { TaskService } from '../task/task.service';
  * For External Wallet payroll:
  *   The frontend handles cross-currency settlement before calling this endpoint.
  *   By the time this is called, all recipients are same-token relative to sourceToken.
- *   The frontend executes the official Circle adapter swap first, then calls
+ *   The frontend executes the Mainnet Uniswap V4 swap first, then calls
  *   /tasks/payroll/init with sourceToken = targetToken.
  *
  * This service simply delegates to TaskService.createPayrollTask().

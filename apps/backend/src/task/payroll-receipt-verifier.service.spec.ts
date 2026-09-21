@@ -222,8 +222,8 @@ function service(
 ) {
   const config = {
     getOrThrow: jest.fn().mockReturnValue({
-      key: 'arc-testnet',
-      chainId: 5_042_002,
+      key: 'arc-mainnet',
+      chainId: 5_042,
       rpcUrl: 'http://127.0.0.1:1',
       contracts: { wizpay: { address: contract } },
     }),
@@ -233,26 +233,37 @@ function service(
   } as unknown as ConfigService;
   const verifier = new PayrollReceiptVerifierService(config);
   const transactionInput = encodeFunctionData({
-    abi: payrollAbi,
-    functionName: 'batchRouteAndPay',
-    args: [usdc, [usdc], [recipient], [1_000_000n], [1_000_000n], reference],
+    abi: mainnetPayrollAbi,
+    functionName: 'executeSameTokenPayroll',
+    args: [usdc, [recipient], [1_000_000n], reference],
   });
-  const batchTopics = encodeEventTopics({
-    abi: [batchEvent],
-    eventName: 'BatchPaymentRouted',
-    args: { sender: payer },
+  const referenceHash = keccak256(
+    encodeAbiParameters(
+      parseAbiParameters('uint256, address, address, string'),
+      [5_042n, contract, payer, reference],
+    ),
+  );
+  const paymentTopics = encodeEventTopics({
+    abi: [mainnetPaymentEvent],
+    eventName: 'PayrollPayment',
+    args: { referenceHash, employer: payer, tokenOut: usdc },
   });
-  const transferTopics = encodeEventTopics({
-    abi: [transferEvent],
-    eventName: 'Transfer',
-    args: { from: contract, to: recipient },
+  const referenceTopics = encodeEventTopics({
+    abi: [mainnetReferenceEvent],
+    eventName: 'PayrollReferenceConsumed',
+    args: { referenceHash, employer: payer, tokenIn: usdc },
+  });
+  const mainnetBatchTopics = encodeEventTopics({
+    abi: [mainnetBatchEvent],
+    eventName: 'PayrollBatchExecuted',
+    args: { employer: payer, tokenIn: usdc, tokenOut: usdc },
   });
   Object.assign(verifier as unknown as { client: unknown }, {
     client: {
-      getChainId: jest.fn().mockResolvedValue(5_042_002),
+      getChainId: jest.fn().mockResolvedValue(5_042),
       getTransaction: jest.fn().mockResolvedValue({
         hash: overrides.returnedHash ?? hash,
-        chainId: 5_042_002,
+        chainId: 5_042,
         from: payer,
         to: contract,
         value: 0n,
@@ -265,20 +276,29 @@ function service(
         logs: [
           {
             address: contract,
-            topics: batchTopics,
+            topics: paymentTopics,
             data: encodeAbiParameters(
-              parseAbiParameters(
-                'address, address, uint256, uint256, uint256, uint256, string',
-              ),
-              [usdc, usdc, 1_000_000n, 1_000_000n, 0n, 1n, reference],
+              parseAbiParameters('address, uint256, uint256'),
+              [recipient, 0n, 1_000_000n],
             ),
           },
           {
-            address: usdc,
-            topics: transferTopics,
-            data: encodeAbiParameters(parseAbiParameters('uint256'), [
-              1_000_000n,
-            ]),
+            address: contract,
+            topics: referenceTopics,
+            data: encodeAbiParameters(
+              parseAbiParameters(
+                'address, bytes32, uint256, uint256, uint256, uint256, string',
+              ),
+              [usdc, `0x${'c'.repeat(64)}`, 1_000_000n, 1_000_000n, 0n, 1n, reference],
+            ),
+          },
+          {
+            address: contract,
+            topics: mainnetBatchTopics,
+            data: encodeAbiParameters(
+              parseAbiParameters('uint256, uint256, uint256, uint256, string'),
+              [1_000_000n, 1_000_000n, 0n, 1n, reference],
+            ),
           },
         ],
       }),

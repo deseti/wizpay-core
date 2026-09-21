@@ -1,9 +1,8 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
 import { QuoteRequest, RfqQuote } from './fx.types';
-import { StableFXRfqClient } from './stablefx-rfq-client.service';
 
 /**
- * BullMQ job options for FX retry configuration.
+ * Job options for FX retry configuration.
  */
 export interface FxRetryJobOptions {
   attempts: number;
@@ -23,30 +22,28 @@ export interface EnsureFreshQuoteResult {
 }
 
 /**
- * FxRetryService handles retry logic for FX operations.
+ * FxRetryService handles retry policy for FX operations on Arc Mainnet.
  *
  * Responsibilities:
- * - Provide BullMQ retry configuration (3 attempts, exponential backoff 1s base)
+ * - Provide retry configuration (3 attempts, exponential backoff 1s base)
  * - Check quote freshness before retry attempts
- * - Request fresh quotes when previous quotes have expired
- * - Log both expired and new quote IDs for audit trail
  *
- * Requirements: 5.3, 5.4
+ * Quote refresh is retired: there is no backend quote provider on Mainnet.
+ * A still-valid quote is reused; an expired quote fails closed so the
+ * external wallet re-quotes through the Uniswap V4 flow.
  */
 @Injectable()
 export class FxRetryService {
   private readonly logger = new Logger(FxRetryService.name);
 
-  constructor(private readonly rfqClient: StableFXRfqClient) {}
-
   /**
-   * Returns BullMQ job options configured for FX retry policy.
+   * Returns retry configuration for FX jobs.
    *
    * Configuration:
    * - Maximum 3 attempts
    * - Exponential backoff with 1-second base delay (1s, 2s, 4s)
    *
-   * @returns BullMQ-compatible job options with retry configuration
+   * @returns Retry configuration with attempts and backoff
    */
   getRetryOptions(): FxRetryJobOptions {
     return {
@@ -61,20 +58,19 @@ export class FxRetryService {
   /**
    * Ensures a fresh quote is available for retry attempts.
    *
-   * On transient failure retry:
-   * - Checks if the previously obtained quote's expiresAt has elapsed
-   * - If expired: requests a fresh quote via StableFXRfqClient, logs both
-   *   the expired quote ID and the new quote ID
-   * - If still valid: reuses the original quote
+   * - If the previous quote is still valid, it is reused.
+   * - If the previous quote expired, fails closed: the caller must obtain
+   *   a new quote through the external-wallet Uniswap V4 flow.
    *
    * @param previousQuote - The quote obtained in the previous attempt
-   * @param params - Original quote request parameters for requesting a fresh quote
-   * @returns The quote to use (either original or fresh) with metadata
+   * @param params - Original quote request parameters (informational)
+   * @returns The quote to use with metadata
    */
   async ensureFreshQuote(
     previousQuote: RfqQuote,
     params: QuoteRequest,
   ): Promise<EnsureFreshQuoteResult> {
+    void params;
     if (!this.isQuoteExpired(previousQuote)) {
       this.logger.log(
         `[fx-retry] Quote ${previousQuote.quoteId} still valid ` +
@@ -87,25 +83,16 @@ export class FxRetryService {
       };
     }
 
-    // Quote has expired — request a fresh one
-    this.logger.log(
+    // Quote has expired and there is no backend provider to refresh it.
+    this.logger.warn(
       `[fx-retry] Quote ${previousQuote.quoteId} expired ` +
-        `(expiresAt=${previousQuote.expiresAt}), requesting fresh quote`,
+        `(expiresAt=${previousQuote.expiresAt}); refusing refresh on Arc Mainnet.`,
     );
-
-    const freshQuote = await this.rfqClient.requestQuote(params);
-
-    this.logger.log(
-      `[fx-retry] Fresh quote obtained: expiredQuoteId=${previousQuote.quoteId} ` +
-        `newQuoteId=${freshQuote.quoteId} rate=${freshQuote.rate} ` +
-        `expiresAt=${freshQuote.expiresAt}`,
-    );
-
-    return {
-      quote: freshQuote,
-      wasRefreshed: true,
-      expiredQuoteId: previousQuote.quoteId,
-    };
+    throw new ServiceUnavailableException({
+      code: 'FX_QUOTE_REFRESH_UNAVAILABLE',
+      message:
+        'The FX quote expired and cannot be refreshed by the backend. Obtain a new quote through the external-wallet Uniswap V4 flow.',
+    });
   }
 
   /**
@@ -114,7 +101,7 @@ export class FxRetryService {
    * A quote is considered expired if its expiresAt timestamp is in the past
    * relative to the current server time.
    *
-   * @param quote - The RFQ quote to check
+   * @param quote - The quote to check
    * @returns true if the quote has expired, false if still valid
    */
   isQuoteExpired(quote: RfqQuote): boolean {

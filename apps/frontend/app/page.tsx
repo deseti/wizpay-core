@@ -19,7 +19,6 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyStateView } from "@/components/ui/empty-state";
 import { TokenIcon } from "@/components/ui/token-icon";
 import { useActiveWalletAddress } from "@/hooks/useActiveWalletAddress";
-import { useCircleWallet } from "@/components/providers/CircleWalletProvider";
 import { useUnifiedActivity } from "@/hooks/useUnifiedActivity";
 import { useTokenBalances } from "@/hooks/useTokenBalances";
 import { useDelayedLoading } from "@/hooks/useDelayedLoading";
@@ -29,7 +28,6 @@ import {
   ARC_CHAIN_ID,
   TOKEN_OPTIONS,
   type TokenSymbol,
-  ARC_TESTNET_CHAIN_ID,
 } from "@/lib/wizpay";
 import { TOKEN_BY_ADDRESS } from "@/constants/erc20";
 import { ACTIVITY_LABELS } from "@/lib/activity-labels";
@@ -179,7 +177,7 @@ function TokenList({ balances, isLoading }: BalanceSnapshotProps) {
           <Link key={token.symbol} href="/assets">
             <div className="flex items-center gap-3 rounded-xl px-3 py-3.5 transition-all hover:bg-muted/20 active:scale-[0.98] cursor-pointer min-h-[52px]">
               <TokenIcon
-                chainId={ARC_TESTNET_CHAIN_ID}
+                chainId={ARC_CHAIN_ID}
                 address={token.address}
                 symbol={token.symbol}
                 size={32}
@@ -341,14 +339,12 @@ function RecentActivity({
 }
 
 function HomeContent() {
-  const { isConnected, walletMode } = useActiveWalletAddress();
-  const { userToken } = useCircleWallet();
+  const { isConnected } = useActiveWalletAddress();
   const { balances, isLoading: isBalancesLoading } = useTokenBalances({
     refetchInterval: 30_000,
   });
   const { items, isLoading: isHistoryLoading } = useUnifiedActivity({
-    userToken: walletMode === "circle" ? userToken : null,
-    enabled: isConnected && walletMode === "circle",
+    enabled: isConnected,
     limit: 25,
     refetchInterval: 60_000,
   });

@@ -4,11 +4,10 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { CircleAgentWalletSwapExecutor } from './executors/circle-agent-wallet-swap.executor';
 import {
   OFFICIAL_SWAP_ALLOWED_CHAIN,
-  OFFICIAL_SWAP_CIRCLE_AGENT_WALLET_EXECUTOR,
   OFFICIAL_SWAP_ERROR_CODES,
+  OFFICIAL_SWAP_MAINNET_EXECUTOR,
   type OfficialSwapExecuteRequest,
   type OfficialSwapExecuteResponse,
   type OfficialSwapPlaceholderResponse,
@@ -18,21 +17,19 @@ import {
 
 @Injectable()
 export class OfficialSwapOrchestrator {
-  constructor(
-    private readonly configService: ConfigService,
-    private readonly circleAgentWalletSwapExecutor: CircleAgentWalletSwapExecutor,
-  ) {}
+  constructor(private readonly configService: ConfigService) {}
 
   async quote(
     request: OfficialSwapQuoteRequest,
   ): Promise<OfficialSwapQuoteResponse> {
     this.guardEnabled();
     this.guardChain(request.chain);
-
-    const executor = this.getExecutor();
-    this.guardTestnetCliEnabled();
-
-    return executor.quote(request);
+    this.guardExecutor();
+    throw new ServiceUnavailableException({
+      code: OFFICIAL_SWAP_ERROR_CODES.QUOTE_FAILED,
+      message:
+        'Official swap quoting is unavailable from the backend. Quote through the external-wallet Mainnet Uniswap V4 endpoints.',
+    });
   }
 
   async execute(
@@ -54,11 +51,13 @@ export class OfficialSwapOrchestrator {
 
     this.guardEnabled();
     this.guardChain(request.chain);
+    this.guardExecutor();
 
-    const executor = this.getExecutor();
-    this.guardTestnetCliEnabled();
-
-    return executor.execute(request);
+    throw new ServiceUnavailableException({
+      code: OFFICIAL_SWAP_ERROR_CODES.EXECUTION_FAILED,
+      message:
+        'Official swap execution is unavailable from the backend. Arc Mainnet swaps are signed by the external wallet; the backend does not submit user funds.',
+    });
   }
 
   getStatus(operationId: string): OfficialSwapPlaceholderResponse {
@@ -86,35 +85,20 @@ export class OfficialSwapOrchestrator {
     if (chain !== OFFICIAL_SWAP_ALLOWED_CHAIN) {
       throw new BadRequestException({
         code: OFFICIAL_SWAP_ERROR_CODES.UNSUPPORTED_CHAIN,
-        message: 'Only ARC-TESTNET is supported by this official swap scaffold.',
+        message: 'Only ARC-MAINNET is supported by official swap.',
       });
     }
   }
 
-  private getExecutor(): CircleAgentWalletSwapExecutor {
+  private guardExecutor(): void {
     const executor =
       this.configService.get<string>('WIZPAY_OFFICIAL_SWAP_EXECUTOR') ??
       'disabled';
 
-    if (executor !== OFFICIAL_SWAP_CIRCLE_AGENT_WALLET_EXECUTOR) {
+    if (executor !== OFFICIAL_SWAP_MAINNET_EXECUTOR) {
       throw new ServiceUnavailableException({
         code: OFFICIAL_SWAP_ERROR_CODES.EXECUTOR_UNAVAILABLE,
         message: 'Official swap executor is unavailable.',
-      });
-    }
-
-    return this.circleAgentWalletSwapExecutor;
-  }
-
-  private guardTestnetCliEnabled(): void {
-    const testnetCliEnabled =
-      this.configService.get<string>('WIZPAY_OFFICIAL_SWAP_ALLOW_TESTNET_CLI') ===
-      'true';
-
-    if (!testnetCliEnabled) {
-      throw new ServiceUnavailableException({
-        code: OFFICIAL_SWAP_ERROR_CODES.TESTNET_CLI_DISABLED,
-        message: 'Official swap testnet CLI execution is disabled.',
       });
     }
   }

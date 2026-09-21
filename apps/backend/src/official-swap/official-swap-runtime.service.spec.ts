@@ -1,62 +1,44 @@
 import { ConfigService } from '@nestjs/config';
 import { OfficialSwapRuntimeService } from './official-swap-runtime.service';
 
-describe('OfficialSwapRuntimeService', () => {
-  function createSubject(
-    env: Record<string, string | undefined>,
-    commandRunner: jest.Mock,
-  ) {
+describe('OfficialSwapRuntimeService (Mainnet only)', () => {
+  function createSubject(env: Record<string, string | undefined>) {
     const configService = {
       get: jest.fn((key: string) => env[key]),
     } as unknown as ConfigService;
 
-    const service = new OfficialSwapRuntimeService(configService);
-    service.setCommandRunnerForTest(commandRunner);
-
-    return service;
+    return new OfficialSwapRuntimeService(configService);
   }
 
-  it('reports Circle CLI availability and sanitized config state', async () => {
-    const commandRunner = jest.fn().mockResolvedValue({});
-    const service = createSubject(
-      {
-        WIZPAY_OFFICIAL_SWAP_ENABLED: 'true',
-        WIZPAY_OFFICIAL_SWAP_EXECUTOR: 'circle-agent-wallet',
-      },
-      commandRunner,
-    );
+  it('reports Mainnet readiness and sanitized config state', async () => {
+    const service = createSubject({
+      WIZPAY_OFFICIAL_SWAP_ENABLED: 'true',
+      WIZPAY_OFFICIAL_SWAP_EXECUTOR: 'mainnet-uniswap-v4',
+    });
 
     await expect(service.getRuntimeStatus()).resolves.toEqual({
-      circleCliAvailable: true,
-      executorConfigured: 'circle-agent-wallet',
+      readinessAvailable: true,
+      executorConfigured: 'mainnet-uniswap-v4',
       enabled: true,
-      chain: 'ARC-TESTNET',
-    });
-    expect(commandRunner).toHaveBeenCalledWith('which', ['circle'], {
-      timeout: 2000,
+      chain: 'ARC-MAINNET',
     });
   });
 
-  it('fails closed when Circle CLI is unavailable', async () => {
-    const commandRunner = jest.fn().mockRejectedValue(new Error('missing'));
-    const service = createSubject({}, commandRunner);
+  it('reports disabled executor by default', async () => {
+    const service = createSubject({});
 
-    await expect(service.getRuntimeStatus()).resolves.toEqual({
-      circleCliAvailable: false,
+    await expect(service.getRuntimeStatus()).resolves.toMatchObject({
       executorConfigured: 'disabled',
       enabled: false,
-      chain: 'ARC-TESTNET',
+      chain: 'ARC-MAINNET',
     });
   });
 
-  it('does not expose unsupported executor environment values', async () => {
-    const commandRunner = jest.fn().mockResolvedValue({});
-    const service = createSubject(
-      {
-        WIZPAY_OFFICIAL_SWAP_EXECUTOR: 'do-not-echo-this-value',
-      },
-      commandRunner,
-    );
+  it('reports unsupported executors without executing anything', async () => {
+    const service = createSubject({
+      WIZPAY_OFFICIAL_SWAP_ENABLED: 'true',
+      WIZPAY_OFFICIAL_SWAP_EXECUTOR: 'legacy-executor',
+    });
 
     await expect(service.getRuntimeStatus()).resolves.toMatchObject({
       executorConfigured: 'unsupported',

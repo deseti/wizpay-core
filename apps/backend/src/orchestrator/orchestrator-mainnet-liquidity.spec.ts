@@ -36,8 +36,6 @@ describe('OrchestratorService Mainnet liquidity boundary', () => {
       taskService,
       queueService,
       executionRouter,
-      {},
-      {},
       blockedCapabilities(),
     ]) as OrchestratorService;
     return { service, taskService, queueService, executionRouter };

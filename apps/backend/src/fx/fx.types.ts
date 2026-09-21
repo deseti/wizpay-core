@@ -1,12 +1,14 @@
 /**
- * Shared FX types and interfaces for the StableFX Migration.
+ * Shared FX types and interfaces for Mainnet settlement.
  *
- * These types model the Circle StableFX RFQ flow, settlement lifecycle,
- * routing guard state, and LP wind-down process.
+ * These types model the quote flow, settlement lifecycle,
+ * routing guard state, and wind-down process. Pricing comes from the
+ * Mainnet Uniswap V4 pool and execution is performed by the external
+ * wallet; the backend never submits settlement transactions.
  */
 
 /**
- * Request parameters for obtaining an RFQ quote from Circle StableFX.
+ * Request parameters for obtaining a binding price quote.
  * Either fromAmount or toAmount must be specified (mutually exclusive).
  */
 export interface QuoteRequest {
@@ -18,7 +20,7 @@ export interface QuoteRequest {
 }
 
 /**
- * Binding price quote returned by Circle StableFX containing rate,
+ * Binding price quote containing rate,
  * expiry, quote identifier, and settlement parameters.
  */
 export interface RfqQuote {
@@ -43,7 +45,7 @@ export interface TradeResponse {
 }
 
 /**
- * All possible trade status values in the Circle StableFX settlement lifecycle.
+ * All possible trade status values in the settlement lifecycle.
  */
 export type TradeStatusValue =
   | 'confirmed'
@@ -113,7 +115,7 @@ export interface ValidationResult {
 }
 
 /**
- * State of the LP wind-down process for the deprecated StableFXAdapter_V2.
+ * State of the wind-down process for the deprecated adapter LP system.
  */
 export interface WindDownState {
   initiated: boolean;
@@ -133,8 +135,8 @@ export interface WindDownState {
 }
 
 /**
- * Registry of supported token pairs for Circle StableFX RFQ.
- * Requests for undocumented pairs are rejected without calling the API.
+ * Registry of supported token pairs for Mainnet quoting.
+ * Requests for undocumented pairs are rejected without calling any provider.
  */
 export interface TokenPairRegistry {
   pairs: Array<{

@@ -3,6 +3,7 @@ import {
   Inject,
   Injectable,
   NotFoundException,
+  ServiceUnavailableException,
   UnauthorizedException,
   forwardRef,
 } from '@nestjs/common';
@@ -32,10 +33,6 @@ import { TaskLogService } from './task-log.service';
 import { TaskTransactionService } from './task-transaction.service';
 import { TaskMapperService, TaskWithRelations } from './task-mapper.service';
 import { TaskUnitService } from './task-unit.service';
-import {
-  assertLegacyLiquidityEnabled,
-  throwOfficialStableFxAuthRequired,
-} from '../fx/stablefx-cutover.guard';
 import { CapabilityService } from '../capabilities/capability.service';
 import {
   createPayrollBatchDigest,
@@ -45,7 +42,7 @@ import { PaymentRoutingService } from '../routing/payment-routing.service';
 import { PayrollReceiptVerifierService } from './payroll-receipt-verifier.service';
 
 // ════════════════════════════════════════════════════════════════════
-//  FX-specific step identifiers for the StableFX settlement lifecycle.
+//  FX-specific step identifiers for the Mainnet settlement lifecycle.
 //  Each step is logged as a machine-readable identifier in the task log.
 // ════════════════════════════════════════════════════════════════════
 
@@ -445,21 +442,23 @@ export class TaskService {
     };
   }
 
-  createSwapTask(payload: TaskPayload): Promise<CreateSwapTaskResult> {
+  async createSwapTask(payload: TaskPayload): Promise<CreateSwapTaskResult> {
     this.capabilities.assert('swap');
     void payload;
-    // Swap is the same FX capability as cross-currency Send.
-    // Block with official RFQ auth required until Circle StableFX entitlement is available.
-    // When official Circle StableFX RFQ is implemented, replace this guard with
-    // actual RFQ quote + execution logic.
-    return Promise.resolve().then(() => throwOfficialStableFxAuthRequired());
+    // Backend swap submission is retired on Arc Mainnet. Swaps are prepared
+    // through the Mainnet Uniswap V4 endpoints and signed by the external
+    // wallet, so backend swap task planning fails closed.
+    throw new ServiceUnavailableException({
+      code: 'SWAP_TASK_PLANNING_UNAVAILABLE',
+      message:
+        'Backend swap task planning is retired on Arc Mainnet. Swap through the external-wallet Uniswap V4 flow.',
+    });
   }
 
   async createLiquidityTask(
     payload: TaskPayload,
   ): Promise<CreateLiquidityTaskResult> {
     this.capabilities.assert('liquidity');
-    assertLegacyLiquidityEnabled(this.capabilities.network);
     const owner = this.normalizeTaskOwner(payload);
 
     const operation =
@@ -535,7 +534,12 @@ export class TaskService {
     if (type === 'payroll') this.capabilities.assertPayroll(payload);
     else if (type === 'swap') this.capabilities.assert('swap');
     else if (type === 'bridge') this.capabilities.assert('bridge');
-    else if (type === 'fx') this.capabilities.assert('stableFx');
+    else if (type === 'fx')
+      throw new ServiceUnavailableException({
+        code: 'FX_TASK_TYPE_RETIRED',
+        message:
+          'FX tasks are retired on Arc Mainnet. Convert through the external-wallet Uniswap V4 flow.',
+      });
     else if (type === 'liquidity') this.capabilities.assert('liquidity');
   }
 
@@ -761,7 +765,7 @@ export class TaskService {
 
   /**
    * Append a new transaction record to a task.
-   * Called by PayrollAgent after each CircleService.transfer() call.
+   * Called after each external-wallet transfer submission.
    */
   async appendTransaction(
     input: AppendTransactionInput,

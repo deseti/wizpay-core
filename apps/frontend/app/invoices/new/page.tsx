@@ -18,7 +18,7 @@ import { Label } from "@/components/ui/label";
 import { TokenIcon } from "@/components/ui/token-icon";
 import { createInvoice, type MerchantInvoice } from "@/lib/invoice-api";
 import {
-  ARC_TESTNET_CHAIN_ID,
+  ARC_MAINNET_CHAIN_ID,
   SUPPORTED_TOKENS,
   type TokenSymbol,
 } from "@/lib/wizpay";
@@ -150,7 +150,7 @@ export default function NewInvoicePage() {
                 <Label htmlFor="invoice-token">Token</Label>
                 <div className="relative">
                   <TokenIcon
-                    chainId={ARC_TESTNET_CHAIN_ID}
+                    chainId={ARC_MAINNET_CHAIN_ID}
                     address={SUPPORTED_TOKENS[token].address}
                     symbol={token}
                     size={26}
@@ -294,7 +294,7 @@ function Preview({
       </div>
       <div className="flex items-center gap-2">
         <TokenIcon
-          chainId={ARC_TESTNET_CHAIN_ID}
+          chainId={ARC_MAINNET_CHAIN_ID}
           address={SUPPORTED_TOKENS[token].address}
           symbol={token}
           size={30}
@@ -304,7 +304,7 @@ function Preview({
         </strong>
       </div>
       <div className="text-xs text-muted-foreground">
-        <p>Arc Testnet</p>
+        <p>Arc Mainnet</p>
         <p>
           {expiresAt
             ? `Expires ${new Date(expiresAt).toLocaleString()}`

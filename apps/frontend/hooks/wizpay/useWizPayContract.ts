@@ -1,7 +1,6 @@
 import { keepPreviousData } from "@tanstack/react-query";
 import { useEffect, useMemo } from "react";
 import {
-  formatUnits,
   getAddress,
   isAddress,
   type Address,
@@ -13,7 +12,7 @@ import { usePublicClient, useReadContract } from "wagmi";
 import { useActiveWalletAddress } from "@/hooks/useActiveWalletAddress";
 import { useTransactionExecutor } from "@/hooks/useTransactionExecutor";
 
-import { WIZPAY_ABI, WIZPAY_BATCH_PAYMENT_ROUTED_EVENT } from "@/constants/abi";
+import { WIZPAY_ABI } from "@/constants/abi";
 import { WIZPAY_PAYROLL_MAINNET_ABI } from "@/constants/generated/wizpay-payroll-mainnet.abi";
 import { ACTIVE_ARC_NETWORK } from "@/lib/active-arc-network";
 import {
@@ -42,8 +41,7 @@ import type {
   TransactionActionResult,
 } from "@/lib/types";
 import type { useWizPayState } from "./useWizPayState";
-import { isStableFxMode, fxProviderLabel } from "@/lib/fx-config";
-import { ARC_TESTNET_RPC_URL, arcTestnet } from "@/lib/wagmi";
+import { activeArcChain } from "@/lib/wagmi";
 
 type BaseState = ReturnType<typeof useWizPayState>;
 
@@ -84,13 +82,6 @@ type PreparedBatchRecipient = {
   id: string;
   targetToken: TokenSymbol;
   validAddress: boolean;
-};
-
-type PayrollEventLog = {
-  transactionHash: Hex | null;
-  args: {
-    referenceId?: string;
-  };
 };
 
 function waitFor(ms: number) {
@@ -154,7 +145,7 @@ async function readPostSettlementTokenState({
   spenderAddress: Address;
 }): Promise<PostSettlementTokenState> {
   const requestKey = [
-    publicClient.chain?.id ?? arcTestnet.id,
+    publicClient.chain?.id ?? activeArcChain.id,
     tokenAddress.toLowerCase(),
     walletAddress.toLowerCase(),
     spenderAddress.toLowerCase(),
@@ -252,7 +243,7 @@ function getTokenSymbolByAddress(address: Address): TokenSymbol | null {
  * This hook now:
  * 1. Reads on-chain data for display (balances, allowances, quotes, fees)
  * 2. Requests approval from the active wallet when needed
- * 3. Executes payroll batches client-side via Circle user-controlled or external wallets
+ * 3. Executes payroll batches client-side via external self-custodial wallets
  */
 export function useWizPayContract({
   state,
@@ -263,9 +254,9 @@ export function useWizPayContract({
   batchAmount: bigint;
   preparedRecipients: PreparedRecipient[];
 }) {
-  const { walletAddress, walletMode } = useActiveWalletAddress();
+  const { walletAddress } = useActiveWalletAddress();
   const { executeTransaction } = useTransactionExecutor();
-  const publicClient = usePublicClient({ chainId: arcTestnet.id });
+  const publicClient = usePublicClient({ chainId: activeArcChain.id });
 
   const activeToken = SUPPORTED_TOKENS[state.selectedToken];
   const allowanceSpender = WIZPAY_ADDRESS;
@@ -279,7 +270,7 @@ export function useWizPayContract({
   } = useReadContract({
     address: activeToken.address,
     abi: ERC20_ABI,
-    chainId: arcTestnet.id,
+    chainId: activeArcChain.id,
     functionName: "allowance",
     args:
       walletAddress && allowanceSpender
@@ -299,7 +290,7 @@ export function useWizPayContract({
   } = useReadContract({
     address: activeToken.address,
     abi: ERC20_ABI,
-    chainId: arcTestnet.id,
+    chainId: activeArcChain.id,
     functionName: "balanceOf",
     args: walletAddress ? [walletAddress] : undefined,
     query: {
@@ -312,7 +303,7 @@ export function useWizPayContract({
   const { data: feeBpsData, isLoading: feeQueryLoading } = useReadContract({
     address: WIZPAY_ADDRESS,
     abi: WIZPAY_ABI,
-    chainId: arcTestnet.id,
+    chainId: activeArcChain.id,
     functionName: "feeBps",
     query: {
       enabled: Boolean(WIZPAY_ADDRESS),
@@ -331,48 +322,15 @@ export function useWizPayContract({
   const currentBalance = currentBalanceData ?? 0n;
   const approvalAmount = batchAmount;
 
-  // ── Quote summary (simplified — no longer drives execution) ─────
+  // ── Quote summary (Arc Mainnet-only: no on-chain quote read) ───
+  // WizPayPayrollMainnet exposes no batch quote view; execution uses the
+  // Mainnet atomic payroll route with local slippage floors instead.
+  // The composer shows an empty quote until execution confirms on Arc.
 
-  const rawQuoteEnabled = Boolean(
-    walletAddress &&
-    preparedRecipients.length > 0 &&
-    batchAmount > 0n &&
-    preparedRecipients.every((r) => r.amountUnits > 0n) &&
-    preparedRecipients.every((r) => r.targetToken === activeToken.symbol),
+  const quoteSummary = useMemo<QuoteSummary>(
+    () => EMPTY_QUOTE_SUMMARY,
+    [],
   );
-
-  const {
-    data: rawQuoteData,
-    isLoading: rawQuoteLoading,
-    isFetching: rawQuoteFetching,
-  } = useReadContract({
-    address: WIZPAY_ADDRESS,
-    abi: WIZPAY_ABI,
-    chainId: arcTestnet.id,
-    functionName: "getBatchEstimatedOutputs",
-    args: [
-      activeToken.address,
-      preparedRecipients.map((r) => SUPPORTED_TOKENS[r.targetToken].address),
-      preparedRecipients.map((r) => r.amountUnits),
-    ],
-    query: {
-      enabled: Boolean(WIZPAY_ADDRESS) && rawQuoteEnabled && !isStableFxMode,
-      refetchInterval: 20_000,
-      refetchIntervalInBackground: false,
-      refetchOnWindowFocus: false,
-      staleTime: 20_000,
-      placeholderData: keepPreviousData,
-    },
-  });
-
-  const quoteSummary = useMemo<QuoteSummary>(() => {
-    if (!rawQuoteData) return EMPTY_QUOTE_SUMMARY;
-    return {
-      estimatedAmountsOut: [...rawQuoteData[0]],
-      totalEstimatedOut: rawQuoteData[1],
-      totalFees: rawQuoteData[2],
-    };
-  }, [rawQuoteData]);
 
   const feeBps = feeBpsData ?? 0n;
 
@@ -382,8 +340,8 @@ export function useWizPayContract({
   const balanceLoading = Boolean(walletAddress) && balanceQueryLoading;
   const feeLoading = feeQueryLoading;
   const engineLoading = false;
-  const quoteLoading = rawQuoteEnabled && rawQuoteLoading;
-  const quoteRefreshing = Boolean(rawQuoteFetching && rawQuoteData);
+  const quoteLoading = false;
+  const quoteRefreshing = false;
 
   const rowDiagnostics = useMemo<(string | null)[]>(() => {
     return preparedRecipients.map(() => null);
@@ -459,108 +417,6 @@ export function useWizPayContract({
     );
   };
 
-  const waitForBatchSettlement = async ({
-    referenceId,
-    startBlock,
-    txHash,
-  }: {
-    referenceId: string;
-    startBlock: bigint;
-    txHash: Hex | null;
-  }) => {
-    if (!publicClient || !walletAddress) {
-      throw new Error("Arc public client is not ready yet.");
-    }
-
-    if (txHash) {
-      try {
-        await publicClient.waitForTransactionReceipt({
-          hash: txHash,
-          confirmations: 1,
-        });
-        return txHash;
-      } catch {
-        // Fall through to the event-based confirmation path.
-      }
-    }
-
-    for (let attempt = 0; attempt < MAX_CONFIRMATION_POLLS; attempt += 1) {
-      const logs = (await publicClient.getLogs({
-        address: requireWizPayAddress(),
-        event: WIZPAY_BATCH_PAYMENT_ROUTED_EVENT,
-        args: { sender: walletAddress },
-        fromBlock: startBlock,
-      })) as PayrollEventLog[];
-
-      const matchedLog = logs.find(
-        (log) =>
-          Boolean(log.transactionHash) && log.args.referenceId === referenceId,
-      );
-
-      if (matchedLog?.transactionHash) {
-        return matchedLog.transactionHash;
-      }
-
-      if (attempt < MAX_CONFIRMATION_POLLS - 1) {
-        await waitFor(POLL_INTERVAL_MS);
-      }
-    }
-
-    if (txHash) {
-      return txHash;
-    }
-
-    throw new Error(
-      "Circle completed the wallet challenge, but the Arc settlement event did not appear before the timeout window ended.",
-    );
-  };
-
-  const getMinimumAmountsOut = async (
-    preparedRecipients: PreparedBatchRecipient[],
-    batchRecipients?: RecipientDraft[],
-  ) => {
-    const canUseCachedQuote =
-      (!batchRecipients || batchRecipients === state.recipients) &&
-      !quoteLoading &&
-      !quoteRefreshing &&
-      quoteSummary.estimatedAmountsOut.length === preparedRecipients.length;
-
-    if (canUseCachedQuote) {
-      return quoteSummary.estimatedAmountsOut.map((estimatedAmountOut) => {
-        if (estimatedAmountOut <= 0n) {
-          return 0n;
-        }
-
-        return (estimatedAmountOut * (10000n - PREVIEW_SLIPPAGE_BPS)) / 10000n;
-      });
-    }
-
-    if (!publicClient || preparedRecipients.length === 0) {
-      return preparedRecipients.map(() => 0n);
-    }
-
-    const quote = (await publicClient.readContract({
-      address: requireWizPayAddress(),
-      abi: WIZPAY_ABI,
-      functionName: "getBatchEstimatedOutputs",
-      args: [
-        activeToken.address,
-        preparedRecipients.map(
-          (recipient) => SUPPORTED_TOKENS[recipient.targetToken].address,
-        ),
-        preparedRecipients.map((recipient) => recipient.amountUnits),
-      ],
-    })) as readonly [readonly bigint[], bigint, bigint];
-
-    return [...quote[0]].map((estimatedAmountOut) => {
-      if (estimatedAmountOut <= 0n) {
-        return 0n;
-      }
-
-      return (estimatedAmountOut * (10000n - PREVIEW_SLIPPAGE_BPS)) / 10000n;
-    });
-  };
-
   const applyBatchSessionTotals = (
     preparedRecipients: PreparedBatchRecipient[],
     batchTotalAmount: bigint,
@@ -612,7 +468,7 @@ export function useWizPayContract({
         amount.toString(),
       ].join(":");
       const approvalIntent = await acquireExecutionIntent({
-        network: "arc-testnet",
+        network: "arc-mainnet",
         operation: "TOKEN_APPROVAL",
         sourceWallet: walletAddress,
         recipient: requireWizPayAddress(),
@@ -624,7 +480,7 @@ export function useWizPayContract({
       const approvalResult = await executeTransaction({
         abi: ERC20_ABI,
         args: [requireWizPayAddress(), amount],
-        chainId: arcTestnet.id,
+        chainId: activeArcChain.id,
         contractAddress: activeToken.address,
         functionName: "approve",
         executionIntentId: approvalIntent.id,
@@ -720,7 +576,7 @@ export function useWizPayContract({
       return { ok: false, hash: null };
     }
 
-    // Determine the effective input token for batchRouteAndPay.
+    // Determine the effective input token for the Mainnet payroll payout.
     // When all recipients target the same token AND it differs from activeToken,
     // it means a pre-swap has already been executed and the wallet now holds
     // the target token. Use the target token as input for same-token payout.
@@ -752,10 +608,10 @@ export function useWizPayContract({
     // read allowance and balance directly for the effective token.
     if (effectiveTokenIn !== activeToken.address) {
       const verificationContext = {
-        chainId: arcTestnet.id,
+        chainId: activeArcChain.id,
         methods: ["allowance", "balanceOf"],
         multicallAddress: ARC_MULTICALL3_ADDRESS,
-        rpcEndpoint: ARC_TESTNET_RPC_URL,
+        rpcEndpoint: ACTIVE_ARC_NETWORK.rpcUrl,
         spender: spenderAddress,
         token: effectiveTokenInSymbol,
         tokenAddress: effectiveTokenIn,
@@ -794,7 +650,7 @@ export function useWizPayContract({
         }
 
         throw new Error(
-          `Arc Testnet RPC could not verify the post-settlement ${effectiveTokenInSymbol} payroll allowance and balance. The FX settlement is not affected; wait a moment and use payroll recovery to continue.`,
+          `Arc Mainnet RPC could not verify the post-settlement ${effectiveTokenInSymbol} payroll allowance and balance. Wait a moment and use payroll recovery to continue.`,
         );
       }
 
@@ -851,7 +707,7 @@ export function useWizPayContract({
             batchTotalAmount.toString(),
           ].join(":");
           const approvalIntent = await acquireExecutionIntent({
-            network: "arc-testnet",
+            network: "arc-mainnet",
             operation: "TOKEN_APPROVAL",
             sourceWallet: walletAddress,
             recipient: requireWizPayAddress(),
@@ -863,7 +719,7 @@ export function useWizPayContract({
           const approvalResult = await executeTransaction({
             abi: ERC20_ABI,
             args: [requireWizPayAddress(), batchTotalAmount],
-            chainId: arcTestnet.id,
+            chainId: activeArcChain.id,
             contractAddress: effectiveTokenIn,
             functionName: "approve",
             executionIntentId: approvalIntent.id,
@@ -884,7 +740,7 @@ export function useWizPayContract({
             return { ok: false, hash: null, error: message };
           }
           // Only use txHash if it's a real EVM hash. The `hash` field may
-          // contain a Circle referenceId (UUID) which must NOT be passed to RPC.
+          // contain a referenceId which must NOT be passed to RPC.
           const approvalEvmHash =
             approvalResult.txHash &&
             /^0x[a-fA-F0-9]{64}$/.test(approvalResult.txHash)
@@ -913,7 +769,7 @@ export function useWizPayContract({
               confirmations: 1,
             });
           } else {
-            // No EVM hash available (Circle W3S mode) — wait briefly then
+            // No EVM hash available — wait briefly then
             // rely on the allowance polling below to confirm the approval.
             state.setStatusMessage(
               `Confirming ${batchTargetToken} approval...`,
@@ -1072,152 +928,12 @@ export function useWizPayContract({
       }
     }
 
-    const tokenOuts = batchPreparedRecipients.map(
-      (recipient) => SUPPORTED_TOKENS[recipient.targetToken].address,
-    );
-    const recipients = batchPreparedRecipients.map(
-      (recipient) => recipient.address,
-    ) as readonly Address[];
-    const amountsIn = batchPreparedRecipients.map(
-      (recipient) => recipient.amountUnits,
-    );
-
-    state.setSubmitState("simulating");
-    state.setSubmitTxHash(null);
-    state.setErrorMessage(null);
-    state.setStatusMessage(
-      "Preparing the payroll batch for wallet confirmation...",
-    );
-
-    try {
-      // For same-token payout after pre-swap, minimum amounts must account for
-      // the on-chain fee deduction. The contract calculates:
-      //   amountAfterFee = amountIn - (amountIn * feeBps / 10000)
-      // and reverts with DirectTransferBelowMinimum if amountAfterFee < minAmountOut.
-      const isSameTokenPayout = batchPreparedRecipients.every(
-        (recipient) =>
-          SUPPORTED_TOKENS[recipient.targetToken].address === effectiveTokenIn,
-      );
-      const minAmountsOut = isSameTokenPayout
-        ? amountsIn.map((a) => {
-            if (feeBps <= 0n) return a;
-            // Floor: amount after fee deduction
-            return (a * (10000n - feeBps)) / 10000n;
-          })
-        : await getMinimumAmountsOut(batchPreparedRecipients, batchRecipients);
-
-      logPayrollRouteDiagnostic(
-        "[official-payroll-route] batchRouteAndPay args",
-        {
-          tokenIn: {
-            symbol: effectiveTokenInSymbol,
-            address: effectiveTokenIn,
-          },
-          tokenOuts: tokenOuts.map((address) => ({
-            symbol: getTokenSymbolByAddress(address),
-            address,
-          })),
-          amounts: amountsIn.map((amount, index) => {
-            const token = batchPreparedRecipients[index]?.targetToken;
-            const decimals = token ? SUPPORTED_TOKENS[token].decimals : 0;
-
-            return {
-              amountUnits: amount.toString(),
-              humanAmount: token ? formatUnits(amount, decimals) : null,
-              token: token ?? null,
-            };
-          }),
-          minAmountsOut: minAmountsOut.map((amount) => amount.toString()),
-          referenceId,
-        },
-      );
-
-      if (walletMode !== "circle") {
-        await publicClient.estimateContractGas({
-          address: requireWizPayAddress(),
-          abi: WIZPAY_ABI,
-          account: walletAddress,
-          functionName: "batchRouteAndPay",
-          args: [
-            effectiveTokenIn,
-            tokenOuts,
-            recipients,
-            amountsIn,
-            minAmountsOut,
-            referenceId,
-          ],
-        });
-      }
-
-      state.setSubmitState("wallet");
-      state.setStatusMessage("Confirm the payroll batch in your wallet.");
-
-      const executionResult = await executeTransaction({
-        abi: WIZPAY_ABI,
-        args: [
-          effectiveTokenIn,
-          tokenOuts,
-          recipients,
-          amountsIn,
-          minAmountsOut,
-          referenceId,
-        ],
-        chainId: arcTestnet.id,
-        contractAddress: requireWizPayAddress(),
-        functionName: "batchRouteAndPay",
-        idempotencyKey: execution?.idempotencyKey,
-        executionIntentId: execution?.intentId,
-        refId: `PAYROLL-${referenceId}`,
-      });
-
-      if (
-        execution?.intentId &&
-        executionResult.txHash &&
-        executionResult.executionLeaseOwner
-      ) {
-        await bindExecutionIntentTransactionHash(
-          execution.intentId,
-          executionResult.txHash,
-          execution.idempotencyKey,
-          executionResult.executionLeaseOwner,
-        );
-      }
-
-      state.setSubmitState("confirming");
-      state.setSubmitTxHash(executionResult.txHash ?? executionResult.hash);
-      state.setStatusMessage("Waiting for Arc confirmation...");
-
-      const confirmedHash = await waitForBatchSettlement({
-        referenceId,
-        startBlock: executionResult.startBlock,
-        txHash: executionResult.txHash,
-      });
-      const finalHash = confirmedHash ?? executionResult.hash;
-
-      state.setSubmitTxHash(finalHash);
-      state.setSubmitState("confirmed");
-      state.setStatusMessage(null);
-
-      applyBatchSessionTotals(
-        batchPreparedRecipients,
-        batchTotalAmount,
-        batchValidRecipientCount,
-      );
-
-      await Promise.all([refetchAllowance(), refetchBalance()]);
-
-      return { ok: true, hash: finalHash };
-    } catch (error) {
-      const message = getFriendlyErrorMessage(error);
-      state.setSubmitState("idle");
-      state.setErrorMessage(message);
-      state.setStatusMessage(null);
-      logPayrollRouteDiagnostic(
-        "[official-payroll-route] batchRouteAndPay FAILED",
-        { error: message, rawError: error },
-      );
-      return { ok: false, hash: null, error: message };
-    }
+    // Arc Mainnet is the only execution path. Fail closed if the active
+    // network ever stops resolving to arc-mainnet.
+    const message =
+      "Arc Mainnet payroll is unavailable on the selected network.";
+    state.setErrorMessage(message);
+    return { ok: false, hash: null, error: message };
   };
 
   return {
@@ -1246,10 +962,8 @@ export function useWizPayContract({
     refetchAllowance,
     refetchBalance,
     refetchEngineBalances: async () => undefined,
-    /** Active FX mode metadata for UI display */
-    fxMeta: {
-      isStableFxMode,
-      providerLabel: fxProviderLabel,
+    executionMeta: {
+      providerLabel: "External Wallet",
       engineAddress: undefined,
     },
   };

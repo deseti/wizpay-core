@@ -1,12 +1,11 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { StableFXRfqClient, TradeStatus } from './stablefx-rfq-client.service';
 import { SettlementValidator } from './settlement-validator.service';
 import { FX_POLL_INTERVAL_MS, FX_POLL_MAX_ATTEMPTS } from './fx.constants';
 import { ValidationResult } from './fx.types';
 
 /**
- * Job data for StableFX settlement poll jobs on the tx_poll queue.
+ * Job data for settlement poll jobs on the tx_poll queue.
  */
 export interface FxSettlementPollJobData {
   tradeId: string;
@@ -42,7 +41,7 @@ const TERMINAL_FAILURE_STATUSES = new Set(['failed', 'expired', 'cancelled']);
 
 /**
  * Error thrown when settlement polling encounters a terminal failure.
- * Re-thrown to BullMQ for retry policy application.
+ * Re-thrown for retry policy application.
  */
 export class SettlementFailedError extends Error {
   constructor(
@@ -58,7 +57,7 @@ export class SettlementFailedError extends Error {
 
 /**
  * Error thrown when settlement polling exceeds max attempts.
- * Re-thrown to BullMQ for retry policy application.
+ * Re-thrown for retry policy application.
  */
 export class SettlementTimeoutError extends Error {
   constructor(
@@ -74,21 +73,26 @@ export class SettlementTimeoutError extends Error {
   }
 }
 
+export interface SettlementTradeStatus {
+  tradeId: string;
+  status: string;
+  fromAmount: string;
+  toAmount: string;
+}
+
 /**
- * SettlementPollerService polls Circle StableFX trade status and finalizes
- * FX settlement tasks.
+ * SettlementPollerService finalizes FX settlement tasks on Arc Mainnet.
+ *
+ * Backend provider polling is retired: there is no backend settlement
+ * provider to poll. Settlement evidence comes from Mainnet receipts
+ * verified against the external-wallet execution plan.
  *
  * Responsibilities:
- * - Poll Circle StableFX API via StableFXRfqClient.getTradeStatus() at configurable intervals
  * - Track poll attempts with configurable max (default 60)
- * - Log status transitions as task steps for audit
  * - On terminal success (completed/settled): validate output via SettlementValidator,
  *   update task to EXECUTED if valid, FAILED if rejected
- * - On terminal failure (failed/expired/cancelled): mark task FAILED, re-throw for BullMQ retry
- * - On timeout: mark task FAILED with timeout reason, re-throw for BullMQ retry
- * - Registered as BullMQ processor on the `tx_poll` queue
- *
- * Requirements: 3.2, 3.3, 3.4, 3.7, 5.5, 5.7
+ * - On terminal failure (failed/expired/cancelled): mark task FAILED
+ * - On timeout: mark task FAILED with timeout reason
  */
 @Injectable()
 export class SettlementPollerService {
@@ -97,7 +101,6 @@ export class SettlementPollerService {
   private readonly maxAttempts: number;
 
   constructor(
-    private readonly rfqClient: StableFXRfqClient,
     private readonly settlementValidator: SettlementValidator,
     private readonly configService: ConfigService,
   ) {
@@ -108,20 +111,23 @@ export class SettlementPollerService {
   }
 
   /**
-   * Polls the Circle StableFX trade status until a terminal state is reached
+   * Polls trade status until a terminal state is reached
    * or max attempts are exhausted.
    *
-   * This method is designed to be called by a BullMQ processor on the `tx_poll` queue.
-   * It blocks for the duration of polling (up to maxAttempts × pollIntervalMs).
+   * The status provider resolves terminal trade state from Mainnet
+   * settlement evidence. When no provider is configured the poll fails
+   * closed without marking the task.
    *
-   * @param tradeId - The Circle StableFX trade identifier
+   * @param tradeId - The trade identifier
    * @param taskId - The internal task identifier for logging and status updates
    * @param taskService - TaskService port for status updates and logging
    * @param minOutput - Minimum acceptable output amount
    * @param quotedAmount - Originally quoted output amount
+   * @param getTradeStatus - Optional status provider; required for polling
    *
-   * @throws SettlementFailedError on terminal failure status (re-throw to BullMQ)
-   * @throws SettlementTimeoutError on max attempts exceeded (re-throw to BullMQ)
+   * @throws SettlementFailedError on terminal failure status
+   * @throws SettlementTimeoutError on max attempts exceeded
+   * @throws ServiceUnavailableException when no status provider is configured
    */
   async pollTradeStatus(
     tradeId: string,
@@ -129,7 +135,16 @@ export class SettlementPollerService {
     taskService: TaskServicePort,
     minOutput: string,
     quotedAmount: string,
+    getTradeStatus?: (tradeId: string) => Promise<SettlementTradeStatus>,
   ): Promise<void> {
+    if (!getTradeStatus) {
+      throw new ServiceUnavailableException({
+        code: 'SETTLEMENT_POLL_UNAVAILABLE',
+        message:
+          'Settlement polling is unavailable: no Mainnet status provider is configured. Verify settlement receipts through the external-wallet execution flow.',
+      });
+    }
+
     let previousStatus: string | undefined;
     let lastStatus = 'unknown';
     let attempt = 0;
@@ -142,8 +157,8 @@ export class SettlementPollerService {
     while (attempt < this.maxAttempts) {
       attempt++;
 
-      // Poll Circle StableFX API
-      const tradeStatus: TradeStatus = await this.rfqClient.getTradeStatus(tradeId);
+      // Poll Mainnet settlement state
+      const tradeStatus: SettlementTradeStatus = await getTradeStatus(tradeId);
       const currentStatus = tradeStatus.status;
       lastStatus = currentStatus;
 
@@ -214,7 +229,7 @@ export class SettlementPollerService {
   private async handleTerminalSuccess(
     tradeId: string,
     taskId: string,
-    tradeStatus: TradeStatus,
+    tradeStatus: SettlementTradeStatus,
     taskService: TaskServicePort,
     minOutput: string,
     quotedAmount: string,

@@ -391,7 +391,7 @@ function CheckoutLoaded({
       <TransactionSuccessDialog
         open={successOpen && invoice.status === "PAID"}
         title="Invoice paid"
-        description="WizPay independently verified the exact Arc Testnet transfer and receipt."
+        description="WizPay independently verified the exact Arc Mainnet transfer and receipt."
         rows={[
           {
             label: "Amount",
@@ -566,7 +566,7 @@ function PaymentProgress({
         error ??
         (paid
           ? "The exact transfer is confirmed and this invoice is paid."
-          : "Keep this page open. WizPay is checking Arc Testnet without requesting another signature.")
+          : "Keep this page open. WizPay is checking Arc Mainnet without requesting another signature.")
       }
       loading={!paid && !terminal && !retryable}
     />

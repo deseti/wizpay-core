@@ -7,7 +7,7 @@ test:
 	forge test
 
 deploy:
-	forge script script/Deploy.s.sol:Deploy --rpc-url https://rpc.testnet.arc.io --broadcast
+	forge script script/DeployWizPayMainnetV2.s.sol --rpc-url https://rpc.mainnet.arc.io --broadcast
 
 anvil:
 	anvil

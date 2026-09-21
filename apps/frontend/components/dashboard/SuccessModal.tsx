@@ -54,8 +54,8 @@ export function SuccessModal({
     (value, index, values): value is string => Boolean(value) && values.indexOf(value) === index
   );
   const shareSummary = isMultiBatch
-    ? `Just settled a payroll of ${amountFormatted} ${tokenSymbol} to ${recipientCount} recipients across multiple submissions on Arc Testnet! 🚀`
-    : `Just settled a payroll of ${amountFormatted} ${tokenSymbol} to ${recipientCount} recipients on Arc Testnet! 🚀`;
+    ? `Just settled a payroll of ${amountFormatted} ${tokenSymbol} to ${recipientCount} recipients across multiple submissions on Arc Mainnet! 🚀`
+    : `Just settled a payroll of ${amountFormatted} ${tokenSymbol} to ${recipientCount} recipients on Arc Mainnet! 🚀`;
   const xShareUrl = buildXShareUrl({
     summary: shareSummary,
     explorerUrl:

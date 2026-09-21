@@ -2,7 +2,6 @@ export * from './fx.types';
 export * from './fx.constants';
 export * from './fx.module';
 export * from './fx-routing-guard.service';
-export * from './stablefx-rfq-client.service';
 export * from './settlement-validator.service';
 export * from './settlement-poller.service';
 export * from './fx-retry.service';

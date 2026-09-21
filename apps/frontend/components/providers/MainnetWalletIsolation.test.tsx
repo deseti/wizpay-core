@@ -1,18 +1,21 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { render, screen } from "@testing-library/react";
-import { userEvent } from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { CircleDisabledProvider } from "@/components/providers/CircleDisabledProvider";
 import { ExternalWalletProvider } from "@/components/providers/ExternalWalletProvider";
 import { ConnectWalletCard } from "@/components/dashboard/ConnectWalletCard";
-import { WALLET_MODE_STORAGE_KEY } from "@/lib/wallet-mode";
+import {
+  DEFAULT_WALLET_MODE,
+  getWalletModeLabel,
+  parseWalletMode,
+} from "@/lib/wallet-mode";
 
 vi.mock("@/lib/active-arc-network", () => ({
   ACTIVE_ARC_NETWORK: {
     key: "arc-mainnet",
+    name: "Arc Mainnet",
     chainId: 5_042,
     contracts: {},
     tokens: {},
@@ -44,18 +47,8 @@ vi.mock("wagmi", () => ({
   useDisconnect: () => ({ disconnect: wallet.disconnect }),
 }));
 
-// If any Mainnet-mounted component touches Circle provider state, this mock
-// throws and the test fails. ExternalWalletProvider and ConnectWalletCard
-// must render without it.
-vi.mock("@/components/providers/CircleWalletProvider", () => ({
-  useCircleWallet: () => {
-    throw new Error("Circle provider state must not be read on Mainnet.");
-  },
-}));
-
 vi.mock("@/lib/wagmi", () => ({
-  activeArcChain: { id: 5_042 },
-  arcTestnet: { id: 5_042 },
+  activeArcChain: { id: 5_042, name: "Arc Mainnet" },
   CHAIN_NAME_BY_ID: { 5_042: "Arc Mainnet" },
   SUPPORTED_CHAIN_IDS: new Set([5_042]),
 }));
@@ -64,26 +57,21 @@ vi.mock("@reown/appkit/react", () => ({
   useAppKit: () => ({ open: vi.fn() }),
 }));
 
-import { useHybridWallet } from "@/components/providers/HybridWalletProvider";
+import { useExternalWallet } from "@/components/providers/external-wallet-context";
 
 function MainnetTree({ children }: { children: ReactNode }) {
-  return (
-    <CircleDisabledProvider>
-      <ExternalWalletProvider>{children}</ExternalWalletProvider>
-    </CircleDisabledProvider>
-  );
+  return <ExternalWalletProvider>{children}</ExternalWalletProvider>;
 }
 
 function Probe() {
-  const hybrid = useHybridWallet();
+  const external = useExternalWallet();
   return (
     <div
       data-testid="probe"
-      data-mode={hybrid.walletMode}
-      data-active={hybrid.activeWalletAddress ?? "none"}
-      data-circle-connected={String(hybrid.isCircleConnected)}
-      data-external-connected={String(hybrid.isExternalConnected)}
-      data-ready={String(hybrid.isReady)}
+      data-mode={external.walletMode}
+      data-active={external.activeWalletAddress ?? "none"}
+      data-external-connected={String(external.isExternalConnected)}
+      data-ready={String(external.isReady)}
     />
   );
 }
@@ -99,7 +87,7 @@ describe("Arc Mainnet external-wallet-only isolation", () => {
     wallet.disconnect.mockReset();
   });
 
-  it("resolves external-only mode without reading Circle provider state", () => {
+  it("resolves external-only mode from the connected wallet", () => {
     render(
       <MainnetTree>
         <Probe />
@@ -108,34 +96,24 @@ describe("Arc Mainnet external-wallet-only isolation", () => {
     const probe = screen.getByTestId("probe");
     expect(probe.dataset.mode).toBe("external");
     expect(probe.dataset.active).toBe(wallet.address);
-    expect(probe.dataset.circleConnected).toBe("false");
     expect(probe.dataset.externalConnected).toBe("true");
     expect(probe.dataset.ready).toBe("true");
   });
 
-  it("refuses to activate Circle mode", async () => {
-    localStorage.setItem(WALLET_MODE_STORAGE_KEY, "circle");
-    const user = userEvent.setup();
-    function ModeSwitcher() {
-      const { setWalletMode, walletMode } = useHybridWallet();
-      return (
-        <button onClick={() => setWalletMode("circle")}>
-          mode:{walletMode}
-        </button>
-      );
-    }
+  it("keeps wallet mode external regardless of stored legacy mode", () => {
+    localStorage.setItem("wizpay.wallet.mode", "circle");
     render(
       <MainnetTree>
-        <ModeSwitcher />
+        <Probe />
       </MainnetTree>,
     );
-    const button = screen.getByRole("button");
-    expect(button).toHaveTextContent("mode:external");
-    await user.click(button);
-    expect(button).toHaveTextContent("mode:external");
+    expect(screen.getByTestId("probe").dataset.mode).toBe("external");
+    expect(parseWalletMode("circle")).toBe("external");
+    expect(DEFAULT_WALLET_MODE).toBe("external");
+    expect(getWalletModeLabel("external")).toBe("External Wallet");
   });
 
-  it("shows the Reown CTA and no Circle login CTA", () => {
+  it("shows the Reown CTA and no legacy login CTA", () => {
     render(
       <MainnetTree>
         <ConnectWalletCard />
@@ -145,12 +123,11 @@ describe("Arc Mainnet external-wallet-only isolation", () => {
       screen.getByRole("button", { name: /connect external wallet/i }),
     ).toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: /sign in with circle/i }),
+      screen.queryByRole("button", { name: /sign in/i }),
     ).toBeNull();
-    expect(screen.queryByText(/circle app id/i)).toBeNull();
   });
 
-  it("does not fall back to Circle when the external wallet disconnects", () => {
+  it("does not fall back to another wallet when the external wallet disconnects", () => {
     wallet.address = undefined;
     wallet.connected = false;
     render(
@@ -161,35 +138,7 @@ describe("Arc Mainnet external-wallet-only isolation", () => {
     const probe = screen.getByTestId("probe");
     expect(probe.dataset.active).toBe("none");
     expect(probe.dataset.mode).toBe("external");
-    expect(probe.dataset.circleConnected).toBe("false");
     expect(probe.dataset.externalConnected).toBe("false");
-  });
-
-  it("exposes inert Circle fields through the hybrid context", () => {
-    render(
-      <MainnetTree>
-        <Probe />
-      </MainnetTree>,
-    );
-    // Circle login fields exist on the shared context but are inert constants.
-    function CircleFields() {
-      const hybrid = useHybridWallet();
-      return (
-        <div
-          data-testid="circle-fields"
-          data-ready={String(hybrid.circleReady)}
-          data-error={hybrid.circleAuthError ?? "none"}
-        />
-      );
-    }
-    render(
-      <MainnetTree>
-        <CircleFields />
-      </MainnetTree>,
-    );
-    const fields = screen.getByTestId("circle-fields");
-    expect(fields.dataset.ready).toBe("false");
-    expect(fields.dataset.error).toBe("none");
   });
 });
 
@@ -198,58 +147,39 @@ describe("Arc Mainnet provider-tree structure", () => {
     resolve(process.cwd(), "app/providers.tsx"),
     "utf8",
   );
-  const branchStart = appProviders.indexOf("if (IS_ARC_MAINNET)");
-  const branchEnd = appProviders.indexOf("\n  }\n", branchStart);
-  const mainnetBranch = appProviders.slice(branchStart, branchEnd);
 
-  it("mounts the external-only boundary on the Mainnet branch", () => {
-    expect(appProviders).toContain("IS_ARC_MAINNET");
-    expect(mainnetBranch).toContain("ExternalWalletProvider");
-    expect(mainnetBranch).toContain("CircleDisabledProvider");
+  it("mounts the external-only provider tree", () => {
+    expect(appProviders).toContain("ExternalWalletProvider");
+    expect(appProviders).toContain("CapabilityProvider");
+    expect(appProviders).toContain("WagmiProvider");
+    expect(appProviders).toContain("Wallet configuration unavailable");
   });
 
-  it("mounts no Circle SDK provider or API proxy on the Mainnet branch", () => {
-    expect(mainnetBranch).not.toContain("CircleWalletProvider");
-    expect(mainnetBranch).not.toContain("CircleApiProxyProvider");
+  it("mounts no legacy wallet provider on any branch", () => {
+    expect(appProviders.toLowerCase()).not.toContain("circle");
+    expect(appProviders).not.toContain("HybridWalletProvider");
+    expect(appProviders).not.toContain("WalletModeToggle");
   });
 
-  it("keeps the hybrid Circle tree for Arc Testnet", () => {
-    expect(appProviders).toContain("CircleWalletProvider");
-    expect(appProviders).toContain("HybridWalletProvider");
-    expect(appProviders).toContain("CircleApiProxyProvider");
-  });
-
-  it("ConnectWalletCard no longer depends on Circle auth state", () => {
+  it("ConnectWalletCard depends only on external wallet state", () => {
     const card = readFileSync(
       resolve(process.cwd(), "components/dashboard/ConnectWalletCard.tsx"),
       "utf8",
     );
-    expect(card).not.toContain("useCircleWallet");
-    expect(card).not.toContain("CircleWalletProvider");
-    expect(card).toContain("circleLogin");
+    expect(card).toContain("useExternalWallet");
+    expect(card.toLowerCase()).not.toContain("circle");
+    expect(card).toContain(
+      "Arc Mainnet uses connected external wallets only",
+    );
   });
 
-  it("CircleDisabledProvider contains no Circle runtime imports", () => {
-    const stub = readFileSync(
-      resolve(process.cwd(), "components/providers/CircleDisabledProvider.tsx"),
-      "utf8",
-    );
-    expect(stub).not.toMatch(/from "@\/lib\/circle-/);
-    expect(stub).not.toContain("./circle/");
-    // Only a type-only import (erased at compile time) may reference Circle.
-    expect(stub).not.toMatch(
-      /^import \{(?![^}]*\btype\b)[^}]*\} from "@\/services\/circle-auth\.service"/m,
-    );
-    expect(stub).toContain("import type");
-  });
-
-  it("ExternalWalletProvider never reads Circle state", () => {
+  it("ExternalWalletProvider never reads legacy wallet state", () => {
     const provider = readFileSync(
       resolve(process.cwd(), "components/providers/ExternalWalletProvider.tsx"),
       "utf8",
     );
-    expect(provider).not.toContain("useCircleWallet");
-    expect(provider).not.toContain("CircleWalletProvider");
+    expect(provider.toLowerCase()).not.toContain("circle");
+    expect(provider).not.toContain("HybridWallet");
     expect(provider).toContain('walletMode: "external"');
   });
 });

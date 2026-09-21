@@ -98,7 +98,7 @@ describePostgres('ExecutionIntentService PostgreSQL integration', () => {
     await expect(
       prisma.executionIntent.create({
         data: {
-          network: 'arc-testnet',
+          network: 'arc-mainnet',
           operation: 'SEND',
           sourceWallet: sender,
           recipient,
@@ -184,7 +184,7 @@ describePostgres('ExecutionIntentService PostgreSQL integration', () => {
 
 function createService(prisma: PrismaClient) {
   const routing = {
-    network: 'arc-testnet',
+    network: 'arc-mainnet',
     chainId: 1,
     decide: (input: { tokenIn: string; tokenOut: string }) => ({
       kind: 'DIRECT_TRANSFER',
@@ -202,7 +202,7 @@ function createService(prisma: PrismaClient) {
 
 function sendInput(reference: string) {
   return {
-    network: 'arc-testnet' as const,
+    network: 'arc-mainnet' as const,
     operation: 'SEND' as const,
     sourceWallet: sender,
     recipient,

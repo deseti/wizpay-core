@@ -1,6 +1,6 @@
 import { getAddress, isAddress, type Address } from "viem";
 
-import { ARC_TESTNET_CHAIN_ID, SUPPORTED_TOKENS, type TokenSymbol } from "@/lib/wizpay";
+import { ARC_MAINNET_CHAIN_ID, SUPPORTED_TOKENS, type TokenSymbol } from "@/lib/wizpay";
 
 export type TokenVisual = {
   chainId: number;
@@ -13,7 +13,7 @@ export type TokenVisual = {
 
 const visuals = Object.freeze(
   Object.values(SUPPORTED_TOKENS).map((token) => ({
-    chainId: ARC_TESTNET_CHAIN_ID,
+    chainId: ARC_MAINNET_CHAIN_ID,
     canonicalAddress: token.address,
     symbol: token.symbol,
     displayName: token.name,
@@ -29,7 +29,7 @@ export function getTokenVisual(chainId: number, address: string): TokenVisual | 
   return byIdentity.get(`${chainId}:${getAddress(address).toLowerCase()}`) ?? null;
 }
 
-export function getTokenVisualForSymbol(symbol: TokenSymbol, chainId = ARC_TESTNET_CHAIN_ID) {
+export function getTokenVisualForSymbol(symbol: TokenSymbol, chainId = ARC_MAINNET_CHAIN_ID) {
   const token = SUPPORTED_TOKENS[symbol];
   return token ? getTokenVisual(chainId, token.address) : null;
 }

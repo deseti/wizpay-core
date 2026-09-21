@@ -14,7 +14,7 @@ WizPay is a **task-based execution engine** that:
 - Accepts structured payment payloads via HTTP
 - Validates, batches, and queues them for asynchronous processing
 - Routes each task to a domain-specific agent (payroll, swap, bridge, FX, liquidity)
-- Settles on-chain through chain-specific adapters (Circle W3S, viem, Solana Web3.js)
+- Settles on-chain through the connected external wallet on Arc Mainnet
 - Tracks every state transition in an append-only audit log
 
 The system is not a smart contract protocol. It is a **backend orchestration layer** that coordinates off-chain logic with on-chain settlement.
@@ -36,7 +36,7 @@ Executing on-chain payments individually introduces compounding costs:
 | State tracking | 8-state machine (`created → assigned → in_progress → executed/partial/failed`) with enforced transitions |
 | Multi-chain abstraction | Adapters selected by execution router — agents never interact with chain libraries directly |
 | Retry semantics | BullMQ exponential backoff (3 attempts), idempotent execution guards |
-| Dual signing model | W3S (backend-signed via Circle) and Passkey (client-signed via AA wallet) |
+| External-wallet execution | Connected wallet signs and submits every on-chain write; backend never holds keys |
 
 ## System Boundary
 
@@ -46,4 +46,4 @@ Executing on-chain payments individually introduces compounding costs:
 | Backend | NestJS | Orchestration, state machine, queue, agent execution |
 | Queue | BullMQ + Redis | Job scheduling, retry, concurrency |
 | Database | PostgreSQL + Prisma | Task, unit, transaction, log persistence |
-| On-chain | Circle W3S / viem / Solana Web3.js | Token transfers, bridge burns/mints, swaps |
+| On-chain | Connected external wallet on Arc Mainnet | Token transfers and authorized contract calls |

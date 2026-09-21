@@ -24,7 +24,7 @@ export type WizPayAnalyticsVolume = {
 
 export type WizPayAnalyticsSnapshot = {
   contractName: 'WizPay';
-  network: 'Arc Testnet';
+  network: 'Arc Mainnet';
   contractAddress: string;
   transactions: number;
   transfers: number;

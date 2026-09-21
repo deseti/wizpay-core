@@ -1,13 +1,9 @@
-import { ConfigService } from '@nestjs/config';
-import { CircleReceiptVerificationError } from '../../adapters/circle/circle-receipt-verifier.service';
 import { TransactionPollerService } from './transaction-poller.service';
 
 const TX_HASH = `0x${'a'.repeat(64)}`;
-const RECIPIENT = '0x2222222222222222222222222222222222222222';
-const SENDER = '0x1111111111111111111111111111111111111111';
 
-describe('TransactionPollerService Circle receipt boundary', () => {
-  const circle = { getTransactionStatus: jest.fn() };
+describe('TransactionPollerService Mainnet receipt boundary', () => {
+  const blockchain = { getTransactionReceiptOnChain: jest.fn() };
   const tasks = {
     getTaskTransactions: jest.fn(),
     updateTransaction: jest.fn(),
@@ -17,146 +13,153 @@ describe('TransactionPollerService Circle receipt boundary', () => {
     updateStatus: jest.fn(),
   };
   const queue = { enqueueTransactionPoll: jest.fn() };
-  const verifier = { verifyTransfer: jest.fn() };
-  const arcNetwork = {
-    tokens: {
-      USDC: {
-        address: '0x3600000000000000000000000000000000000000',
-        decimals: 6,
-      },
-    },
-  };
-  const config = {
-    getOrThrow: jest.fn().mockReturnValue(arcNetwork),
-  } as unknown as ConfigService;
   let service: TransactionPollerService;
 
   beforeEach(() => {
     jest.clearAllMocks();
     tasks.hasLogStep.mockResolvedValue(false);
-    tasks.getTaskTransactions.mockResolvedValue([
-      {
-        txId: 'circle-tx',
-        recipient: RECIPIENT,
-        amount: '1.25',
-        currency: 'USDC',
-      },
-    ]);
-    circle.getTransactionStatus.mockResolvedValue({
-      status: 'COMPLETE',
-      txHash: TX_HASH,
-      blockchain: 'ARC-TESTNET',
-      sourceAddress: SENDER,
-    });
-    verifier.verifyTransfer.mockResolvedValue(undefined);
+    blockchain.getTransactionReceiptOnChain.mockResolvedValue(null);
     service = new TransactionPollerService(
-      circle as never,
+      blockchain as never,
       tasks as never,
       queue as never,
-      verifier as never,
-      config,
     );
   });
 
-  it('does not complete Circle COMPLETE without a transaction hash', async () => {
-    circle.getTransactionStatus.mockResolvedValue({
-      status: 'COMPLETE',
-      txHash: null,
-      blockchain: 'ARC-TESTNET',
-      sourceAddress: SENDER,
-    });
+  it('re-enqueues while no Mainnet receipt is available', async () => {
+    blockchain.getTransactionReceiptOnChain.mockResolvedValue(null);
 
     await service.poll({
-      network: 'arc-testnet',
+      network: 'arc-mainnet',
       taskId: 'task',
-      txId: 'circle-tx',
+      txId: TX_HASH,
       attempt: 3,
     });
 
-    expect(verifier.verifyTransfer).not.toHaveBeenCalled();
-    expect(tasks.updateTransaction).toHaveBeenCalledWith('circle-tx', {
+    expect(blockchain.getTransactionReceiptOnChain).toHaveBeenCalledWith(
+      TX_HASH,
+      'ARC-MAINNET',
+    );
+    expect(tasks.updateTransaction).toHaveBeenCalledWith(TX_HASH, {
       status: 'pending',
       pollAttempts: 4,
     });
     expect(tasks.updateTransaction).not.toHaveBeenCalledWith(
-      'circle-tx',
-      expect.objectContaining({ status: 'completed' }),
-    );
-    expect(queue.enqueueTransactionPoll).toHaveBeenCalled();
-  });
-
-  it('does not complete while the selected-chain receipt is unavailable', async () => {
-    verifier.verifyTransfer.mockRejectedValue(
-      new CircleReceiptVerificationError('Receipt unavailable.', true),
-    );
-
-    await service.poll({
-      network: 'arc-testnet',
-      taskId: 'task',
-      txId: 'circle-tx',
-      attempt: 0,
-    });
-
-    expect(tasks.updateTransaction).not.toHaveBeenCalledWith(
-      'circle-tx',
+      TX_HASH,
       expect.objectContaining({ status: 'completed' }),
     );
     expect(queue.enqueueTransactionPoll).toHaveBeenCalledWith(
       {
-        network: 'arc-testnet',
+        network: 'arc-mainnet',
         taskId: 'task',
-        txId: 'circle-tx',
-        attempt: 1,
+        txId: TX_HASH,
+        attempt: 4,
       },
       2000,
     );
   });
 
-  it('fails permanently invalid receipts without completing', async () => {
-    verifier.verifyTransfer.mockRejectedValue(
-      new CircleReceiptVerificationError('Wrong recipient.', false),
-    );
-
-    await service.poll({
-      network: 'arc-testnet',
-      taskId: 'task',
-      txId: 'circle-tx',
-      attempt: 0,
+  it('completes on a successful Mainnet receipt', async () => {
+    blockchain.getTransactionReceiptOnChain.mockResolvedValue({
+      transactionHash: TX_HASH,
+      blockNumber: '0x1234',
+      status: '0x1',
+      logs: [],
     });
 
-    expect(tasks.updateTransaction).toHaveBeenCalledWith(
-      'circle-tx',
-      expect.objectContaining({
-        status: 'failed',
-        errorReason: 'Circle transaction receipt verification failed.',
-      }),
-    );
-    expect(tasks.updateTransaction).not.toHaveBeenCalledWith(
-      'circle-tx',
-      expect.objectContaining({ status: 'completed' }),
-    );
-  });
-
-  it('completes only after exact receipt verification', async () => {
     await service.poll({
-      network: 'arc-testnet',
+      network: 'arc-mainnet',
       taskId: 'task',
-      txId: 'circle-tx',
+      txId: TX_HASH,
       attempt: 1,
     });
 
-    expect(verifier.verifyTransfer).toHaveBeenCalledWith({
-      transactionHash: TX_HASH,
-      senderAddress: SENDER,
-      recipientAddress: RECIPIENT,
-      tokenAddress: '0x3600000000000000000000000000000000000000',
-      amountUnits: 1_250_000n,
-      circleBlockchain: 'ARC-TESTNET',
-    });
-    expect(tasks.updateTransaction).toHaveBeenCalledWith('circle-tx', {
+    expect(tasks.updateTransaction).toHaveBeenCalledWith(TX_HASH, {
       status: 'completed',
       txHash: TX_HASH,
       pollAttempts: 2,
     });
+    expect(tasks.logStep).toHaveBeenCalledWith(
+      'task',
+      'tx.completed',
+      expect.anything(),
+      expect.anything(),
+    );
+  });
+
+  it('fails on a reverted Mainnet receipt', async () => {
+    blockchain.getTransactionReceiptOnChain.mockResolvedValue({
+      transactionHash: TX_HASH,
+      blockNumber: '0x1234',
+      status: '0x0',
+      logs: [],
+    });
+
+    await service.poll({
+      network: 'arc-mainnet',
+      taskId: 'task',
+      txId: TX_HASH,
+      attempt: 1,
+    });
+
+    expect(tasks.updateTransaction).toHaveBeenCalledWith(
+      TX_HASH,
+      expect.objectContaining({ status: 'failed' }),
+    );
+    expect(tasks.updateTransaction).not.toHaveBeenCalledWith(
+      TX_HASH,
+      expect.objectContaining({ status: 'completed' }),
+    );
+  });
+
+  it('re-enqueues on transient read errors', async () => {
+    blockchain.getTransactionReceiptOnChain.mockRejectedValue(
+      new Error('RPC timeout'),
+    );
+
+    await service.poll({
+      network: 'arc-mainnet',
+      taskId: 'task',
+      txId: TX_HASH,
+      attempt: 0,
+    });
+
+    expect(tasks.updateTransaction).toHaveBeenCalledWith(TX_HASH, {
+      status: 'pending',
+      pollAttempts: 1,
+    });
+    expect(queue.enqueueTransactionPoll).toHaveBeenCalled();
+  });
+
+  it('fails closed for non-Mainnet job networks', async () => {
+    await service.poll({
+      network: 'arc-legacy' as never,
+      taskId: 'task',
+      txId: TX_HASH,
+      attempt: 0,
+    });
+
+    expect(blockchain.getTransactionReceiptOnChain).not.toHaveBeenCalled();
+    expect(tasks.updateTransaction).toHaveBeenCalledWith(
+      TX_HASH,
+      expect.objectContaining({ status: 'failed' }),
+    );
+  });
+
+  it('marks timeout after max attempts without a receipt', async () => {
+    blockchain.getTransactionReceiptOnChain.mockResolvedValue(null);
+
+    await service.poll({
+      network: 'arc-mainnet',
+      taskId: 'task',
+      txId: TX_HASH,
+      attempt: 180,
+    });
+
+    expect(tasks.updateTransaction).toHaveBeenCalledWith(
+      TX_HASH,
+      expect.objectContaining({ status: 'failed' }),
+    );
+    expect(queue.enqueueTransactionPoll).not.toHaveBeenCalled();
   });
 });

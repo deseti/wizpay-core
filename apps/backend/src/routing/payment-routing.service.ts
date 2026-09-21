@@ -5,7 +5,6 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
-  getArcTokenResource,
   getArcNetworkByKey,
   isArcCapabilityEnabled,
   type ArcCapabilities,
@@ -17,7 +16,6 @@ import { getAddress, isAddressEqual, zeroAddress, type Address } from 'viem';
 
 export const PAYMENT_ROUTE_DECISIONS = Object.freeze({
   DIRECT_TRANSFER: 'DIRECT_TRANSFER',
-  CROSS_TOKEN_PROVIDER: 'CROSS_TOKEN_PROVIDER',
   CROSS_TOKEN_ATOMIC: 'CROSS_TOKEN_ATOMIC',
   CROSS_TOKEN_DISABLED: 'CROSS_TOKEN_DISABLED',
 });
@@ -43,7 +41,7 @@ export type PaymentRouteDecision = Readonly<{
   tokenInSymbol: ArcTokenSymbol;
   tokenOut: Address;
   tokenOutSymbol: ArcTokenSymbol;
-  provider: 'XYLONET' | null;
+  provider: 'UNISWAP_V4' | null;
 }>;
 
 type RouteInput = Readonly<{
@@ -109,18 +107,6 @@ export class PaymentRoutingService {
     }
 
     if (
-      this.network === 'arc-testnet' &&
-      isArcCapabilityEnabled(this.capabilities, capability)
-    ) {
-      return this.decision(
-        input.operation,
-        tokenIn,
-        tokenOut,
-        PAYMENT_ROUTE_DECISIONS.CROSS_TOKEN_PROVIDER,
-        'XYLONET',
-      );
-    }
-    if (
       this.network === 'arc-mainnet' &&
       isArcCapabilityEnabled(this.capabilities, capability)
     ) {
@@ -129,7 +115,7 @@ export class PaymentRoutingService {
         tokenIn,
         tokenOut,
         PAYMENT_ROUTE_DECISIONS.CROSS_TOKEN_ATOMIC,
-        null,
+        'UNISWAP_V4',
       );
     }
     return this.decision(
@@ -185,20 +171,6 @@ export class PaymentRoutingService {
       const configured = this.tokens[symbol];
       if (configured && isAddressEqual(address, configured)) {
         return { address: configured, symbol };
-      }
-    }
-    const otherNetwork =
-      this.network === 'arc-testnet' ? 'arc-mainnet' : 'arc-testnet';
-    for (const symbol of ['USDC', 'EURC'] as const) {
-      const resource = getArcTokenResource(otherNetwork, symbol);
-      if (
-        resource.status === 'available' &&
-        isAddressEqual(address, resource.value.address)
-      ) {
-        throw new BadRequestException({
-          code: PAYMENT_ROUTING_ERROR_CODES.FOREIGN_NETWORK_TOKEN,
-          message: 'Payment token belongs to a different Arc network.',
-        });
       }
     }
     throw new BadRequestException({
@@ -257,9 +229,9 @@ export class PaymentRoutingService {
       network: this.network,
       operation,
       tokenIn: tokenIn.address,
-      tokenInSymbol: tokenIn.symbol,
       tokenOut: tokenOut.address,
       tokenOutSymbol: tokenOut.symbol,
+      tokenInSymbol: tokenIn.symbol,
       provider,
     });
   }

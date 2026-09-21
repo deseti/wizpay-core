@@ -9,9 +9,6 @@ import {
 } from "viem";
 
 import { ERC20_ABI } from "@/constants/erc20";
-import { buildBackendUrl, resolveBackendBaseUrl } from "@/lib/backend-api";
-
-export const ARC_NATIVE_USDC_EVENT_ADDRESS = "0xfffffffffffffffffffffffffffffffffffffffe" as Address;
 
 const TRANSFER_EVENT = [{
   type: "event",
@@ -22,82 +19,6 @@ const TRANSFER_EVENT = [{
     { indexed: false, name: "value", type: "uint256" },
   ],
 }] as const;
-
-function records(value: unknown): Record<string, unknown>[] {
-  if (!value || typeof value !== "object") return [];
-  const record = value as Record<string, unknown>;
-  return [record, ...Object.values(record).flatMap(records)];
-}
-
-export function extractCircleTransactionId(...values: unknown[]) {
-  for (const value of values) {
-    for (const record of records(value)) {
-      const correlations = record.correlationIds;
-      if (Array.isArray(correlations)) {
-        const id = correlations.find((entry) => typeof entry === "string" && entry.length > 0);
-        if (typeof id === "string") return id;
-      }
-      if (typeof record.transactionId === "string" && record.transactionId) return record.transactionId;
-    }
-  }
-  return null;
-}
-
-export function extractCircleTransactionHash(...values: unknown[]) {
-  for (const value of values) {
-    for (const record of records(value)) {
-      for (const candidate of [record.txHash, record.transactionHash]) {
-        if (typeof candidate === "string" && /^0x[a-fA-F0-9]{64}$/.test(candidate)) return candidate as Hex;
-      }
-    }
-  }
-  return null;
-}
-
-function findTransactionRecord(value: unknown): Record<string, unknown> | null {
-  return records(value).find((record) =>
-    typeof record.state === "string" || typeof record.txHash === "string" || typeof record.transactionHash === "string",
-  ) ?? null;
-}
-
-export async function waitForCircleTransactionHash({
-  signal,
-  transactionId,
-  attempts = 45,
-  intervalMs = 2_000,
-}: {
-  signal?: AbortSignal;
-  transactionId: string;
-  attempts?: number;
-  intervalMs?: number;
-}) {
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
-    if (signal?.aborted) throw new DOMException("Send verification was cancelled.", "AbortError");
-    const response = await fetch(buildBackendUrl("/w3s/action", resolveBackendBaseUrl()), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "getTransaction", transactionId }),
-      cache: "no-store",
-      signal,
-    });
-    const payload: unknown = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error("Unable to verify the Circle transaction status.");
-    const transaction = findTransactionRecord(payload);
-    const state = typeof transaction?.state === "string" ? transaction.state.toUpperCase() : "";
-    if (["FAILED", "CANCELLED", "DENIED"].includes(state)) {
-      throw new Error(`Circle transfer ended in ${state.toLowerCase()} state.`);
-    }
-    const candidate = transaction?.txHash ?? transaction?.transactionHash;
-    if (["COMPLETE", "CONFIRMED", "SENT"].includes(state) && typeof candidate === "string" && /^0x[a-fA-F0-9]{64}$/.test(candidate)) {
-      return candidate as Hex;
-    }
-    await new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(resolve, intervalMs);
-      signal?.addEventListener("abort", () => { clearTimeout(timer); reject(new DOMException("Send verification was cancelled.", "AbortError")); }, { once: true });
-    });
-  }
-  throw new Error("Circle transfer is still processing. It was not marked completed or verified.");
-}
 
 export async function verifyErc20Transfer({
   amount,
@@ -136,35 +57,6 @@ export async function verifyErc20Transfer({
     } catch { return false; }
   });
   if (!transferMatched) throw new Error("Confirmed receipt is missing the exact ERC-20 Transfer evidence.");
-  return receipt;
-}
-
-/** Circle's Arc transfer challenge sends native USDC through ERC-4337. Arc's
- * documented unified-balance model emits its standard Transfer evidence from
- * the native system token address, with 18-decimal event units. EURC and
- * contract-interface transfers continue to require the canonical token log. */
-export async function verifyCircleAppWalletTransfer({
-  amount, hash, publicClient, recipient, sender, token, tokenSymbol,
-}: {
-  amount: bigint; hash: Hex; publicClient: PublicClient; recipient: Address;
-  sender: Address; token: Address; tokenSymbol: "USDC" | "EURC";
-}) {
-  const [receipt, transaction] = await Promise.all([
-    publicClient.waitForTransactionReceipt({ hash, confirmations: 1 }),
-    publicClient.getTransaction({ hash }),
-  ]);
-  assertReceipt(receipt);
-  if (transaction.chainId !== publicClient.chain?.id) throw new Error("Confirmed transaction chain mismatch.");
-  const eventAddress = tokenSymbol === "USDC" ? ARC_NATIVE_USDC_EVENT_ADDRESS : token;
-  const eventAmount = tokenSymbol === "USDC" ? amount * 1_000_000_000_000n : amount;
-  const transferMatched = receipt.logs.some((log) => {
-    if (getAddress(log.address) !== getAddress(eventAddress)) return false;
-    try {
-      const event = decodeEventLog({ abi: TRANSFER_EVENT, data: log.data, topics: log.topics });
-      return event.eventName === "Transfer" && getAddress(event.args.from) === getAddress(sender) && getAddress(event.args.to) === getAddress(recipient) && event.args.value === eventAmount;
-    } catch { return false; }
-  });
-  if (!transferMatched) throw new Error("Confirmed receipt is missing the exact App Wallet Transfer evidence.");
   return receipt;
 }
 

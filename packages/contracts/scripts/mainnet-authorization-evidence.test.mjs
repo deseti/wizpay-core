@@ -164,7 +164,7 @@ test("rejects missing, expired, wrong signer or Safe, wrong plan, chain, fee, an
     { signer: base.deployer },
     { safe: base.deployer },
     { payload: { planDigest: `0x${"11".repeat(32)}` } },
-    { payload: { chainId: "5042002" } },
+    { payload: { chainId: "9999" } },
     { payload: { feeBps: "11" } },
     { payload: { resourceManifestDigest: `0x${"22".repeat(32)}` } },
   ]) {
@@ -230,7 +230,7 @@ test("rejects invalid production signature, chain, Safe owner, expiry, release I
     /EIP-1271/,
   );
   for (const change of [
-    { payload: { chainId: "5042002" } },
+    { payload: { chainId: "9999" } },
     { safe: base.deployer },
     { expiresAt: "2026-09-15T00:00:00.000Z" },
     { releaseId: "invalid release id" },
@@ -286,7 +286,7 @@ test("Safe verifier requires Arc Mainnet, contract code, a current Safe owner, a
     true,
   );
   for (const changed of [
-    client({ chainId: 5042002 }),
+    client({ chainId: 9999 }),
     client({ code: "0x" }),
     client({ owners: [base.deployer] }),
     client({ magic: "0xffffffff" }),

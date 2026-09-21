@@ -2,12 +2,7 @@ import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { AgentRouterService } from '../agents/agent-router.service';
 import { AgentExecutionResult } from '../agents/agent.interface';
 import { TaskType } from '../task/task-type.enum';
-import { TaskDetails, WalletMode } from '../task/task.types';
-import { PasskeyEngineService } from './passkey-engine.service';
-import {
-  assertLegacyFxEnabled,
-  assertLegacyLiquidityEnabled,
-} from '../fx/stablefx-cutover.guard';
+import { TaskDetails } from '../task/task.types';
 import { CapabilityService } from '../capabilities/capability.service';
 
 // ─── Service ─────────────────────────────────────────────────────────────────
@@ -18,24 +13,17 @@ import { CapabilityService } from '../capabilities/capability.service';
  * This is the single entry point called by OrchestratorService.
  * No agent, worker, or controller should call execution engines directly.
  *
+ * Arc Mainnet is external-wallet-only: the backend never submits user
+ * funds. Execution payloads are prepared for the connected wallet and
+ * settlement is verified from Mainnet receipts.
+ *
  * Routing logic
  * ─────────────
- *  task.payload.walletMode === "PASSKEY"
- *    → PasskeyEngineService  (no userToken / tokenId / createTransferChallenge)
+ *  task.payload.walletMode === "EXTERNAL_WALLET"  |  absent (default)
+ *    → AgentRouterService (Mainnet preparation + fail-closed guards)
  *
- *  task.payload.walletMode === "W3S"  |  absent (default)
- *    → AgentRouterService  (existing Circle W3S flow, UNCHANGED)
- *
- * Backward compatibility
- * ──────────────────────
- *  When walletMode is absent the router defaults to "W3S".
- *  Every existing task that was created before walletMode was introduced
- *  will continue to work exactly as before — zero breaking changes.
- *
- * Adding new wallet modes
- * ───────────────────────
- *  Extend the WalletMode union in task.types.ts and add a new case here.
- *  Neither agents nor OrchestratorService need to change.
+ * Any other walletMode value fails closed: unknown execution paths are
+ * rejected before any side effect.
  */
 @Injectable()
 export class ExecutionRouterService {
@@ -43,12 +31,11 @@ export class ExecutionRouterService {
 
   constructor(
     private readonly agentRouter: AgentRouterService,
-    private readonly passkeyEngine: PasskeyEngineService,
     private readonly capabilities: CapabilityService,
   ) {}
 
   /**
-   * Route a task to the correct execution engine based on walletMode.
+   * Route a task to the Mainnet execution path.
    *
    * @param task - Full task record including payload and logs.
    * @returns AgentExecutionResult — structure is engine-specific but
@@ -60,13 +47,9 @@ export class ExecutionRouterService {
         'Legacy bridge task execution was removed. Use the external-wallet /bridge/intents lifecycle.',
       );
     }
-    if (String(task.type) === 'swap') {
-      assertLegacyFxEnabled();
-    }
 
     if (String(task.type) === 'liquidity') {
       this.capabilities.assert('liquidity');
-      assertLegacyLiquidityEnabled(this.capabilities.network);
     }
 
     const walletMode = this.resolveWalletMode(task);
@@ -75,11 +58,6 @@ export class ExecutionRouterService {
       `[execution-router] taskId=${task.id} type=${task.type} walletMode=${walletMode}`,
     );
 
-    if (walletMode === 'PASSKEY') {
-      return this.passkeyEngine.execute(task);
-    }
-
-    // Default: W3S — delegate to existing AgentRouterService untouched.
     return this.agentRouter.execute(task.type as TaskType, task);
   }
 
@@ -89,16 +67,17 @@ export class ExecutionRouterService {
 
   /**
    * Extract walletMode from the task payload.
-   * Defaults to "W3S" when absent so existing tasks are unaffected.
+   * Defaults to "EXTERNAL_WALLET" when absent. Any other value fails closed.
    */
-  private resolveWalletMode(task: TaskDetails): WalletMode {
+  private resolveWalletMode(task: TaskDetails): 'EXTERNAL_WALLET' {
     const raw = task.payload?.walletMode;
 
-    if (raw === 'PASSKEY') {
-      return 'PASSKEY';
+    if (raw === undefined || raw === null || raw === 'EXTERNAL_WALLET') {
+      return 'EXTERNAL_WALLET';
     }
 
-    // Treat any other value (including undefined / null / "W3S") as W3S.
-    return 'W3S';
+    throw new BadRequestException(
+      `Unsupported walletMode "${String(raw)}". Only "EXTERNAL_WALLET" is supported on Arc Mainnet.`,
+    );
   }
 }

@@ -201,7 +201,7 @@ test("rejects duplicate or non-manifest RPC URLs and chain/snapshot disagreement
   await assert.rejects(
     runMainnetPreflight(
       request(fixture),
-      deps(fixture, [rpc(), rpc({ chainId: 5042002 })]),
+      deps(fixture, [rpc(), rpc({ chainId: 9999 })]),
     ),
     /disagreement/,
   );

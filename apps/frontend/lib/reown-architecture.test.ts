@@ -3,10 +3,11 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
+  activeArcChain,
   arcMainnetNetwork,
-  arcTestnetNetwork,
   readReownProjectConfiguration,
   resolveReownProjectId,
+  SUPPORTED_CHAIN_IDS,
 } from "@/lib/wagmi";
 
 const root = resolve(process.cwd());
@@ -47,11 +48,13 @@ describe("Reown AppKit wallet architecture", () => {
     expect(providers).toContain("Wallet configuration unavailable");
   });
 
-  it("defines both Arc chains exactly", () => {
+  it("defines only the Arc Mainnet chain", () => {
     expect(arcMainnetNetwork.id).toBe(5_042);
     expect(arcMainnetNetwork.testnet).toBe(false);
-    expect(arcTestnetNetwork.id).toBe(5_042_002);
-    expect(arcTestnetNetwork.testnet).toBe(true);
+    expect(activeArcChain.id).toBe(5_042);
+    expect(SUPPORTED_CHAIN_IDS.has(5_042)).toBe(true);
+    expect(SUPPORTED_CHAIN_IDS.has(9_999)).toBe(false);
+    expect(wagmi).not.toContain("9_999");
   });
 
   it("configures external-wallet-only AppKit features", () => {
@@ -77,22 +80,17 @@ describe("Reown AppKit wallet architecture", () => {
     expect(wagmi).toContain("coinbaseWallet");
   });
 
-  it("keeps Circle controls and initialization unavailable on Mainnet", () => {
-    // Arc Mainnet mounts a dedicated external-only provider tree: no Circle
-    // SDK provider and no Circle API proxy may appear on that branch.
-    expect(providers).toContain("IS_ARC_MAINNET");
+  it("keeps legacy controls unavailable on Mainnet", () => {
+    // Arc Mainnet mounts a dedicated external-only provider tree: no legacy
+    // SDK provider and no legacy API proxy may appear on that branch.
     expect(providers).toContain("ExternalWalletProvider");
-    expect(providers).toContain("CircleDisabledProvider");
-    const mainnetBranch = providers.slice(
-      providers.indexOf("if (IS_ARC_MAINNET)"),
-      providers.indexOf("\n  }\n", providers.indexOf("if (IS_ARC_MAINNET)")),
-    );
-    expect(mainnetBranch).not.toContain("CircleWalletProvider");
-    expect(mainnetBranch).not.toContain("CircleApiProxyProvider");
+    expect(providers.toLowerCase()).not.toContain("circle");
     expect(invoiceCheckout).toContain("mainnetExternalOnly");
     expect(invoiceCheckout).toContain("!mainnetExternalOnly");
-    expect(invoiceShared).toContain("mainnetExternalOnly ? null");
-    expect(invoiceShared).toContain("will not fall back to Testnet");
+    expect(invoiceShared).toContain(
+      "Invoice management unavailable on Arc Mainnet",
+    );
+    expect(invoiceShared).toContain("will not use another network");
     expect(connectCard).toContain(
       "Arc Mainnet uses connected external wallets only",
     );

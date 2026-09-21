@@ -2,7 +2,7 @@ import {
   parseArcNetworkKey,
   resolveArcCapabilities,
 } from '@wizpay/arc-network';
-import { validateCircleEnvironmentIsolation } from './circle-execution.config';
+import { normalizeMainnetRuntimeEnvironmentValues } from './runtime-env';
 import { resolveRuntimeIsolationConfiguration } from './runtime-isolation.config';
 
 type EnvironmentValues = Record<string, unknown> & {
@@ -10,15 +10,15 @@ type EnvironmentValues = Record<string, unknown> & {
 };
 
 export function validateEnvironment(config: Record<string, unknown>) {
-  const environment = config as EnvironmentValues &
-    Record<string, string | undefined>;
+  const environment = normalizeMainnetRuntimeEnvironmentValues(
+    config as EnvironmentValues & Record<string, string | undefined>,
+  );
   const arcNetworkKey = parseArcNetworkKey(environment.WIZPAY_ARC_NETWORK);
   resolveArcCapabilities(arcNetworkKey, environment);
-  validateCircleEnvironmentIsolation(environment);
   const isolation = resolveRuntimeIsolationConfiguration(environment);
 
   return {
-    ...config,
+    ...environment,
     DATABASE_URL: isolation.databaseUrl,
     REDIS_URL: isolation.redisUrl,
     REDIS_HOST: isolation.redis.host,

@@ -9,15 +9,13 @@ import {
   Globe2,
   Link2,
   LogOut,
-  Mail,
   Network,
   Sparkles,
   User,
   WalletCards,
 } from "lucide-react";
 
-import { useCircleWallet } from "@/components/providers/CircleWalletProvider";
-import { useHybridWallet } from "@/components/providers/HybridWalletProvider";
+import { useExternalWallet } from "@/components/providers/external-wallet-context";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -29,7 +27,6 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
-import { resolveCanonicalAppWalletEvmAddress } from "@/lib/canonical-app-wallet";
 import { cn } from "@/lib/utils";
 
 import { useProfilePreferences } from "./hooks/useProfilePreferences";
@@ -126,142 +123,60 @@ function AddressItem({
 
 export function ProfileHubPage() {
   const {
-    arcWallet,
-    authMethod,
-    loginMethodLabel,
-    logout,
-    primaryWallet,
-    sepoliaWallet,
-    userEmail,
-  } = useCircleWallet();
-  const {
     activeWalletAddress,
     activeWalletChainName,
     activeWalletLabel,
     activeWalletShortAddress,
     externalConnectorName,
     isActiveWalletConnected,
-    walletMode,
-  } = useHybridWallet();
+  } = useExternalWallet();
   const { disconnect } = useDisconnect();
   const { toast } = useToast();
 
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
 
   const profileScopeId = useMemo(() => {
-    if (walletMode === "circle") {
-      return `circle:${arcWallet?.address ?? primaryWallet?.address ?? userEmail ?? "guest"}`;
-    }
-
     return `external:${activeWalletAddress ?? externalConnectorName ?? "guest"}`;
-  }, [
-    activeWalletAddress,
-    arcWallet?.address,
-    externalConnectorName,
-    primaryWallet?.address,
-    userEmail,
-    walletMode,
-  ]);
+  }, [activeWalletAddress, externalConnectorName]);
 
   const { preferences, savePreferences } = useProfilePreferences(profileScopeId);
-
-  const shortEmailHandle = useMemo(() => {
-    if (!userEmail) {
-      return null;
-    }
-
-    const localPart = userEmail.split("@")[0]?.trim();
-    return localPart ? localPart.slice(0, 24) : null;
-  }, [userEmail]);
 
   const manualIdentity = preferences.customIdentity || null;
   const socialHandle = preferences.xHandle || null;
 
-  const connectionType = walletMode === "circle" ? "Circle Wallet" : "External Wallet";
-  const connectionDetail =
-    walletMode === "circle"
-      ? authMethod === "google"
-        ? "Google authenticated"
-        : authMethod === "email"
-          ? "Email authenticated"
-          : authMethod === "passkey"
-            ? "Passkey secured"
-            : "App wallet session"
-      : `${externalConnectorName ?? "Wallet"} connected`;
-  const canonicalAppWallet = resolveCanonicalAppWalletEvmAddress(
-    arcWallet?.address,
-    sepoliaWallet?.address,
-    primaryWallet?.address,
-    walletMode === "circle" ? activeWalletAddress : null,
-  );
-  const presentationWalletShortAddress =
-    walletMode === "circle"
-      ? canonicalAppWallet.address
-        ? `${canonicalAppWallet.address.slice(0, 6)}…${canonicalAppWallet.address.slice(-4)}`
-        : null
-      : activeWalletShortAddress;
+  const connectionType = "External Wallet";
+  const connectionDetail = `${externalConnectorName ?? "Wallet"} connected on Arc Mainnet`;
+  const presentationWalletShortAddress = activeWalletShortAddress;
   const displayIdentity =
-    manualIdentity ??
-    shortEmailHandle ??
-    presentationWalletShortAddress ??
-    "WizPay account";
+    manualIdentity ?? presentationWalletShortAddress ?? "WizPay account";
 
-  const addressEntries = useMemo<AddressEntry[]>(() => {
-    if (walletMode === "circle") {
-      return [
-        {
-          id: "evm",
-          label: "EVM Address",
-          network: "App Wallet",
-          value: canonicalAppWallet.address,
-          description:
-            canonicalAppWallet.mismatch
-              ? "Address display is blocked because the App Wallet EVM records do not match."
-              : "Canonical App Wallet address used across supported EVM networks.",
-        },
-      ];
-    }
-
-    return [
+  const addressEntries = useMemo<AddressEntry[]>(
+    () => [
       {
         id: "external",
         label: "EVM address",
-        network: activeWalletChainName ?? "Active chain",
+        network: activeWalletChainName ?? "Arc Mainnet",
         value: activeWalletAddress ?? null,
         description:
-          "The currently connected external wallet address that signs this active session.",
+          "The currently connected external wallet address that signs this active session on Arc Mainnet (chain 5042).",
       },
-    ];
-  }, [
-    activeWalletAddress,
-    activeWalletChainName,
-    canonicalAppWallet.address,
-    canonicalAppWallet.mismatch,
-    walletMode,
-  ]);
+    ],
+    [activeWalletAddress, activeWalletChainName],
+  );
 
   const walletBadges = useMemo(() => {
     const badges = [
       connectionType,
       isActiveWalletConnected ? "Connected" : "Disconnected",
-      activeWalletChainName ?? "Chain pending",
+      activeWalletChainName ?? "Arc Mainnet",
     ];
 
-    if (walletMode === "circle") {
-      badges.push(loginMethodLabel);
-    } else if (externalConnectorName) {
+    if (externalConnectorName) {
       badges.push(externalConnectorName);
     }
 
     return Array.from(new Set(badges.filter(Boolean)));
-  }, [
-    activeWalletChainName,
-    connectionType,
-    externalConnectorName,
-    isActiveWalletConnected,
-    loginMethodLabel,
-    walletMode,
-  ]);
+  }, [activeWalletChainName, externalConnectorName, isActiveWalletConnected]);
 
   async function handleCopy(value: string, key: string, label: string) {
     try {
@@ -316,11 +231,6 @@ export function ProfileHubPage() {
   }
 
   function handleDisconnect() {
-    if (walletMode === "circle") {
-      logout();
-      return;
-    }
-
     disconnect();
   }
 
@@ -375,13 +285,13 @@ export function ProfileHubPage() {
             />
             <SummaryTile
               label="Active chain"
-              value={activeWalletChainName ?? "Not set"}
+              value={activeWalletChainName ?? "Arc Mainnet"}
               hint={activeWalletLabel}
             />
             <SummaryTile
               label="Short identity"
               value={presentationWalletShortAddress ?? "Pending"}
-              hint={userEmail ?? "Identity fallback in use"}
+              hint="Identity fallback in use"
             />
           </div>
         </div>
@@ -395,9 +305,8 @@ export function ProfileHubPage() {
               Wallet surface
             </CardTitle>
             <CardDescription className="text-sm text-muted-foreground/75">
-              {walletMode === "circle"
-                ? "App Wallet exposes one canonical address across supported EVM networks."
-                : "External wallet mode mirrors the currently connected EVM wallet while preserving the standard signing flow."}
+              External wallet mode mirrors the currently connected EVM wallet
+              on Arc Mainnet while preserving the standard signing flow.
             </CardDescription>
           </CardHeader>
 
@@ -423,13 +332,12 @@ export function ProfileHubPage() {
                 <div className="mt-2 flex items-center gap-2">
                   <Network className="h-4 w-4 text-cyan-300" />
                   <p className="text-base font-semibold text-foreground">
-                    {activeWalletChainName ?? "Not set"}
+                    {activeWalletChainName ?? "Arc Mainnet"}
                   </p>
                 </div>
                 <p className="mt-2 text-xs leading-5 text-muted-foreground/75">
-                  {walletMode === "circle"
-                    ? "App wallet sessions default to the managed Arc execution surface unless another connected Circle wallet is shown here."
-                    : "External mode always reflects the current EVM connector chain reported by the active wallet."}
+                  External mode always reflects the current EVM connector chain
+                  reported by the active wallet on Arc Mainnet (chain 5042).
                 </p>
               </div>
             </div>
@@ -451,12 +359,6 @@ export function ProfileHubPage() {
                   Session metadata
                 </p>
                 <div className="mt-2 space-y-1 text-sm text-foreground/85">
-                  {userEmail ? (
-                    <p className="flex items-center gap-2 break-all">
-                      <Mail className="h-4 w-4 text-primary" />
-                      {userEmail}
-                    </p>
-                  ) : null}
                   <p className="flex items-center gap-2 break-all text-muted-foreground/80">
                     <Link2 className="h-4 w-4 text-cyan-300" />
                     {presentationWalletShortAddress ?? "Wallet not connected"}
@@ -472,7 +374,7 @@ export function ProfileHubPage() {
               >
                 <span className="flex items-center gap-2">
                   <LogOut className="h-4 w-4" />
-                  {walletMode === "circle" ? "Log out Circle Wallet" : "Disconnect wallet"}
+                  Disconnect wallet
                 </span>
               </Button>
             </div>
@@ -574,7 +476,7 @@ export function ProfileHubPage() {
                   />
                 </div>
                 <p className="mt-2 text-xs leading-5 text-muted-foreground/75">
-                  Works for Circle Wallet and external wallet users. OAuth is intentionally deferred until the identity layer is ready.
+                  Works for external wallet users. OAuth is intentionally deferred until the identity layer is ready.
                 </p>
               </div>
 

@@ -86,7 +86,7 @@ describe("Arc Mainnet payroll protocol", () => {
     ).toBeNull();
     expect(data).not.toContain("batchRouteAndPay");
     expect(ARC_MAINNET_CHAIN_ID).toBe(5_042);
-    expect(ARC_MAINNET_CHAIN_ID).not.toBe(5_042_002);
+    expect(ARC_MAINNET_CHAIN_ID).not.toBe(9_999);
   });
 
   it("encodes EURC -> USDC approval against Payroll, not Permit2 or UniversalRouter", () => {

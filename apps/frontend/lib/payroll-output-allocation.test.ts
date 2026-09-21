@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { allocateVerifiedPayrollOutput } from "@/lib/payroll-output-allocation";
 
-describe("verified XyloNet Payroll output allocation", () => {
+describe("verified Mainnet payroll output allocation", () => {
   it("allocates exact output proportionally with deterministic remainder", () => {
     const result = allocateVerifiedPayrollOutput("1000001", [
       { id: "first", sourceAmount: "1" },

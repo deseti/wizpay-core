@@ -1,51 +1,49 @@
 import { describe, expect, it } from "vitest";
-import {
-  WIZPAY_ABI,
-  WIZPAY_DIRECT_USDC_PAYMENT_EVENT,
-  WIZPAY_MAINNET_ABI,
-  WIZPAY_PAYROLL_REFERENCE_CONSUMED_EVENT,
-  WIZPAY_TESTNET_LEGACY_ABI,
-} from "./abi";
+import { WIZPAY_ABI, WIZPAY_MAINNET_ABI } from "./abi";
 
-describe("WizPay Mainnet V2 receipt ABI", () => {
-  it("keeps the exact ordered payment and domain-bound summary events", () => {
-    expect(WIZPAY_ABI).toContain(WIZPAY_DIRECT_USDC_PAYMENT_EVENT);
-    expect(WIZPAY_ABI).toContain(WIZPAY_PAYROLL_REFERENCE_CONSUMED_EVENT);
+describe("WizPay Mainnet payroll receipt ABI", () => {
+  it("routes the shared ABI to PayrollMainnet with the exact reference event", () => {
+    expect(WIZPAY_ABI).toBe(WIZPAY_MAINNET_ABI);
+    const referenceConsumed = (
+      WIZPAY_ABI as unknown as Array<{
+        type: string;
+        name?: string;
+        inputs?: Array<{ name: string }>;
+      }>
+    ).find(
+      (entry) => entry.type === "event" && entry.name === "PayrollReferenceConsumed",
+    );
     expect(
-      WIZPAY_DIRECT_USDC_PAYMENT_EVENT.inputs.map((input) => input.name),
+      referenceConsumed?.inputs?.map((input) => input.name),
     ).toEqual([
       "referenceHash",
-      "payer",
-      "recipient",
-      "paymentIndex",
-      "grossAmount",
-      "netAmount",
-      "feeAmount",
-    ]);
-    expect(
-      WIZPAY_PAYROLL_REFERENCE_CONSUMED_EVENT.inputs.map((input) => input.name),
-    ).toEqual([
-      "referenceHash",
-      "payer",
-      "token",
+      "employer",
+      "tokenIn",
+      "tokenOut",
       "batchDigest",
-      "totalAmount",
-      "totalOut",
+      "totalInput",
+      "totalOutput",
       "totalFees",
       "recipientCount",
       "referenceId",
     ]);
+    const eventNames = (
+      WIZPAY_ABI as unknown as Array<{ type: string; name?: string }>
+    )
+      .filter((entry) => entry.type === "event")
+      .map((entry) => entry.name);
+    expect(eventNames).not.toContain("DirectUsdcPayment");
+    expect(eventNames).not.toContain("BatchPaymentRouted");
   });
 
-  it("keeps legacy FX reads Testnet-only and routes Mainnet ABI to PayrollMainnet", () => {
-    const functionNames = (abi: readonly { type: string; name?: string }[]) =>
-      abi.filter((entry) => entry.type === "function").map((entry) => entry.name);
+  it("exposes Mainnet payroll execution without legacy reads", () => {
+    const functionNames = (
+      abi: readonly { type: string; name?: string }[],
+    ) => abi.filter((entry) => entry.type === "function").map((entry) => entry.name);
     expect(functionNames(WIZPAY_MAINNET_ABI)).not.toContain("fxEngine");
     expect(functionNames(WIZPAY_MAINNET_ABI)).not.toContain("getEstimatedOutput");
     expect(functionNames(WIZPAY_MAINNET_ABI)).not.toContain("batchRouteAndPay");
     expect(functionNames(WIZPAY_MAINNET_ABI)).toContain("executeSameTokenPayroll");
     expect(functionNames(WIZPAY_MAINNET_ABI)).toContain("executeCrossTokenPayroll");
-    expect(functionNames(WIZPAY_TESTNET_LEGACY_ABI)).toContain("fxEngine");
-    expect(functionNames(WIZPAY_TESTNET_LEGACY_ABI)).toContain("batchRouteAndPay");
   });
 });

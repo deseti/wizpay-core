@@ -32,7 +32,7 @@ export class ExecutionIntentController {
       });
     return {
       data: await this.intents.acquire({
-        network: body.network as 'arc-testnet' | 'arc-mainnet',
+        network: body.network as 'arc-mainnet',
         operation,
         ownerId: null,
         sourceWallet: this.stringField(body.sourceWallet),

@@ -31,7 +31,7 @@ import {
   formatTokenAmount,
   getExplorerTxUrl,
   ARC_CHAIN_ID,
-  ARC_TESTNET_CHAIN_ID,
+  ARC_MAINNET_CHAIN_ID,
 } from "@/lib/wizpay";
 import {
   useActivityHistory,
@@ -393,7 +393,7 @@ export function TransactionHistory({
                                 : item.lpToken
                             ) ? (
                               <TokenIcon
-                                chainId={item.chainId ?? ARC_TESTNET_CHAIN_ID}
+                                chainId={item.chainId ?? ARC_MAINNET_CHAIN_ID}
                                 address={
                                   (usesTokenAmount(item.type)
                                     ? item.tokenIn
@@ -502,7 +502,7 @@ export function TransactionHistory({
                         <p className="mt-1 flex items-center gap-2 font-mono text-sm font-medium">
                           {item.tokenIn ? (
                             <TokenIcon
-                              chainId={item.chainId ?? ARC_TESTNET_CHAIN_ID}
+                              chainId={item.chainId ?? ARC_MAINNET_CHAIN_ID}
                               address={item.tokenIn}
                               symbol={
                                 item.tokenSymbol ??

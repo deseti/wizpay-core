@@ -5,7 +5,6 @@ import { useActiveWalletAddress } from "@/hooks/useActiveWalletAddress";
 import { sameAddress } from "@/lib/wizpay";
 import type { HistoryItem, UnifiedHistoryItem } from "@/lib/types";
 import { useUnifiedActivity } from "@/hooks/useUnifiedActivity";
-import { useCircleWallet } from "@/components/providers/CircleWalletProvider";
 
 function isValidTxHash(value: string): value is Hex {
   return /^0x[a-fA-F0-9]{64}$/.test(value);
@@ -16,14 +15,12 @@ export function useWizPayHistory({
 }: {
   activeToken: { address: Address };
 }) {
-  const { isConnected, walletMode } = useActiveWalletAddress();
-  const { userToken } = useCircleWallet();
-  // Backend task history only (no on-chain log scans).
+  const { isConnected } = useActiveWalletAddress();
   const { items: backendItems, isLoading: backendLoading } = useUnifiedActivity(
     {
-      userToken: walletMode === "circle" ? userToken : null,
+      userToken: null,
       limit: 50,
-      enabled: isConnected && walletMode === "circle",
+      enabled: isConnected,
     },
   );
   const unifiedHistory = useMemo<UnifiedHistoryItem[]>(() => {

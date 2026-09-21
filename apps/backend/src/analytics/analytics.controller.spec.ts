@@ -22,8 +22,8 @@ describe('AnalyticsController', () => {
 
     expect(analytics).toMatchObject({
       contractName: 'WizPay',
-      network: 'Arc Testnet',
-      contractAddress: '0x87ACE45582f45cC81AC1E627E875AE84cbd75946',
+      network: 'Arc Mainnet',
+      contractAddress: '0x77AC7Cb6507D404b5530fC03e3D39BAaEdE10C34',
       transactions: 20996,
       transfers: 336994,
       gasUsed: 8356116679,
@@ -85,8 +85,8 @@ describe('AnalyticsController', () => {
 
     expect(analytics).toMatchObject({
       contractName: 'WizPay',
-      network: 'Arc Testnet',
-      contractAddress: '0x87ACE45582f45cC81AC1E627E875AE84cbd75946',
+      network: 'Arc Mainnet',
+      contractAddress: '0x77AC7Cb6507D404b5530fC03e3D39BAaEdE10C34',
       transactions: 20996,
       transfers: 336994,
       source: 'verified_seed_cache_updated_by_backend_cron',

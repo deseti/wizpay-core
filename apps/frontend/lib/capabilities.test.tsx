@@ -16,7 +16,6 @@ const allFalse = {
   swap: false,
   crossTokenPayroll: false,
   crossTokenInvoice: false,
-  stableFx: false,
   nanoAgentApi: false,
 };
 
@@ -31,39 +30,38 @@ function response(data: unknown, ok = true) {
 describe("frontend capability authority", () => {
   const originalNetwork = process.env.NEXT_PUBLIC_WIZPAY_ARC_NETWORK;
   beforeEach(() => {
-    process.env.NEXT_PUBLIC_WIZPAY_ARC_NETWORK = "arc-testnet";
+    process.env.NEXT_PUBLIC_WIZPAY_ARC_NETWORK = "arc-mainnet";
   });
   afterEach(() => {
     vi.unstubAllGlobals();
     process.env.NEXT_PUBLIC_WIZPAY_ARC_NETWORK = originalNetwork;
   });
 
-  it("accepts only backend capabilities for the selected network", async () => {
+  it("accepts only backend capabilities for Arc Mainnet", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(() =>
         response({
           data: {
-            network: "arc-testnet",
+            network: "arc-mainnet",
             capabilities: { ...allFalse, send: true },
           },
         }),
       ),
     );
     await expect(fetchEffectiveCapabilities()).resolves.toMatchObject({
+      network: "arc-mainnet",
       capabilities: { send: true },
     });
   });
 
-  it("rejects mismatched Testnet data instead of falling back across networks", async () => {
-    const selected = process.env.NEXT_PUBLIC_WIZPAY_ARC_NETWORK;
-    process.env.NEXT_PUBLIC_WIZPAY_ARC_NETWORK = "arc-mainnet";
+  it("rejects non-Mainnet capability data instead of falling back across networks", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(() =>
         response({
           data: {
-            network: "arc-testnet",
+            network: "unknown",
             capabilities: { ...allFalse, send: true },
           },
         }),
@@ -72,7 +70,21 @@ describe("frontend capability authority", () => {
     await expect(fetchEffectiveCapabilities()).rejects.toThrow(
       "does not match",
     );
-    process.env.NEXT_PUBLIC_WIZPAY_ARC_NETWORK = selected;
+  });
+
+  it("rejects malformed capability payloads without enabling features", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        response({
+          data: {
+            network: "arc-mainnet",
+            capabilities: { ...allFalse, send: true, unknownFeature: false },
+          },
+        }),
+      ),
+    );
+    await expect(fetchEffectiveCapabilities()).rejects.toThrow("malformed");
   });
 
   it("keeps protected features disabled when capability fetching fails", async () => {
@@ -93,7 +105,7 @@ describe("frontend capability authority", () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(() =>
-        response({ data: { network: "arc-testnet", capabilities: allFalse } }),
+        response({ data: { network: "arc-mainnet", capabilities: allFalse } }),
       ),
     );
     function ProtectedAction() {

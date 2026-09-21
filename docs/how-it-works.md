@@ -33,7 +33,7 @@ TaskUnit {
 Execution is the process of converting a `TaskUnit` into one or more on-chain transactions.
 
 - The orchestrator picks up a queued task and routes it to an **agent** (Payroll, Swap, Bridge, FX, Liquidity).
-- The agent calls the appropriate **adapter** (Circle API, viem, Solana) to submit the transaction.
+- The agent prepares execution through the external-wallet path on Arc Mainnet.
 - For async operations (payroll), each submitted transfer is tracked as a `TaskTransaction` record and polled separately.
 
 Execution is **not synchronous by default**. Payroll tasks submit transfers and return immediately. Settlement is confirmed asynchronously via the `tx_poll` queue.
@@ -61,8 +61,8 @@ The orchestration layer is the coordination logic between HTTP ingestion, queue 
 **Key components:**
 
 - `OrchestratorService` — The single entry point. Exposes `handleTask()` (called by HTTP) and `executeTask()` (called by workers). No other component creates or executes tasks.
-- `ExecutionRouterService` — Checks `walletMode` (W3S vs PASSKEY) and dispatches to the correct execution engine.
-- `AgentRouterService` — Dispatches to the remaining type-specific agents. Legacy bridge task execution is rejected.
+- `ExecutionRouterService` — Resolves the external-wallet execution path for Arc Mainnet.
+- `AgentRouterService` — Dispatches to the remaining type-specific agents. Unsupported execution is rejected.
 - `QueueService` — Enqueue-only. Never processes jobs.
 
 **Architectural invariant:** Workers never call agents directly. The call chain is always:

@@ -43,12 +43,6 @@ RUN --mount=type=cache,id=wizpay-npm-v1,target=/root/.npm,sharing=locked \
     npm ci --legacy-peer-deps --omit=dev --workspace backend \
       --include-workspace-root=false --no-audit --no-fund --offline
 
-FROM production-deps AS circle-cli
-
-# The registered fail-closed official-swap runtime probes and invokes this CLI.
-RUN --mount=type=cache,id=wizpay-npm-v1,target=/root/.npm,sharing=locked \
-    npm install --global @circle-fin/cli@1.0.0 --no-audit --no-fund --prefer-offline
-
 FROM node:22-alpine AS runner
 
 WORKDIR /app
@@ -56,8 +50,6 @@ WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=4000
 
-COPY --from=circle-cli /usr/local/lib/node_modules/@circle-fin/cli /usr/local/lib/node_modules/@circle-fin/cli
-COPY --from=circle-cli /usr/local/bin/circle /usr/local/bin/circle
 COPY --from=production-deps /repo/node_modules ./node_modules
 COPY --from=builder /repo/node_modules/.prisma ./node_modules/.prisma
 COPY --from=builder /repo/packages/arc-network ./packages/arc-network

@@ -6,7 +6,7 @@ import { ConnectWalletCard } from "@/components/dashboard/ConnectWalletCard";
 import { DashboardBottomNav } from "@/components/dashboard/DashboardBottomNav";
 import { DashboardHeader } from "@/components/dashboard/DashboardHeader";
 import { DashboardSidebar } from "@/components/dashboard/DashboardSidebar";
-import { useHybridWallet } from "@/components/providers/HybridWalletProvider";
+import { useExternalWallet } from "@/components/providers/external-wallet-context";
 import { MobileInstallPrompt } from "@/src/features/profile/components/MobileInstallPrompt";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { cn } from "@/lib/utils";
@@ -16,7 +16,7 @@ interface DashboardAppFrameProps {
 }
 
 export function DashboardAppFrame({ children }: DashboardAppFrameProps) {
-  const { isActiveWalletConnected, isReady } = useHybridWallet();
+  const { isActiveWalletConnected, isReady } = useExternalWallet();
   const isDesktop = useMediaQuery("(min-width: 768px)");
 
   return (

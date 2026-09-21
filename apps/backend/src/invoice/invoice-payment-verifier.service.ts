@@ -67,8 +67,7 @@ export class InvoicePaymentVerifierService {
     const arcNetwork =
       config.getOrThrow<BackendArcNetworkConfiguration>('arcNetwork');
     this.chainId = arcNetwork.chainId;
-    this.networkName =
-      arcNetwork.key === 'arc-mainnet' ? 'Arc Mainnet' : 'Arc Testnet';
+    this.networkName = 'Arc Mainnet';
     const rpcUrl = arcNetwork.rpcUrl;
     this.publicClient = createPublicClient({
       chain: {

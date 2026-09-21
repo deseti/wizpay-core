@@ -1,4 +1,8 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { TaskType } from '../task/task-type.enum';
 import { TaskDetails } from '../task/task.types';
 import { AgentExecutionResult } from './agent.interface';
@@ -6,11 +10,6 @@ import { FxAgent } from './fx.agent';
 import { LiquidityAgent } from './liquidity.agent';
 import { PayrollAgent } from './payroll/payroll.agent';
 import { SwapAgent } from './swap.agent';
-import {
-  assertLegacyFxEnabled,
-  assertLegacyLiquidityEnabled,
-  throwOfficialStableFxAuthRequired,
-} from '../fx/stablefx-cutover.guard';
 
 @Injectable()
 export class AgentRouterService {
@@ -28,19 +27,25 @@ export class AgentRouterService {
     switch (taskType) {
       case TaskType.PAYROLL:
         if (this.hasCrossCurrencyPayroll(task)) {
-          throwOfficialStableFxAuthRequired();
+          throw new ServiceUnavailableException({
+            code: 'PAYROLL_CROSS_TOKEN_BACKEND_UNAVAILABLE',
+            message:
+              'Cross-currency payroll cannot execute from the backend. Settle conversion through the external-wallet Uniswap V4 flow, then submit same-token payroll.',
+          });
         }
         return this.payrollAgent.execute(task);
       case TaskType.SWAP:
-        assertLegacyFxEnabled();
         return this.swapAgent.execute(task);
       case TaskType.BRIDGE:
         throw new BadRequestException(
           'Legacy bridge task execution was removed. Use the external-wallet /bridge/intents lifecycle.',
         );
       case TaskType.LIQUIDITY:
-        assertLegacyLiquidityEnabled();
-        return this.liquidityAgent.execute(task);
+        throw new ServiceUnavailableException({
+          code: 'LIQUIDITY_BACKEND_EXECUTION_UNAVAILABLE',
+          message:
+            'Backend liquidity execution is retired on Arc Mainnet. Manage liquidity through the external wallet.',
+        });
       case TaskType.FX:
         return this.fxAgent.execute(task);
       default:

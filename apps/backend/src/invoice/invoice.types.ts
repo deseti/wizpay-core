@@ -5,7 +5,7 @@ import {
   requireAvailableArcResource,
 } from '@wizpay/arc-network';
 
-const INVOICE_ARC_NETWORK = getArcNetworkByKey('arc-testnet');
+const INVOICE_ARC_NETWORK = getArcNetworkByKey('arc-mainnet');
 const INVOICE_USDC = requireAvailableArcResource(
   getArcTokenResource(INVOICE_ARC_NETWORK.key, 'USDC'),
 );

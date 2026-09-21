@@ -12,7 +12,7 @@ export interface TaskQueueJobData {
 
 /**
  * Job data for the TX_POLL queue.
- * Each job represents one Circle transaction that needs status polling.
+ * Each job represents one Mainnet transaction that needs status polling.
  */
 export interface TxPollJobData {
   network: ArcNetworkKey;

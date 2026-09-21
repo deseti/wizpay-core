@@ -2,11 +2,11 @@
 
 import { TransactionSuccessDialog } from "./TransactionSuccessDialog";
 import { TokenIcon } from "@/components/ui/token-icon";
-import { ARC_TESTNET_CHAIN_ID, SUPPORTED_TOKENS, type TokenSymbol } from "@/lib/wizpay";
+import { ARC_MAINNET_CHAIN_ID, SUPPORTED_TOKENS, type TokenSymbol } from "@/lib/wizpay";
 
 function amountWithIcon(amount: string, symbol: string) {
   const token = SUPPORTED_TOKENS[symbol as TokenSymbol];
-  return token ? <span className="flex items-center gap-2"><TokenIcon chainId={ARC_TESTNET_CHAIN_ID} address={token.address} symbol={symbol} size={24} />{amount} {symbol}</span> : `${amount} ${symbol}`;
+  return token ? <span className="flex items-center gap-2"><TokenIcon chainId={ARC_MAINNET_CHAIN_ID} address={token.address} symbol={symbol} size={24} />{amount} {symbol}</span> : `${amount} ${symbol}`;
 }
 
 export interface SwapSuccessResult {

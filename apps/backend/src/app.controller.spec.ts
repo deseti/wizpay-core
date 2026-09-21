@@ -145,7 +145,7 @@ describe('TaskController', () => {
           if (authorization === 'Bearer user-b') {
             return { merchantWalletAddress: walletB };
           }
-          throw new UnauthorizedException('Invalid Circle session.');
+          throw new UnauthorizedException('Invalid session.');
         },
       );
       taskService.getTaskList.mockImplementation(

@@ -57,7 +57,7 @@ export function DashboardSidebar() {
           className="w-fit self-start gap-1.5 border-emerald-500/25 text-emerald-300/85 text-[10px] px-2 py-0.5 bg-emerald-500/5"
         >
           <span className="status-dot w-1.5 h-1.5" />
-          Live Arc Testnet
+          Live Arc Mainnet
         </Badge>
         <p className="mt-1 text-xs text-muted-foreground/70 leading-relaxed font-medium">
           Cross-token payments &amp; Web3 wallet.
@@ -112,7 +112,7 @@ export function DashboardSidebar() {
       <div className="mt-auto p-4 border-t border-border/30 bg-card/15 space-y-4">
         <SidebarWalletSummary />
         <p className="text-[10px] text-center text-muted-foreground/40 font-mono">
-          v1.0.0 · Arc Testnet
+          v1.0.0 · Arc Mainnet
         </p>
       </div>
     </aside>

@@ -1,6 +1,5 @@
 import { Module } from '@nestjs/common';
 import { APP_FILTER } from '@nestjs/core';
-import { AppWalletSwapModule } from './app-wallet-swap/app-wallet-swap.module';
 import { BridgeModule } from './bridge/bridge.module';
 import { AdaptersModule } from './adapters/adapters.module';
 import { AgentsModule } from './agents/agents.module';
@@ -45,7 +44,6 @@ import { ExecutionIntentModule } from './execution-intent/execution-intent.modul
     OfficialSwapModule,
     WalletModule,
     UserSwapModule,
-    AppWalletSwapModule,
     BridgeModule,
     AnalyticsModule,
     ActivityModule,

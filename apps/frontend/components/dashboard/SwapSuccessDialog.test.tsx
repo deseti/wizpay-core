@@ -9,9 +9,9 @@ const result = {
   outputAmount: "0.95",
   outputToken: "EURC",
   walletMode: "External Wallet" as const,
-  network: "Arc Testnet",
+  network: "Arc Mainnet",
   transactionHash: `0x${"ab".repeat(32)}`,
-  explorerUrl: `https://testnet.arcscan.app/tx/0x${"ab".repeat(32)}`,
+  explorerUrl: `https://explorer.arc.io/tx/0x${"ab".repeat(32)}`,
 };
 
 describe("SwapSuccessDialog", () => {
@@ -36,7 +36,7 @@ describe("SwapSuccessDialog", () => {
     expect(new URL(usdcIcon?.querySelector("img")?.getAttribute("src") ?? "", window.location.href).pathname).toBe("/tokens/usdc.png");
     expect(new URL(eurcIcon?.querySelector("img")?.getAttribute("src") ?? "", window.location.href).pathname).toBe("/tokens/eurc.png");
     expect(screen.getByText("External Wallet")).toBeInTheDocument();
-    expect(screen.getByText("Arc Testnet")).toBeInTheDocument();
+    expect(screen.getByText("Arc Mainnet")).toBeInTheDocument();
     expect(screen.getByText(result.transactionHash)).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /View on explorer/ })).toHaveAttribute(
       "href",

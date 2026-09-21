@@ -1,106 +1,125 @@
-import { ConfigService } from '@nestjs/config';
-import { WalletService } from './wallet.service';
+import {
+  EXTERNAL_WALLET_BLOCKCHAIN,
+  WalletService,
+} from './wallet.service';
 
-function config(overrides: Record<string, unknown> = {}) {
-  const values: Record<string, unknown> = {
-    'arcNetwork.key': 'arc-testnet',
-    CIRCLE_TESTNET_API_BASE_URL: 'https://api.circle.test',
-    CIRCLE_TESTNET_API_KEY: 'test-api-key',
-    CIRCLE_TESTNET_APP_ID: 'testnet-app-id',
-    CIRCLE_TESTNET_RECEIPT_CONFIRMATIONS: '2',
+const ADDRESS = '0x56DE876C902AdA72CF8E7595715127cEA27d43E6';
+
+function stored(overrides: Record<string, unknown> = {}) {
+  return {
+    address: ADDRESS,
+    blockchain: EXTERNAL_WALLET_BLOCKCHAIN,
+    chain: 'EVM',
+    createdAt: new Date('2026-09-01T00:00:00.000Z'),
+    updatedAt: new Date('2026-09-01T00:00:00.000Z'),
+    userEmail: null,
+    userId: 'user-a',
+    walletId: `external:arc-mainnet:${ADDRESS.toLowerCase()}`,
+    walletSetId: null,
     ...overrides,
   };
-  return {
-    get: jest.fn((key: string) => values[key]),
-    getOrThrow: jest.fn((key: string) => {
-      if (values[key] === undefined) throw new Error(`Missing ${key}`);
-      return values[key];
-    }),
-  } as unknown as ConfigService;
 }
 
-describe('WalletService Circle network isolation', () => {
-  const originalFetch = global.fetch;
+describe('WalletService Mainnet isolation', () => {
   const prisma = {
     userWallet: {
       findUnique: jest.fn(),
+      findMany: jest.fn(),
+      update: jest.fn(),
+      upsert: jest.fn(),
     },
   };
+  const config = {
+    get: jest.fn(),
+    getOrThrow: jest.fn(),
+  };
 
-  afterEach(() => {
-    global.fetch = originalFetch;
+  beforeEach(() => {
     jest.clearAllMocks();
   });
 
-  it('creates wallets only with the selected verified Circle identifier', async () => {
-    global.fetch = jest
-      .fn()
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ data: { wallets: [] } }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        }),
-      )
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ data: { challengeId: 'challenge' } }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        }),
-      );
-    const service = new WalletService(config(), prisma as never);
+  function service() {
+    return new WalletService(config as never, prisma as never);
+  }
 
-    await expect(
-      service.initializeWallets({
-        userId: 'circle:user:test-user',
-        userToken: 'test-user-token',
-      }),
-    ).resolves.toEqual({
-      challengeId: 'challenge',
-      userId: 'circle:user:test-user',
+  it('registers an external wallet on Arc Mainnet (chain 5042) only', async () => {
+    prisma.userWallet.findUnique.mockResolvedValue(null);
+    prisma.userWallet.upsert.mockImplementation(async ({ create }: any) => ({
+      ...stored(),
+      ...create,
+    }));
+
+    const wallet = await service().registerExternalWallet({
+      userId: 'user-a',
+      address: ADDRESS,
     });
 
-    expect(global.fetch).toHaveBeenNthCalledWith(
-      2,
-      'https://api.circle.test/v1/w3s/user/initialize',
-      expect.objectContaining({
-        body: expect.stringContaining('"blockchains":["ARC-TESTNET"]'),
-      }),
-    );
-  });
-
-  it('rejects cross-network and ambiguous persisted wallets', async () => {
-    const service = new WalletService(config(), prisma as never);
-    prisma.userWallet.findUnique.mockResolvedValue({
-      userId: 'circle:user:test-user',
-      walletId: 'wallet',
-      blockchain: 'ETH-SEPOLIA',
+    expect(wallet).toMatchObject({
+      address: ADDRESS,
+      blockchain: 'ARC-MAINNET',
+      chain: 'EVM',
+      chainId: 5042,
+      userId: 'user-a',
       walletSetId: null,
     });
-
-    await expect(
-      service.getStoredWalletForSelectedArc('circle:user:test-user', 'wallet'),
-    ).rejects.toMatchObject({ code: 'CIRCLE_WALLET_BLOCKCHAIN_MISMATCH' });
-
-    prisma.userWallet.findUnique.mockResolvedValue(null);
-    await expect(
-      service.getStoredWalletForSelectedArc('circle:user:test-user', 'wallet'),
-    ).rejects.toMatchObject({ code: 'CIRCLE_WALLET_BLOCKCHAIN_MISMATCH' });
+    expect(prisma.userWallet.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          userId_blockchain: {
+            userId: 'user-a',
+            blockchain: 'ARC-MAINNET',
+          },
+        },
+      }),
+    );
   });
 
-  it('rejects a persisted wallet from a different configured wallet set', async () => {
-    const service = new WalletService(
-      config({ CIRCLE_TESTNET_WALLET_SET_ID: 'selected-wallet-set' }),
-      prisma as never,
-    );
-    prisma.userWallet.findUnique.mockResolvedValue({
-      userId: 'circle:user:test-user',
-      walletId: 'wallet',
-      blockchain: 'ARC-TESTNET',
-      walletSetId: 'other-wallet-set',
-    });
-
+  it('rejects invalid addresses and conflicting registrations', async () => {
     await expect(
-      service.getStoredWalletForSelectedArc('circle:user:test-user', 'wallet'),
-    ).rejects.toMatchObject({ code: 'CIRCLE_WALLET_SET_MISMATCH' });
+      service().registerExternalWallet({ userId: 'user-a', address: 'nope' }),
+    ).rejects.toMatchObject({ status: 400 });
+
+    prisma.userWallet.findUnique.mockResolvedValue(
+      stored({ userId: 'user-b' }),
+    );
+    await expect(
+      service().registerExternalWallet({ userId: 'user-a', address: ADDRESS }),
+    ).rejects.toMatchObject({
+      status: 409,
+      code: 'WALLET_ALREADY_EXISTS',
+    });
+  });
+
+  it('looks up the registry only on ARC-MAINNET', async () => {
+    prisma.userWallet.findUnique.mockResolvedValue(stored());
+    await expect(
+      service().getStoredWalletByBlockchain('user-a', 'ARC-MAINNET'),
+    ).resolves.toMatchObject({ chainId: 5042 });
+    await expect(
+      service().getStoredWalletByBlockchain('user-a', 'OTHER' as never),
+    ).resolves.toBeNull();
+  });
+
+  it.each([['initializeWallets'], ['syncWallets'], ['getOrCreateWallet']])(
+    'fails closed for retired provider wallet flow %s',
+    async (method) => {
+      await expect(
+        (service() as never as Record<string, (input: never) => unknown>)[
+          method
+        ]({ userToken: 'token' } as never),
+      ).rejects.toMatchObject({
+        status: 503,
+        code: 'WALLET_PROVISIONING_RETIRED',
+      });
+    },
+  );
+
+  it('fails closed when a provider wallet resource is requested', async () => {
+    await expect(
+      service().getStoredWalletForSelectedArc('user-a', 'wallet-id'),
+    ).rejects.toMatchObject({
+      status: 503,
+      code: 'WALLET_PROVISIONING_RETIRED',
+    });
   });
 });

@@ -7,7 +7,5 @@ ARC_MAINNET_QUEUE_PREFIX=wizpay:arc-mainnet
 ARC_MAINNET_POSTGRES_USER=<unavailable-until-authorized>
 ARC_MAINNET_POSTGRES_PASSWORD=<unavailable-until-authorized>
 ARC_MAINNET_POSTGRES_DATABASE=<unavailable-until-authorized>
-# Arc Mainnet is external-wallet-only: Circle App Wallet execution is
-# unavailable there, so no CIRCLE_MAINNET_* credentials are required or
-# accepted for Mainnet runtime. Circle configuration remains Testnet-scoped
-# (see deploy/arc-testnet/environment.template).
+# Arc Mainnet is external-wallet-only. No additional wallet credentials are
+# required or accepted for Mainnet runtime.

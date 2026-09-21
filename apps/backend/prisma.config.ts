@@ -21,11 +21,7 @@ const needsDatabase = /\bmigrate\b|\bdb\s+(push|pull|execute)\b/.test(command);
 const selectedNetwork = process.env.WIZPAY_ARC_NETWORK;
 const migrationNetwork = process.env.WIZPAY_MIGRATION_NETWORK;
 const databaseKey =
-  selectedNetwork === 'arc-testnet'
-    ? 'ARC_TESTNET_DATABASE_URL'
-    : selectedNetwork === 'arc-mainnet'
-      ? 'ARC_MAINNET_DATABASE_URL'
-      : null;
+  selectedNetwork === 'arc-mainnet' ? 'ARC_MAINNET_DATABASE_URL' : null;
 
 if (needsDatabase) {
   if (
@@ -34,7 +30,7 @@ if (needsDatabase) {
     process.env.DATABASE_URL !== undefined
   ) {
     throw new Error(
-      'Prisma migration requires matching explicit Arc runtime and migration networks and rejects DATABASE_URL.',
+      'Prisma migration requires matching explicit Arc Mainnet runtime and migration networks and rejects DATABASE_URL.',
     );
   }
   if (!process.env[databaseKey]?.trim()) {
