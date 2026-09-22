@@ -49,4 +49,7 @@ jobs:
         run: npm run test
 
       - name: Build workspace
+        env:
+          NEXT_PUBLIC_WIZPAY_ARC_NETWORK: arc-mainnet
+          NEXT_PUBLIC_API_URL: https://api-ci.invalid
         run: npm run build
