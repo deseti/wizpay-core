@@ -16,17 +16,30 @@ const DEFAULT_API_BASE_URL = "http://localhost:4000";
 type FrontendApiEnvironment = Record<string, string | undefined>;
 
 export function readFrontendApiBaseUrl(
-  environment: FrontendApiEnvironment = process.env,
+  environment?: FrontendApiEnvironment,
 ): string {
-  const canonical = environment.NEXT_PUBLIC_API_URL?.trim();
+  // Direct references so Next.js inlines NEXT_PUBLIC_* at build time.
+  // Indirect access such as environment.NEXT_PUBLIC_API_URL is not inlined,
+  // which previously left the browser bundle without the production URL.
+  const bundledEnvironment: FrontendApiEnvironment = {
+    NODE_ENV: process.env.NODE_ENV,
+    NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL,
+    NEXT_PUBLIC_BACKEND_API_BASE_URL:
+      process.env.NEXT_PUBLIC_BACKEND_API_BASE_URL,
+    NEXT_PUBLIC_BACKEND_URL: process.env.NEXT_PUBLIC_BACKEND_URL,
+    BACKEND_API_BASE_URL: process.env.BACKEND_API_BASE_URL,
+    API_URL: process.env.API_URL,
+  };
+  const source: FrontendApiEnvironment = environment ?? bundledEnvironment;
+  const canonical = source.NEXT_PUBLIC_API_URL?.trim();
   const legacy = [
-    environment.NEXT_PUBLIC_BACKEND_API_BASE_URL,
-    environment.NEXT_PUBLIC_BACKEND_URL,
-    environment.BACKEND_API_BASE_URL,
-    environment.API_URL,
+    source.NEXT_PUBLIC_BACKEND_API_BASE_URL,
+    source.NEXT_PUBLIC_BACKEND_URL,
+    source.BACKEND_API_BASE_URL,
+    source.API_URL,
   ].filter((value): value is string => Boolean(value?.trim()));
 
-  if (environment.NODE_ENV === "production") {
+  if (source.NODE_ENV === "production") {
     if (!canonical) {
       throw new Error(
         "NEXT_PUBLIC_API_URL is required for the production frontend.",

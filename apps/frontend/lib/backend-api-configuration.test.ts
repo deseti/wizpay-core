@@ -1,7 +1,18 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { readFrontendApiBaseUrl } from "./backend-api";
 
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
+
 describe("production frontend API configuration", () => {
+  it("reads the canonical URL directly from the bundled environment", () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("NEXT_PUBLIC_API_URL", "https://api.wizpay.xyz");
+
+    expect(readFrontendApiBaseUrl()).toBe("https://api.wizpay.xyz");
+  });
+
   it("requires the canonical HTTPS public API URL", () => {
     expect(
       readFrontendApiBaseUrl({
