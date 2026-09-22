@@ -178,7 +178,7 @@ function normalizeBatches(
   );
 }
 
-function calculateTotals(
+export function calculatePayrollRunTotals(
   batches: RecipientDraft[][],
   decimals: number,
 ): BatchPayrollTotals {
@@ -267,10 +267,37 @@ function getTaskProgress(
   };
 }
 
-function getSubmissionHashes(task: BackendTask | null) {
-  return (task?.units ?? [])
-    .map((unit) => unit.txHash)
-    .filter((value): value is string => Boolean(value));
+export function mergeSuccessfulSubmissionHashes(
+  currentHashes: readonly string[],
+  units: readonly Pick<BackendTaskUnit, "status" | "txHash">[],
+) {
+  const hashes: string[] = [];
+  const seen = new Set<string>();
+
+  for (const hash of [
+    ...currentHashes,
+    ...units
+      .filter((unit) => unit.status === "SUCCESS")
+      .map((unit) => unit.txHash),
+  ]) {
+    if (!hash) continue;
+    const normalized = hash.toLowerCase();
+    if (seen.has(normalized)) continue;
+    seen.add(normalized);
+    hashes.push(hash);
+  }
+
+  return hashes;
+}
+
+export function resolvePayrollRunRecipientCount(
+  sessionRecipientCount: number,
+  currentRunRecipientCount: number,
+  lastTaskRecipientCount: number | null,
+) {
+  if (sessionRecipientCount > 0) return sessionRecipientCount;
+  if (currentRunRecipientCount > 0) return currentRunRecipientCount;
+  return lastTaskRecipientCount ?? 0;
 }
 
 /**
@@ -341,7 +368,7 @@ export function useBatchPayroll({
     [pendingBatches, recipients],
   );
   const totals = useMemo(
-    () => calculateTotals(batches, activeToken.decimals),
+    () => calculatePayrollRunTotals(batches, activeToken.decimals),
     [activeToken.decimals, batches],
   );
 
@@ -349,6 +376,7 @@ export function useBatchPayroll({
   const [taskId, setTaskId] = useState<string | null>(null);
   const [task, setTask] = useState<BackendTask | null>(null);
   const [approvalHash, setApprovalHash] = useState<string | null>(null);
+  const [submissionHashes, setSubmissionHashes] = useState<string[]>([]);
   const [fxStatus, setFxStatus] = useState<PayrollFxRecoverableStatus | null>(
     null,
   );
@@ -360,6 +388,9 @@ export function useBatchPayroll({
     try {
       const nextTask = await backendFetch<BackendTask>(`/tasks/${nextTaskId}`);
       setTask(nextTask);
+      setSubmissionHashes((current) =>
+        mergeSuccessfulSubmissionHashes(current, nextTask.units),
+      );
       return nextTask;
     } catch {
       return null;
@@ -384,7 +415,6 @@ export function useBatchPayroll({
     return () => window.clearInterval(intervalId);
   }, [refreshTask, task, taskId]);
 
-  const submissionHashes = useMemo(() => getSubmissionHashes(task), [task]);
   const hashes = useMemo(
     () =>
       approvalHash ? [approvalHash, ...submissionHashes] : submissionHashes,
@@ -413,6 +443,7 @@ export function useBatchPayroll({
     setTask(null);
     setTaskId(null);
     setApprovalHash(null);
+    setSubmissionHashes([]);
     setStatusMessage(null);
     setErrorMessage(null);
 
@@ -638,6 +669,9 @@ export function useBatchPayroll({
               },
             );
           setTask(reportResult.task);
+          setSubmissionHashes((current) =>
+            mergeSuccessfulSubmissionHashes(current, reportResult.task.units),
+          );
           if (!result.ok) failedGroups.push(unitReferenceId);
           nextUnit = reportResult.nextUnit;
         }
@@ -698,6 +732,7 @@ export function useBatchPayroll({
     setTask(null);
     setTaskId(null);
     setApprovalHash(null);
+    setSubmissionHashes([]);
     setFxStatus(null);
     executionLockRef.current = false;
   }, []);

@@ -1,0 +1,9 @@
+<!-- Source: official Ethereum brand assets, https://ethereum.org/assets/ -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 417" preserveAspectRatio="xMidYMid">
+  <path fill="#343434" d="M127.9 0L125.1 9.5V279.1L127.9 281.9L255.8 206.3Z"/>
+  <path fill="#8C8C8C" d="M127.9 0L0 206.3L127.9 281.9V154.1Z"/>
+  <path fill="#3C3C3B" d="M127.9 306.1L126.3 308V406.2L127.9 410.9L255.9 230.6Z"/>
+  <path fill="#8C8C8C" d="M127.9 410.9V306.1L0 230.6Z"/>
+  <path fill="#141414" d="M127.9 281.9L255.8 206.3L127.9 154.1Z"/>
+  <path fill="#393939" d="M0 206.3L127.9 281.9V154.1Z"/>
+</svg>

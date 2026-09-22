@@ -11,6 +11,7 @@ import {
 } from "wagmi";
 
 import { Button } from "@/components/ui/button";
+import { BridgeChainLabel } from "@/components/dashboard/BridgeChainIcon";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -513,13 +514,17 @@ function BridgeWorkspace() {
                   disabled={busy}
                 >
                   <SelectTrigger aria-label="Source chain">
-                    <SelectValue />
+                    <SelectValue>
+                      <BridgeChainLabel chainCode={source.code} />
+                    </SelectValue>
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="ARC-MAINNET">Arc (5042)</SelectItem>
+                    <SelectItem value="ARC-MAINNET">
+                      <BridgeChainLabel chainCode="ARC-MAINNET" />
+                    </SelectItem>
                     {COUNTERPARTIES.map((code) => (
                       <SelectItem key={code} value={code}>
-                        {bridgeChain(code).name}
+                        <BridgeChainLabel chainCode={code} />
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -548,13 +553,17 @@ function BridgeWorkspace() {
                   disabled={busy}
                 >
                   <SelectTrigger aria-label="Destination chain">
-                    <SelectValue />
+                    <SelectValue>
+                      <BridgeChainLabel chainCode={destination.code} />
+                    </SelectValue>
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="ARC-MAINNET">Arc (5042)</SelectItem>
+                    <SelectItem value="ARC-MAINNET">
+                      <BridgeChainLabel chainCode="ARC-MAINNET" />
+                    </SelectItem>
                     {COUNTERPARTIES.map((code) => (
                       <SelectItem key={code} value={code}>
-                        {bridgeChain(code).name}
+                        <BridgeChainLabel chainCode={code} />
                       </SelectItem>
                     ))}
                   </SelectContent>

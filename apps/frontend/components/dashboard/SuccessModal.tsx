@@ -50,12 +50,18 @@ export function SuccessModal({
   if (!isOpen) return null;
 
   const amountFormatted = formatTokenAmount(totalAmount, decimals, 2);
+  const distributedEntries = Object.entries(sessionTotalDistributed).filter(
+    ([, amount]) => amount > 0n,
+  );
+  const isMixedTokenRun = distributedEntries.length > 1;
   const submissionHashes = txHashes.filter(
     (value, index, values): value is string => Boolean(value) && values.indexOf(value) === index
   );
-  const shareSummary = isMultiBatch
-    ? `Just settled a payroll of ${amountFormatted} ${tokenSymbol} to ${recipientCount} recipients across multiple submissions on Arc Mainnet! 🚀`
-    : `Just settled a payroll of ${amountFormatted} ${tokenSymbol} to ${recipientCount} recipients on Arc Mainnet! 🚀`;
+  const shareSummary = isMixedTokenRun
+    ? `Just settled a mixed-token payroll to ${recipientCount} recipients on Arc Mainnet! 🚀`
+    : isMultiBatch
+      ? `Just settled a payroll of ${amountFormatted} ${tokenSymbol} to ${recipientCount} recipients across multiple submissions on Arc Mainnet! 🚀`
+      : `Just settled a payroll of ${amountFormatted} ${tokenSymbol} to ${recipientCount} recipients on Arc Mainnet! 🚀`;
   const xShareUrl = buildXShareUrl({
     summary: shareSummary,
     explorerUrl:
@@ -107,11 +113,17 @@ export function SuccessModal({
             <div className="grid grid-cols-2 gap-4 divide-x divide-border/40">
               <div className="space-y-1">
                 <p className="text-xs uppercase text-muted-foreground/60 font-semibold">
-                  Amount Routed
+                  {isMixedTokenRun ? "Assets Routed" : "Amount Routed"}
                 </p>
                 <p className="font-mono text-xl font-bold">
-                  {amountFormatted}{" "}
-                  <span className="text-sm font-medium text-muted-foreground">{tokenSymbol}</span>
+                  {isMixedTokenRun ? (
+                    <span className="text-base">Mixed tokens</span>
+                  ) : (
+                    <>
+                      {amountFormatted}{" "}
+                      <span className="text-sm font-medium text-muted-foreground">{tokenSymbol}</span>
+                    </>
+                  )}
                 </p>
               </div>
               <div className="space-y-1 pl-4">
@@ -129,8 +141,7 @@ export function SuccessModal({
                 Successfully Distributed
               </p>
               <div className="flex flex-col gap-2">
-                {Object.entries(sessionTotalDistributed).map(([token, amount]) => {
-                  if (amount === 0n) return null;
+                {distributedEntries.map(([token, amount]) => {
                   const distributedToken = token as TokenSymbol;
                   const distributedDecimals =
                     SUPPORTED_TOKENS[distributedToken].decimals;

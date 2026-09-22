@@ -1,0 +1,7 @@
+<!-- Source: official Polygon site favicon, https://polygon.technology/favicon.svg -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <rect width="32" height="32" rx="4" fill="#670DE5"/>
+  <g transform="translate(6.284 6.293) scale(.8)">
+    <path fill="#FFF" d="m17.41 1.224-6.815 3.914v12.216l-3.76 2.18-3.784-2.182v-4.361l3.784-2.161 2.432 1.411V8.712L6.813 7.319 0 11.278v7.83l6.836 3.937 6.814-3.937V6.893l3.783-2.181 3.782 2.181v4.342l-3.782 2.201-2.454-1.423v3.511l2.431 1.402 6.881-3.914V5.138Z"/>
+  </g>
+</svg>

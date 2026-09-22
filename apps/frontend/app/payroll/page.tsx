@@ -12,6 +12,7 @@ import { ReceiveModal } from "@/components/dashboard/ReceiveModal";
 import { Button } from "@/components/ui/button";
 import { useActiveWalletAddress } from "@/hooks/useActiveWalletAddress";
 import { useWizPay } from "@/hooks/wizpay";
+import { resolvePayrollRunRecipientCount } from "@/hooks/wizpay/useBatchPayroll";
 import { useDelayedLoading } from "@/hooks/useDelayedLoading";
 import { SUPPORTED_TOKENS, type TokenSymbol } from "@/lib/wizpay";
 import { useState } from "react";
@@ -68,18 +69,21 @@ function PayrollWorkspace() {
   const taskSubmissionHashes = wp.smartBatchSubmissionHashes;
   const taskLastHash =
     taskSubmissionHashes[taskSubmissionHashes.length - 1] ?? null;
-  const successTotalAmount = taskTotalAmount
-    ? BigInt(taskTotalAmount)
-    : wp.sessionTotalAmount > 0n
+  const successTotalAmount =
+    wp.sessionTotalAmount > 0n
       ? wp.sessionTotalAmount
-      : wp.batchAmount;
+      : wp.batchAmount > 0n
+        ? wp.batchAmount
+        : taskTotalAmount
+          ? BigInt(taskTotalAmount)
+          : 0n;
   const successTokenSymbol = taskSourceToken ?? wp.activeToken.symbol;
   const successTokenDecimals = SUPPORTED_TOKENS[successTokenSymbol].decimals;
-  const successRecipientCount =
-    taskRecipientCount ??
-    (wp.sessionTotalRecipients > 0
-      ? wp.sessionTotalRecipients
-      : wp.validRecipientCount);
+  const successRecipientCount = resolvePayrollRunRecipientCount(
+    wp.sessionTotalRecipients,
+    wp.validRecipientCount,
+    taskRecipientCount,
+  );
   const payrollIsCrossToken = wp.preparedRecipients.some(
     (recipient) => recipient.targetToken !== wp.activeToken.symbol,
   );
@@ -240,8 +244,11 @@ function PayrollWorkspace() {
         tokenSymbol={successTokenSymbol}
         decimals={successTokenDecimals}
         recipientCount={successRecipientCount}
-        isMultiBatch={(wp.payrollTask?.totalUnits ?? wp.totalBatches) > 1}
-        referenceId={taskReferenceId ?? wp.referenceId}
+        isMultiBatch={
+          taskSubmissionHashes.length > 1 ||
+          (wp.payrollTask?.totalUnits ?? wp.totalBatches) > 1
+        }
+        referenceId={wp.referenceId || taskReferenceId || ""}
         sessionTotalDistributed={wp.sessionTotalDistributed}
       />
 
