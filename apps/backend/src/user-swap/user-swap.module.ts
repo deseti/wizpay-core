@@ -5,8 +5,11 @@ import { MainnetUniswapV4QuoteService } from './mainnet-uniswap-v4-quote.service
 import { MainnetUniswapV4ReadinessService } from './mainnet-uniswap-v4-readiness.service';
 import { MainnetUniswapV4Service } from './mainnet-uniswap-v4.service';
 import { MainnetUniswapV4Controller } from './mainnet-uniswap-v4.controller';
+import { DatabaseModule } from '../database/database.module';
+import { InvoiceModule } from '../invoice/invoice.module';
 
 @Module({
+  imports: [DatabaseModule, InvoiceModule],
   controllers: [UserSwapController, MainnetUniswapV4Controller],
   providers: [
     UserSwapService,

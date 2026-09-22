@@ -3,9 +3,11 @@ import { UnauthorizedException } from '@nestjs/common';
 import { ActivityController } from './activity.controller';
 
 describe('ActivityController authentication', () => {
-  it('uses only the database-backed read authenticator for GET', async () => {
+  it('uses the wallet ownership session authenticator for GET', async () => {
     const auth = {
-      authenticate: jest.fn(),
+      authenticate: jest.fn(async () => {
+        throw new UnauthorizedException();
+      }),
     };
     const activity = {
       authenticateRead: jest.fn(async () => {
@@ -19,7 +21,7 @@ describe('ActivityController authentication', () => {
     await expect(controller.list(undefined)).rejects.toBeInstanceOf(
       UnauthorizedException,
     );
-    expect(auth.authenticate).not.toHaveBeenCalled();
+    expect(auth.authenticate).toHaveBeenCalledWith(undefined);
     expect(activity.sync).not.toHaveBeenCalled();
     expect(activity.list).not.toHaveBeenCalled();
   });
@@ -30,10 +32,10 @@ describe('ActivityController authentication', () => {
       merchantWalletAddress: '0x1111111111111111111111111111111111111111',
     };
     const auth = {
-      authenticate: jest.fn(),
+      authenticate: jest.fn(async () => principal),
     };
     const activity = {
-      authenticateRead: jest.fn(async () => principal),
+      authenticateRead: jest.fn(),
       sync: jest.fn(),
       validateListInput: jest.fn(),
       list: jest.fn(async () => ({ items: [], nextCursor: null })),
@@ -52,7 +54,7 @@ describe('ActivityController authentication', () => {
       type: undefined,
       status: undefined,
     });
-    expect(auth.authenticate).not.toHaveBeenCalled();
+    expect(auth.authenticate).toHaveBeenCalledWith('Bearer valid');
   });
 
   it('uses external wallet authentication only for explicit sync', async () => {

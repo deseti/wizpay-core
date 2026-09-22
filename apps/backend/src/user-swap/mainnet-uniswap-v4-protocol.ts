@@ -1,6 +1,7 @@
 import {
   concatHex,
   decodeFunctionResult,
+  decodeFunctionData,
   encodeAbiParameters,
   encodeFunctionData,
   decodeAbiParameters,
@@ -118,6 +119,27 @@ export const WIZPAY_SWAP_EXECUTOR_MAINNET_EXECUTABLE = true as const;
 const EXECUTE_SWAP_ABI = parseAbi([
   'function executeSwap(address tokenIn, address tokenOut, uint256 amountIn, uint256 minAmountOut, uint256 minHopPriceX36, uint256 deadline) payable returns (uint256 amountOut)',
 ]);
+
+export function decodeExecuteSwap(data: Hex) {
+  const decoded = decodeFunctionData({ abi: EXECUTE_SWAP_ABI, data });
+  if (decoded.functionName !== 'executeSwap') {
+    throw new MainnetUniswapV4ProtocolError(
+      'INVALID_RECEIPT',
+      'Transaction calldata is not an executor swap.',
+    );
+  }
+  const [tokenIn, tokenOut, amountIn, minAmountOut, minHopPriceX36, deadline] =
+    decoded.args;
+  zeroForOneFromTokens(tokenIn, tokenOut);
+  return {
+    tokenIn,
+    tokenOut,
+    amountIn,
+    minAmountOut,
+    minHopPriceX36,
+    deadline,
+  };
+}
 const SWAP_EXECUTED_EVENT = parseAbiItem(
   'event WizPayMainnetSwapExecuted(address indexed caller, address indexed tokenIn, address indexed tokenOut, uint256 amountIn, uint256 feeAmount, uint256 netAmountIn, uint256 amountOut, uint256 minAmountOut)',
 );

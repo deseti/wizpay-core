@@ -9,12 +9,16 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'node:crypto';
 import {
+  createPublicClient,
+  decodeEventLog,
   getAddress,
+  http,
   isAddress,
   isAddressEqual,
   parseAbi,
   zeroAddress,
   type Address,
+  type Hash,
   type Hex,
 } from 'viem';
 import {
@@ -26,6 +30,10 @@ import {
   getBridgeTransferMode,
 } from '@wizpay/bridge-registry';
 import { getArcCctpResource } from '@wizpay/arc-network';
+import {
+  ARC_MAINNET_CHAIN_ID,
+  type BackendArcNetworkConfiguration,
+} from '../config/arc-network.config';
 import { PrismaService } from '../database/prisma.service';
 import type {
   AuthorizeBridgeDestinationDto,
@@ -36,7 +44,11 @@ import type {
   ReportBridgeSourceDto,
   SubmitBridgeDestinationDto,
 } from './dto/bridge-intent.dto';
-import { decodeCctpV2Message } from './bridge-message';
+import {
+  addressToBytes32,
+  cctpMessageBody,
+  decodeCctpV2Message,
+} from './bridge-message';
 
 export const CCTP_V2_DEPOSIT_EVENT = parseAbi([
   'event DepositForBurn(address indexed burnToken,uint256 amount,address indexed depositor,bytes32 mintRecipient,uint32 destinationDomain,bytes32 destinationTokenMessenger,bytes32 destinationCaller,uint256 maxFee,uint32 indexed minFinalityThreshold,bytes hookData)',
@@ -75,6 +87,64 @@ export function matchesExpectedDestinationChain(
   expectedChainId: number,
 ) {
   return actualChainId === expectedChainId;
+}
+
+export type DestinationReceiptLog = {
+  address: string;
+  topics: readonly string[];
+  data: string;
+};
+
+/**
+ * True when a destination receipt contains MessageReceived for this exact
+ * attested burn. The submitter may be any non-zero caller because production
+ * intents use a permissionless destination caller.
+ */
+export function destinationMintReceiptMatches(
+  logs: readonly DestinationReceiptLog[],
+  expected: {
+    messageTransmitter: Address;
+    sourceDomain: number;
+    nonce: Hex;
+    sender: Hex;
+    finalityThresholdExecuted: number;
+    messageBody: Hex;
+  },
+) {
+  for (const log of logs) {
+    if (
+      !isAddress(log.address) ||
+      !isAddressEqual(getAddress(log.address), expected.messageTransmitter) ||
+      log.topics.length === 0
+    ) {
+      continue;
+    }
+    try {
+      const decoded = decodeEventLog({
+        abi: CCTP_V2_MESSAGE_RECEIVED_EVENT,
+        data: log.data as Hex,
+        topics: log.topics as [Hex, ...Hex[]],
+      });
+      if (decoded.eventName !== 'MessageReceived') continue;
+      const caller = decoded.args.caller;
+      if (!isAddress(caller) || isAddressEqual(caller, zeroAddress)) continue;
+      if (
+        matchesCctpV2MessageReceived(decoded.args, {
+          caller,
+          sourceDomain: expected.sourceDomain,
+          nonce: expected.nonce,
+          sender: expected.sender,
+          finalityThresholdExecuted: expected.finalityThresholdExecuted,
+          messageBody: expected.messageBody,
+        })
+      ) {
+        return true;
+      }
+    } catch {
+      continue;
+    }
+  }
+  return false;
 }
 
 export function matchesBridgeAttestation(
@@ -190,6 +260,9 @@ export interface BridgeLifecycleResult {
   sourceMessageHash?: Hex;
   completedAt?: string;
   destinationSubmittedAt?: string;
+  /** Set only after the destination MessageReceived log matches the attestation. */
+  destinationReceiptVerified?: boolean;
+  destinationVerifiedAt?: string;
   /**
    * Latest Circle Iris status for the source burn (e.g. complete,
    * pending_confirmations) and the machine-readable delayReason when Iris
@@ -606,9 +679,17 @@ export class BridgeLifecycleService {
           'The destination mint transaction hash is required before completing the bridge.',
       });
     }
+    const destinationReceiptVerified = await this.proveDestinationReceipt(view);
+    const verifiedAt = new Date().toISOString();
     const result: BridgeLifecycleResult = {
       ...view.result,
-      completedAt: new Date().toISOString(),
+      completedAt: verifiedAt,
+      ...(destinationReceiptVerified
+        ? {
+            destinationReceiptVerified: true,
+            destinationVerifiedAt: verifiedAt,
+          }
+        : {}),
     };
     const updated = await this.prisma.$transaction(async (tx) => {
       await tx.task.updateMany({
@@ -621,6 +702,117 @@ export class BridgeLifecycleService {
       });
     });
     return this.view(updated);
+  }
+
+  /**
+   * Arc Mainnet destinations use the configured Arc RPC. Other destination
+   * chains are checked only when BRIDGE_DESTINATION_RPC_<chainId> is set.
+   * A missing reader leaves the intent completable but unverified, so activity
+   * projection will not treat it as a finished bridge.
+   */
+  private async proveDestinationReceipt(
+    view: BridgeIntentView,
+  ): Promise<boolean> {
+    const chainId = view.payload.destinationChainId;
+    const rpcUrl = this.destinationRpc(chainId);
+    if (!rpcUrl) return false;
+    const hash = view.result?.destinationTransactionHash;
+    const message = view.result?.attestedMessage;
+    if (!hash || !message) {
+      throw new ConflictException({
+        code: 'BRIDGE_DESTINATION_REQUIRED',
+        message:
+          'The destination mint transaction and attested message are required.',
+      });
+    }
+    const decoded = decodeCctpV2Message(message);
+    if (!matchesBridgeAttestation(view.payload, decoded, view.result?.nonce)) {
+      throw new ConflictException({
+        code: 'BRIDGE_ATTESTATION_MISMATCH',
+        message:
+          'The stored Circle attestation does not match this bridge intent.',
+      });
+    }
+    let providerChainId: number;
+    let transactionTo: string | null;
+    let status: string;
+    let logs: DestinationReceiptLog[];
+    try {
+      const client = createPublicClient({
+        chain: {
+          id: chainId,
+          name: view.payload.destinationCode,
+          nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
+          rpcUrls: { default: { http: [rpcUrl] } },
+        },
+        transport: http(rpcUrl, { retryCount: 1, timeout: 10_000 }),
+      });
+      const transactionHash = hash as Hash;
+      const [reportedChainId, transaction, receipt] = await Promise.all([
+        client.getChainId(),
+        client.getTransaction({ hash: transactionHash }),
+        client.getTransactionReceipt({ hash: transactionHash }),
+      ]);
+      providerChainId = reportedChainId;
+      transactionTo = transaction.to;
+      status = receipt.status;
+      logs = receipt.logs.map((log) => ({
+        address: log.address,
+        topics: log.topics,
+        data: log.data,
+      }));
+    } catch (error) {
+      if (
+        error instanceof ConflictException ||
+        error instanceof ServiceUnavailableException
+      ) {
+        throw error;
+      }
+      throw new ServiceUnavailableException({
+        code: 'BRIDGE_DESTINATION_PENDING',
+        message: 'The destination mint receipt is not available yet.',
+        retryable: true,
+      });
+    }
+    const matched =
+      providerChainId === chainId &&
+      status === 'success' &&
+      Boolean(transactionTo) &&
+      isAddress(transactionTo!) &&
+      isAddressEqual(
+        getAddress(transactionTo!),
+        view.payload.destinationMessageTransmitterV2,
+      ) &&
+      destinationMintReceiptMatches(logs, {
+        messageTransmitter: view.payload.destinationMessageTransmitterV2,
+        sourceDomain: decoded.sourceDomain,
+        nonce: decoded.nonce,
+        sender: addressToBytes32(decoded.sender),
+        finalityThresholdExecuted: decoded.finalityThresholdExecuted,
+        messageBody: cctpMessageBody(message),
+      });
+    if (!matched) {
+      throw new ConflictException({
+        code: 'BRIDGE_DESTINATION_MISMATCH',
+        message:
+          'The destination transaction does not prove the attested CCTP mint.',
+      });
+    }
+    return true;
+  }
+
+  private destinationRpc(chainId: number): string | null {
+    if (chainId === ARC_MAINNET_CHAIN_ID) {
+      const network =
+        this.config.getOrThrow<BackendArcNetworkConfiguration>('arcNetwork');
+      return network.chainId === ARC_MAINNET_CHAIN_ID ? network.rpcUrl : null;
+    }
+    const configured = this.config.get<string>(
+      `BRIDGE_DESTINATION_RPC_${chainId}`,
+    );
+    return typeof configured === 'string' && /^https?:\/\//.test(configured)
+      ? configured
+      : null;
   }
 
   private async refreshAttestation(

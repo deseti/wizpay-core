@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { formatUnits } from "viem";
 
 import { SwapScreen } from "./SwapScreen";
-import { prepareMainnetSwap, quoteUserSwap } from "@/lib/user-swap-service";
+import { confirmMainnetSwap, prepareMainnetSwap, quoteUserSwap } from "@/lib/user-swap-service";
 import { activeArcChain } from "@/lib/wagmi";
 import {
   calculateArcMaxAmount,
@@ -41,6 +41,14 @@ vi.mock("@/hooks/useActiveWalletAddress", () => ({
 vi.mock("@/hooks/use-toast", () => ({
   useToast: () => ({ toast: state.toast }),
 }));
+vi.mock("@/components/providers/WalletAuthProvider", () => ({
+  useWalletAuth: () => ({
+    authenticate: vi.fn(async () => "opaque-wallet-session"),
+    error: null,
+    sessionToken: "opaque-wallet-session",
+    state: "authenticated",
+  }),
+}));
 vi.mock("@/hooks/useTokenBalances", () => ({
   useTokenBalances: () => ({
     balances: { USDC: 10_000_000n, EURC: 10_000_000n },
@@ -68,6 +76,7 @@ vi.mock("wagmi", async (importOriginal) => ({
 vi.mock("@/lib/user-swap-service", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/user-swap-service")>()),
   quoteUserSwap: vi.fn(),
+  confirmMainnetSwap: vi.fn(async () => ({ id: "swap-1" })),
   prepareMainnetSwap: vi.fn(async (params: { tokenInAddress: string }) => ({
     walletControl: "external-wallet",
     chainId: 5042,
@@ -248,6 +257,10 @@ describe("SwapScreen verified success modal", () => {
     );
     expect(screen.getByText("1.00 USDC")).toBeInTheDocument();
     expect(screen.getAllByText("0.99 EURC").length).toBeGreaterThan(0);
+    expect(confirmMainnetSwap).toHaveBeenCalledWith(
+      state.hash,
+      "opaque-wallet-session",
+    );
     expect(screen.getByText("External Wallet")).toBeInTheDocument();
     expect(
       screen.getByRole("link", { name: /View on explorer/ }),

@@ -5,9 +5,10 @@ import { InvoiceController } from './invoice.controller';
 import { InvoicePaymentVerifierService } from './invoice-payment-verifier.service';
 import { InvoiceService } from './invoice.service';
 import { PublicInvoiceController } from './public-invoice.controller';
+import { WalletModule } from '../modules/wallet/wallet.module';
 
 @Module({
-  imports: [DatabaseModule],
+  imports: [DatabaseModule, WalletModule],
   controllers: [InvoiceController, PublicInvoiceController],
   providers: [
     InvoiceAuthService,

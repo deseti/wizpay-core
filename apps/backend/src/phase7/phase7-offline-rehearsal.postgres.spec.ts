@@ -237,16 +237,26 @@ describePostgres('Phase 7 deterministic offline Mainnet rehearsal', () => {
         outputTokenAddress: OFFLINE_USDC,
       });
     }
-    const ledger = await activity.list(
-      {
-        merchantUserId: 'offline-owner',
-        merchantWalletAddress: EXTERNAL_WALLET,
-        merchantDisplayLabel: 'Offline Owner',
-      },
-      { limit: 20 },
+    const pages = await Promise.all(
+      [APP_WALLET, EXTERNAL_WALLET, MERCHANT].map((merchantWalletAddress) =>
+        activity.list(
+          {
+            merchantUserId: 'offline-owner',
+            merchantWalletAddress,
+            merchantDisplayLabel: 'Offline Owner',
+          },
+          { limit: 20 },
+        ),
+      ),
     );
-    expect(ledger.items).toHaveLength(5);
-    expect(new Set(ledger.items.map((item) => item.txHash)).size).toBe(5);
+    const ledger = pages.flatMap((page) => page.items);
+    expect(ledger).toHaveLength(5);
+    expect(new Set(ledger.map((item) => item.txHash)).size).toBe(5);
+    expect(
+      pages.find((page) =>
+        page.items.some((item) => item.txHash === hashes[0]),
+      )?.items.every((item) => item.txHash === hashes[0]),
+    ).toBe(true);
   });
 
   it('recovers exact completion after a restart without a second settlement event', async () => {

@@ -2,18 +2,18 @@
 
 import Link from "next/link";
 import { Copy, Loader2, Plus } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useExternalWallet } from "@/components/providers/external-wallet-context";
 import { useAppKit } from "@reown/appkit/react";
 import type { InvoiceStatus } from "@/lib/invoice-api";
 import { getInvoiceCheckoutUrl } from "@/lib/invoice-links";
-import { ensureExternalWalletRegistered } from "@/lib/wallet-registration";
+import { useWalletAuth } from "@/components/providers/WalletAuthProvider";
 import { InvoiceQrCode } from "./InvoiceQrCode";
 
 export type MerchantInvoiceSession = {
-  /** Bearer token for merchant invoice/activity endpoints: the wallet address. */
+  /** Opaque bearer token issued after wallet ownership verification. */
   userToken: string | null;
   registered: boolean;
   registering: boolean;
@@ -28,57 +28,19 @@ export type MerchantInvoiceSession = {
 /**
  * Merchant invoice session for Arc Mainnet external wallets.
  *
- * The backend binds the merchant principal to the registered external wallet
- * address (presented as the bearer token). Registration is a self-custodial
- * address binding — no keys, no hosted wallet, no alternate network.
+ * A one-time EIP-191 message signature proves wallet ownership. The backend
+ * returns an opaque session token; no key or transaction signature is used.
  */
 export function useMerchantInvoiceSession(): MerchantInvoiceSession {
   const { isReady, activeWalletAddress } = useExternalWallet();
-  const [registered, setRegistered] = useState(false);
-  const [registering, setRegistering] = useState(false);
-  const [registerError, setRegisterError] = useState<string | null>(null);
-  const [attempt, setAttempt] = useState(0);
-
-  useEffect(() => {
-    if (!activeWalletAddress) {
-      setRegistered(false);
-      setRegistering(false);
-      setRegisterError(null);
-      return;
-    }
-    let cancelled = false;
-    setRegistering(true);
-    setRegisterError(null);
-    void ensureExternalWalletRegistered(activeWalletAddress)
-      .then(() => {
-        if (!cancelled) setRegistered(true);
-      })
-      .catch((cause: unknown) => {
-        if (!cancelled) {
-          setRegistered(false);
-          setRegisterError(
-            cause instanceof Error
-              ? cause.message
-              : "Wallet registration failed.",
-          );
-        }
-      })
-      .finally(() => {
-        if (!cancelled) setRegistering(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [activeWalletAddress, attempt]);
-
-  const retry = useCallback(() => setAttempt((value) => value + 1), []);
+  const auth = useWalletAuth();
 
   return {
-    userToken: activeWalletAddress ?? null,
-    registered,
-    registering,
-    registerError,
-    retry,
+    userToken: auth.sessionToken,
+    registered: auth.state === "authenticated",
+    registering: auth.state === "authenticating",
+    registerError: auth.error,
+    retry: () => void auth.authenticate().catch(() => undefined),
     ready: isReady,
     walletMode: "external",
     walletAddress: activeWalletAddress,
@@ -97,13 +59,18 @@ export function MerchantInvoiceAuthNotice({
   onUseAppWallet: () => void;
   session?: Pick<
     MerchantInvoiceSession,
-    "registered" | "registering" | "registerError" | "retry" | "userToken"
+    | "registered"
+    | "registering"
+    | "registerError"
+    | "retry"
+    | "userToken"
+    | "walletAddress"
   >;
 }) {
   void walletMode;
   void onUseAppWallet;
   const { open } = useAppKit();
-  if (!session?.userToken) {
+  if (!session?.walletAddress) {
     return (
       <Card className="glass-card border-border/40">
         <CardContent className="space-y-4 p-6">
@@ -132,7 +99,7 @@ export function MerchantInvoiceAuthNotice({
       <Card className="glass-card border-border/40">
         <CardContent className="flex items-center gap-3 p-6 text-sm text-muted-foreground">
           <Loader2 className="h-4 w-4 animate-spin" />
-          Registering the external wallet for merchant invoices...
+          Verifying wallet ownership...
         </CardContent>
       </Card>
     );
@@ -143,15 +110,15 @@ export function MerchantInvoiceAuthNotice({
         <CardContent className="space-y-4 p-6">
           <div>
             <h2 className="text-lg font-semibold">
-              Merchant registration needed
+              Authenticate your wallet
             </h2>
             <p className="mt-1 text-sm text-muted-foreground">
               {session.registerError ??
-                "Register the external Arc Mainnet wallet before using invoices."}
+                "Sign a message to prove wallet ownership. This will not send a transaction or spend funds."}
             </p>
           </div>
           <Button variant="outline" onClick={session.retry}>
-            Retry registration
+            {session.registerError ? "Retry authentication" : "Authenticate wallet"}
           </Button>
         </CardContent>
       </Card>

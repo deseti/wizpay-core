@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-return, @typescript-eslint/require-await */
-import { NotFoundException, UnauthorizedException } from '@nestjs/common';
+import { NotFoundException } from '@nestjs/common';
 import { ActivityService } from './activity.service';
 
 const walletA = '0x1111111111111111111111111111111111111111' as const;
@@ -58,14 +58,22 @@ describe('ActivityService privacy and idempotency', () => {
         }),
         findMany: jest.fn(async ({ where, take }: any) =>
           rows
-            .filter((row) => row.ownerUserId === where.ownerUserId)
+            .filter(
+              (row) =>
+                row.ownerUserId === where.ownerUserId &&
+                (!where.walletAddress ||
+                  row.walletAddress === where.walletAddress),
+            )
             .slice(0, take),
         ),
         findFirst: jest.fn(
           async ({ where }: any) =>
             rows.find(
               (row) =>
-                row.id === where.id && row.ownerUserId === where.ownerUserId,
+                row.id === where.id &&
+                row.ownerUserId === where.ownerUserId &&
+                (!where.walletAddress ||
+                  row.walletAddress === where.walletAddress),
             ) ?? null,
         ),
         update: jest.fn(async ({ where, data }: any) => {
@@ -75,6 +83,10 @@ describe('ActivityService privacy and idempotency', () => {
         }),
       },
       invoicePayment: { findMany: jest.fn(async () => []) },
+      executionIntent: { findMany: jest.fn(async () => []) },
+      task: { findMany: jest.fn(async () => []) },
+      bridgeTransaction: { findMany: jest.fn(async () => []) },
+      verifiedSwapTransaction: { findMany: jest.fn(async () => []) },
       activityAuthSession: {
         findFirst: jest.fn(async ({ where }: any) =>
           sessions.find(
@@ -143,6 +155,7 @@ describe('ActivityService privacy and idempotency', () => {
     expect(prisma.activity.findMany).toHaveBeenLastCalledWith({
       where: {
         ownerUserId: 'user-a',
+        walletAddress: walletA,
         type: 'swap',
         status: 'completed',
         OR: [
@@ -173,64 +186,6 @@ describe('ActivityService privacy and idempotency', () => {
       service.list(principal('user-a', walletA), {}),
     ).resolves.toMatchObject({ items: [{ sourceReferenceId: 'stored' }] });
     expect(prisma.activity.upsert).toHaveBeenCalledTimes(1);
-  });
-
-  it('issues a 256-bit opaque read session bound to the canonical owner and never returns the wallet bearer', async () => {
-    const result = await service.sync(principal('user-a', walletA));
-    expect(result.readSessionToken).toMatch(/^[A-Za-z0-9_-]{43}$/);
-    expect(result).toMatchObject({ source: 'external_wallet' });
-    const write = prisma.activityAuthSession.create.mock.calls[0][0];
-    expect(write.data.sessionHash).toMatch(/^[0-9a-f]{64}$/);
-    expect(JSON.stringify(write)).not.toContain(result.readSessionToken);
-    await expect(
-      service.authenticateRead(`Bearer ${result.readSessionToken}`),
-    ).resolves.toEqual({
-      merchantUserId: 'user-a',
-      merchantWalletAddress: walletA,
-      merchantDisplayLabel: null,
-    });
-  });
-
-  it('rotates sessions, enforces expiry, and keeps User B from resolving as User A', async () => {
-    const first = await service.sync(principal('user-a', walletA));
-    const second = await service.sync(principal('user-a', walletA));
-    expect(second.readSessionToken).not.toBe(first.readSessionToken);
-    await expect(
-      service.authenticateRead(`Bearer ${first.readSessionToken}`),
-    ).rejects.toBeInstanceOf(UnauthorizedException);
-    await expect(
-      service.authenticateRead(`Bearer ${second.readSessionToken}`),
-    ).resolves.toMatchObject({ merchantUserId: 'user-a' });
-
-    prisma.activitySyncState.upsert.mockImplementation(async ({ where }: any) => ({
-      id: 'sync-user-b',
-      ownerUserId: where.ownerUserId_source.ownerUserId,
-      walletAddress: walletB,
-      source: 'external_wallet',
-      checkpointTransactionId: null,
-      leaseId: null,
-      leaseExpiresAt: null,
-      nextAllowedAt: null,
-    }));
-    const userB = await service.sync(principal('user-b', walletB));
-    await expect(
-      service.authenticateRead(`Bearer ${userB.readSessionToken}`),
-    ).resolves.toMatchObject({ merchantUserId: 'user-b' });
-    await expect(
-      service.getOwned(
-        {
-          merchantUserId: 'user-b',
-          merchantWalletAddress: walletB,
-          merchantDisplayLabel: null,
-        },
-        'activity-1',
-      ),
-    ).rejects.toBeInstanceOf(NotFoundException);
-
-    prisma.activityAuthSession.findFirst.mockResolvedValueOnce(null);
-    await expect(
-      service.authenticateRead(`Bearer ${userB.readSessionToken}`),
-    ).rejects.toBeInstanceOf(UnauthorizedException);
   });
 
   it('returns not found when User B guesses User A activity ID', async () => {
@@ -388,6 +343,152 @@ describe('ActivityService privacy and idempotency', () => {
       chainId: 5042,
       txHash,
     });
+  });
+
+  it('projects completed sends and ignores records outside the completed query', async () => {
+    const txHash = `0x${'1'.repeat(64)}`;
+    prisma.executionIntent.findMany.mockResolvedValue([
+      {
+        id: 'send-intent',
+        network: 'arc-mainnet',
+        operation: 'SEND',
+        sourceWallet: walletA,
+        recipient: walletB,
+        tokenOut: '0x3600000000000000000000000000000000000000',
+        amountUnits: '10000',
+        externalReference: 'SEND-1',
+        transactionHash: txHash,
+        completedAt: new Date('2026-09-22T00:00:00Z'),
+        updatedAt: new Date('2026-09-22T00:00:00Z'),
+      },
+      {
+        id: 'send-other-network',
+        network: 'arc-testnet',
+        operation: 'SEND',
+        sourceWallet: walletA,
+        recipient: walletB,
+        tokenOut: '0x3600000000000000000000000000000000000000',
+        amountUnits: '10000',
+        externalReference: 'SEND-OTHER',
+        transactionHash: `0x${'9'.repeat(64)}`,
+        completedAt: new Date('2026-09-22T00:00:00Z'),
+        updatedAt: new Date('2026-09-22T00:00:00Z'),
+      },
+    ]);
+    await service.projectPersisted(principal('user-a', walletA));
+    expect(rows.filter((row) => row.type === 'send')).toHaveLength(1);
+    expect(rows).toContainEqual(
+      expect.objectContaining({
+        type: 'send',
+        status: 'completed',
+        txHash,
+        counterparty: walletB,
+      }),
+    );
+    expect(prisma.executionIntent.findMany).toHaveBeenCalledWith({
+      where: {
+        status: 'COMPLETED',
+        network: 'arc-mainnet',
+        transactionHash: { not: null },
+        operation: { in: ['SEND', 'PAYROLL'] },
+      },
+    });
+  });
+
+  it('aggregates same-token, cross-token, and mixed payroll into deterministic run rows', async () => {
+    const usdc = '0x3600000000000000000000000000000000000000';
+    const eurc = '0xbEf5f6d51CB62b58e6A8f77868681825C6fe21c1';
+    const completedAt = new Date('2026-09-22T00:00:00Z');
+    prisma.executionIntent.findMany.mockResolvedValue([
+      {
+        id: 'pay-usdc', network: 'arc-mainnet', operation: 'PAYROLL', sourceWallet: walletA,
+        tokenOut: usdc, amountUnits: '20000', externalReference: 'RUN-MIXED-USDC',
+        transactionHash: `0x${'2'.repeat(64)}`, taskId: 'task-usdc', completedAt, updatedAt: completedAt,
+      },
+      {
+        id: 'pay-eurc', network: 'arc-mainnet', operation: 'PAYROLL', sourceWallet: walletA,
+        tokenOut: eurc, amountUnits: '10000', externalReference: 'RUN-MIXED-EURC',
+        transactionHash: `0x${'3'.repeat(64)}`, taskId: 'task-eurc', completedAt, updatedAt: completedAt,
+      },
+      {
+        id: 'pay-single', network: 'arc-mainnet', operation: 'PAYROLL', sourceWallet: walletA,
+        tokenOut: usdc, amountUnits: '30000', externalReference: 'RUN-SINGLE',
+        transactionHash: `0x${'4'.repeat(64)}`, taskId: 'task-single', completedAt, updatedAt: completedAt,
+      },
+      {
+        id: 'pay-cross', network: 'arc-mainnet', operation: 'PAYROLL', sourceWallet: walletA,
+        tokenOut: eurc, amountUnits: '10000', externalReference: 'RUN-CROSS',
+        transactionHash: `0x${'5'.repeat(64)}`, taskId: 'task-cross', completedAt, updatedAt: completedAt,
+      },
+    ]);
+    prisma.task.findMany.mockResolvedValue([
+      { id: 'task-usdc', metadata: { totalRecipients: 2 } },
+      { id: 'task-eurc', metadata: { totalRecipients: 1 } },
+      { id: 'task-single', metadata: { totalRecipients: 3 } },
+      { id: 'task-cross', metadata: { totalRecipients: 1 } },
+    ]);
+    await service.projectPersisted(principal('user-a', walletA));
+    await service.projectPersisted(principal('user-a', walletA));
+    const payroll = rows.filter((row) => row.type === 'payroll');
+    expect(payroll).toHaveLength(3);
+    expect(payroll).toContainEqual(
+      expect.objectContaining({
+        inputTokenSymbol: undefined,
+        inputAmount: undefined,
+        metadata: expect.objectContaining({
+          referenceId: 'RUN-MIXED',
+          transactionCount: 3,
+          transactionHashes: [`0x${'2'.repeat(64)}`, `0x${'3'.repeat(64)}`],
+          tokenTotals: { USDC: '20000', EURC: '10000' },
+        }),
+      }),
+    );
+    expect(payroll).toContainEqual(
+      expect.objectContaining({
+        inputTokenSymbol: 'USDC',
+        inputAmount: '30000',
+        metadata: expect.objectContaining({ transactionCount: 3 }),
+      }),
+    );
+    expect(payroll).toContainEqual(
+      expect.objectContaining({
+        inputTokenSymbol: 'EURC',
+        inputAmount: '10000',
+      }),
+    );
+  });
+
+  it('projects only verified swaps and completed destination bridges for the owned wallet', async () => {
+    prisma.verifiedSwapTransaction.findMany.mockResolvedValue([
+      {
+        id: 'swap-1', transactionHash: `0x${'6'.repeat(64)}`, walletAddress: walletA,
+        chainId: 5042, tokenIn: '0x3600000000000000000000000000000000000000',
+        tokenOut: '0xbEf5f6d51CB62b58e6A8f77868681825C6fe21c1', amountIn: '10000',
+        amountOut: '9900', completedAt: new Date('2026-09-22T00:00:00Z'),
+      },
+    ]);
+    prisma.bridgeTransaction.findMany.mockResolvedValue([
+      {
+        id: 'bridge-1', taskId: 'bridge-task', updatedAt: new Date('2026-09-22T00:00:00Z'),
+        payload: { walletAddress: walletA, recipientAddress: walletA, sourceChainId: 5042,
+          destinationChainId: 8453, sourceUsdcAddress: walletA, destinationUsdcAddress: walletB, amount: '10000' },
+        result: { sourceTransactionHash: `0x${'7'.repeat(64)}`,
+          destinationTransactionHash: `0x${'8'.repeat(64)}`, mintAmount: '9990',
+          destinationReceiptVerified: true, completedAt: '2026-09-22T00:00:00Z' },
+      },
+      {
+        id: 'bridge-unverified', taskId: 'bridge-task-2', updatedAt: new Date('2026-09-22T00:00:00Z'),
+        payload: { walletAddress: walletA, recipientAddress: walletA, sourceChainId: 5042,
+          destinationChainId: 8453, amount: '10000' },
+        result: { destinationTransactionHash: `0x${'9'.repeat(64)}`, completedAt: '2026-09-22T00:00:00Z' },
+      },
+    ]);
+    await service.projectPersisted(principal('user-a', walletA));
+    expect(rows).toContainEqual(expect.objectContaining({ type: 'swap', status: 'completed' }));
+    expect(rows.filter((row) => row.type === 'bridge')).toEqual([
+      expect.objectContaining({ type: 'bridge', status: 'completed', sourceReferenceId: 'bridge-1' }),
+    ]);
+    expect(prisma.bridgeTransaction.findMany).toHaveBeenCalledWith({ where: { status: 'completed' } });
   });
 
   it('single-flights concurrent sync and throttles the next scan', async () => {

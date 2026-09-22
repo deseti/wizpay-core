@@ -5,6 +5,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { getAddress, isAddress, isAddressEqual, zeroAddress } from 'viem';
+import { createPublicClient, http, type Hash } from 'viem';
 import { type ArcNetworkKey } from '@wizpay/arc-network';
 import type { BackendArcNetworkConfiguration } from '../config/arc-network.config';
 import {
@@ -20,8 +21,10 @@ import {
   ARC_MAINNET_UNISWAP_V4_POOL_ID,
   ARC_MAINNET_UNISWAP_V4_POOL_KEY,
   ARC_MAINNET_UNISWAP_V4_QUOTER,
+  ARC_MAINNET_UNISWAP_V4_USDC,
   WIZPAY_SWAP_EXECUTOR_MAINNET_ADDRESS,
   buildUserControlledSwapPlan,
+  decodeExecuteSwap,
   encodeQuoteExactInputSingle,
   type MainnetUniswapV4QuoteObservation,
   type MainnetUniswapV4Receipt,
@@ -80,11 +83,24 @@ export type MainnetUniswapV4PayrollQuote = Readonly<{
 
 @Injectable()
 export class MainnetUniswapV4Service {
+  private readonly receiptClient;
+
   constructor(
     private readonly readiness: MainnetUniswapV4ReadinessService,
     private readonly quotes: MainnetUniswapV4QuoteService,
     private readonly config: ConfigService,
-  ) {}
+  ) {
+    const network = this.config.getOrThrow<BackendArcNetworkConfiguration>('arcNetwork');
+    this.receiptClient = createPublicClient({
+      chain: {
+        id: network.chainId,
+        name: network.key,
+        nativeCurrency: { decimals: 18, name: 'USDC', symbol: 'USDC' },
+        rpcUrls: { default: { http: [network.rpcUrl] } },
+      },
+      transport: http(network.rpcUrl, { retryCount: 1, timeout: 10_000 }),
+    });
+  }
 
   /**
    * Live executable readiness: Arc Mainnet process isolation plus live
@@ -262,6 +278,78 @@ export class MainnetUniswapV4Service {
       amountOut: verified.amountOut.toString(),
       tokenInSpent: verified.tokenInSpent.toString(),
     });
+  }
+
+  async confirmTransaction(transactionHash: string, authenticatedWallet: string) {
+    if (!/^0x[0-9a-fA-F]{64}$/.test(transactionHash) || !isAddress(authenticatedWallet)) {
+      throw new BadRequestException({
+        code: ARC_MAINNET_UNISWAP_V4_ERROR_CODES.INVALID_REQUEST,
+        message: 'A valid Arc Mainnet swap transaction hash is required.',
+      });
+    }
+    const network = this.config.getOrThrow<BackendArcNetworkConfiguration>('arcNetwork');
+    const client = this.receiptClient;
+    let providerChainId: number;
+    let transaction: Awaited<ReturnType<typeof client.getTransaction>>;
+    let receipt: Awaited<ReturnType<typeof client.getTransactionReceipt>>;
+    try {
+      [providerChainId, transaction, receipt] = await Promise.all([
+        client.getChainId(),
+        client.getTransaction({ hash: transactionHash as Hash }),
+        client.getTransactionReceipt({ hash: transactionHash as Hash }),
+      ]);
+    } catch {
+      throw new ServiceUnavailableException({
+        code: 'SWAP_RECEIPT_PENDING',
+        message: 'The Arc Mainnet swap receipt is not available yet.',
+        retryable: true,
+      });
+    }
+    if (providerChainId !== network.chainId) {
+      throw new BadRequestException({
+        code: 'SWAP_RECEIPT_MISMATCH',
+        message: 'The swap receipt is not an Arc Mainnet transaction.',
+      });
+    }
+    if (receipt.status !== 'success' || !transaction.to) {
+      throw new BadRequestException({
+        code: 'SWAP_RECEIPT_MISMATCH',
+        message: 'The Arc Mainnet swap transaction did not succeed.',
+      });
+    }
+    const call = decodeExecuteSwap(transaction.input);
+    const walletAddress = getAddress(authenticatedWallet);
+    const verified = verifySwapReceipt(
+      {
+        chainId: providerChainId,
+        status: receipt.status,
+        from: transaction.from,
+        to: transaction.to,
+        input: transaction.input,
+        value: transaction.value.toString(),
+        logs: receipt.logs,
+      },
+      {
+        walletAddress,
+        recipient: walletAddress,
+        tokenIn: call.tokenIn,
+        tokenOut: call.tokenOut,
+        amountIn: call.amountIn,
+        minAmountOut: call.minAmountOut,
+        transactionData: transaction.input,
+        transactionValue: transaction.value,
+        zeroForOne: isAddressEqual(call.tokenIn, ARC_MAINNET_UNISWAP_V4_USDC),
+      },
+    );
+    return {
+      transactionHash: transactionHash.toLowerCase(),
+      walletAddress,
+      chainId: network.chainId,
+      tokenIn: call.tokenIn,
+      tokenOut: call.tokenOut,
+      amountIn: verified.tokenInSpent.toString(),
+      amountOut: verified.amountOut.toString(),
+    };
   }
 
   /**

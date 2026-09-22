@@ -61,7 +61,13 @@ export class ActivityBackfillService {
       ownersProjected,
       malformedWalletsSkipped,
       ambiguousWalletsSkipped,
-      safeCategories: ['verified_invoice_payment'],
+      safeCategories: [
+        'verified_invoice_payment',
+        'verified_send_intent',
+        'verified_payroll_intent',
+        'verified_swap_receipt',
+        'verified_bridge_destination',
+      ],
       unsupportedCategories: [
         'provider_transfer_without_wallet_sync',
         'payroll_without_wallet_sync',

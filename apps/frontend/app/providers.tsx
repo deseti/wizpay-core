@@ -8,6 +8,7 @@ import "@/lib/reown-appkit";
 import { config, REOWN_CONFIGURATION_ERROR } from "@/lib/wagmi";
 import { PwaRuntime } from "@/src/features/pwa/components/PwaRuntime";
 import { CapabilityProvider } from "@/components/providers/CapabilityProvider";
+import { WalletAuthProvider } from "@/components/providers/WalletAuthProvider";
 
 export function Providers({ children }: { children: React.ReactNode }) {
   const [queryClient] = useState(
@@ -45,8 +46,10 @@ export function Providers({ children }: { children: React.ReactNode }) {
       <WagmiProvider config={config}>
         <CapabilityProvider>
           <ExternalWalletProvider>
-            <PwaRuntime />
-            {children}
+            <WalletAuthProvider>
+              <PwaRuntime />
+              {children}
+            </WalletAuthProvider>
           </ExternalWalletProvider>
         </CapabilityProvider>
       </WagmiProvider>

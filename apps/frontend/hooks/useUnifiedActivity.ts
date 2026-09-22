@@ -56,7 +56,27 @@ export function activityDtoToHistoryItem(
     totalFees: units(item.feeAmount),
     lpToken: inputAddress ?? outputAddress,
     lpAmount: units(item.inputAmount ?? item.outputAmount),
-    referenceId: item.sourceReferenceId,
+    referenceId:
+      typeof item.metadata?.referenceId === "string"
+        ? item.metadata.referenceId
+        : item.sourceReferenceId,
+    transactionHashes: Array.isArray(item.metadata?.transactionHashes)
+      ? item.metadata.transactionHashes.filter(
+          (value): value is Hex =>
+            typeof value === "string" && /^0x[0-9a-fA-F]{64}$/.test(value),
+        )
+      : undefined,
+    tokenTotals:
+      item.metadata?.tokenTotals &&
+      typeof item.metadata.tokenTotals === "object" &&
+      !Array.isArray(item.metadata.tokenTotals)
+        ? Object.fromEntries(
+            Object.entries(item.metadata.tokenTotals).filter(
+              (entry): entry is [string, string] =>
+                typeof entry[1] === "string" && /^\d+$/.test(entry[1]),
+            ),
+          )
+        : undefined,
     counterparty: item.counterparty ?? undefined,
     recipientCount:
       typeof item.metadata?.transactionCount === "number"
@@ -76,8 +96,8 @@ export function useUnifiedActivity(
   } = {},
 ) {
   const queryClient = useQueryClient();
-  const synchronizedScopes = useRef(new Set<string>());
-  const [readSessionToken, setReadSessionToken] = useState<string | null>(null);
+  const generation = useRef(0);
+  const startedScopes = useRef(new Set<string>());
   const {
     userToken,
     enabled = true,
@@ -87,16 +107,23 @@ export function useUnifiedActivity(
     refetchInterval = 60_000,
   } = options;
   const authenticated = Boolean(userToken?.trim());
-  const canRead = enabled && authenticated && Boolean(readSessionToken);
   const params = new URLSearchParams({ limit: String(limit) });
   if (type) params.set("type", type);
   if (status) params.set("status", status);
   const scope = sessionScope(userToken);
-  const readSessionScope = sessionScope(readSessionToken);
+  const [trackedScope, setTrackedScope] = useState(scope);
+  const [readyScope, setReadyScope] = useState<string | null>(null);
+  const [syncError, setSyncError] = useState<Error | null>(null);
+  const [syncAttempt, setSyncAttempt] = useState(0);
+  if (trackedScope !== scope) {
+    setTrackedScope(scope);
+    setSyncError(null);
+  }
+  const syncComplete = readyScope === scope;
+  const canRead = enabled && authenticated && syncComplete;
   const queryKey = [
       "unified-activity",
       scope,
-      readSessionScope,
       type ?? "all",
       status ?? "all",
       limit,
@@ -105,7 +132,7 @@ export function useUnifiedActivity(
     queryKey,
     queryFn: () =>
       backendFetch(`/activities?${params.toString()}`, {
-        headers: { Authorization: `Bearer ${readSessionToken}` },
+        headers: { Authorization: `Bearer ${userToken}` },
       }),
     enabled: canRead,
     refetchInterval,
@@ -114,38 +141,64 @@ export function useUnifiedActivity(
     staleTime: 15_000,
   });
   useEffect(() => {
-    setReadSessionToken(null);
-  }, [scope]);
+    queryClient.removeQueries({
+      predicate: (query) =>
+        Array.isArray(query.queryKey) &&
+        query.queryKey[0] === "unified-activity" &&
+        query.queryKey[1] !== scope,
+    });
+  }, [queryClient, scope]);
   useEffect(() => {
-    if (!enabled || !authenticated || !userToken || synchronizedScopes.current.has(scope)) return;
-    synchronizedScopes.current.add(scope);
-    let cancelled = false;
+    if (!enabled || !authenticated || !userToken || readyScope === scope) return;
+    if (startedScopes.current.has(scope)) return;
+    const current = generation.current + 1;
+    generation.current = current;
+    startedScopes.current.add(scope);
     void backendFetch<{
       status: "synced" | "throttled" | "in_flight" | "failed";
-      readSessionToken: string;
     }>("/activities/sync", {
       method: "POST",
       headers: { Authorization: `Bearer ${userToken}` },
     })
       .then((summary) => {
-        if (cancelled) return;
-        setReadSessionToken(summary.readSessionToken);
+        if (generation.current !== current) return;
+        if (summary.status === "failed") {
+          throw new Error("Activity synchronization is temporarily unavailable.");
+        }
+        setReadyScope(scope);
         return queryClient.invalidateQueries({
           queryKey: ["unified-activity", scope],
         });
       })
-      .catch(() => undefined);
+      .catch((cause: unknown) => {
+        startedScopes.current.delete(scope);
+        if (generation.current !== current) return;
+        setSyncError(
+          cause instanceof Error
+            ? cause
+            : new Error("Activity synchronization is temporarily unavailable."),
+        );
+      });
     return () => {
-      cancelled = true;
+      if (generation.current === current) generation.current += 1;
+      startedScopes.current.delete(scope);
     };
-  }, [authenticated, enabled, queryClient, scope, userToken]);
+  }, [authenticated, enabled, queryClient, readyScope, scope, syncAttempt, userToken]);
+  const retry = () => {
+    startedScopes.current.delete(scope);
+    setSyncError(null);
+    setReadyScope(null);
+    setSyncAttempt((value) => value + 1);
+  };
   return {
     items: canRead
       ? (query.data?.items ?? []).map(activityDtoToHistoryItem)
       : [],
     nextCursor: canRead ? (query.data?.nextCursor ?? null) : null,
-    isLoading: enabled && authenticated && (!readSessionToken || query.isLoading),
-    isError: query.isError,
+    isLoading: enabled && authenticated && (!syncComplete || query.isLoading) && !syncError,
+    isError: Boolean(syncError) || query.isError,
+    error: syncError ?? query.error ?? null,
     refetch: query.refetch,
+    retry,
   };
 }

@@ -64,7 +64,10 @@ function service(network = 'arc-mainnet') {
   const instance = new MainnetUniswapV4Service(
     new MainnetUniswapV4ReadinessService(),
     quotes as never,
-    { get: () => ({ key: network }) } as never,
+    {
+      get: () => ({ key: network }),
+      getOrThrow: () => ({ key: network, chainId: 5042, rpcUrl: 'http://127.0.0.1:8545' }),
+    } as never,
   );
   return { instance, quotes };
 }

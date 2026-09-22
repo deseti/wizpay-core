@@ -39,6 +39,7 @@ import {
 } from "@/lib/arc-gas-reserve";
 import {
   prepareMainnetSwap,
+  confirmMainnetSwap,
   quoteUserSwap,
   USER_SWAP_CHAIN,
   type UserSwapQuoteResponse,
@@ -58,6 +59,7 @@ import {
   ARC_MAINNET_UNISWAP_V4_UNAVAILABLE_MESSAGE,
   useMainnetUniswapV4Gate,
 } from "@/lib/mainnet-uniswap-v4";
+import { useWalletAuth } from "@/components/providers/WalletAuthProvider";
 
 type RequestStatus =
   | "idle"
@@ -114,6 +116,7 @@ function SwapWorkspace({
   const publicClient = usePublicClient({ chainId: activeArcChain.id });
   const { balances, isLoading: balancesLoading } = useTokenBalances();
   const { toast } = useToast();
+  const walletAuth = useWalletAuth();
 
   const [tokenIn, setTokenIn] = useState<TokenSymbol>("USDC");
   const [tokenOut, setTokenOut] = useState<TokenSymbol>("EURC");
@@ -363,7 +366,10 @@ function SwapWorkspace({
     setProgressOpen(true);
     setTransactionStatus("preparing");
     try {
+      const activitySessionToken =
+        walletAuth.sessionToken ?? (await walletAuth.authenticate());
       const completed = await executeMainnetSwap();
+      await confirmMainnetSwap(completed.hash, activitySessionToken);
       setSwapSuccess({
         inputAmount: formatTokenAmount(
           completed.inputAmount,

@@ -2,14 +2,15 @@ import {
   BadRequestException,
   Body,
   Controller,
+  Headers,
   HttpException,
   InternalServerErrorException,
   Post,
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
-import { isAddress } from 'viem';
 import { WalletProvisionError, WalletService } from './wallet.service';
+import { WalletAuthService } from './wallet-auth.service';
 
 type WalletSessionBody = {
   email?: string | null;
@@ -23,7 +24,37 @@ type EnsureWalletBody = WalletSessionBody & {
 
 @Controller('wallets')
 export class WalletController {
-  constructor(private readonly walletService: WalletService) {}
+  constructor(
+    private readonly walletService: WalletService,
+    private readonly walletAuth: WalletAuthService,
+  ) {}
+
+  @Post('auth/challenge')
+  async challenge(@Body() body: { address?: unknown; chainId?: unknown }) {
+    return {
+      data: await this.walletAuth.createChallenge(
+        typeof body.address === 'string' ? body.address : '',
+        typeof body.chainId === 'number' ? body.chainId : Number.NaN,
+      ),
+    };
+  }
+
+  @Post('auth/verify')
+  async verify(
+    @Body() body: { challengeId?: unknown; signature?: unknown },
+  ) {
+    return {
+      data: await this.walletAuth.verifyChallenge(
+        typeof body.challengeId === 'string' ? body.challengeId : '',
+        typeof body.signature === 'string' ? body.signature : '',
+      ),
+    };
+  }
+
+  @Post('auth/revoke')
+  async revoke(@Headers('authorization') authorization?: string) {
+    return { data: await this.walletAuth.revoke(authorization) };
+  }
 
   /**
    * Register the caller's external Arc Mainnet wallet address.
@@ -35,34 +66,12 @@ export class WalletController {
    * to authenticated endpoints must match the registered address.
    */
   @Post('register-external')
-  async registerExternal(
-    @Body() body: { userId?: unknown; address?: unknown; userEmail?: unknown },
-  ) {
-    const userId = typeof body.userId === 'string' ? body.userId.trim() : '';
-    const address = typeof body.address === 'string' ? body.address.trim() : '';
-    const userEmail =
-      typeof body.userEmail === 'string' && body.userEmail.trim()
-        ? body.userEmail.trim()
-        : null;
-    if (!userId) {
-      throw new BadRequestException('Missing required field: userId');
-    }
-    if (!isAddress(address)) {
-      throw new BadRequestException(
-        'Wallet registration requires a valid EVM address.',
-      );
-    }
-    try {
-      return {
-        data: await this.walletService.registerExternalWallet({
-          userId,
-          address,
-          userEmail,
-        }),
-      };
-    } catch (error) {
-      throw mapWalletControllerError(error);
-    }
+  registerExternal() {
+    throw new BadRequestException({
+      code: 'WALLET_SIGNATURE_REQUIRED',
+      message:
+        'External wallet registration requires a signed wallet authentication challenge.',
+    });
   }
 
   @Post('initialize')

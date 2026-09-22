@@ -27,11 +27,13 @@ vi.mock("@/components/providers/external-wallet-context", () => ({
   }),
 }));
 
-vi.mock("@/lib/wallet-registration", () => ({
-  ensureExternalWalletRegistered: vi.fn(async (address: string) => ({
-    address,
-    userId: "user-test",
-  })),
+vi.mock("@/components/providers/WalletAuthProvider", () => ({
+  useWalletAuth: () => ({
+    authenticate: vi.fn(),
+    error: null,
+    sessionToken: "opaque-wallet-session",
+    state: "authenticated",
+  }),
 }));
 
 vi.mock("@reown/appkit/react", () => ({
@@ -70,7 +72,7 @@ describe("merchant invoice pages", () => {
     render(<InvoicesPage />);
     await waitFor(() =>
       expect(listInvoices).toHaveBeenCalledWith(
-        WALLET,
+        "opaque-wallet-session",
         expect.objectContaining({ limit: 10, offset: 0 }),
       ),
     );
@@ -124,7 +126,7 @@ describe("merchant invoice pages", () => {
     await waitFor(() =>
       expect(getMerchantInvoice).toHaveBeenCalledWith(
         "3fcbcc73-3471-4e64-8dda-63c12ebf6c3c",
-        WALLET,
+        "opaque-wallet-session",
       ),
     );
     expect(await screen.findByText("Consulting")).toBeInTheDocument();

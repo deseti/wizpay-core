@@ -30,7 +30,7 @@ import {
   TOKEN_OPTIONS,
   type TokenSymbol,
 } from "@/lib/wizpay";
-import { TOKEN_BY_ADDRESS } from "@/constants/erc20";
+import { presentActivityAmount } from "@/lib/activity-amount";
 import { ACTIVITY_LABELS } from "@/lib/activity-labels";
 import { ActivityTypeIcon } from "@/components/dashboard/ActivityTypeIcon";
 import type { UnifiedHistoryItem } from "@/lib/types";
@@ -214,12 +214,20 @@ const HOME_ACTIVITY_CONFIG: Record<
   invoice_payment: { color: "text-teal-400" },
 };
 
-function RecentActivity({
+export function RecentActivity({
   items,
   isLoading,
+  authRequired,
+  authError = null,
+  error,
+  onAuthenticate,
 }: {
   items: UnifiedHistoryItem[];
   isLoading: boolean;
+  authRequired: boolean;
+  authError?: string | null;
+  error: string | null;
+  onAuthenticate: () => void;
 }) {
   if (isLoading) {
     return (
@@ -238,6 +246,39 @@ function RecentActivity({
           </div>
         ))}
       </div>
+    );
+  }
+
+  if (authError) {
+    return (
+      <EmptyStateView
+        icon={<Wallet className="h-7 w-7 text-primary/60" />}
+        title="Wallet authentication failed"
+        description={authError}
+        action={
+          <Button size="sm" onClick={onAuthenticate}>
+            Retry authentication
+          </Button>
+        }
+      />
+    );
+  }
+
+  if (authRequired || error) {
+    return (
+      <EmptyStateView
+        icon={<Wallet className="h-7 w-7 text-primary/60" />}
+        title={error ? "Activity unavailable" : "Authenticate your wallet"}
+        description={
+          error ??
+          "Sign a message to load account activity. This does not send a transaction or spend funds."
+        }
+        action={
+          <Button size="sm" onClick={onAuthenticate}>
+            {error ? "Try again" : "Authenticate wallet"}
+          </Button>
+        }
+      />
     );
   }
 
@@ -267,19 +308,7 @@ function RecentActivity({
     <div className="space-y-1">
       {recent.map((item) => {
         const config = HOME_ACTIVITY_CONFIG[item.type];
-        const tokenLabel =
-          item.tokenSymbol ??
-          (item.tokenIn
-            ? (TOKEN_BY_ADDRESS.get(item.tokenIn.toLowerCase())?.symbol ??
-              "Token")
-            : "Token");
-        const amount =
-          item.amountDisplay ??
-          (item.totalAmountIn
-            ? formatTokenAmount(item.totalAmountIn, 6)
-            : item.lpAmount
-              ? formatTokenAmount(item.lpAmount, 6)
-              : "—");
+        const amountLabel = presentActivityAmount(item);
         const txUrl = getExplorerTxUrl(item.txHash, ARC_CHAIN_ID);
 
         return (
@@ -315,9 +344,7 @@ function RecentActivity({
                 })}
               </p>
             </div>
-            <p className="text-sm font-mono font-medium">
-              {amount} {tokenLabel}
-            </p>
+            <p className="text-sm font-mono font-medium">{amountLabel}</p>
             {txUrl ? (
               <a
                 href={txUrl}
@@ -345,14 +372,18 @@ function HomeContent() {
   const { balances, isLoading: isBalancesLoading } = useTokenBalances({
     refetchInterval: 30_000,
   });
-  const { items, isLoading: isHistoryLoading } = useUnifiedActivity({
+  const {
+    items,
+    isLoading: isHistoryLoading,
+    error: activityError,
+    retry: retryActivity,
+  } = useUnifiedActivity({
     userToken: merchantSession.registered ? merchantSession.userToken : null,
     enabled: isConnected,
     limit: 25,
     refetchInterval: 60_000,
   });
   const showBalancesLoading = useDelayedLoading(isBalancesLoading);
-  const showHistoryLoading = useDelayedLoading(isHistoryLoading);
   const unifiedHistory = useMemo(() => {
     const seen = new Set<string>();
 
@@ -419,7 +450,25 @@ function HomeContent() {
         <CardContent className="pt-0">
           <RecentActivity
             items={unifiedHistory}
-            isLoading={showHistoryLoading}
+            isLoading={isHistoryLoading || merchantSession.registering}
+            authRequired={
+              isConnected &&
+              !merchantSession.registered &&
+              !merchantSession.registerError
+            }
+            authError={merchantSession.registerError}
+            error={
+              merchantSession.registered
+                ? (activityError?.message ?? null)
+                : null
+            }
+            onAuthenticate={() => {
+              if (merchantSession.registered) {
+                retryActivity();
+                return;
+              }
+              merchantSession.retry();
+            }}
           />
         </CardContent>
       </Card>

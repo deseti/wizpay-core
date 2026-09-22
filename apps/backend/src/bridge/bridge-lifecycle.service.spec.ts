@@ -1,9 +1,19 @@
 import { ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { concatHex, numberToHex, padHex, zeroAddress, type Hex } from 'viem';
+import {
+  concatHex,
+  encodeAbiParameters,
+  encodeEventTopics,
+  numberToHex,
+  padHex,
+  zeroAddress,
+  type Hex,
+} from 'viem';
 import {
   BridgeLifecycleService,
+  CCTP_V2_MESSAGE_RECEIVED_EVENT,
   bridgeUnavailable,
+  destinationMintReceiptMatches,
   matchesBridgeAttestation,
   matchesBridgeSourceMessage,
   matchesCctpV2MessageReceived,
@@ -553,6 +563,40 @@ describe('Bridge codec matchers', () => {
         decoded,
         padHex('0x99', { size: 32 }),
       ),
+    ).toBe(false);
+  });
+
+  it('accepts only a MessageReceived log from the destination transmitter', () => {
+    const messageBody = '0x01020304' as Hex;
+    const nonce = padHex('0x1234', { size: 32 });
+    const sender = addressToBytes32(MAINNET_MESSENGER);
+    const topics = encodeEventTopics({
+      abi: CCTP_V2_MESSAGE_RECEIVED_EVENT,
+      eventName: 'MessageReceived',
+      args: { caller: WALLET, nonce, finalityThresholdExecuted: 2000 },
+    });
+    const data = encodeAbiParameters(
+      [{ type: 'uint32' }, { type: 'bytes32' }, { type: 'bytes' }],
+      [26, sender, messageBody],
+    );
+    const log = { address: MAINNET_MESSENGER, topics, data };
+    const expected = {
+      messageTransmitter: MAINNET_MESSENGER,
+      sourceDomain: 26,
+      nonce,
+      sender,
+      finalityThresholdExecuted: 2000,
+      messageBody,
+    };
+    expect(destinationMintReceiptMatches([log], expected)).toBe(true);
+    expect(
+      destinationMintReceiptMatches([log], {
+        ...expected,
+        messageBody: '0xffff',
+      }),
+    ).toBe(false);
+    expect(
+      destinationMintReceiptMatches([{ ...log, address: RECIPIENT }], expected),
     ).toBe(false);
   });
 

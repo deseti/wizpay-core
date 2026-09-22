@@ -40,7 +40,10 @@ function service() {
   const instance = new MainnetUniswapV4Service(
     new MainnetUniswapV4ReadinessService(),
     quotes as never,
-    { get: () => ({ key: 'arc-mainnet' }) } as never,
+    {
+      get: () => ({ key: 'arc-mainnet' }),
+      getOrThrow: () => ({ key: 'arc-mainnet', chainId: 5042, rpcUrl: 'http://127.0.0.1:8545' }),
+    } as never,
   );
   return instance;
 }

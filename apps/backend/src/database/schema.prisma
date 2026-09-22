@@ -298,11 +298,43 @@ model ActivityAuthSession {
   ownerUserId   String
   walletAddress String
   expiresAt     DateTime
+  revokedAt     DateTime?
+  lastUsedAt    DateTime?
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
   @@index([ownerUserId])
   @@index([expiresAt])
+}
+
+model WalletAuthChallenge {
+  id            String    @id @default(uuid()) @db.Uuid
+  nonceHash     String    @unique
+  walletAddress String
+  chainId       Int
+  message       String
+  expiresAt     DateTime
+  usedAt        DateTime?
+  createdAt     DateTime  @default(now())
+
+  @@index([walletAddress, createdAt])
+  @@index([expiresAt])
+}
+
+model VerifiedSwapTransaction {
+  id              String   @id @default(uuid()) @db.Uuid
+  transactionHash String   @unique
+  walletAddress   String
+  chainId         Int
+  tokenIn         String
+  tokenOut        String
+  amountIn        String
+  amountOut       String
+  completedAt     DateTime
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([walletAddress, completedAt])
 }
 
 model ActivitySyncState {

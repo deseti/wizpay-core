@@ -90,13 +90,14 @@ describe("Reown AppKit wallet architecture", () => {
   it("keeps legacy controls unavailable on Mainnet", () => {
     // Arc Mainnet mounts a dedicated external-only provider tree: no legacy
     // SDK provider and no legacy API proxy may appear on that branch.
-    // Merchant invoices are scoped to the registered external wallet address.
+    // Merchant invoices use an opaque session from a signed wallet challenge.
     expect(providers).toContain("ExternalWalletProvider");
     expect(providers.toLowerCase()).not.toContain("circle");
     expect(invoiceCheckout).toContain("mainnetExternalOnly");
     expect(invoiceCheckout).toContain("!mainnetExternalOnly");
     expect(invoiceShared).toContain("useMerchantInvoiceSession");
-    expect(invoiceShared).toContain("ensureExternalWalletRegistered");
+    expect(invoiceShared).toContain("useWalletAuth");
+    expect(invoiceShared).not.toContain("ensureExternalWalletRegistered");
     expect(invoiceShared.toLowerCase()).not.toContain("circle");
     expect(connectCard).toContain(
       "Arc Mainnet uses connected external wallets only",

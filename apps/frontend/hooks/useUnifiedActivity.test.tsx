@@ -73,7 +73,7 @@ describe("useUnifiedActivity session isolation", () => {
         (options?.headers as Record<string, string> | undefined)
           ?.Authorization ?? "",
       );
-      if (authorization.includes("session-a"))
+      if (authorization.includes("user-a-token"))
         return Promise.resolve({ items: [activity("a")], nextCursor: null });
       return new Promise((resolve) => {
         resolveB = resolve;
@@ -130,5 +130,33 @@ describe("useUnifiedActivity session isolation", () => {
     );
     expect(result.current.items).toEqual([]);
     expect(backendFetch).not.toHaveBeenCalled();
+  });
+
+  it("returns a genuine authenticated empty result without an error", async () => {
+    vi.mocked(backendFetch).mockImplementation((path) =>
+      Promise.resolve(
+        path === "/activities/sync"
+          ? { status: "synced" }
+          : { items: [], nextCursor: null },
+      ),
+    );
+    const { result } = renderHook(
+      () => useUnifiedActivity({ userToken: "valid-session" }),
+      { wrapper },
+    );
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    expect(result.current.items).toEqual([]);
+    expect(result.current.isError).toBe(false);
+  });
+
+  it("surfaces authentication or backend failure instead of returning an empty success", async () => {
+    vi.mocked(backendFetch).mockRejectedValue(new Error("Backend unavailable"));
+    const { result } = renderHook(
+      () => useUnifiedActivity({ userToken: "invalid-session" }),
+      { wrapper },
+    );
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(result.current.error?.message).toBe("Backend unavailable");
+    expect(result.current.isLoading).toBe(false);
   });
 });

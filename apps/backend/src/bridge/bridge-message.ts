@@ -80,3 +80,9 @@ export function decodeCctpV2Message(message: Hex): DecodedCctpMessage {
     messageHash: keccak256(message),
   };
 }
+
+/** Burn-message body carried by MessageReceived. Excludes the 148-byte header. */
+export function cctpMessageBody(message: Hex): Hex {
+  decodeCctpV2Message(message);
+  return `0x${message.slice(2 + HEADER_LENGTH * 2)}` as Hex;
+}

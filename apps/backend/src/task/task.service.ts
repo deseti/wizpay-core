@@ -250,6 +250,11 @@ export class TaskService {
             metadata: {
               approvalAmount: sourceTokenApprovalAmount.toString(),
               referenceId,
+              runReferenceId:
+                typeof payload.runReferenceId === 'string' &&
+                payload.runReferenceId.trim()
+                  ? payload.runReferenceId.trim()
+                  : referenceId,
               sourceToken,
               walletAddress: owner.address,
               totalBatches: totals.totalBatches,

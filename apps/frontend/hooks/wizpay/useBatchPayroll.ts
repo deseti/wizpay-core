@@ -549,6 +549,7 @@ export function useBatchPayroll({
               sourceToken: activeToken.symbol,
               sourceTokenAddress: SUPPORTED_TOKENS[activeToken.symbol].address,
               referenceId: groupReferenceId,
+              runReferenceId: referenceId,
               walletAddress,
               recipients: groupRecipients.map((recipient) => ({
                 ...recipient,

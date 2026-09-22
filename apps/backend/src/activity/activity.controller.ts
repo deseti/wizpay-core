@@ -25,7 +25,7 @@ export class ActivityController {
     @Query('type') type?: string,
     @Query('status') status?: string,
   ) {
-    const principal = await this.activity.authenticateRead(authorization);
+    const principal = await this.auth.authenticate(authorization);
     const limit = limitText === undefined ? undefined : Number(limitText);
     if (limit !== undefined && (!Number.isInteger(limit) || limit < 1))
       throw new BadRequestException('Invalid activity page size.');
@@ -54,7 +54,7 @@ export class ActivityController {
     @Headers('authorization') authorization: string | undefined,
     @Param('id') id: string,
   ) {
-    const principal = await this.activity.authenticateRead(authorization);
+    const principal = await this.auth.authenticate(authorization);
     return { data: await this.activity.getOwned(principal, id) };
   }
 

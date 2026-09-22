@@ -46,7 +46,7 @@ export type ActivityProjection = {
   feeAmount?: string;
   feeTokenSymbol?: string;
   counterparty?: string;
-  metadata?: Record<string, string | number | boolean>;
+  metadata?: Record<string, unknown>;
   occurredAt?: Date;
 };
 
@@ -64,6 +64,4 @@ export type ActivitySyncSummary = {
  * Returned only from the authenticated synchronization endpoint.  The opaque
  * token is never persisted directly and is required for subsequent reads.
  */
-export type ActivitySyncResult = ActivitySyncSummary & {
-  readSessionToken: string;
-};
+export type ActivitySyncResult = ActivitySyncSummary;

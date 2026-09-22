@@ -81,7 +81,7 @@ export interface ActivityDto {
   feeAmount: string | null;
   feeTokenSymbol: string | null;
   counterparty: string | null;
-  metadata: Record<string, string | number | boolean> | null;
+  metadata: Record<string, unknown> | null;
   occurredAt: string | null;
   createdAt: string;
   updatedAt: string;
@@ -134,6 +134,8 @@ export interface UnifiedHistoryItem {
   totalFees?: bigint;
   recipientCount?: number;
   referenceId?: string;
+  transactionHashes?: Hex[];
+  tokenTotals?: Record<string, string>;
   /* LP-specific */
   lpToken?: Address;
   lpAmount?: bigint;

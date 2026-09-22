@@ -135,6 +135,20 @@ export async function prepareMainnetSwap(
   });
 }
 
+export function confirmMainnetSwap(
+  transactionHash: `0x${string}`,
+  sessionToken: string,
+) {
+  return backendFetch<{
+    id: string;
+    transactionHash: string;
+  }>("/user-swap/mainnet/confirm", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${sessionToken}` },
+    body: JSON.stringify({ transactionHash }),
+  });
+}
+
 export async function fetchMainnetSwapReadiness(): Promise<{
   available: boolean;
   executable: boolean;

@@ -1,15 +1,14 @@
-import {
-  Injectable,
-  Logger,
-  NotFoundException,
-  UnauthorizedException,
-} from '@nestjs/common';
-import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { Injectable, Logger, NotFoundException, UnauthorizedException } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
 import { Prisma, type Activity } from '@prisma/client';
 import { getAddress, isAddress, isAddressEqual } from 'viem';
 import { PrismaService } from '../database/prisma.service';
 import type { InvoiceMerchantPrincipal } from '../invoice/invoice.types';
 import { ARC_MAINNET_CHAIN_ID } from '../config/arc-network.config';
+import {
+  ARC_MAINNET_UNISWAP_V4_EURC,
+  ARC_MAINNET_UNISWAP_V4_USDC,
+} from '../user-swap/mainnet-uniswap-v4-protocol';
 import {
   ACTIVITY_STATUSES,
   ACTIVITY_TYPES,
@@ -33,39 +32,18 @@ export class ActivityService {
   private static readonly WALLET_SOURCE = 'external_wallet' as const;
   private static readonly SYNC_THROTTLE_MS = 60_000;
   private static readonly SYNC_LEASE_MS = 120_000;
-  private static readonly READ_SESSION_MS = 12 * 60 * 60 * 1000;
 
   constructor(
     private readonly prisma: PrismaService,
   ) {}
 
-  async authenticateRead(authorization?: string): Promise<ActivityOwnerPrincipal> {
-    const token = this.bearerToken(authorization);
-    const session = await this.prisma.activityAuthSession.findFirst({
-      where: {
-        sessionHash: this.sessionHash(token),
-        expiresAt: { gt: new Date() },
-      },
-    });
-    if (!session)
-      throw new UnauthorizedException({
-        code: 'ACTIVITY_SESSION_REQUIRED',
-        message: 'Synchronize activity once for this authenticated session.',
-      });
-    return {
-      merchantUserId: session.ownerUserId,
-      merchantWalletAddress: getAddress(session.walletAddress),
-      merchantDisplayLabel: null,
-    };
-  }
-
   async sync(
     principal: ActivityOwnerPrincipal,
   ): Promise<ActivitySyncResult> {
-    const key = `${principal.merchantUserId}:${ActivityService.WALLET_SOURCE}`;
+    const key = `${principal.merchantUserId}:${this.canonicalWallet(principal.merchantWalletAddress)}:${ActivityService.WALLET_SOURCE}`;
     const current = this.syncFlights.get(key);
     if (current) return current;
-    const flight = this.runSyncWithReadSession(principal).finally(() => {
+    const flight = this.runSync(principal).finally(() => {
       if (this.syncFlights.get(key) === flight) this.syncFlights.delete(key);
     });
     this.syncFlights.set(key, flight);
@@ -81,9 +59,11 @@ export class ActivityService {
     const type = this.optionalType(input.type);
     const status = this.optionalStatus(input.status);
     const cursor = input.cursor ? this.decodeCursor(input.cursor) : null;
+    const walletAddress = this.canonicalWallet(principal.merchantWalletAddress);
     const rows = await this.prisma.activity.findMany({
       where: {
         ownerUserId: principal.merchantUserId,
+        walletAddress,
         ...(type ? { type } : {}),
         ...(status ? { status } : {}),
         ...(cursor
@@ -133,7 +113,11 @@ export class ActivityService {
 
   async getOwned(principal: ActivityOwnerPrincipal, id: string) {
     const row = await this.prisma.activity.findFirst({
-      where: { id, ownerUserId: principal.merchantUserId },
+      where: {
+        id,
+        ownerUserId: principal.merchantUserId,
+        walletAddress: this.canonicalWallet(principal.merchantWalletAddress),
+      },
     });
     if (!row) throw new NotFoundException('Activity not found.');
     return this.toPublic(row);
@@ -196,39 +180,6 @@ export class ActivityService {
     });
   }
 
-  private async runSyncWithReadSession(
-    principal: ActivityOwnerPrincipal,
-  ): Promise<ActivitySyncResult> {
-    const readSessionToken = await this.registerReadSession(principal);
-    return {
-      ...(await this.runSync(principal)),
-      readSessionToken,
-    };
-  }
-
-  private async registerReadSession(
-    principal: ActivityOwnerPrincipal,
-  ): Promise<string> {
-    // The external-wallet bearer proves ownership only while synchronizing.
-    // Reads use a separate 256-bit opaque token, stored solely as a
-    // SHA-256 fingerprint.
-    const readSessionToken = randomBytes(32).toString('base64url');
-    const ownerUserId = principal.merchantUserId;
-    const walletAddress = getAddress(principal.merchantWalletAddress).toLowerCase();
-    await this.prisma.activityAuthSession.deleteMany({
-      where: { ownerUserId },
-    });
-    await this.prisma.activityAuthSession.create({
-      data: {
-        sessionHash: this.sessionHash(readSessionToken),
-        ownerUserId,
-        walletAddress,
-        expiresAt: new Date(Date.now() + ActivityService.READ_SESSION_MS),
-      },
-    });
-    return readSessionToken;
-  }
-
   private async runSync(
     principal: ActivityOwnerPrincipal,
   ): Promise<ActivitySyncSummary> {
@@ -255,10 +206,14 @@ export class ActivityService {
       throw new UnauthorizedException('Activity sync ownership conflict.');
 
     if (state.nextAllowedAt && state.nextAllowedAt > now) {
-      return this.emptySyncSummary(
-        'throttled',
-        state.nextAllowedAt.getTime() - now.getTime(),
-      );
+      const recordsAccepted = await this.projectPersisted(principal);
+      return {
+        ...this.emptySyncSummary(
+          'throttled',
+          state.nextAllowedAt.getTime() - now.getTime(),
+        ),
+        recordsAccepted,
+      };
     }
 
     const leaseId = randomUUID();
@@ -364,13 +319,28 @@ export class ActivityService {
    * anchored to a verified on-chain receipt on chain 5042.
    */
   async projectPersisted(principal: ActivityOwnerPrincipal): Promise<number> {
-    const payments = await this.prisma.invoicePayment.findMany({
-      where: {
-        status: 'VERIFIED',
-        invoice: { merchantUserId: principal.merchantUserId },
-      },
-      include: { invoice: true },
-    });
+    const wallet = getAddress(principal.merchantWalletAddress);
+    const [payments, intents, bridges, swaps] = await Promise.all([
+      this.prisma.invoicePayment.findMany({
+        where: {
+          status: 'VERIFIED',
+          invoice: { merchantUserId: principal.merchantUserId },
+        },
+        include: { invoice: true },
+      }),
+      this.prisma.executionIntent.findMany({
+        where: {
+          status: 'COMPLETED',
+          network: 'arc-mainnet',
+          transactionHash: { not: null },
+          operation: { in: ['SEND', 'PAYROLL'] },
+        },
+      }),
+      this.prisma.bridgeTransaction.findMany({ where: { status: 'completed' } }),
+      this.prisma.verifiedSwapTransaction.findMany({
+        where: { chainId: ARC_MAINNET_CHAIN_ID },
+      }),
+    ]);
 
     let accepted = 0;
     for (const payment of payments) {
@@ -402,6 +372,199 @@ export class ActivityService {
         counterparty: payment.payerAddress ?? undefined,
         metadata: { invoicePublicId: invoice.publicId },
         occurredAt: payment.verifiedAt ?? payment.createdAt,
+      });
+      accepted += 1;
+    }
+
+    for (const intent of intents) {
+      if (intent.network !== 'arc-mainnet' || !intent.transactionHash) continue;
+      if (!this.sameWallet(intent.sourceWallet, wallet)) continue;
+      if (intent.operation !== 'SEND') continue;
+      await this.upsert({
+        ownerUserId: principal.merchantUserId,
+        walletAddress: wallet,
+        type: 'send',
+        direction: 'outgoing',
+        status: 'completed',
+        source: 'verified_execution_intent',
+        idempotencyKey: `execution-intent:${intent.id}`,
+        sourceReferenceType: 'execution_intent',
+        sourceReferenceId: intent.id,
+        operationId: intent.id,
+        chainId: ARC_MAINNET_CHAIN_ID,
+        txHash: intent.transactionHash,
+        inputTokenSymbol: this.tokenSymbol(intent.tokenOut),
+        inputTokenAddress: intent.tokenOut,
+        inputAmount: intent.amountUnits,
+        counterparty: intent.recipient ?? undefined,
+        metadata: { referenceId: intent.externalReference },
+        occurredAt: intent.completedAt ?? intent.updatedAt,
+      });
+      accepted += 1;
+    }
+
+    const payrollIntents = intents.filter(
+      (intent) =>
+        intent.network === 'arc-mainnet' &&
+        intent.operation === 'PAYROLL' &&
+        Boolean(intent.transactionHash) &&
+        this.sameWallet(intent.sourceWallet, wallet),
+    );
+    const taskIds = [
+      ...new Set(
+        payrollIntents.flatMap((intent) => (intent.taskId ? [intent.taskId] : [])),
+      ),
+    ];
+    const tasks = taskIds.length
+      ? await this.prisma.task.findMany({ where: { id: { in: taskIds } } })
+      : [];
+    const tasksById = new Map(tasks.map((task) => [task.id, task]));
+    const refs = new Set(payrollIntents.map((intent) => intent.externalReference));
+    const payrollRuns = new Map<string, typeof payrollIntents>();
+    for (const intent of payrollIntents) {
+      const task = intent.taskId ? tasksById.get(intent.taskId) : undefined;
+      const runReference =
+        this.metadataString(task?.metadata, 'runReferenceId') ??
+        this.payrollRunReference(intent.externalReference, refs);
+      const run = payrollRuns.get(runReference) ?? [];
+      run.push(intent);
+      payrollRuns.set(runReference, run);
+    }
+    for (const [runReference, run] of payrollRuns) {
+      const uniqueTasks = new Map(
+        run.flatMap((intent) => {
+          const task = intent.taskId ? tasksById.get(intent.taskId) : undefined;
+          return task ? [[task.id, task] as const] : [];
+        }),
+      );
+      const recipientCount = [...uniqueTasks.values()].reduce(
+        (sum, task) => sum + this.metadataNumber(task.metadata, 'totalRecipients'),
+        0,
+      );
+      const tokenTotals = new Map<string, { address: string; amount: bigint }>();
+      for (const intent of run) {
+        const symbol = this.tokenSymbol(intent.tokenOut);
+        const current = tokenTotals.get(symbol) ?? {
+          address: intent.tokenOut,
+          amount: 0n,
+        };
+        current.amount += BigInt(intent.amountUnits);
+        tokenTotals.set(symbol, current);
+      }
+      const hashes = [
+        ...new Set(
+          run.flatMap((intent) =>
+            intent.transactionHash ? [intent.transactionHash.toLowerCase()] : [],
+          ),
+        ),
+      ];
+      const single = tokenTotals.size === 1 ? [...tokenTotals.entries()][0] : null;
+      const occurredAt = run.reduce(
+        (latest, intent) => {
+          const value = intent.completedAt ?? intent.updatedAt;
+          return value > latest ? value : latest;
+        },
+        new Date(0),
+      );
+      const sourceReferenceId = `${wallet.toLowerCase()}:${runReference}`;
+      await this.upsert({
+        ownerUserId: principal.merchantUserId,
+        walletAddress: wallet,
+        type: 'payroll',
+        direction: 'outgoing',
+        status: 'completed',
+        source: 'verified_payroll_intents',
+        idempotencyKey: `payroll-run:${sourceReferenceId}`,
+        sourceReferenceType: 'payroll_run',
+        sourceReferenceId,
+        taskId: run[0]?.taskId ?? undefined,
+        chainId: ARC_MAINNET_CHAIN_ID,
+        txHash: hashes[0],
+        inputTokenSymbol: single?.[0],
+        inputTokenAddress: single?.[1].address,
+        inputAmount: single?.[1].amount.toString(),
+        metadata: {
+          referenceId: runReference,
+          transactionCount: recipientCount,
+          transactionHashes: hashes,
+          tokenTotals: Object.fromEntries(
+            [...tokenTotals].map(([symbol, total]) => [symbol, total.amount.toString()]),
+          ),
+        },
+        occurredAt,
+      });
+      accepted += 1;
+    }
+
+    for (const swap of swaps) {
+      if (!this.sameWallet(swap.walletAddress, wallet)) continue;
+      await this.upsert({
+        ownerUserId: principal.merchantUserId,
+        walletAddress: wallet,
+        type: 'swap',
+        direction: 'outgoing',
+        status: 'completed',
+        source: 'verified_swap_receipt',
+        idempotencyKey: `verified-swap:${swap.id}`,
+        sourceReferenceType: 'verified_swap',
+        sourceReferenceId: swap.id,
+        transactionId: swap.id,
+        chainId: swap.chainId,
+        txHash: swap.transactionHash,
+        inputTokenSymbol: this.tokenSymbol(swap.tokenIn),
+        inputTokenAddress: swap.tokenIn,
+        inputAmount: swap.amountIn,
+        outputTokenSymbol: this.tokenSymbol(swap.tokenOut),
+        outputTokenAddress: swap.tokenOut,
+        outputAmount: swap.amountOut,
+        occurredAt: swap.completedAt,
+      });
+      accepted += 1;
+    }
+
+    for (const bridge of bridges) {
+      const payload = this.object(bridge.payload);
+      const result = this.object(bridge.result);
+      const bridgeWallet = this.string(payload.walletAddress);
+      const destinationHash = this.string(result.destinationTransactionHash);
+      if (
+        result.destinationReceiptVerified !== true ||
+        !bridgeWallet ||
+        !destinationHash ||
+        !this.sameWallet(bridgeWallet, wallet)
+      ) {
+        continue;
+      }
+      await this.upsert({
+        ownerUserId: principal.merchantUserId,
+        walletAddress: wallet,
+        type: 'bridge',
+        direction: 'outgoing',
+        status: 'completed',
+        source: 'completed_cctp_intent',
+        idempotencyKey: `bridge:${bridge.id}`,
+        sourceReferenceType: 'bridge_transaction',
+        sourceReferenceId: bridge.id,
+        taskId: bridge.taskId,
+        operationId: bridge.id,
+        chainId: this.number(payload.sourceChainId),
+        txHash: destinationHash,
+        inputTokenSymbol: 'USDC',
+        inputTokenAddress: this.string(payload.sourceUsdcAddress),
+        inputAmount: this.string(payload.amount),
+        outputTokenSymbol: 'USDC',
+        outputTokenAddress: this.string(payload.destinationUsdcAddress),
+        outputAmount: this.string(result.mintAmount) ?? this.string(payload.amount),
+        counterparty: this.string(payload.recipientAddress),
+        metadata: {
+          sourceChainId: this.number(payload.sourceChainId) ?? 0,
+          destinationChainId: this.number(payload.destinationChainId) ?? 0,
+          transactionHashes: [
+            this.string(result.sourceTransactionHash),
+            destinationHash,
+          ].filter((value): value is string => Boolean(value)),
+        },
+        occurredAt: this.date(result.completedAt) ?? bridge.updatedAt,
       });
       accepted += 1;
     }
@@ -492,6 +655,10 @@ export class ActivityService {
       ? (value as JsonObject)
       : {};
   }
+  private canonicalWallet(value: string) {
+    return getAddress(value).toLowerCase();
+  }
+
   private sameWallet(left: string, right: string) {
     return (
       isAddress(left) &&
@@ -511,33 +678,77 @@ export class ActivityService {
       'transactionCount',
       'sourceChainId',
       'destinationChainId',
+      'referenceId',
+      'transactionHashes',
+      'tokenTotals',
     ];
-    return Object.fromEntries(
-      allowed.flatMap((key) => {
-        const item = value[key];
-        return typeof item === 'string' ||
-          typeof item === 'number' ||
-          typeof item === 'boolean'
-          ? [[key, item]]
-          : [];
-      }),
+    const safe: Record<string, unknown> = {};
+    for (const key of allowed) {
+      const item = value[key];
+      if (
+        typeof item === 'string' ||
+        typeof item === 'number' ||
+        typeof item === 'boolean' ||
+        (Array.isArray(item) &&
+          item.every((child) => typeof child === 'string')) ||
+        (item &&
+          typeof item === 'object' &&
+          !Array.isArray(item) &&
+          Object.values(item).every((child) => typeof child === 'string'))
+      ) {
+        safe[key] = item;
+      }
+    }
+    return safe;
+  }
+
+  private payrollRunReference(reference: string, all: Set<string>) {
+    const match = reference.match(/^(.*)-(USDC|EURC)(?:-\d+)?$/);
+    if (!match) return reference.replace(/-\d+$/, '');
+    const base = match[1];
+    const other = match[2] === 'USDC' ? 'EURC' : 'USDC';
+    const hasSibling = [...all].some((candidate) =>
+      new RegExp(`^${this.escapeRegex(base)}-${other}(?:-\\d+)?$`).test(candidate),
     );
+    return hasSibling ? base : reference.replace(/-\d+$/, '');
   }
 
-  private bearerToken(authorization?: string) {
-    const match = authorization?.match(/^Bearer\s+([^\s]+)$/i);
-    if (!match)
-      throw new UnauthorizedException({
-        code: 'ACTIVITY_AUTH_REQUIRED',
-        message: 'An authenticated activity session is required.',
-      });
-    return match[1];
+  private escapeRegex(value: string) {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   }
 
-  private sessionHash(token: string) {
-    return createHash('sha256')
-      .update('wizpay.activity.read.v1\0')
-      .update(token)
-      .digest('hex');
+  private tokenSymbol(address: string) {
+    if (this.sameWallet(address, ARC_MAINNET_UNISWAP_V4_USDC)) return 'USDC';
+    if (this.sameWallet(address, ARC_MAINNET_UNISWAP_V4_EURC)) return 'EURC';
+    return 'Token';
   }
+
+  private metadataNumber(value: unknown, key: string) {
+    const item = this.object(value)[key];
+    return typeof item === 'number' && Number.isSafeInteger(item) && item >= 0
+      ? item
+      : 0;
+  }
+
+  private metadataString(value: unknown, key: string) {
+    const item = this.object(value)[key];
+    return typeof item === 'string' && item ? item : undefined;
+  }
+
+  private string(value: unknown) {
+    return typeof value === 'string' && value ? value : undefined;
+  }
+
+  private number(value: unknown) {
+    return typeof value === 'number' && Number.isSafeInteger(value)
+      ? value
+      : undefined;
+  }
+
+  private date(value: unknown) {
+    if (typeof value !== 'string') return undefined;
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? undefined : parsed;
+  }
+
 }
