@@ -8,31 +8,45 @@ import {
   Home,
   Repeat,
   ReceiptText,
-  Route,
-  User,
-  Wallet,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { SidebarWalletSummary } from "./SidebarWalletSummary";
 
 const navItems = [
-  { href: "/", label: "Home", icon: Home },
-  { href: "/send", label: "Send", icon: ArrowRightLeft },
-  { href: "/payroll", label: "Payroll", icon: BriefcaseBusiness },
-  { href: "/invoices", label: "Invoices", icon: ReceiptText },
-  { href: "/swap", label: "Swap", icon: Repeat },
-  { href: "/bridge", label: "Bridge", icon: Route },
-  { href: "/assets", label: "Assets", icon: Wallet },
-  { href: "/profile", label: "Profile", icon: User },
+  { href: "/", label: "Home", icon: Home, activePaths: ["/"] },
+  {
+    href: "/send",
+    label: "Send",
+    icon: ArrowRightLeft,
+    activePaths: ["/send"],
+  },
+  {
+    href: "/payroll",
+    label: "Payroll",
+    icon: BriefcaseBusiness,
+    activePaths: ["/payroll"],
+  },
+  {
+    href: "/invoices",
+    label: "Invoices",
+    icon: ReceiptText,
+    activePaths: ["/invoices"],
+  },
+  {
+    href: "/swap",
+    label: "Swap & Bridge",
+    icon: Repeat,
+    activePaths: ["/swap", "/bridge"],
+  },
 ];
 
-function isActivePath(pathname: string, href: string) {
-  if (href === "/") {
-    return pathname === href;
-  }
-
-  return pathname === href || pathname.startsWith(`${href}/`);
+function isActivePath(pathname: string, activePaths: readonly string[]) {
+  return activePaths.some((href) =>
+    href === "/"
+      ? pathname === href
+      : pathname === href || pathname.startsWith(`${href}/`),
+  );
 }
 
 export function DashboardSidebar() {
@@ -71,8 +85,8 @@ export function DashboardSidebar() {
         <div className="mb-3 px-2 text-[10px] font-bold tracking-[0.2em] text-muted-foreground/50 uppercase">
           Menu
         </div>
-        {navItems.map(({ href, label, icon: Icon }) => {
-          const isActive = isActivePath(pathname, href);
+        {navItems.map(({ href, label, icon: Icon, activePaths }) => {
+          const isActive = isActivePath(pathname, activePaths);
           return (
             <Link
               key={href}

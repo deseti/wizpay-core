@@ -47,5 +47,13 @@ export const reownAppKit =
         enableWalletGuide: false,
         features: REOWN_EXTERNAL_WALLET_FEATURES,
         themeMode: "dark",
+        // AppKit otherwise preloads its remote KHTeka assets, which the
+        // production font-src policy rejects. Use the app's system stack.
+        themeVariables: {
+          "--w3m-font-family":
+            '"Avenir Next", Avenir, "Segoe UI", Helvetica, Arial, sans-serif',
+          "--apkt-font-family":
+            '"Avenir Next", Avenir, "Segoe UI", Helvetica, Arial, sans-serif',
+        },
       })
     : null;

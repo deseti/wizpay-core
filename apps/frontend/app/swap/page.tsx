@@ -1,12 +1,12 @@
 "use client";
 
 import { DashboardAppFrame } from "@/components/dashboard/DashboardAppFrame";
-import { SwapScreen } from "@/components/dashboard/SwapScreen";
+import { SwapBridgeWorkspace } from "@/components/dashboard/SwapBridgeWorkspace";
 
 export default function SwapPage() {
   return (
     <DashboardAppFrame>
-      <SwapScreen />
+      <SwapBridgeWorkspace />
     </DashboardAppFrame>
   );
 }

@@ -12,23 +12,19 @@ describe("payment navigation regression", () => {
       "utf8",
     );
     for (const label of [
+      "Home",
       "Send",
       "Payroll",
-      "Swap",
-      "Bridge",
-      "Assets",
-      "Profile",
       "Invoices",
+      "Swap & Bridge",
     ])
       expect(sidebar).toContain(`label: "${label}"`);
-    for (const label of [
-      "Send",
-      "Payroll",
-      "Invoices",
-      "Bridge",
-      "Scan QR",
-    ])
+    expect(sidebar).not.toContain('label: "Assets"');
+    expect(sidebar).not.toContain('label: "Profile"');
+    expect(sidebar).not.toContain('label: "Bridge"');
+    for (const label of ["Send", "Payroll", "Invoices", "Scan QR"])
       expect(actions).toContain(label);
+    expect(actions).not.toContain("Bridge");
   });
 
   it("keeps the three primary payment actions on the homepage", () => {

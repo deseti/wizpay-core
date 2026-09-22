@@ -8,17 +8,22 @@ import { cn } from "@/lib/utils";
 import { QuickActionSheet } from "@/components/dashboard/QuickActionSheet";
 
 const tabs = [
-  { href: "/", label: "Home", icon: Home },
-  { href: "/swap", label: "Swap", icon: ArrowLeftRight },
-  { href: "/profile", label: "Profile", icon: User },
+  { href: "/", label: "Home", icon: Home, activePaths: ["/"] },
+  {
+    href: "/swap",
+    label: "Swap",
+    icon: ArrowLeftRight,
+    activePaths: ["/swap", "/bridge"],
+  },
+  { href: "/profile", label: "Account", icon: User, activePaths: ["/profile"] },
 ] as const;
 
-function isActiveDestination(pathname: string, href: string) {
-  if (href === "/") {
-    return pathname === "/";
-  }
-
-  return pathname === href || pathname.startsWith(`${href}/`);
+function isActiveDestination(pathname: string, activePaths: readonly string[]) {
+  return activePaths.some((href) =>
+    href === "/"
+      ? pathname === href
+      : pathname === href || pathname.startsWith(`${href}/`),
+  );
 }
 
 export function DashboardBottomNav() {
@@ -66,12 +71,9 @@ export function DashboardBottomNav() {
   );
 }
 
-function renderTab(
-  tab: (typeof tabs)[number],
-  pathname: string,
-) {
-  const { href, label, icon: Icon } = tab;
-  const isActive = isActiveDestination(pathname, href);
+function renderTab(tab: (typeof tabs)[number], pathname: string) {
+  const { href, label, icon: Icon, activePaths } = tab;
+  const isActive = isActiveDestination(pathname, activePaths);
 
   return (
     <Link

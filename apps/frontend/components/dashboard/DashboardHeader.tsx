@@ -1,6 +1,7 @@
 "use client";
 
 import { useAppKit } from "@reown/appkit/react";
+import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import {
   ArrowRightLeft,
@@ -8,6 +9,7 @@ import {
   ChevronDown,
   Copy,
   User,
+  Wallet,
   Wifi,
 } from "lucide-react";
 
@@ -31,7 +33,7 @@ function MobileProfileEntry({
     <a
       href="/profile"
       className="flex items-center gap-2 rounded-2xl border border-border/40 bg-card/60 px-2.5 py-1.5 backdrop-blur-md shadow-lg shadow-black/10 transition-all hover:border-primary/25 hover:bg-primary/10 active:scale-95 md:hidden"
-      aria-label="Open profile"
+      aria-label="Open account"
     >
       <span className="relative flex h-8 w-8 items-center justify-center rounded-xl bg-gradient-to-br from-primary/25 to-violet-500/20 text-primary ring-1 ring-primary/20">
         <User className="h-4 w-4" />
@@ -150,7 +152,10 @@ export function DashboardHeader() {
                 label={activeWalletShortAddress ?? "Account"}
                 statusLabel={activeWalletChainName ?? "External"}
               />
-              <div className="hidden items-center gap-1.5 rounded-2xl border border-border/40 bg-card/50 p-1 backdrop-blur-md shadow-lg shadow-black/10 md:flex">
+              <div
+                ref={menuRef}
+                className="relative hidden items-center gap-1.5 rounded-2xl border border-border/40 bg-card/50 p-1 backdrop-blur-md shadow-lg shadow-black/10 md:flex"
+              >
                 {activeWalletAddress ? (
                   <button
                     onClick={() => void copyAddress(activeWalletAddress)}
@@ -173,14 +178,10 @@ export function DashboardHeader() {
 
                 <button
                   type="button"
-                  onClick={() =>
-                    void openAppKit({
-                      view:
-                        activeWalletChainId !== activeArcChain.id
-                          ? "Networks"
-                          : "Account",
-                    })
-                  }
+                  aria-expanded={menuOpen}
+                  aria-haspopup="menu"
+                  aria-label="Account and wallet menu"
+                  onClick={() => setMenuOpen((open) => !open)}
                   className="flex items-center gap-2 rounded-xl border border-transparent bg-background/80 px-3 py-2 transition-all hover:border-primary/20 hover:bg-primary/10 active:scale-95"
                 >
                   <span className="flex h-6 w-6 items-center justify-center rounded-lg bg-gradient-to-br from-primary/25 to-violet-500/20 text-[11px] font-bold text-primary ring-1 ring-primary/20">
@@ -196,6 +197,40 @@ export function DashboardHeader() {
                   </span>
                   <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
                 </button>
+                {menuOpen ? (
+                  <div
+                    role="menu"
+                    aria-label="Account menu"
+                    className="absolute right-0 top-full z-50 mt-2 w-56 overflow-hidden rounded-2xl border border-border/40 bg-card/95 p-1 shadow-2xl shadow-black/30 backdrop-blur-xl"
+                  >
+                    <Link
+                      href="/profile"
+                      role="menuitem"
+                      className="flex items-center gap-2 rounded-xl px-3 py-2.5 text-sm font-medium text-foreground transition-colors hover:bg-primary/10"
+                      onClick={() => setMenuOpen(false)}
+                    >
+                      <User className="h-4 w-4 text-primary" />
+                      Account
+                    </Link>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className="flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-left text-sm font-medium text-foreground transition-colors hover:bg-primary/10"
+                      onClick={() => {
+                        setMenuOpen(false);
+                        void openAppKit({
+                          view:
+                            activeWalletChainId !== activeArcChain.id
+                              ? "Networks"
+                              : "Account",
+                        });
+                      }}
+                    >
+                      <Wallet className="h-4 w-4 text-primary" />
+                      Wallet
+                    </button>
+                  </div>
+                ) : null}
               </div>
             </>
           )}

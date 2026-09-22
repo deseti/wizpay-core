@@ -107,7 +107,11 @@ export function formatUsdcUnits(units: bigint): string {
   return raw.includes(".") ? raw.replace(/0+$/, "").replace(/\.$/, ".0") : raw;
 }
 
-export function BridgeScreen() {
+export function BridgeScreen({
+  showHeading = true,
+}: {
+  showHeading?: boolean;
+}) {
   const capability = useCapability("bridge");
   if (!capability.enabled) {
     return (
@@ -116,10 +120,10 @@ export function BridgeScreen() {
       </p>
     );
   }
-  return <BridgeWorkspace />;
+  return <BridgeWorkspace showHeading={showHeading} />;
 }
 
-function BridgeWorkspace() {
+function BridgeWorkspace({ showHeading }: { showHeading: boolean }) {
   const bridgeCapability = useCapability("bridge");
   const { address, chainId, isConnected } = useAccount();
   const { switchChainAsync } = useSwitchChain();
@@ -483,13 +487,15 @@ function BridgeWorkspace() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold sm:text-3xl">Bridge</h1>
-        <p className="text-sm text-muted-foreground">
-          Move native USDC between Arc Mainnet and supported chains with
-          official Circle CCTP. Your wallet signs every transaction.
-        </p>
-      </div>
+      {showHeading ? (
+        <div>
+          <h1 className="text-2xl font-bold sm:text-3xl">Bridge</h1>
+          <p className="text-sm text-muted-foreground">
+            Move native USDC between Arc Mainnet and supported chains with
+            official Circle CCTP. Your wallet signs every transaction.
+          </p>
+        </div>
+      ) : null}
       <div className="grid gap-6 xl:grid-cols-[minmax(0,2fr)_minmax(300px,1fr)]">
         <Card className="glass-card border-border/40">
           <CardHeader>

@@ -2,13 +2,7 @@
 
 import { useCallback, useState } from "react";
 import { useRouter } from "next/navigation";
-import {
-  ArrowLeftRight,
-  BriefcaseBusiness,
-  ReceiptText,
-  ScanLine,
-  Send,
-} from "lucide-react";
+import { BriefcaseBusiness, ReceiptText, ScanLine, Send } from "lucide-react";
 import { BottomSheet } from "@/components/ui/bottom-sheet";
 import { RecipientScannerDialog } from "@/components/dashboard/RecipientScannerDialog";
 import {
@@ -85,21 +79,6 @@ export function QuickActionSheet({ open, onClose }: QuickActionSheetProps) {
             <span className="text-sm font-semibold">Invoices</span>
             <span className="text-[11px] text-muted-foreground/70">
               Payment links
-            </span>
-          </button>
-          <button
-            onClick={() => {
-              onClose();
-              router.push("/bridge");
-            }}
-            className="flex flex-col items-center gap-3 rounded-2xl border border-border/40 bg-background/40 p-5 transition-all active:scale-95 hover:border-primary/30 hover:bg-primary/8"
-          >
-            <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary/15 text-primary">
-              <ArrowLeftRight className="h-6 w-6" />
-            </div>
-            <span className="text-sm font-semibold">Bridge</span>
-            <span className="text-[11px] text-muted-foreground/70">
-              CCTP transfers
             </span>
           </button>
           <button

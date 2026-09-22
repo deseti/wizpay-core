@@ -28,11 +28,27 @@ describe("production browser security headers", () => {
       )?.value ?? "";
     expect(csp).not.toContain("unsafe-eval");
     expect(csp).not.toMatch(/https:\/\/\*\./);
+    expect(csp).toContain("script-src 'self' 'unsafe-inline'");
+    expect(csp).toContain("style-src 'self' 'unsafe-inline'");
+    expect(csp).toContain(
+      "img-src 'self' data: blob: https://api.qrserver.com https://secure.walletconnect.com",
+    );
+    expect(csp).toContain("frame-src 'self' https://verify.walletconnect.org");
     expect(csp).toContain("frame-ancestors 'none'");
+    expect(csp).toContain("base-uri 'self'");
+    expect(csp).toContain("form-action 'self'");
     expect(csp).toContain("https://rpc.mainnet.arc.io");
     expect(csp).toContain("wss://relay.walletconnect.com");
     expect(csp).not.toContain("api.circle.com");
     expect(csp.toLowerCase()).not.toContain("testnet");
+    expect(csp).toContain("font-src 'self' data:");
+    expect(csp).toContain("default-src 'self'");
+    expect(csp).toContain("object-src 'none'");
+    expect(csp).not.toContain("fonts.reown.com");
+    expect(csp).not.toContain("cca-lite.coinbase.com");
+    expect(csp).not.toContain("font-src *");
+    expect(csp).not.toContain("connect-src *");
+    expect(csp).not.toContain("default-src *");
   });
 
   it("adds only the exact configured HTTPS backend origin", () => {

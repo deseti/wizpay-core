@@ -83,8 +83,13 @@ describe("Reown AppKit wallet architecture", () => {
     expect(appKit).toContain('defaultAccountTypes: { eip155: "eoa" }');
     expect(appKit).toContain('coinbasePreference: "eoaOnly"');
     expect(appKit).toContain("enableInjected: true");
+    expect(appKit).toContain('"--w3m-font-family"');
+    expect(appKit).toContain('"--apkt-font-family"');
+    expect(appKit).not.toContain("fonts.reown.com");
     expect(wagmi).toContain("safe({ shimDisconnect: true })");
     expect(wagmi).toContain("coinbaseWallet");
+    expect(wagmi).toContain("telemetry: false");
+    expect(wagmi).not.toContain("cca-lite.coinbase.com");
   });
 
   it("keeps legacy controls unavailable on Mainnet", () => {

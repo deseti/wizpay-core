@@ -134,7 +134,9 @@ const transports = {
 const externalWalletConnectors = [
   coinbaseWallet({
     appName: "WizPay",
-    preference: "eoaOnly",
+    // Keep the EOA connector for Coinbase Wallet. Functional telemetry is not
+    // required to connect or sign and remains disabled in production.
+    preference: { options: "eoaOnly", telemetry: false },
     version: "4",
   }),
   safe({ shimDisconnect: true }),
