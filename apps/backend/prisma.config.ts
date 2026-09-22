@@ -11,7 +11,9 @@ const envPaths = [
 
 for (const p of envPaths) {
   if (fs.existsSync(p)) {
-    loadEnv({ path: p });
+    // Keep Prisma CLI output machine-safe. In particular, `migrate diff
+    // --script` must emit SQL only when redirected into a migration file.
+    loadEnv({ path: p, quiet: true });
     break;
   }
 }

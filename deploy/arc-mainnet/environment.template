@@ -1,11 +1,40 @@
+# Fresh Arc Mainnet production template. Copy outside version control and
+# replace every angle-bracket placeholder. Never reuse a Testnet env file.
+# external-wallet-only runtime: no Circle App Wallet or custody credentials.
+
+# REQUIRED SERVER
 WIZPAY_ARC_NETWORK=arc-mainnet
 WIZPAY_API_NETWORK=arc-mainnet
 WIZPAY_WORKER_NETWORK=arc-mainnet
-ARC_MAINNET_DATABASE_URL=<unavailable-until-authorized>
-ARC_MAINNET_REDIS_URL=<unavailable-until-authorized>
+WIZPAY_MIGRATION_NETWORK=arc-mainnet
+ARC_MAINNET_POSTGRES_USER=<mainnet-postgres-user>
+ARC_MAINNET_POSTGRES_PASSWORD=<mainnet-postgres-password>
+ARC_MAINNET_POSTGRES_DATABASE=<mainnet-postgres-database>
+ARC_MAINNET_DATABASE_URL=postgresql://<mainnet-postgres-user>:<mainnet-postgres-password>@postgres:5432/<mainnet-postgres-database>
+ARC_MAINNET_REDIS_URL=redis://redis:6379/0
 ARC_MAINNET_QUEUE_PREFIX=wizpay:arc-mainnet
-ARC_MAINNET_POSTGRES_USER=<unavailable-until-authorized>
-ARC_MAINNET_POSTGRES_PASSWORD=<unavailable-until-authorized>
-ARC_MAINNET_POSTGRES_DATABASE=<unavailable-until-authorized>
-# Arc Mainnet is external-wallet-only. No additional wallet credentials are
-# required or accepted for Mainnet runtime.
+CORS_ORIGINS=https://app.wizpay.xyz
+WIZPAY_ARC_MAINNET_CAPABILITY_SEND=<true-or-false-after-release-approval>
+WIZPAY_ARC_MAINNET_CAPABILITY_SAME_TOKEN_PAYROLL=<true-or-false-after-release-approval>
+WIZPAY_ARC_MAINNET_CAPABILITY_INVOICE=<true-or-false-after-release-approval>
+WIZPAY_ARC_MAINNET_CAPABILITY_PAYMENT_LINK=<true-or-false-after-release-approval>
+WIZPAY_ARC_MAINNET_CAPABILITY_BRIDGE=<true-or-false-after-release-approval>
+WIZPAY_ARC_MAINNET_CAPABILITY_SWAP=<true-or-false-after-release-approval>
+WIZPAY_ARC_MAINNET_CAPABILITY_CROSS_TOKEN_PAYROLL=<true-or-false-after-release-approval>
+
+# REQUIRED FRONTEND/VERCEL
+NEXT_PUBLIC_WIZPAY_ARC_NETWORK=arc-mainnet
+NEXT_PUBLIC_API_URL=<https-backend-origin-required>
+NEXT_PUBLIC_WIZPAY_PUBLIC_APP_URL=https://app.wizpay.xyz
+NEXT_PUBLIC_REOWN_PROJECT_ID=<reown-project-id>
+
+# OPTIONAL SERVER
+WIZPAY_BACKEND_HOST_PORT=4100
+CCTP_IRIS_API_BASE_URL=https://iris-api.circle.com
+BRIDGE_DESTINATION_RPC_1=<ethereum-mainnet-rpc-url>
+BRIDGE_DESTINATION_RPC_10=<op-mainnet-rpc-url>
+BRIDGE_DESTINATION_RPC_137=<polygon-mainnet-rpc-url>
+BRIDGE_DESTINATION_RPC_8453=<base-mainnet-rpc-url>
+BRIDGE_DESTINATION_RPC_42161=<arbitrum-mainnet-rpc-url>
+BRIDGE_DESTINATION_RPC_43114=<avalanche-mainnet-rpc-url>
+ANALYTICS_CRON_SECRET=<analytics-cron-secret-if-enabled>

@@ -66,7 +66,11 @@ function service(network = 'arc-mainnet') {
     quotes as never,
     {
       get: () => ({ key: network }),
-      getOrThrow: () => ({ key: network, chainId: 5042, rpcUrl: 'http://127.0.0.1:8545' }),
+      getOrThrow: () => ({
+        key: network,
+        chainId: 5042,
+        rpcUrl: 'http://127.0.0.1:8545',
+      }),
     } as never,
   );
   return { instance, quotes };
@@ -95,7 +99,9 @@ describe('MainnetUniswapV4Service', () => {
   it('prepares the Swap Executor plan but keeps backend submission fail-closed', async () => {
     const { instance } = service();
     const plan = await instance.prepare(request());
-    expect(plan.swap.to).toBe(WIZPAY_SWAP_EXECUTOR_MAINNET_ADDRESS);
+    expect(plan.swap).toMatchObject({
+      to: WIZPAY_SWAP_EXECUTOR_MAINNET_ADDRESS,
+    });
     expect(plan.executable).toBe(false);
     expect(plan.permit2).toBeNull();
     expect(() => instance.execute(request())).toThrow(HttpException);
@@ -122,7 +128,9 @@ describe('MainnetUniswapV4Service', () => {
       ),
     ).rejects.toThrow(HttpException);
     await expect(
-      service().instance.prepare(request({ walletControl: 'managed-app-wallet' })),
+      service().instance.prepare(
+        request({ walletControl: 'managed-app-wallet' }),
+      ),
     ).rejects.toThrow(HttpException);
   });
 

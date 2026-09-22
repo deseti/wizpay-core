@@ -7,12 +7,29 @@ function httpsOrigin(value: string, label: string) {
 }
 
 function backendConnectOrigin(environment: Record<string, string | undefined>) {
-  const value =
-    environment.NEXT_PUBLIC_API_URL ??
-    environment.NEXT_PUBLIC_BACKEND_API_BASE_URL ??
-    environment.NEXT_PUBLIC_BACKEND_URL ??
-    environment.BACKEND_API_BASE_URL;
-  if (!value) return null;
+  const value = environment.NEXT_PUBLIC_API_URL;
+  const legacyPublicVariables = [
+    environment.NEXT_PUBLIC_BACKEND_API_BASE_URL,
+    environment.NEXT_PUBLIC_BACKEND_URL,
+    environment.NEXT_PUBLIC_INVOICE_API_PREFIX,
+    environment.NEXT_PUBLIC_WIZPAY_AGENTIC_NANO_ADDRESS,
+  ];
+  if (
+    environment.NODE_ENV === "production" &&
+    legacyPublicVariables.some((candidate) => Boolean(candidate?.trim()))
+  ) {
+    throw new Error(
+      "Legacy NEXT_PUBLIC backend configuration is not accepted in production.",
+    );
+  }
+  if (!value) {
+    if (environment.NODE_ENV === "production") {
+      throw new Error(
+        "NEXT_PUBLIC_API_URL is required to build the production CSP.",
+      );
+    }
+    return null;
+  }
 
   const url = new URL(value);
   if (
@@ -27,7 +44,9 @@ function backendConnectOrigin(environment: Record<string, string | undefined>) {
   return httpsOrigin(value, "Production backend URL");
 }
 
-function contentSecurityPolicy(environment: Record<string, string | undefined>) {
+function contentSecurityPolicy(
+  environment: Record<string, string | undefined>,
+) {
   const backendOrigin = backendConnectOrigin(environment);
   const dynamicConnectOrigins = [...new Set([backendOrigin])]
     .filter((value): value is string => Boolean(value))
@@ -53,7 +72,10 @@ export function productionSecurityHeaders(
   environment: Record<string, string | undefined> = {},
 ) {
   return Object.freeze([
-    { key: "Content-Security-Policy", value: contentSecurityPolicy(environment) },
+    {
+      key: "Content-Security-Policy",
+      value: contentSecurityPolicy(environment),
+    },
     {
       key: "Strict-Transport-Security",
       value: "max-age=63072000; includeSubDomains; preload",

@@ -1,49 +1,9 @@
 name: wizpay-arc-mainnet
 
 services:
-  backend:
-    build:
-      context: ../..
-      dockerfile: apps/backend/Dockerfile
-    environment:
-      WIZPAY_ARC_NETWORK: arc-mainnet
-      WIZPAY_API_NETWORK: arc-mainnet
-      WIZPAY_WORKER_NETWORK: arc-mainnet
-      WIZPAY_MIGRATION_NETWORK: arc-mainnet
-      ARC_MAINNET_DATABASE_URL: ${ARC_MAINNET_DATABASE_URL:?required}
-      ARC_MAINNET_REDIS_URL: ${ARC_MAINNET_REDIS_URL:?required}
-      ARC_MAINNET_QUEUE_PREFIX: ${ARC_MAINNET_QUEUE_PREFIX:?required}
-      PORT: ${PORT:-4000}
-      CORS_ORIGINS: ${CORS_ORIGINS:?required}
-      WIZPAY_ARC_MAINNET_CAPABILITY_SEND: ${WIZPAY_ARC_MAINNET_CAPABILITY_SEND:-false}
-      WIZPAY_ARC_MAINNET_CAPABILITY_SAME_TOKEN_PAYROLL: ${WIZPAY_ARC_MAINNET_CAPABILITY_SAME_TOKEN_PAYROLL:-false}
-      WIZPAY_ARC_MAINNET_CAPABILITY_INVOICE: ${WIZPAY_ARC_MAINNET_CAPABILITY_INVOICE:-false}
-      WIZPAY_ARC_MAINNET_CAPABILITY_PAYMENT_LINK: ${WIZPAY_ARC_MAINNET_CAPABILITY_PAYMENT_LINK:-false}
-      WIZPAY_ARC_MAINNET_CAPABILITY_BRIDGE: ${WIZPAY_ARC_MAINNET_CAPABILITY_BRIDGE:-false}
-      WIZPAY_ARC_MAINNET_CAPABILITY_SWAP: ${WIZPAY_ARC_MAINNET_CAPABILITY_SWAP:-false}
-      WIZPAY_ARC_MAINNET_CAPABILITY_CROSS_TOKEN_PAYROLL: ${WIZPAY_ARC_MAINNET_CAPABILITY_CROSS_TOKEN_PAYROLL:-false}
-      CCTP_IRIS_API_BASE_URL: ${CCTP_IRIS_API_BASE_URL:-https://iris-api.circle.com}
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_started
-    networks: [arc-mainnet]
-
-  migrate:
-    profiles: [migration]
-    build:
-      context: ../..
-      dockerfile: apps/backend/Dockerfile
-    command: npm run prisma:migrate:arc-mainnet -w backend
-    environment:
-      WIZPAY_ARC_NETWORK: arc-mainnet
-      WIZPAY_MIGRATION_NETWORK: arc-mainnet
-      ARC_MAINNET_DATABASE_URL: ${ARC_MAINNET_DATABASE_URL:?required}
-    networks: [arc-mainnet]
-
   postgres:
     image: postgres:15
+    restart: unless-stopped
     environment:
       POSTGRES_USER: ${ARC_MAINNET_POSTGRES_USER:?required}
       POSTGRES_PASSWORD: ${ARC_MAINNET_POSTGRES_PASSWORD:?required}
@@ -52,18 +12,102 @@ services:
       test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
       interval: 5s
       timeout: 5s
-      retries: 10
-    volumes: [arc-mainnet-postgres:/var/lib/postgresql/data]
-    networks: [arc-mainnet]
+      retries: 20
+      start_period: 10s
+    volumes:
+      - arc-mainnet-postgres:/var/lib/postgresql/data
+    networks:
+      - arc-mainnet
 
   redis:
     image: redis:7-alpine
-    volumes: [arc-mainnet-redis:/data]
-    networks: [arc-mainnet]
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    volumes:
+      - arc-mainnet-redis:/data
+    networks:
+      - arc-mainnet
+
+  migrate:
+    profiles: ["migration"]
+    build:
+      context: ../..
+      dockerfile: apps/backend/Dockerfile
+    entrypoint: ["npm", "run", "prisma:migrate:arc-mainnet"]
+    environment:
+      WIZPAY_ARC_NETWORK: arc-mainnet
+      WIZPAY_MIGRATION_NETWORK: arc-mainnet
+      ARC_MAINNET_DATABASE_URL: ${ARC_MAINNET_DATABASE_URL:?required}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    networks:
+      - arc-mainnet
+
+  backend:
+    build:
+      context: ../..
+      dockerfile: apps/backend/Dockerfile
+    restart: unless-stopped
+    init: true
+    environment:
+      NODE_ENV: production
+      PORT: 4000
+      DOCKER: "true"
+      WIZPAY_ARC_NETWORK: arc-mainnet
+      WIZPAY_API_NETWORK: arc-mainnet
+      WIZPAY_WORKER_NETWORK: arc-mainnet
+      WIZPAY_MIGRATION_NETWORK: arc-mainnet
+      ARC_MAINNET_DATABASE_URL: ${ARC_MAINNET_DATABASE_URL:?required}
+      ARC_MAINNET_REDIS_URL: ${ARC_MAINNET_REDIS_URL:?required}
+      ARC_MAINNET_QUEUE_PREFIX: ${ARC_MAINNET_QUEUE_PREFIX:?required}
+      CORS_ORIGINS: ${CORS_ORIGINS:?required}
+      WIZPAY_ARC_MAINNET_CAPABILITY_SEND: ${WIZPAY_ARC_MAINNET_CAPABILITY_SEND:?required}
+      WIZPAY_ARC_MAINNET_CAPABILITY_SAME_TOKEN_PAYROLL: ${WIZPAY_ARC_MAINNET_CAPABILITY_SAME_TOKEN_PAYROLL:?required}
+      WIZPAY_ARC_MAINNET_CAPABILITY_INVOICE: ${WIZPAY_ARC_MAINNET_CAPABILITY_INVOICE:?required}
+      WIZPAY_ARC_MAINNET_CAPABILITY_PAYMENT_LINK: ${WIZPAY_ARC_MAINNET_CAPABILITY_PAYMENT_LINK:?required}
+      WIZPAY_ARC_MAINNET_CAPABILITY_BRIDGE: ${WIZPAY_ARC_MAINNET_CAPABILITY_BRIDGE:?required}
+      WIZPAY_ARC_MAINNET_CAPABILITY_SWAP: ${WIZPAY_ARC_MAINNET_CAPABILITY_SWAP:?required}
+      WIZPAY_ARC_MAINNET_CAPABILITY_CROSS_TOKEN_PAYROLL: ${WIZPAY_ARC_MAINNET_CAPABILITY_CROSS_TOKEN_PAYROLL:?required}
+      CCTP_IRIS_API_BASE_URL: ${CCTP_IRIS_API_BASE_URL:-https://iris-api.circle.com}
+      BRIDGE_DESTINATION_RPC_1: ${BRIDGE_DESTINATION_RPC_1:-}
+      BRIDGE_DESTINATION_RPC_10: ${BRIDGE_DESTINATION_RPC_10:-}
+      BRIDGE_DESTINATION_RPC_137: ${BRIDGE_DESTINATION_RPC_137:-}
+      BRIDGE_DESTINATION_RPC_8453: ${BRIDGE_DESTINATION_RPC_8453:-}
+      BRIDGE_DESTINATION_RPC_42161: ${BRIDGE_DESTINATION_RPC_42161:-}
+      BRIDGE_DESTINATION_RPC_43114: ${BRIDGE_DESTINATION_RPC_43114:-}
+      ANALYTICS_CRON_SECRET: ${ANALYTICS_CRON_SECRET:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${WIZPAY_BACKEND_HOST_PORT:-4100}:4000"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget -qO- http://127.0.0.1:4000/health >/dev/null || exit 1",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 45s
+    networks:
+      - arc-mainnet
 
 networks:
   arc-mainnet:
     name: wizpay-arc-mainnet
+    driver: bridge
 
 volumes:
   arc-mainnet-postgres:

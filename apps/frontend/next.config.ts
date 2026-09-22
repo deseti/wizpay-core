@@ -4,17 +4,9 @@ import type { NextConfig } from "next";
 import { parseArcNetworkKey } from "@wizpay/arc-network";
 import { frontendSecurityHeaderRules } from "./lib/security-headers";
 
-const arcNetworkKey = parseArcNetworkKey(process.env.WIZPAY_ARC_NETWORK);
-const publicArcNetworkKey = process.env.NEXT_PUBLIC_WIZPAY_ARC_NETWORK;
-
-if (
-  publicArcNetworkKey !== undefined &&
-  publicArcNetworkKey !== arcNetworkKey
-) {
-  throw new Error(
-    "NEXT_PUBLIC_WIZPAY_ARC_NETWORK conflicts with WIZPAY_ARC_NETWORK.",
-  );
-}
+const arcNetworkKey = parseArcNetworkKey(
+  process.env.NEXT_PUBLIC_WIZPAY_ARC_NETWORK,
+);
 
 const emptyModuleShim = path.resolve(__dirname, "lib/shims/empty-module.js");
 const emptyModuleShimImport = "./lib/shims/empty-module.js";

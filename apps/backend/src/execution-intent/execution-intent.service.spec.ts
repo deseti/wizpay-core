@@ -333,17 +333,19 @@ describe('ExecutionIntentService', () => {
   });
 });
 
-describe('execution intent migration safety', () => {
-  it('is additive and contains no data mutation or destructive drop', () => {
+describe('Arc Mainnet baseline execution intent safety', () => {
+  it('creates the current intent schema without data mutation or destructive drop', () => {
     const sql = readFileSync(
       join(
         __dirname,
-        '../database/migrations/20260910120000_execution_intents/migration.sql',
+        '../database/migrations/20260922210000_arc_mainnet_fresh_baseline/migration.sql',
       ),
       'utf8',
     );
     expect(sql).toMatch(/CREATE TABLE "ExecutionIntent"/);
-    expect(sql).not.toMatch(/\b(?:DROP|TRUNCATE|DELETE|UPDATE|INSERT)\b/i);
+    expect(sql).not.toMatch(
+      /\b(?:DROP\s+(?:TABLE|TYPE|SCHEMA)|TRUNCATE|DELETE\s+FROM|UPDATE\s+"|INSERT\s+INTO)\b/i,
+    );
   });
 });
 

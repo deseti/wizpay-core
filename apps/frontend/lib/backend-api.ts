@@ -13,9 +13,51 @@ export class BackendApiError extends Error {
 
 const DEFAULT_API_BASE_URL = "http://localhost:4000";
 
+type FrontendApiEnvironment = Record<string, string | undefined>;
+
+export function readFrontendApiBaseUrl(
+  environment: FrontendApiEnvironment = process.env,
+): string {
+  const canonical = environment.NEXT_PUBLIC_API_URL?.trim();
+  const legacy = [
+    environment.NEXT_PUBLIC_BACKEND_API_BASE_URL,
+    environment.NEXT_PUBLIC_BACKEND_URL,
+    environment.BACKEND_API_BASE_URL,
+    environment.API_URL,
+  ].filter((value): value is string => Boolean(value?.trim()));
+
+  if (environment.NODE_ENV === "production") {
+    if (!canonical) {
+      throw new Error(
+        "NEXT_PUBLIC_API_URL is required for the production frontend.",
+      );
+    }
+    if (legacy.length > 0) {
+      throw new Error(
+        "Legacy frontend backend-URL aliases are not accepted in production.",
+      );
+    }
+  }
+
+  const value = canonical || legacy[0]?.trim() || DEFAULT_API_BASE_URL;
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error("The frontend API base URL must be an absolute URL.");
+  }
+  const local = ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+  if (url.username || url.password || (url.protocol !== "https:" && !local)) {
+    throw new Error(
+      "The frontend API base URL must be credential-free HTTPS except on localhost.",
+    );
+  }
+  return value;
+}
+
 export async function backendFetch<T>(
   path: string,
-  init?: RequestInit
+  init?: RequestInit,
 ): Promise<T> {
   const headers = new Headers(init?.headers);
   const apiBaseUrl = resolveBackendBaseUrl();
@@ -44,12 +86,16 @@ export async function backendFetch<T>(
       : getString(errorPayload.message);
 
     throw new BackendApiError(
-      getString(errorPayload.error) !== "Bad Request" && getString(errorPayload.error)
+      getString(errorPayload.error) !== "Bad Request" &&
+        getString(errorPayload.error)
         ? getString(errorPayload.error)!
-        : nestedMessage || `Backend request failed with status ${response.status}`,
+        : nestedMessage ||
+            `Backend request failed with status ${response.status}`,
       response.status,
       getString(errorPayload.code) ||
-        (isRecord(errorPayload.message) ? getString(errorPayload.message.code) : undefined),
+        (isRecord(errorPayload.message)
+          ? getString(errorPayload.message.code)
+          : undefined),
       getString(errorPayload.details),
       errorPayload,
     );
@@ -69,14 +115,7 @@ export async function backendFetch<T>(
 }
 
 export function resolveBackendBaseUrl(): string {
-  return (
-    process.env.NEXT_PUBLIC_API_URL ||
-    process.env.NEXT_PUBLIC_BACKEND_API_BASE_URL ||
-    process.env.NEXT_PUBLIC_BACKEND_URL ||
-    process.env.BACKEND_API_BASE_URL ||
-    process.env.API_URL ||
-    DEFAULT_API_BASE_URL
-  );
+  return readFrontendApiBaseUrl();
 }
 
 export function buildBackendUrl(path: string, baseUrl: string): string {

@@ -14,17 +14,18 @@ describe("Arc network configuration architecture", () => {
   const nextConfig = read("apps/frontend/next.config.ts");
 
   it("uses explicit Mainnet-only selectors for backend runtime and frontend build", () => {
-    expect(compose.match(/^\s+WIZPAY_ARC_NETWORK:/gm)).toHaveLength(3);
+    expect(compose.match(/^\s+WIZPAY_ARC_NETWORK:/gm)).toHaveLength(1);
     expect(compose).not.toContain("${WIZPAY_ARC_NETWORK:");
     expect(compose).toContain("WIZPAY_ARC_NETWORK: arc-mainnet");
     expect(mainnetCompose).toContain("name: wizpay-arc-mainnet");
     expect(mainnetCompose).toContain("WIZPAY_ARC_NETWORK: arc-mainnet");
     expect(mainnetCompose).not.toContain("TESTNET_");
     expect(mainnetCompose.toLowerCase()).not.toContain("testnet");
-    expect(frontendDockerfile).toContain("ARG WIZPAY_ARC_NETWORK");
+    expect(frontendDockerfile).toContain("ARG NEXT_PUBLIC_WIZPAY_ARC_NETWORK");
     expect(frontendDockerfile).toContain(
-      "ENV WIZPAY_ARC_NETWORK=$WIZPAY_ARC_NETWORK",
+      "ENV NEXT_PUBLIC_WIZPAY_ARC_NETWORK=$NEXT_PUBLIC_WIZPAY_ARC_NETWORK",
     );
+    expect(frontendDockerfile).not.toMatch(/(?:ARG|ENV) WIZPAY_ARC_NETWORK=/);
   });
 
   it("retains no Testnet deployment", () => {
@@ -33,14 +34,13 @@ describe("Arc network configuration architecture", () => {
     );
   });
 
-  it("derives the public identity in next.config without a public operator selector", () => {
-    expect(nextConfig).toContain(
-      "parseArcNetworkKey(process.env.WIZPAY_ARC_NETWORK)",
-    );
+  it("uses the public frontend selector directly in next.config", () => {
+    expect(nextConfig).toContain("process.env.NEXT_PUBLIC_WIZPAY_ARC_NETWORK");
+    expect(nextConfig).not.toContain("process.env.WIZPAY_ARC_NETWORK");
     expect(nextConfig).toContain(
       "NEXT_PUBLIC_WIZPAY_ARC_NETWORK: arcNetworkKey",
     );
-    expect(compose).not.toContain("NEXT_PUBLIC_WIZPAY_ARC_NETWORK:");
+    expect(compose).toContain("NEXT_PUBLIC_WIZPAY_ARC_NETWORK: arc-mainnet");
   });
 
   it("does not preserve active Testnet RPC, chain, token, or contract defaults", () => {

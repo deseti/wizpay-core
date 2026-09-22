@@ -232,30 +232,33 @@ describePostgres('Phase 7 deterministic offline Mainnet rehearsal', () => {
         sourceReferenceType: 'invoice',
         sourceReferenceId: request.publicId,
         chainId: 5_042,
-        txHash: request.transactionHash ?? undefined,
+        txHash: request.transactionHash
+          ? (request.transactionHash as Hex)
+          : undefined,
         outputTokenSymbol: 'USDC',
         outputTokenAddress: OFFLINE_USDC,
       });
     }
     const pages = await Promise.all(
-      [APP_WALLET, EXTERNAL_WALLET, MERCHANT].map((merchantWalletAddress) =>
-        activity.list(
-          {
-            merchantUserId: 'offline-owner',
-            merchantWalletAddress,
-            merchantDisplayLabel: 'Offline Owner',
-          },
-          { limit: 20 },
-        ),
+      ([APP_WALLET, EXTERNAL_WALLET, MERCHANT] as Hex[]).map(
+        (merchantWalletAddress) =>
+          activity.list(
+            {
+              merchantUserId: 'offline-owner',
+              merchantWalletAddress,
+              merchantDisplayLabel: 'Offline Owner',
+            },
+            { limit: 20 },
+          ),
       ),
     );
     const ledger = pages.flatMap((page) => page.items);
     expect(ledger).toHaveLength(5);
     expect(new Set(ledger.map((item) => item.txHash)).size).toBe(5);
     expect(
-      pages.find((page) =>
-        page.items.some((item) => item.txHash === hashes[0]),
-      )?.items.every((item) => item.txHash === hashes[0]),
+      pages
+        .find((page) => page.items.some((item) => item.txHash === hashes[0]))
+        ?.items.every((item) => item.txHash === hashes[0]),
     ).toBe(true);
   });
 
@@ -489,11 +492,7 @@ function assertUrl(value: string) {
 async function migrate(databaseUrl: string) {
   const client = new Client({ connectionString: databaseUrl });
   await client.connect();
-  for (const migration of [
-    '20260826090000_invoice_payment_links',
-    '20260831120000_unified_activity_ledger',
-    '20260910120000_execution_intents',
-  ]) {
+  for (const migration of ['20260922210000_arc_mainnet_fresh_baseline']) {
     await client.query(
       await readFile(
         join(__dirname, `../database/migrations/${migration}/migration.sql`),

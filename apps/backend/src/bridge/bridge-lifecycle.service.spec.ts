@@ -464,7 +464,12 @@ describe('BridgeLifecycleService official CCTP intents', () => {
         status: 200,
         json: () =>
           Promise.resolve([
-            { sourceDomain: 6, destinationDomain: 26, finalityThreshold: 1000, minimumFee: 1.3 },
+            {
+              sourceDomain: 6,
+              destinationDomain: 26,
+              finalityThreshold: 1000,
+              minimumFee: 1.3,
+            },
           ]),
       })
       .mockResolvedValueOnce({
@@ -491,7 +496,12 @@ describe('BridgeLifecycleService official CCTP intents', () => {
         status: 200,
         json: () =>
           Promise.resolve([
-            { sourceDomain: 6, destinationDomain: 26, finalityThreshold: 1000, minimumFee: 1.3 },
+            {
+              sourceDomain: 6,
+              destinationDomain: 26,
+              finalityThreshold: 1000,
+              minimumFee: 1.3,
+            },
           ]),
       })
       .mockResolvedValueOnce({
@@ -574,7 +584,7 @@ describe('Bridge codec matchers', () => {
       abi: CCTP_V2_MESSAGE_RECEIVED_EVENT,
       eventName: 'MessageReceived',
       args: { caller: WALLET, nonce, finalityThresholdExecuted: 2000 },
-    });
+    }) as readonly string[];
     const data = encodeAbiParameters(
       [{ type: 'uint32' }, { type: 'bytes32' }, { type: 'bytes' }],
       [26, sender, messageBody],

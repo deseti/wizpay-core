@@ -40,13 +40,10 @@ describePostgres('ExecutionIntentService PostgreSQL integration', () => {
     isolatedUrl = clientUrl.toString();
     migrationClient = new Client({ connectionString: isolatedUrl });
     await migrationClient.connect();
-    await migrationClient.query(
-      'CREATE TABLE "Invoice" ("id" UUID PRIMARY KEY)',
-    );
     const migration = await readFile(
       join(
         __dirname,
-        '../database/migrations/20260910120000_execution_intents/migration.sql',
+        '../database/migrations/20260922210000_arc_mainnet_fresh_baseline/migration.sql',
       ),
       'utf8',
     );

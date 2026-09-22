@@ -1,15 +1,21 @@
-name: CD Production
+name: CD Production Backend
 
 on:
   workflow_dispatch:
+    inputs:
+      confirmation:
+        description: Type ARC_MAINNET_BACKEND_ONLY to continue
+        required: true
+        type: string
 
 concurrency:
-  group: cd-production
+  group: cd-production-backend
   cancel-in-progress: false
 
 jobs:
   deploy:
-    name: Deploy Production
+    name: Deploy Arc Mainnet backend
+    if: ${{ inputs.confirmation == 'ARC_MAINNET_BACKEND_ONLY' }}
     runs-on: ubuntu-latest
 
     steps:
@@ -27,58 +33,51 @@ jobs:
             -o IdentitiesOnly=yes \
             -o StrictHostKeyChecking=yes \
             "${{ secrets.WIZPAY_VM_USER }}@${{ secrets.WIZPAY_VM_HOST }}" \
-            'hostname && whoami && docker ps --format "table {{.Names}}\t{{.Status}}" | head'
+            'hostname && whoami'
 
-      - name: Deploy application
+      - name: Deploy backend-only Arc Mainnet stack
         run: |
           ssh -i ~/.ssh/wizpay_deploy_key \
             -o IdentitiesOnly=yes \
             -o StrictHostKeyChecking=yes \
             "${{ secrets.WIZPAY_VM_USER }}@${{ secrets.WIZPAY_VM_HOST }}" \
             'set -euo pipefail
-             cd /home/wizpay/apps/wizpay/repo
+             deploy_dir=/home/wizpay/apps/wizpay/repo
+             env_file=/home/wizpay/apps/wizpay/arc-mainnet.env
+             test -f "$env_file"
+             test ! -L "$env_file"
+             cd "$deploy_dir"
+             test "$(git branch --show-current)" = main
              test -z "$(git status --short)"
              git fetch origin main
              git merge --ff-only origin/main
-             docker compose -p wizpay -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.vps2.yml build backend
-             docker compose -p wizpay -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.vps2.yml build frontend
-             docker compose -p wizpay -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.vps2.yml up -d postgres redis backend frontend
-             containers_healthy=false
+             compose="docker compose --env-file $env_file -f deploy/arc-mainnet/compose.yml"
+             $compose config --quiet
+             $compose build backend migrate
+             $compose up -d postgres redis
+             $compose --profile migration run --rm migrate
+             $compose up -d backend
+             backend_id=$($compose ps -q backend)
+             test -n "$backend_id"
+             backend_healthy=false
              for attempt in $(seq 1 30); do
-               backend_health=$(docker inspect -f "{{.State.Health.Status}}" wizpay-backend-1 2>/dev/null || true)
-               frontend_health=$(docker inspect -f "{{.State.Health.Status}}" wizpay-frontend-1 2>/dev/null || true)
-               if [ "$backend_health" = "healthy" ] && [ "$frontend_health" = "healthy" ]; then
-                 containers_healthy=true
+               backend_health=$(docker inspect -f "{{.State.Health.Status}}" "$backend_id" 2>/dev/null || true)
+               if [ "$backend_health" = healthy ]; then
+                 backend_healthy=true
                  break
                fi
                if [ "$attempt" -lt 30 ]; then
                  sleep 5
                fi
              done
-             if [ "$containers_healthy" != "true" ]; then
-               docker compose -p wizpay -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.vps2.yml ps
-               docker compose -p wizpay -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.vps2.yml logs --tail=100 backend
-               docker compose -p wizpay -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.vps2.yml logs --tail=100 frontend
+             if [ "$backend_healthy" != true ]; then
+               $compose ps
+               $compose logs --tail=100 backend
                exit 1
              fi
-             systemctl is-active --quiet caddy
-             curl -fsS http://127.0.0.1:3100 >/dev/null
-             curl -fsS http://127.0.0.1:4100/tasks >/dev/null
-             invoice_headers=$(mktemp)
-             invoice_body=$(mktemp)
-             invoice_status=$(curl -ksS \
-               --resolve app.wizpay.xyz:443:127.0.0.1 \
-               -D "$invoice_headers" \
-               -o "$invoice_body" \
-               -w "%{http_code}" \
-               https://app.wizpay.xyz/api/invoices)
-             if [ "$invoice_status" != "401" ] || \
-                ! grep -qi "^content-type:.*application/json" "$invoice_headers" || \
-                grep -Eqi "<!doctype|<html" "$invoice_body" || \
-                ! grep -Eq "\"code\"[[:space:]]*:[[:space:]]*\"INVOICE_AUTH_REQUIRED\"" "$invoice_body"; then
-               echo "Invoice API proxy health check failed (status=$invoice_status)"
-               rm -f "$invoice_headers" "$invoice_body"
-               exit 1
-             fi
-             rm -f "$invoice_headers" "$invoice_body"
-             docker compose -p wizpay -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.vps2.yml ps'
+             backend_endpoint=$($compose port backend 4000)
+             test -n "$backend_endpoint"
+             curl -fsS "http://$backend_endpoint/health" >/dev/null
+             runtime=$(curl -fsS "http://$backend_endpoint/health/runtime-isolation")
+             printf "%s" "$runtime" | grep -q '"network":"arc-mainnet"'
+             $compose ps'

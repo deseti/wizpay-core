@@ -1,3 +1,5 @@
+# Local Mainnet full-stack only. The production VPS uses
+# deploy/arc-mainnet/compose.yml and never runs the frontend container.
 name: wizpay-arc-mainnet
 
 services:
@@ -68,14 +70,10 @@ services:
       # To change a value: edit root .env, then rebuild with:
       #   docker compose down && docker compose up --build
       args:
-        WIZPAY_ARC_NETWORK: arc-mainnet
+        NEXT_PUBLIC_WIZPAY_ARC_NETWORK: arc-mainnet
         NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL}
         NEXT_PUBLIC_WIZPAY_PUBLIC_APP_URL: ${NEXT_PUBLIC_WIZPAY_PUBLIC_APP_URL:-http://localhost:3000}
-        NEXT_PUBLIC_BACKEND_API_BASE_URL: ${NEXT_PUBLIC_BACKEND_API_BASE_URL}
-        NEXT_PUBLIC_BACKEND_URL: ${NEXT_PUBLIC_BACKEND_URL:-}
-        NEXT_PUBLIC_INVOICE_API_PREFIX: ${NEXT_PUBLIC_INVOICE_API_PREFIX:-}
         NEXT_PUBLIC_REOWN_PROJECT_ID: ${NEXT_PUBLIC_REOWN_PROJECT_ID:?NEXT_PUBLIC_REOWN_PROJECT_ID is required}
-        NEXT_PUBLIC_WIZPAY_AGENTIC_NANO_ADDRESS: ${NEXT_PUBLIC_WIZPAY_AGENTIC_NANO_ADDRESS:-}
     depends_on:
       backend:
         condition: service_started
@@ -83,17 +81,13 @@ services:
         condition: service_healthy
     environment:
       PORT: 3000
-      WIZPAY_ARC_NETWORK: arc-mainnet
+      NEXT_PUBLIC_WIZPAY_ARC_NETWORK: arc-mainnet
       # ── Frontend runtime vars (Next.js dev server / SSR) ───────────────────
       # Keep these sourced from the root .env so docker-compose.dev does not
       # depend on apps/frontend/.env.local.
       NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:4000}
       NEXT_PUBLIC_WIZPAY_PUBLIC_APP_URL: ${NEXT_PUBLIC_WIZPAY_PUBLIC_APP_URL:-http://localhost:3000}
-      NEXT_PUBLIC_BACKEND_API_BASE_URL: ${NEXT_PUBLIC_BACKEND_API_BASE_URL:-http://localhost:4000}
-      NEXT_PUBLIC_BACKEND_URL: ${NEXT_PUBLIC_BACKEND_URL:-}
-      NEXT_PUBLIC_INVOICE_API_PREFIX: ${NEXT_PUBLIC_INVOICE_API_PREFIX:-}
       NEXT_PUBLIC_REOWN_PROJECT_ID: ${NEXT_PUBLIC_REOWN_PROJECT_ID:?NEXT_PUBLIC_REOWN_PROJECT_ID is required}
-      NEXT_PUBLIC_WIZPAY_AGENTIC_NANO_ADDRESS: ${NEXT_PUBLIC_WIZPAY_AGENTIC_NANO_ADDRESS:-}
     ports:
       - "127.0.0.1:3000:3000"
     healthcheck:

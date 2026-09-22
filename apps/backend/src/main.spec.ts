@@ -1,4 +1,8 @@
-import { bootstrap } from './main';
+import {
+  bootstrap,
+  resolveCorsOrigins,
+  WIZPAY_PRODUCTION_APP_ORIGIN,
+} from './main';
 
 const mainnetEnv = {
   WIZPAY_ARC_NETWORK: 'arc-mainnet',
@@ -48,5 +52,28 @@ describe('backend startup Arc readiness order', () => {
     await bootstrap(createApplication, { ...mainnetEnv });
     expect(events[0]).toBe('create');
     expect(events.at(-1)).toBe('listen');
+  });
+});
+
+describe('backend production CORS isolation', () => {
+  it('allows only the confirmed Vercel production origin', () => {
+    expect(
+      resolveCorsOrigins({
+        NODE_ENV: 'production',
+        CORS_ORIGINS: WIZPAY_PRODUCTION_APP_ORIGIN,
+      }),
+    ).toEqual([WIZPAY_PRODUCTION_APP_ORIGIN]);
+  });
+
+  it.each([
+    undefined,
+    '',
+    'http://localhost:3000',
+    'https://app.wizpay.xyz,https://admin.wizpay.xyz',
+    'https://app.wizpay.xyz/',
+  ])('rejects an inexact production CORS origin: %p', (value) => {
+    expect(() =>
+      resolveCorsOrigins({ NODE_ENV: 'production', CORS_ORIGINS: value }),
+    ).toThrow(`exactly ${WIZPAY_PRODUCTION_APP_ORIGIN}`);
   });
 });

@@ -5,6 +5,32 @@ import { validateEnvironment } from './config/env.validation';
 
 type CreateApplication = () => ReturnType<typeof NestFactory.create>;
 
+export const WIZPAY_PRODUCTION_APP_ORIGIN = 'https://app.wizpay.xyz';
+
+export function resolveCorsOrigins(
+  environment: Record<string, string | undefined>,
+): string[] {
+  const configured = environment.CORS_ORIGINS;
+  const origins = (configured ?? 'http://localhost:3000,http://localhost:3001')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+
+  if (environment.NODE_ENV === 'production') {
+    if (
+      configured === undefined ||
+      origins.length !== 1 ||
+      origins[0] !== WIZPAY_PRODUCTION_APP_ORIGIN
+    ) {
+      throw new Error(
+        `Production CORS_ORIGINS must be exactly ${WIZPAY_PRODUCTION_APP_ORIGIN}.`,
+      );
+    }
+  }
+
+  return origins;
+}
+
 export async function bootstrap(
   createApplication: CreateApplication | undefined = undefined,
   environment = process.env,
@@ -23,22 +49,14 @@ export async function bootstrap(
   app.enableShutdownHooks();
 
   // ── CORS ─────────────────────────────────────────────────────────────
-  // Read allowed origins from CORS_ORIGINS env var (comma-separated).
-  // Falls back to localhost:3000 and localhost:3001 for local development.
-  // Example: CORS_ORIGINS=https://wizpay.example.com,http://localhost:3000
-  const corsOrigins = (
-    process.env.CORS_ORIGINS || 'http://localhost:3000,http://localhost:3001'
-  )
-    .split(',')
-    .map((origin) => origin.trim())
-    .filter(Boolean);
+  const corsOrigins = resolveCorsOrigins(environment);
 
   app.enableCors({
     origin: corsOrigins,
     credentials: true,
   });
 
-  const port = process.env.PORT ?? 4000;
+  const port = environment.PORT ?? 4000;
   await app.listen(port);
   logger.log(`Application running on port ${port}`);
   logger.log(`CORS origins: ${corsOrigins.join(', ')}`);

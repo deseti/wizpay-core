@@ -63,4 +63,22 @@ describe("production browser security headers", () => {
       }),
     ).toThrow("credential-free HTTPS");
   });
+
+  it("fails closed when the canonical production API origin is absent", () => {
+    expect(() =>
+      frontendSecurityHeaderRules({
+        NODE_ENV: "production",
+      }),
+    ).toThrow("NEXT_PUBLIC_API_URL is required");
+  });
+
+  it("rejects legacy public backend configuration in production", () => {
+    expect(() =>
+      frontendSecurityHeaderRules({
+        NODE_ENV: "production",
+        NEXT_PUBLIC_API_URL: "https://api.wizpay.example",
+        NEXT_PUBLIC_INVOICE_API_PREFIX: "/api",
+      }),
+    ).toThrow("Legacy NEXT_PUBLIC backend configuration");
+  });
 });

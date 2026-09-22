@@ -1,9 +1,7 @@
 import { backendFetch } from "@/lib/backend-api";
 
 function invoiceApiPath(path: string) {
-  const prefix =
-    process.env.NEXT_PUBLIC_INVOICE_API_PREFIX?.trim().replace(/\/$/, "") || "";
-  return `${prefix}${path}`;
+  return path;
 }
 
 export type InvoiceStatus =
