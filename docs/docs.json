@@ -24,7 +24,6 @@
             "group": "Architecture",
             "pages": [
               "architecture",
-              "domain-multi-tenant-architecture",
               "execution-flow",
               "task-system"
             ]
