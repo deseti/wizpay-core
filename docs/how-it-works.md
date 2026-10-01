@@ -1,74 +1,38 @@
 ---
 title: "Core Concepts"
-description: "Batch, execution, settlement, and orchestration primitives."
+description: "Intent, wallet authorization, payment verification, and recovery."
 ---
 
 # Core Concepts
 
-WizPay operates on four primitives: **batch**, **execution**, **settlement**, and **orchestration**. Every payment flow in the system reduces to these concepts.
+A payment is a sequence of recorded intent, wallet authorization, transaction submission, and verification. Preparing a request does not transfer funds.
 
-## Batch
+## Execution Intent
 
-A batch is a set of payment instructions grouped into a single processing unit.
+An `ExecutionIntent` binds the operation to its network, source wallet, tokens, amount, recipient or batch digest, and external reference. Logical keys and request fingerprints identify the operation across retries.
 
-- The frontend composes a list of recipients (address, amount, token).
-- The backend validates the list and splits it into `TaskUnit` records — one per batch.
-- Each unit is processed independently. A task with 3 batches produces 3 units.
+An intent can wait for a wallet signature, store a submitted transaction hash, enter verification, and complete after the expected receipt has been verified.
 
-Batching is not optional. Even a single-recipient payment creates one unit. The system always operates in batch mode.
+## Wallet Authorization
 
-**Data shape:**
+The user reviews the payment and any required token approval in their connected wallet. An authentication-message signature proves wallet ownership; it does not send a payment.
 
-```
-TaskUnit {
-  type: "batch" | "step"
-  index: 0
-  status: "PENDING" | "SUCCESS" | "FAILED"
-  payload: { recipients, sourceToken, totalAmount }
-}
-```
+A token approval changes spending allowance. It is separate from the payment transaction and must not be displayed as successful payment settlement.
 
-## Execution
+## Payroll Batches
 
-Execution is the process of converting a `TaskUnit` into one or more on-chain transactions.
+Payroll preparation validates recipients and returns task units for the wallet to execute. A unit includes its batch reference and execution-intent identity.
 
-- The orchestrator picks up a queued task and routes it to an **agent** (Payroll, Swap, Bridge, FX, Liquidity).
-- The agent prepares execution through the external-wallet path on Arc Mainnet.
-- For async operations (payroll), each submitted transfer is tracked as a `TaskTransaction` record and polled separately.
+Planning batches does not guarantee that the entire payroll is one atomic transaction. Multiple units can complete independently. Review each unit's result before retrying an unresolved payroll.
 
-Execution is **not synchronous by default**. Payroll tasks submit transfers and return immediately. Settlement is confirmed asynchronously via the `tx_poll` queue.
+## Verification
 
-## Settlement
+The application reports a transaction hash to the appropriate backend verifier. The verifier checks the transaction against the expected operation. A client-reported hash or success message alone is not proof of settlement.
 
-Settlement is the on-chain confirmation that a transaction has been included in a block and reached a terminal state.
+Send, payroll, invoice payments, swaps, and bridge steps use their own verification paths. They do not all pass through one generic task queue.
 
-Two settlement models exist:
+## Recovery
 
-| Model | Used By | Behavior |
-|---|---|---|
-| **Sync** | Swap, FX, Liquidity | Agent blocks until the operation completes. Task is marked `executed` or `failed` immediately. |
-| **Async** | Payroll | Agent submits all transfers, enqueues poll jobs, and returns. `TransactionPollerService` confirms each tx individually. Task finalizes when all transactions reach a terminal state. |
+If a transaction was submitted but the application lost the response, recover the existing intent and known hash. Do not create a new payment merely because a request timed out or a page was refreshed.
 
-Terminal states for a `TaskTransaction`:
-
-- `completed` — On-chain confirmation received, `txHash` populated.
-- `failed` — Transfer rejected or timed out, `errorReason` populated.
-
-## Orchestration
-
-The orchestration layer is the coordination logic between HTTP ingestion, queue dispatch, agent execution, and state persistence.
-
-**Key components:**
-
-- `OrchestratorService` — The single entry point. Exposes `handleTask()` (called by HTTP) and `executeTask()` (called by workers). No other component creates or executes tasks.
-- `ExecutionRouterService` — Resolves the external-wallet execution path for Arc Mainnet.
-- `AgentRouterService` — Dispatches to the remaining type-specific agents. Unsupported execution is rejected.
-- `QueueService` — Enqueue-only. Never processes jobs.
-
-**Architectural invariant:** Workers never call agents directly. The call chain is always:
-
-```
-Worker → Processor → OrchestratorService.executeTask() → ExecutionRouter → Agent
-```
-
-This ensures all execution passes through the orchestrator's idempotency guard, logging, and error handling.
+A pending receipt or unavailable RPC does not prove that funds were not transferred. Preserve the original operation identity until its outcome is resolved.

@@ -1,52 +1,19 @@
-# WizPay Analytics Cron
+# Analytics Cache Maintenance
 
-## Purpose
+This is an operator reference for the existing backend cache endpoints. It does not establish that an analytics refresh job is enabled in production.
 
-The production VM can refresh the backend-owned WizPay analytics cache with a 24-hour cron job. The cron calls the backend internal update endpoint and updates only the in-memory analytics cache metadata for the first implementation.
+## Current Behavior
 
-This job does not push to GitHub, does not deploy, does not run scheduled jobs, and does not recompute volume from full explorer token-transfer pagination.
+`GET /analytics/wizpay` returns an in-memory snapshot initialized from values embedded in `AnalyticsService`.
 
-## Required Environment
+`POST /internal/analytics/wizpay/update` requires `Authorization: Bearer <ANALYTICS_CRON_SECRET>`. It updates cache metadata and the configured contract address. The current implementation does not fetch fresh explorer counters or recalculate transfer volume.
 
-Set `ANALYTICS_CRON_SECRET` in the backend runtime and in the VM cron environment. This value must be a strong secret and must not have an insecure production default.
+The response source labels describe the stored seed snapshot. Its `updatedAt` value is not evidence that the counters or volume were measured at that time. Do not present these values as freshly verified production totals.
 
-Optional backend environment variables:
+## Operator Configuration
 
-- `WIZPAY_ANALYTICS_CONTRACT_ADDRESS`: no default. Configure the authorized Arc Mainnet contract address.
-- `ARCSCAN_API_BASE_URL`: no default. The official Arc Mainnet explorer endpoint remains unavailable until authorized phases supply it.
+Use the existing production backend endpoint and protected secret storage. The Compose stack exposes port `4100` on loopback by default; `WIZPAY_BACKEND_HOST_PORT` can override it. Port `4000` is the backend container's internal port.
 
-## Endpoint
+`WIZPAY_ANALYTICS_CONTRACT_ADDRESS` overrides the contract address used by the cache. `ARCSCAN_API_BASE_URL` is read by a placeholder refresh method and does not enable a live explorer fetch in the current implementation.
 
-The VM cron should call the backend on localhost:
-
-```sh
-curl -fsS -X POST http://127.0.0.1:<BACKEND_PORT>/internal/analytics/wizpay/update -H "Authorization: Bearer $ANALYTICS_CRON_SECRET"
-```
-
-Example daily cron entry:
-
-```cron
-0 0 * * * curl -fsS -X POST http://127.0.0.1:<BACKEND_PORT>/internal/analytics/wizpay/update -H "Authorization: Bearer $ANALYTICS_CRON_SECRET" >> /var/log/wizpay-analytics-cron.log 2>&1
-```
-
-Replace `<BACKEND_PORT>` with the backend port exposed on the VM, usually `4000` unless production uses a different port.
-
-## Docker Compose Alternative
-
-If the backend is reachable only inside Docker, run the same curl command from the backend container network instead of the VM host network. For example:
-
-```cron
-0 0 * * * docker compose exec -T backend sh -lc 'curl -fsS -X POST http://127.0.0.1:${PORT:-4000}/internal/analytics/wizpay/update -H "Authorization: Bearer $ANALYTICS_CRON_SECRET"' >> /var/log/wizpay-analytics-cron.log 2>&1
-```
-
-Use the compose project and service name that are already running in production. Do not run `docker compose up` or redeploy from this cron.
-
-## Public Read Path
-
-Frontend analytics pages should read:
-
-```http
-GET /analytics/wizpay
-```
-
-The response contains verified seed contract counters, token-transfer counts, stablecoin volume totals, token breakdowns, and `updatedAt`. The first implementation serves seed data and refreshes backend cache metadata only.
+An external scheduler may call the protected update endpoint when configured. This document does not install a cron job, change production configuration, or require a deployment.

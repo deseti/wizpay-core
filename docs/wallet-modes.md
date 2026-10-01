@@ -1,39 +1,35 @@
 ---
-title: "Wallet Modes"
-description: "Signing model: external-wallet-only on Arc Mainnet."
+title: "External Wallet"
+description: "Wallet connection, authentication, and transaction signing."
 ---
 
-# Wallet Modes
+# External Wallet
 
-WizPay is external-wallet-only on Arc Mainnet. The connected external wallet holds the signing key and submits every on-chain write. The backend never holds signing keys, never signs on behalf of users, and never custodies funds.
+WizPay uses connected external wallets on Arc Mainnet, chain ID `5042`. The user controls the signing keys and authorizes every on-chain transaction.
 
-## Mode Selection
+## Connection and Authentication
 
-`ExecutionRouterService` resolves the external-wallet execution path for Arc Mainnet. Any non-Mainnet selector is rejected before execution.
+The frontend connects wallets through Reown. Connecting a wallet and authenticating an account are separate steps.
 
-## External Wallet (Non-Custodial)
+1. Request a wallet-authentication challenge.
+2. Sign the returned message in the wallet.
+3. Submit the challenge ID and signature for verification.
+4. Use the issued session for account-scoped backend requests.
 
-**Signing model:**
-- The user connects an external wallet through the Reown connector.
-- The user approves and signs each transaction in their own wallet.
-- The backend prepares, validates, and reconciles; it does not sign.
+The authentication signature proves wallet ownership. It does not send funds or approve token spending.
 
-**Flow:**
-1. User connects their external wallet in the frontend.
-2. Frontend submits the validated task payload to the backend.
-3. Backend validates the route, prepares execution, and returns instructions.
-4. User signs and submits the transaction in their wallet.
-5. Backend reconciles the receipt and finalizes task state.
+## Payment Signing
 
-**Characteristics:**
-- Client-side signing for every on-chain write.
-- No backend signing authority.
-- Arc Mainnet only.
+The frontend prepares a supported payment request and presents it to the wallet. The user reviews its network, token, amount, recipient, and any allowance request before signing.
 
-## Isolation
+Token approvals and payment transactions have separate hashes and outcomes. Only verified payment settlement completes the corresponding payment operation.
 
-The `ExecutionRouterService` is the **only** component aware of execution paths.
+## Backend Boundary
 
-- Agents do not check wallet paths. They receive tasks through the router and execute.
-- The orchestrator does not check wallet paths. It calls the execution router.
-- Workers do not check wallet paths. They call the orchestrator.
+The backend stores operation state and verifies on-chain evidence. It does not hold private keys, sign user transactions, or provide hosted-wallet execution.
+
+## Recovery
+
+If a payment has already been submitted, recover its intent and hash. Do not automatically open another payment request after a timeout or page refresh.
+
+Signing an authentication challenge does not authorize the backend to spend from the wallet.

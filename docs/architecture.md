@@ -1,165 +1,58 @@
 ---
 title: "System Architecture"
-description: "Component topology, responsibilities, and trust boundaries."
+description: "The production application, wallet signing, and backend verification."
 ---
 
 # System Architecture
 
-WizPay is a monorepo containing a NestJS backend, a Next.js frontend, and shared protocol configuration. The active configuration is strict Arc Mainnet-only and external-wallet-only: the connected external wallet signs and submits every on-chain write in the browser, while the backend validates, orchestrates, and reconciles without holding signing keys or custodying funds.
+## Deployment
 
-## Component Topology
+| Component | Production deployment | Responsibility |
+| --- | --- | --- |
+| Next.js frontend | Vercel, at `app.wizpay.xyz` | Payment UI, external-wallet connection, signing, and progress display |
+| NestJS backend | Docker on the VPS | Request validation, capability checks, intent storage, and receipt verification |
+| PostgreSQL 15 | Docker on the VPS | Wallet sessions, intents, tasks, invoices, bridge state, and activity |
+| Redis 7 | Docker on the VPS | Existing BullMQ queue infrastructure |
+| Arc Mainnet and external services | External infrastructure | Settlement, chain reads, and route-specific verification |
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                          Frontend (Next.js)                        │
-│  Composes payloads · Polls task status · Manages wallet sessions   │
-│  Signs and submits every on-chain write in the browser             │
-└────────────────────────────┬────────────────────────────────────────┘
-                             │ HTTP
-┌────────────────────────────▼────────────────────────────────────────┐
-│                     TaskController (/tasks/*)                       │
-├─────────────────────────────────────────────────────────────────────┤
-│                       OrchestratorService                           │
-│  handleTask() ─── creates task, enqueues to BullMQ                 │
-│  executeTask() ── called by workers, routes to agent               │
-├──────────────┬──────────────┬───────────────────────────────────────┤
-│  TaskService │ QueueService │ ExecutionRouterService                │
-│  (state)     │ (enqueue)    │ (external-wallet dispatch)           │
-├──────────────┴──────┬───────┴───────────────────────────────────────┤
-│                     │ BullMQ (Redis)                                │
-│    ┌────────────────▼─────────────────┐                            │
-│    │ Workers (payroll/swap/tx_poll)   │                            │
-│    └────────────────┬─────────────────┘                            │
-│                     │                                              │
-│    ┌────────────────▼─────────────────┐                            │
-│    │ Agents                           │                            │
-│    │ PayrollAgent · SwapAgent         │                            │
-│    │ FxAgent · LiquidityAgent         │                            │
-│    └────────────────┬─────────────────┘                            │
-│                     │                                              │
-│    ┌────────────────▼─────────────────┐                            │
-│    │ Adapters                         │                            │
-│    │ BlockchainSvc · DexService       │                            │
-│    └──────────────────────────────────┘                            │
-├─────────────────────────────────────────────────────────────────────┤
-│                    PostgreSQL (Prisma ORM)                          │
-│  Task · TaskUnit · TaskTransaction · TaskLog                       │
-└─────────────────────────────────────────────────────────────────────┘
+The production backend stack is defined in `deploy/arc-mainnet/compose.yml`. Frontend configuration selects its backend with `NEXT_PUBLIC_API_URL`.
+
+## Payment Flow
+
+```mermaid
+flowchart LR
+    UI[Next.js application] --> API[NestJS API]
+    API --> DB[(PostgreSQL)]
+    UI --> Wallet[Connected external wallet]
+    Wallet --> Chain[Blockchain]
+    UI -->|Report transaction hash| API
+    API -->|Read and verify receipt| Chain
+    API -->|Record verified outcome| DB
 ```
 
-## Component Responsibilities
+## Backend Responsibilities
 
-### Frontend (Next.js)
+- Capability and route checks reject unavailable operations.
+- Wallet authentication verifies a one-time signed challenge and issues an account-scoped session.
+- Execution intents bind immutable payment details to an operation identity.
+- Payroll preparation validates batches; reporting verifies wallet-submitted results.
+- Invoice APIs distinguish merchant management from public checkout and payment verification.
+- Activity APIs expose account-scoped payment records.
 
-- Composes payment payloads from user input
-- Calls backend HTTP endpoints to create tasks
-- Polls `GET /tasks/:id` for progress and renders status
-- Manages external wallet sessions (Reown connector)
-- Signs and broadcasts transactions client-side through the connected wallet
+## Queue Boundary
 
-#### Mobile Shell
+BullMQ workers for payroll, swap, and transaction polling remain in the backend. Their presence does not mean the backend signs or submits user payments.
 
-The frontend adapts to mobile viewports through a dedicated shell layer:
+The legacy payroll and swap agents reject backend submission on Arc Mainnet. Current wallet payment flows must not be described as worker-owned transfers or as automatic retries of user payments.
 
-- **Bottom Navigation** — 4-tab fixed bar (Home, Swap, Liquidity, Profile). Visible on mobile; hidden at the `md` breakpoint and above. Desktop navigation is rendered separately in the sidebar.
-- **Profile / Account Center** — A dedicated `/profile` route (`ProfileHubPage`) containing wallet identity, wallet address display, and the PWA install prompt on eligible devices.
+## Frontend Navigation
 
-#### Progressive Web App (PWA)
+Desktop navigation contains Home, Send, Payroll, Invoices, and Swap & Bridge. Mobile navigation contains Home, Actions, Swap, and Account. Assets are accessible from Home; the Account menu opens the profile page.
 
-WizPay ships a complete PWA surface for add-to-home-screen installability on mobile and desktop:
-
-| Artifact | Path | Purpose |
-|---|---|---|
-| Web Manifest | `app/manifest.ts` → `/manifest.webmanifest` | App name, display mode (`standalone`), theme/background colors, icon declarations |
-| Service Worker | `public/sw.js` | Satisfies browser install heuristic; pass-through fetch (no caching) |
-| App Icons | `app/icon.tsx`, `app/apple-icon.tsx`, `app/api/pwa-icon/route.tsx` | Dynamically generated PNG icons at 192 × 192, 512 × 512, and maskable variants |
-| PWA Runtime | `src/features/pwa/components/PwaRuntime.tsx` | Client component mounted at the root that registers the service worker and captures the `beforeinstallprompt` event |
-| Install State Store | `src/features/pwa/install-state.ts` | Shared Zustand store tracking `nativePromptAvailable`, `manualInstallAvailable`, `isInstalled`, `isMobileDevice`, `platform` |
-
-The install prompt shown in the Profile hub gates visibility on a real installability signal (`nativePromptAvailable || manualInstallAvailable`) in addition to the mobile/not-installed/not-dismissed checks, preventing the prompt from appearing on platforms where installation is not possible.
-
-### Orchestrator
-
-- `OrchestratorService.handleTask()` — HTTP entry point. Creates task, sets status to `assigned`, enqueues to BullMQ.
-- `OrchestratorService.executeTask()` — Worker entry point. Idempotency guard → status to `in_progress` → route to agent → finalize.
-- Unsupported task submissions fail closed before task creation.
-
-### Task Module
-
-| Service | Responsibility |
-|---|---|
-| `TaskService` | CRUD facade, status transitions, delegation to sub-services |
-| `TaskUnitService` | Unit reporting, task status recomputation |
-| `TaskTransactionService` | Transaction record CRUD, terminal-state aggregation |
-| `TaskLogService` | Append-only audit log, duplicate step detection |
-| `TaskMapperService` | Prisma model → domain object mapping |
-
-### Execution Layer
-
-- `ExecutionRouterService` — Resolves the external-wallet execution path for Arc Mainnet. Any non-Mainnet selector is rejected.
-- Execution engines handle their remaining authorized task types. Unauthorized routes fail closed.
-
-### Agents
-
-Each agent implements the `TaskAgent` interface:
-
-```typescript
-interface TaskAgent {
-  execute(task: TaskDetails): Promise<AgentExecutionResult>;
-}
-```
-
-| Agent | Operation | Settlement |
-|---|---|---|
-| `PayrollAgent` | Batch same-token USDC transfers | Async (tx_poll) |
-| `SwapAgent` | Token swap (disabled by default) | Sync |
-| `FxAgent` | FX trade (disabled by default) | Sync |
-| `LiquidityAgent` | Add/remove liquidity (disabled by default) | Sync |
-
-### Adapters
-
-| Adapter | Target | Protocol |
-|---|---|---|
-| `BlockchainService` | Arc Mainnet | viem |
-| `DexService` | DEX protocols | Chain-agnostic swap prep (disabled by default) |
-
-### Queue
-
-| Queue | Worker | Concurrency | Purpose |
-|---|---|---|---|
-| `payroll` | `PayrollWorker` | 5 | Payroll batch execution |
-| `swap` | `SwapWorker` | 1 | Swap, FX, Liquidity |
-| `tx_poll` | `TxPollWorker` | 1 | Transaction status polling |
+PWA installation is offered when supported by the device and browser. The service worker does not provide offline payment execution.
 
 ## Trust Boundaries
 
-```
-┌──────────────────────────────────────────────────┐
-│ UNTRUSTED                                        │
-│  Frontend (user input, wallet sessions)          │
-├──────────────────────────────────────────────────┤
-│ TRUSTED (backend perimeter)                      │
-│  TaskController — validates via class-validator   │
-│  OrchestratorService — enforces state machine     │
-│  Agents — prepare execution without signing keys  │
-├──────────────────────────────────────────────────┤
-│ EXTERNAL (third-party)                           │
-│  Arc Mainnet RPC — chain reads and submission     │
-│  Connected wallet — user-signed execution         │
-└──────────────────────────────────────────────────┘
-```
+User input, transaction hashes, and wallet claims require validation. The backend verifies receipts before accepting successful settlement. Signing authority remains in the connected wallet.
 
-- All user input crosses the trust boundary at `TaskController` and is validated before reaching the orchestrator.
-- The backend has no signing authority over user wallets. The trust model is external-wallet-only: the backend prepares and validates, the connected wallet signs and submits.
-- Bridge, swap, liquidity, and cross-token routes fail closed unless an authorized Mainnet route is configured and enabled.
-
-## Infrastructure
-
-| Component | Technology | Deployment |
-|---|---|---|
-| Backend | NestJS | Docker container |
-| Frontend | Next.js | Docker container |
-| Database | PostgreSQL | Docker container |
-| Queue | Redis | Docker container |
-| Reverse Proxy | Nginx | Routes `/api` → backend, `/` → frontend |
-| Orchestration | Docker Compose | All services in `docker-compose.yml` |
+Capabilities and route readiness determine availability. Source files, menu items, and prepared calldata are not evidence that a production payment completed.
