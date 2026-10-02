@@ -1,0 +1,53 @@
+name: Phase 2 clean Supabase validation
+
+on:
+  push:
+    branches: [feat/serverless-free-stack]
+    paths:
+      - .github/workflows/phase2-supabase-validation.yml
+      - apps/backend/test/validate-live-supabase.ts
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: phase2-clean-supabase-validation
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    if: github.ref == 'refs/heads/feat/serverless-free-stack'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install locked dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Generate Prisma client without database credentials
+        run: npm run prisma:generate -w backend
+      - name: Collect guarded live Phase 2 evidence
+        working-directory: apps/backend
+        env:
+          WIZPAY_DATABASE_PROFILE: supavisor-transaction
+          WIZPAY_MIGRATION_DATABASE_MODE: session
+          WIZPAY_ARC_NETWORK: arc-mainnet
+          WIZPAY_MIGRATION_NETWORK: arc-mainnet
+          WIZPAY_EXTERNAL_TEST_TARGET_DATABASE: postgres
+          WIZPAY_EXTERNAL_TEST_ACK: ISOLATED_NONPRODUCTION_SCHEMA
+          WIZPAY_EXTERNAL_TEST_TARGET_HOST: ${{ vars.WIZPAY_EXTERNAL_TEST_TARGET_HOST }}
+          WIZPAY_EXTERNAL_TEST_RUNTIME_TARGET_HOST: ${{ vars.WIZPAY_EXTERNAL_TEST_RUNTIME_TARGET_HOST }}
+          WIZPAY_EXTERNAL_TEST_DATABASE_URL: ${{ secrets.WIZPAY_EXTERNAL_TEST_DATABASE_URL }}
+          WIZPAY_EXTERNAL_TEST_RUNTIME_DATABASE_URL: ${{ secrets.WIZPAY_EXTERNAL_TEST_RUNTIME_DATABASE_URL }}
+          WIZPAY_EXTERNAL_TEST_CA_PEM: ${{ secrets.WIZPAY_EXTERNAL_TEST_CA_PEM }}
+        run: npm exec -- ts-node test/validate-live-supabase.ts
+      - name: Verify unchanged checkout
+        run: |
+          git diff --check
+          test -z "$(git status --porcelain)"

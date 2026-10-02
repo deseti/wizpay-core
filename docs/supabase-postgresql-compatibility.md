@@ -184,3 +184,47 @@ Supabase credentials. Live evidence still needs clean-project migration/status,
 the catalog/history report, all three suites over the supplied transaction
 pooler, secure certificate verification and permission/lifecycle compatibility.
 No Phase 2 acceptance or Phase 3 implementation follows automatically.
+
+## Remote validation when Codex cannot reach PostgreSQL
+
+[Phase 2 clean Supabase validation](../.github/workflows/phase2-supabase-validation.yml)
+provides a GitHub-hosted runner path for the same migration chain and three
+integration suites. It runs only on `feat/serverless-free-stack`; it has no
+deployment steps or production credentials. Installation and Prisma generation
+run before database secrets are supplied to the validation step.
+
+Provision the existing authorized clean-project URLs as repository Actions
+secrets named `WIZPAY_EXTERNAL_TEST_DATABASE_URL` and
+`WIZPAY_EXTERNAL_TEST_RUNTIME_DATABASE_URL`. Set the independently confirmed
+endpoint hostnames as repository Actions variables
+`WIZPAY_EXTERNAL_TEST_TARGET_HOST` and
+`WIZPAY_EXTERNAL_TEST_RUNTIME_TARGET_HOST`. When the provider certificate needs
+an explicit trusted root, provision the provider-issued PEM as
+`WIZPAY_EXTERNAL_TEST_CA_PEM`; it is written only to a temporary runner file and
+removed afterward. Never substitute an unverified certificate or disable TLS.
+Credentials must be transferred through the GitHub secret API or browser
+settings, never through Git, workflow inputs or logs.
+
+[validate-live-supabase.ts](../apps/backend/test/validate-live-supabase.ts)
+adds a missing `verify-full` option only in process, verifies both endpoint
+modes and certificate authorization, checks PostgreSQL 17 and setup permissions,
+then runs migration status/deploy/status/repeated deploy, the catalog/history
+checker, and all three suites with the transaction endpoint mandatory. It
+checks cleanup and zero public application rows afterward. A rerun accepts only
+a canonical, fully migrated schema containing no application data; unfamiliar
+or partially migrated schemas fail closed without reset or repair.
+
+Only selected metadata, command outcomes and numeric test summaries are emitted.
+Raw child-process/driver output stays in memory and is not uploaded. A workflow
+failure is evidence of its failed stage, not acceptance. Missing bindings fail
+before any database writes. A push changing the workflow/validator triggers the
+feature-branch run; after provisioning bindings, use the Actions browser or API
+to rerun it. The workflow need not be merged into `main` to rerun an existing
+push-triggered run. Dispatch requires GitHub's default-branch workflow
+registration, so do not change `main` merely to enable dispatch.
+
+During the cloud investigation, native DNS returned `EAI_AGAIN` and direct DNS
+queries returned `ECONNREFUSED`; GitHub API requests through the cloud proxy
+returned `Forbidden`. These observations do not establish a product defect or
+a failed Supabase TLS/authentication check. The remote workflow remains unproven
+until it executes with authorized bindings and its evidence is reviewed.
