@@ -39,36 +39,80 @@ claim, when present, must match the same workflow. JWT time claims must be valid
 and the token lifetime cannot exceed ten minutes. Key URL/algorithm overrides
 and unsigned tokens are never accepted.
 
-Each run/attempt gets a distinct bounded `wizpay_p2_<run_id>_<attempt>` role and
-48 random password bytes. PostgreSQL receives a salted SCRAM-SHA-256 verifier;
-plaintext passwords never enter SQL statements, broker logs or persistent broker
-state. PostgreSQL necessarily stores the password verifier. The two returned
-URLs are delivered only in the authenticated HTTPS response with `no-store`. The
-runner immediately issues GitHub mask commands for JWT, URLs, password and role,
-then supplies the validation environment only to its child process. No database
-credential is written to GitHub outputs/environment files or artifacts.
+Phase 2 uses exactly one migration-infrastructure login, `wizpay_phase2_ci`,
+with marker `wizpay-phase2-ci:v1`. Its 48 random password bytes are encoded as a
+64-character URL-safe string and persist only as the encrypted Vault secret
+`wizpay_phase2_ci_password_v1` (PostgreSQL separately stores the SCRAM
+verifier). There is no 30-minute role expiry: explicit finalization after
+independently accepted Phase 2 bounds its lifecycle. This is not application
+runtime infrastructure and must not survive Phase 2 acceptance.
 
-Before returning either URL, the broker opens a separate connection to
-`db.tsvzblikmgocgksgxguc.supabase.co:5432`, database `postgres`, using only the
-raw temporary role name and its freshly generated password. It reuses the
-already fingerprint-verified Supabase CA with `rejectUnauthorized: true`
-(certificate chain and hostname verification); TLS options have no permissive
-fallback. The query must confirm `current_user`, `current_database()` and this
-session's `pg_stat_ssl.ssl`. This is real password authentication, never
-privileged `SET ROLE`. The separate client closes on success and failure. A
-failed check revokes/drops its role through the existing cleanup routine and
-returns only `request_denied`; credentials cannot be returned even if cleanup
-encounters an unexpected object. Successful responses assert
-`directCredentialVerified: true`; the runner requires this flag before starting
-validation.
+Under the existing transaction advisory lock, bootstrap inventories the exact
+role and named Vault record without reading decrypted data. If both are absent,
+it creates the nonprivileged role and Vault secret in the same transaction.
+`vault.create_secret($1, $2, $3)` receives the password as a bound parameter;
+plaintext is never interpolated into SQL text, diagnostics or logs. PostgreSQL
+receives only the independently tested SCRAM-SHA-256 verifier, with
+transaction-local `password_encryption = 'scram-sha-256'`.
 
-The hand-built verifier is retained after an independent PostgreSQL 17
-interoperability check: the server stores the supplied SCRAM verifier unchanged,
-accepts its generated password over SCRAM-enforced loopback TCP, and rejects an
-incorrect password. Bootstrap explicitly sets transaction-local
-`password_encryption = 'scram-sha-256'`; plaintext still never enters SQL. This
-proves interoperability, not the original Supavisor failure's cause. The exact
-deployed role/password must also pass the new direct self-test.
+If both exist, bootstrap checks the marker, LOGIN, NOINHERIT, unset expiry and
+role configuration, administrative flags, memberships and permission boundaries
+before reading only that named secret from `vault.decrypted_secrets`. It does
+not recreate, rotate, update or regenerate the password. Only expected minimum
+grants are re-established. A missing half, duplicate/invalid record, unexpected
+marker or elevated permission fails closed; no partial-state repair occurs.
+
+After the creation transaction commits, a separate connection authenticates to
+`db.tsvzblikmgocgksgxguc.supabase.co:5432`, database `postgres`, with raw
+username `wizpay_phase2_ci` and the generated or retrieved Vault password. It
+reuses the fingerprint-pinned Supabase CA with `rejectUnauthorized: true`,
+keeping chain and hostname verification enabled. `current_user`,
+`current_database()` and this session's `pg_stat_ssl.ssl` must match. The client
+closes on either outcome; this is password authentication, never privileged
+`SET ROLE`. Failed direct verification returns only `request_denied` and leaves
+the matched role/Vault pair intact for investigation or explicit finalization,
+without rotation.
+
+Only a successful direct test permits URL delivery in the authenticated HTTPS
+response with `no-store`. Responses assert `directCredentialVerified: true` and
+`credentialLifecycle: phase2-vault-v1`; the runner requires both and the fixed
+role. Pooler usernames are `wizpay_phase2_ci.tsvzblikmgocgksgxguc`, on Session
+port 5432 and Transaction port 6543 with `sslmode=verify-full`. The runner
+immediately masks OIDC JWT, both URLs and password, and supplies credentials
+only to its validation child's environment. No credential enters GitHub outputs,
+`GITHUB_ENV`, artifacts, files or ordinary logs. No GitHub database secret or
+manual variable is required.
+
+## Vault and role permissions
+
+The role is LOGIN, NOINHERIT, NOSUPERUSER, NOCREATEDB, NOCREATEROLE,
+NOREPLICATION and NOBYPASSRLS. Grants remain CONNECT/CREATE on `postgres`,
+USAGE/CREATE on public and DML/type usage on enumerated canonical WizPay
+objects. No database-side connection limit is imposed on Supavisor's internal
+pools; application validation retains its one-connection runtime pool. Reverse
+membership grants the CI role to `postgres` with INHERIT/SET and preserves
+PostgreSQL 17's automatic creator ADMIN grant for reuse and finalization. It
+does not explicitly re-grant ADMIN to the nonsuperuser creator: PostgreSQL
+rejects granting ADMIN back to one's own grantor. Multiple creator/reverse-grant
+records are allowed only in this exact CI-to-postgres direction. The CI role
+must belong to no other role; no provider/admin role is granted to it.
+
+Only the broker's platform-provided `postgres` connection accesses Vault. The CI
+role receives no Vault grant. Effective schema privileges, including PUBLIC,
+must deny Vault USAGE/CREATE, which blocks table/view reads and function
+invocation, even when a Vault function has PostgreSQL's default PUBLIC EXECUTE.
+The guard also rejects access to other provider/admin schemas, unexpected
+explicit object/database ACLs, grant options and default grants. Catalog access
+is limited by PostgreSQL's normal catalog ACLs. Shared PUBLIC/provider ACLs are
+never rewritten to satisfy the guard; an incompatible provider permission
+configuration fails closed before decrypted-secret retrieval or URL delivery.
+The local PostgreSQL permission fixture proves denial of `vault.secrets`,
+`vault.decrypted_secrets`, `vault.create_secret` and `vault.update_secret`, and
+proves a leaked PUBLIC Vault schema grant is rejected. This fixture does not
+simulate Vault encryption; actual Vault encryption and provider ACLs require
+separate deployment/live evidence.
+
+## Supavisor preflight
 
 Session preflight (and then Transaction preflight) retries only exact SQLSTATE
 `28P01`, using the same role, password and endpoint. Waits are 5, 10, 15, 20 and
@@ -79,47 +123,40 @@ errors fail immediately; post-connect checks, queries and migrations are never
 retried by this policy. Retry evidence contains only retry count and final
 PASS/FAIL, never raw driver data.
 
-The role is LOGIN, NOINHERIT, NOSUPERUSER, NOCREATEDB, NOCREATEROLE,
-NOREPLICATION and NOBYPASSRLS, with a 30-minute password expiry. Runtime pools
-retain the existing one-connection default. No database-side connection limit is
-imposed on the provider's internal Supavisor pools. `CREATE` on database
-`postgres` permits isolated schemas; it does not grant `CREATEDB`. Grants are
-limited to CONNECT/CREATE on that database, USAGE/CREATE on public, and DML/type
-usage on enumerated retained baseline objects when rerunning. No provider/admin
-role is granted to the temporary login. The reverse membership grant lets
-`postgres` terminate the role's sessions and reassign its temporary objects; it
-never gives the login access to `postgres`. GitHub job concurrency and a broker
-PostgreSQL transaction lock prevent overlap. Another unexpired managed role
-blocks bootstrap rather than sharing credentials.
+## Normal cleanup and finalization
 
-## Cleanup and reruns
+GitHub job concurrency remains serialized with `cancel-in-progress: false`. Each
+run's `always()` cleanup obtains fresh OIDC and operates only on the fixed CI
+role. It terminates that role's remaining sessions, drops only owned
+`wizpay_test_<32 hexadecimal characters>` schemas, verifies retained public
+tables/types against canonical names/kinds, rejects unexpected owned functions
+or objects, and reassigns expected retained objects to `postgres`. It preserves
+LOGIN, password, Vault record and expected grants: there is no NOLOGIN, password
+clearing, DROP OWNED, role deletion, secret deletion or rotation during normal
+cleanup. Bootstrap re-establishes canonical object grants on the next run. Fully
+absent role/secret state is a cleanup no-op; partial state fails closed.
 
-The `always()` workflow step obtains a fresh OIDC token and requests cleanup for
-its own run/attempt. Cleanup derives the role from signed claims; a supplied
-role must match exactly. A catalog marker and nonprivileged role attributes must
-also match. Replays cannot select another run's role or an arbitrary provider
-role.
+A separate broker action `finalize` requires the same strict GitHub OIDC
+identity. Optional `role` and `secret` targets must exactly equal the fixed CI
+role and Vault name; arbitrary targets are rejected before connecting. No runner
+command or normal workflow invokes finalization. The authorized ChatGPT/Supabase
+process invokes it only after Phase 2 is independently ACCEPTED.
 
-Cleanup commits NOLOGIN/password removal and terminates existing backend
-sessions before attempting ownership changes. It then drops only UUID test
-schemas owned by that role, validates retained public objects against the
-canonical baseline, reassigns them to `postgres`, removes remaining grants and
-drops the role. Unexpected ownership fails closed, leaving the login revoked for
-operator review. It never drops public or rewrites migration history. A failed
-bootstrap transaction does not leave a partly created role. Subsequent
-authenticated bootstrap can reclaim expired, correctly marked roles before
-issuing a new role.
-
-If a runner is forcibly terminated before cleanup, password expiry is a
-fallback, not a promise that an already-open pooled session instantly ends.
-Verify cleanup and role absence after every run; expired-role reclamation
-terminates sessions. After Phase 2 evidence is collected, remove this temporary
-function through the authorized connector. It must not become a permanent
-production credential API.
+Finalization first commits NOLOGIN/password removal. A second locked transaction
+terminates sessions, removes only owned isolated schemas, checks retained
+ownership, reassigns canonical public objects, removes owned grants and drops
+`wizpay_phase2_ci`. It deletes only the Vault record selected by both its UUID
+and exact name `wizpay_phase2_ci_password_v1`, atomically with the role drop.
+Unexpected ownership/termination failure keeps login revoked and leaves the
+secret for operator review; retrying finalization can finish that revoked state.
+After both are absent, finalization is idempotent. Remove the temporary broker
+through the authorized connector after finalization; do not retain a production
+credential API. No finalization, deployment or live migration runs from Codex.
 
 The workflow and broker are tested locally with synthetic tokens and mocked SQL,
 plus this explicit isolated PostgreSQL 17 SCRAM interoperability test using a
-cached image (no pulls, host ports, persistent volumes or migrations):
+cached image and Vault permission fixture (no pulls, host ports, persistent
+volumes or migrations):
 
 ```sh
 deno test --config supabase/functions/phase2-db-credential-broker/deno.json \

@@ -9,6 +9,7 @@ import { pathToFileURL } from "node:url";
 export const SETTINGS = Object.freeze({
   audience: "wizpay-phase2-supabase",
   project: "tsvzblikmgocgksgxguc",
+  role: "wizpay_phase2_ci",
   host: "aws-0-ap-southeast-1.pooler.supabase.com",
   endpoint:
     "https://tsvzblikmgocgksgxguc.supabase.co/functions/v1/phase2-db-credential-broker",
@@ -95,21 +96,13 @@ export function verifyCertificate(pem, now = Date.now()) {
   );
   return pem;
 }
-export function validationEnvironment(
-  body,
-  environment,
-  certificatePath,
-  now = Date.now(),
-) {
+export function validationEnvironment(body, environment, certificatePath) {
   assert.equal(body.directCredentialVerified, true);
+  assert.equal(body.credentialLifecycle, "phase2-vault-v1");
   assert(/^[1-9][0-9]{0,19}$/.test(environment.GITHUB_RUN_ID));
   assert(/^[1-9][0-9]{0,5}$/.test(environment.GITHUB_RUN_ATTEMPT));
-  assert.equal(
-    body.role,
-    `wizpay_p2_${environment.GITHUB_RUN_ID}_${environment.GITHUB_RUN_ATTEMPT}`,
-  );
-  const expiry = Date.parse(body.expiresAt);
-  assert(expiry > now && expiry <= now + 30 * 60 * 1000 + 30_000);
+  assert.equal(body.role, SETTINGS.role);
+  assert.equal(body.expiresAt, undefined);
   const urls = [body.sessionUrl, body.transactionUrl].map((value, index) => {
     const url = new URL(value);
     assert.equal(url.protocol, "postgresql:");
@@ -120,7 +113,7 @@ export function validationEnvironment(
       decodeURIComponent(url.username),
       `${body.role}.${SETTINGS.project}`,
     );
-    assert(url.password.length >= 48);
+    assert(/^[A-Za-z0-9_-]{64}$/.test(decodeURIComponent(url.password)));
     assert.equal(url.searchParams.get("sslmode"), "verify-full");
     assert.deepEqual([...url.searchParams.keys()], ["sslmode"]);
     url.searchParams.set("sslrootcert", certificatePath);
@@ -167,12 +160,13 @@ export async function run(
   const body = await brokerRequest(action, environment, fetcher, masker);
   if (action === "cleanup") {
     assert.equal(body.cleaned, true);
-    console.log("Phase 2 temporary role cleanup PASS.");
+    console.log("Phase 2 run cleanup PASS; stable CI credential preserved.");
     return;
   }
   let directory;
   try {
     assert.equal(body.directCredentialVerified, true);
+    assert.equal(body.credentialLifecycle, "phase2-vault-v1");
     console.log("Phase 2 broker direct credential self-test PASS.");
     const response = await fetcher(SETTINGS.caUrl, {
       redirect: "error",

@@ -1,12 +1,12 @@
 import type { Row } from "./database.ts";
-import { managedIdentity, requireCondition, TARGET } from "./security.ts";
+import { requireCiRole, requireCondition, TARGET } from "./security.ts";
 
 export function directCredentialOptions(
   role: string,
   password: string,
   ca: string,
 ) {
-  managedIdentity(role);
+  requireCiRole(role);
   requireCondition(/^[A-Za-z0-9_-]{64}$/.test(password) && ca.length > 0);
   return {
     host: `db.${TARGET.project}.supabase.co`,

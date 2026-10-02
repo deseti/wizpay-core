@@ -34,9 +34,9 @@ jobs:
         run: npm ci --no-audit --no-fund
       - name: Generate Prisma client without database credentials
         run: npm run prisma:generate -w backend
-      - name: Request OIDC, bootstrap role, verify CA, and collect live evidence
+      - name: Request OIDC, reuse Vault CI credential, verify CA, and collect live evidence
         run: node .github/scripts/phase2-oidc-bootstrap.mjs bootstrap
-      - name: Revoke and remove the temporary role using fresh OIDC
+      - name: Clean run objects and preserve the stable CI credential using fresh OIDC
         if: always()
         run: node .github/scripts/phase2-oidc-bootstrap.mjs cleanup
       - name: Verify unchanged checkout

@@ -21,16 +21,16 @@ const environment = {
   ACTIONS_ID_TOKEN_REQUEST_TOKEN: "synthetic-request-token",
   GH_TOKEN: "do-not-forward",
 };
-const role = "wizpay_p2_37045203379_1",
-  password = "synthetic-password-".repeat(4);
+const role = "wizpay_phase2_ci",
+  password = "synthetic-password-for-ci-validation-".padEnd(64, "x");
 const make = (port) =>
   `postgresql://${role}.${SETTINGS.project}:${password}@${SETTINGS.host}:${port}/postgres?sslmode=verify-full`;
 const body = {
   role,
   directCredentialVerified: true,
+  credentialLifecycle: "phase2-vault-v1",
   sessionUrl: make(5432),
   transactionUrl: make(6543),
-  expiresAt: new Date(Date.now() + 1800_000).toISOString(),
 };
 test("OIDC request uses dedicated audience and masks token before returning", async () => {
   const masks = [];
@@ -100,6 +100,9 @@ test("guarded child environment binds run and endpoint modes and removes OIDC/Gi
   for (const change of [
     { directCredentialVerified: false },
     { directCredentialVerified: undefined },
+    { credentialLifecycle: undefined },
+    { credentialLifecycle: "per-run" },
+    { role: "wizpay_p2_37056114267_2" },
     { role: "postgres" },
     { expiresAt: new Date(Date.now() + 3600_000).toISOString() },
     { transactionUrl: make(5432) },
@@ -202,9 +205,37 @@ test("workflow stays secretless and cleanup/checkout checks run even on prefligh
     ),
   );
   assert(
-    /- name: Revoke[^\n]*\n\s+if: always\(\)\n\s+run: node \.github\/scripts\/phase2-oidc-bootstrap\.mjs cleanup/.test(
+    /- name: Clean run objects[^\n]*\n\s+if: always\(\)\n\s+run: node \.github\/scripts\/phase2-oidc-bootstrap\.mjs cleanup/.test(
       source,
     ),
   );
   assert(/- name: Verify unchanged checkout\n\s+if: always\(\)/.test(source));
+  assert(!source.includes("finalize"));
+});
+test("stable broker response works across run/attempts with the same credential", () => {
+  const first = validationEnvironment(
+    body,
+    environment,
+    "/tmp/public-root.crt",
+  );
+  const second = validationEnvironment(
+    body,
+    { ...environment, GITHUB_RUN_ID: "37056114267", GITHUB_RUN_ATTEMPT: "3" },
+    "/tmp/public-root.crt",
+  );
+  assert.equal(
+    first.WIZPAY_EXTERNAL_TEST_DATABASE_URL,
+    second.WIZPAY_EXTERNAL_TEST_DATABASE_URL,
+  );
+  assert.equal(
+    first.WIZPAY_EXTERNAL_TEST_RUNTIME_DATABASE_URL,
+    second.WIZPAY_EXTERNAL_TEST_RUNTIME_DATABASE_URL,
+  );
+});
+test("runner has no automatic finalization action", async () => {
+  await assert.rejects(() =>
+    brokerRequest("finalize", environment, () => {
+      throw new Error("must not call fetch");
+    }),
+  );
 });

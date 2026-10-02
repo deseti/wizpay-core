@@ -1,23 +1,14 @@
 import assert from "node:assert/strict";
-import {
-  bootstrap,
-  cleanup,
-  type Database,
-  type Query,
-  ROLE_PRIVILEGES,
-  type Row,
-} from "./database.ts";
 import { createHandler } from "./handler.ts";
+import { FakeDatabase } from "./test-database.ts";
 import {
   directCredentialOptions,
   verifyDirectCredentials,
 } from "./direct-credentials.ts";
 import {
-  expiresAt,
-  marker,
+  CI,
   randomPassword,
-  ROLE_TTL_SECONDS,
-  roleName,
+  runIdentity,
   scramVerifier,
   TARGET,
   verifyOidc,
@@ -146,17 +137,16 @@ Deno.test("invalid signatures, unsigned tokens and malformed JWTs rejected", asy
     ]
   ) await assert.rejects(() => verifyOidc(jwt, fetchJwks, now));
 });
-Deno.test("bounded role identity, expiry, random passwords and SCRAM verifier", async () => {
-  assert(
-    roleName({ runId: "9".repeat(20), attempt: "9".repeat(6) }).length < 63,
-  );
-  assert.throws(() => roleName({ runId: "9".repeat(21), attempt: "1" }));
-  assert.throws(() => roleName({ runId: "postgres", attempt: "1" }));
-  assert.equal(
-    expiresAt(now * 1000).getTime() - now * 1000,
-    ROLE_TTL_SECONDS * 1000,
-  );
-  assert.equal(ROLE_TTL_SECONDS, 1800);
+Deno.test("bounded OIDC run identity, fixed CI targets, random passwords and SCRAM verifier", async () => {
+  assert.deepEqual(runIdentity("9".repeat(20), "9".repeat(6)), {
+    runId: "9".repeat(20),
+    attempt: "9".repeat(6),
+  });
+  assert.throws(() => runIdentity("9".repeat(21), "1"));
+  assert.throws(() => runIdentity("postgres", "1"));
+  assert.equal(CI.role, "wizpay_phase2_ci");
+  assert.equal(CI.secret, "wizpay_phase2_ci_password_v1");
+  assert.equal(CI.marker, "wizpay-phase2-ci:v1");
   const first = randomPassword(), second = randomPassword();
   assert.notEqual(first, second);
   assert.equal(first.length, 64);
@@ -165,135 +155,6 @@ Deno.test("bounded role identity, expiry, random passwords and SCRAM verifier", 
   assert(!verifier.includes(first));
 });
 
-class FakeDatabase implements Database {
-  statements: string[] = [];
-  entries: Row[] = [];
-  publicTypes: Row[] = [];
-  schemas: Row[] = [];
-  transactionCount = 0;
-  closed = false;
-  verified: { role: string; password: string } | undefined;
-  verificationError: Error | undefined;
-  async query(text: string): Promise<Row[]> {
-    this.statements.push(text);
-    if (text.startsWith("CREATE ROLE")) this.entries = [managedRow()];
-    if (text.includes("FROM pg_roles")) return this.entries;
-    if (text.startsWith("ALTER ROLE")) {
-      for (const entry of this.entries) entry.rolcanlogin = false;
-    }
-    if (text.startsWith("DROP ROLE")) this.entries = [];
-    if (text.includes("FROM pg_namespace WHERE nspowner")) return this.schemas;
-    if (text.includes("WHERE t.typowner")) return this.publicTypes;
-    return await Promise.resolve([]);
-  }
-  async transaction<T>(work: (query: Query) => Promise<T>): Promise<T> {
-    this.transactionCount++;
-    return await work(this);
-  }
-  close(): Promise<void> {
-    this.closed = true;
-    return Promise.resolve();
-  }
-  verifyCredentials(role: string, password: string): Promise<void> {
-    assert(this.statements.some((sql) => sql.startsWith("CREATE ROLE")));
-    assert.equal(this.entries[0].rolcanlogin, true);
-    this.verified = { role, password };
-    return this.verificationError
-      ? Promise.reject(this.verificationError)
-      : Promise.resolve();
-  }
-}
-function managedRow(): Row {
-  return {
-    oid: 123,
-    rolname: roleName(identity),
-    marker: marker(identity),
-    rolvaliduntil: expiresAt(),
-    rolcanlogin: true,
-    rolsuper: false,
-    rolcreatedb: false,
-    rolcreaterole: false,
-    rolreplication: false,
-    rolbypassrls: false,
-  };
-}
-Deno.test("bootstrap privilege plan is bounded and never sends plaintext password to SQL", async () => {
-  const db = new FakeDatabase(), password = randomPassword();
-  await bootstrap(db, identity, password, now * 1000);
-  const sql = db.statements.join("\n");
-  assert(sql.includes(ROLE_PRIVILEGES));
-  assert(
-    sql.includes(
-      "NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS",
-    ),
-  );
-  assert(sql.includes("GRANT CONNECT, CREATE ON DATABASE postgres"));
-  assert(sql.includes("GRANT USAGE, CREATE ON SCHEMA public"));
-  assert(!sql.includes(password));
-  assert(sql.includes("SCRAM-SHA-256$"));
-  assert(sql.includes("SET LOCAL password_encryption = 'scram-sha-256'"));
-  assert(!/GRANT (postgres|supabase_admin|pg_[a-z_]+) TO/.test(sql));
-  assert(!sql.includes("ON ALL TABLES"));
-});
-Deno.test("bootstrap serializes runs and rejects overlap without revoking an active role", async () => {
-  const db = new FakeDatabase();
-  db.entries = [managedRow()];
-  await assert.rejects(() =>
-    bootstrap(db, { runId: "12345", attempt: "1" }, randomPassword())
-  );
-  assert(db.statements[0].includes("pg_advisory_xact_lock"));
-  assert(
-    !db.statements.some((text) =>
-      /^(ALTER ROLE|CREATE ROLE|DROP ROLE)/.test(text)
-    ),
-  );
-});
-Deno.test("cleanup rejects arbitrary identities and markers, commits revoke before bounded retention", async () => {
-  const db = new FakeDatabase();
-  db.entries = [managedRow()];
-  await assert.rejects(() => cleanup(db, identity, "postgres"));
-  assert.equal(db.statements.length, 0);
-  db.entries[0].marker = "not-created-by-broker";
-  await assert.rejects(() => cleanup(db, identity));
-  assert(!db.statements.some((sql) => sql.startsWith("ALTER ROLE")));
-  db.statements = [];
-  db.entries = [managedRow()];
-  db.publicTypes = [{ nspname: "public", typname: "_prisma_migrations" }, {
-    nspname: "public",
-    typname: "__prisma_migrations",
-  }];
-  db.schemas = [{ nspname: `wizpay_test_${"a".repeat(32)}` }];
-  await cleanup(db, identity);
-  const sql = db.statements.join("\n");
-  assert(sql.indexOf("NOLOGIN PASSWORD NULL") < sql.indexOf("REASSIGN OWNED"));
-  assert(sql.includes("pg_terminate_backend"));
-  assert(sql.includes("TO postgres"));
-  assert(sql.includes(`DROP ROLE "${roleName(identity)}"`));
-  assert(!sql.includes("DROP SCHEMA public"));
-});
-Deno.test("cleanup fails closed on unrelated schema ownership while keeping role revoked", async () => {
-  const db = new FakeDatabase();
-  db.entries = [managedRow()];
-  db.schemas = [{ nspname: "public" }];
-  await assert.rejects(() => cleanup(db, identity));
-  assert.equal(db.entries[0].rolcanlogin, false);
-  assert(!db.statements.some((text) => text.startsWith("DROP SCHEMA")));
-});
-Deno.test("termination permission failure cannot roll back committed login revocation", async () => {
-  class TerminationDenied extends FakeDatabase {
-    override async query(text: string): Promise<Row[]> {
-      if (text.includes("pg_terminate_backend")) {
-        throw new Error("Synthetic permission failure");
-      }
-      return await super.query(text);
-    }
-  }
-  const db = new TerminationDenied();
-  db.entries = [managedRow()];
-  await assert.rejects(() => cleanup(db, identity));
-  assert.equal(db.transactionCount, 2);
-  assert.equal(db.entries[0].rolcanlogin, false);
-});
 Deno.test("broker returns URLs only to authenticated invocation and never logs them", async () => {
   const db = new FakeDatabase();
   let connections = 0;
@@ -340,7 +201,10 @@ Deno.test("broker returns URLs only to authenticated invocation and never logs t
     assert.equal(response.headers.get("cache-control"), "no-store");
     const body = await response.json();
     assert.equal(body.directCredentialVerified, true);
-    assert.equal(db.verified?.role, roleName(identity));
+    assert.equal(body.credentialLifecycle, "phase2-vault-v1");
+    assert.equal(body.password, undefined);
+    assert.equal(body.expiresAt, undefined);
+    assert.equal(db.verified?.role, CI.role);
     assert.equal(
       db.verified?.password,
       decodeURIComponent(new URL(body.sessionUrl).password),
@@ -353,8 +217,24 @@ Deno.test("broker returns URLs only to authenticated invocation and never logs t
     assert.equal(new URL(body.transactionUrl).port, "6543");
     assert.equal(
       new URL(body.sessionUrl).username,
-      `${roleName(identity)}.${TARGET.project}`,
+      `${CI.role}.${TARGET.project}`,
     );
+    const reused = await handler(
+      new Request("https://broker.invalid", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${await token({
+            run_id: "37056114267",
+            run_attempt: "3",
+          })}`,
+          "content-type": "application/json",
+        },
+        body: '{"action":"bootstrap"}',
+      }),
+    );
+    assert.equal(reused.status, 200);
+    assert.deepEqual(await reused.json(), body);
+    assert.equal(db.transactionCount, 2);
     assert.deepEqual(messages, []);
   } finally {
     [console.log, console.warn, console.error] = original;
@@ -363,8 +243,8 @@ Deno.test("broker returns URLs only to authenticated invocation and never logs t
 Deno.test("direct self-test uses raw role, fixed direct endpoint and pinned verified TLS", async () => {
   const password = randomPassword();
   const ca = "synthetic already-pinned CA";
-  const options = directCredentialOptions(roleName(identity), password, ca);
-  assert.equal(options.username, roleName(identity));
+  const options = directCredentialOptions(CI.role, password, ca);
+  assert.equal(options.username, CI.role);
   assert(!options.username.includes(TARGET.project));
   assert.equal(options.host, `db.${TARGET.project}.supabase.co`);
   assert.equal(options.port, 5432);
@@ -376,25 +256,25 @@ Deno.test("direct self-test uses raw role, fixed direct endpoint and pinned veri
   for (
     const row of [
       {
-        current_user: roleName(identity),
+        current_user: CI.role,
         current_database: "postgres",
         ssl: true,
       },
       { current_user: "postgres", current_database: "postgres", ssl: true },
       {
-        current_user: roleName(identity),
+        current_user: CI.role,
         current_database: "wrong",
         ssl: true,
       },
       {
-        current_user: roleName(identity),
+        current_user: CI.role,
         current_database: "postgres",
         ssl: false,
       },
     ]
   ) {
     const verification = () =>
-      verifyDirectCredentials(roleName(identity), password, ca, (actual) => {
+      verifyDirectCredentials(CI.role, password, ca, (actual) => {
         assert.deepEqual(actual.ssl, options.ssl);
         return {
           query: () => Promise.resolve([row]),
@@ -405,14 +285,14 @@ Deno.test("direct self-test uses raw role, fixed direct endpoint and pinned veri
         };
       });
     if (
-      row.current_user === roleName(identity) &&
+      row.current_user === CI.role &&
       row.current_database === "postgres" && row.ssl
     ) {
       await verification();
     } else await assert.rejects(verification);
   }
   await assert.rejects(() =>
-    verifyDirectCredentials(roleName(identity), password, ca, () => ({
+    verifyDirectCredentials(CI.role, password, ca, () => ({
       query: () => Promise.reject(new Error("synthetic credential failure")),
       close: () => {
         closed++;
@@ -423,19 +303,23 @@ Deno.test("direct self-test uses raw role, fixed direct endpoint and pinned veri
   assert.equal(closed, 5);
   assert.throws(() =>
     directCredentialOptions(
-      `${roleName(identity)}.${TARGET.project}`,
+      `${CI.role}.${TARGET.project}`,
       password,
       ca,
     )
   );
 });
-Deno.test("failed direct verification returns no credentials and revokes/drops its role", async () => {
-  for (const retentionFailure of [false, true]) {
-    const db = new FakeDatabase();
-    db.verificationError = new Error(
-      "postgresql://synthetic:synthetic-password@invalid/",
-    );
-    if (retentionFailure) db.schemas = [{ nspname: "public" }];
+Deno.test("failed direct verification returns only generic error and retains the stable credential", async () => {
+  const db = new FakeDatabase();
+  db.verificationError = new Error(
+    "postgresql://synthetic:synthetic-password@invalid/",
+  );
+  const messages: unknown[][] = [];
+  const original = [console.log, console.warn, console.error];
+  console.log = console.warn = console.error = (...args) => {
+    messages.push(args);
+  };
+  try {
     const handler = createHandler(() => Promise.resolve(db), fetchJwks);
     const response = await handler(
       new Request("https://broker.invalid", {
@@ -449,11 +333,63 @@ Deno.test("failed direct verification returns no credentials and revokes/drops i
     );
     assert(response.status >= 400);
     assert.deepEqual(await response.json(), { error: "request_denied" });
-    assert(db.statements.some((sql) => sql.includes("NOLOGIN PASSWORD NULL")));
     assert.equal(db.closed, true);
-    if (retentionFailure) assert.equal(db.entries[0].rolcanlogin, false);
-    else assert.equal(db.entries.length, 0);
+    assert.equal(db.entries[0].rolcanlogin, true);
+    assert.equal(db.secrets.length, 1);
+    assert(
+      !db.statements.some((sql) =>
+        /^(ALTER ROLE|DROP ROLE|DELETE FROM vault)/.test(sql)
+      ),
+    );
+    assert.deepEqual(messages, []);
+  } finally {
+    [console.log, console.warn, console.error] = original;
   }
+});
+Deno.test("handler finalization requires valid OIDC and rejects arbitrary targets before connecting", async () => {
+  let connections = 0;
+  const handler = createHandler(() => {
+    connections++;
+    return Promise.resolve(new FakeDatabase());
+  }, fetchJwks);
+  for (
+    const [jwt, body] of [
+      ["invalid", { action: "finalize" }],
+      [await token({ ref: "refs/heads/main" }), { action: "finalize" }],
+      [await token(), { action: "finalize", role: "postgres" }],
+      [await token(), { action: "finalize", secret: "provider-password" }],
+      [await token(), { action: "cleanup", secret: CI.secret }],
+    ] as const
+  ) {
+    const response = await handler(
+      new Request("https://broker.invalid", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${jwt}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify(body),
+      }),
+    );
+    assert.equal(response.status, 403);
+    assert.deepEqual(await response.json(), { error: "request_denied" });
+  }
+  assert.equal(connections, 0);
+  const response = await handler(
+    new Request("https://broker.invalid", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${await token()}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        action: "finalize",
+        role: CI.role,
+        secret: CI.secret,
+      }),
+    }),
+  );
+  assert.deepEqual(await response.json(), { finalized: true });
 });
 Deno.test("production adapter wires direct verification using the same pinned CA", async () => {
   const source = await Deno.readTextFile(new URL("index.ts", import.meta.url));
@@ -474,6 +410,7 @@ Deno.test("workflow uses OIDC with no repository database bindings and always cl
   assert(!workflow.includes("secrets.") && !workflow.includes("vars."));
   assert(workflow.includes("if: always()"));
   assert(workflow.includes("phase2-oidc-bootstrap.mjs cleanup"));
+  assert(!workflow.includes("finalize"));
   const script = await Deno.readTextFile(
     new URL(
       "../../../.github/scripts/phase2-oidc-bootstrap.mjs",

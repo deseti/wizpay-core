@@ -198,8 +198,10 @@ or variables. It requests GitHub OIDC for audience `wizpay-phase2-supabase` and
 calls the temporary [credential broker](../supabase/functions/phase2-db-credential-broker/README.md).
 The separately deployed broker verifies GitHub's signature and strict
 repository/branch/workflow/run claims, then uses only its platform-injected
-database binding to create a bounded, nonprivileged 30-minute login role. The
-broker source is deployment-ready source, not evidence of a deployed function.
+database binding to create/reuse the nonprivileged `wizpay_phase2_ci` login and
+its stable encrypted Vault credential. Explicit finalization after independently
+accepted Phase 2 removes both; no short password expiry or per-run rotation is
+used. Source preparation is separate from authorized broker deployment.
 
 [phase2-oidc-bootstrap.mjs](../.github/scripts/phase2-oidc-bootstrap.mjs) immediately
 masks the returned URLs/password and obtains the public Supabase Root 2021 CA
@@ -222,9 +224,10 @@ or partially migrated schemas fail closed without reset or repair.
 Only selected metadata, command outcomes and numeric test summaries are emitted.
 Raw child-process/driver output stays in memory and is not uploaded. A workflow
 failure is evidence of its failed stage, not acceptance. An `always()` cleanup
-step obtains fresh OIDC, revokes its own role, terminates sessions, transfers
-only expected retained migration objects to `postgres`, and drops the temporary
-role/grants/test schemas. Checkout checks also run on failure. The workflow need
+step obtains fresh OIDC, terminates CI sessions, drops owned isolated test
+schemas and transfers only expected retained migration objects to `postgres`.
+It preserves the fixed role/password/Vault pair for subsequent runs. Checkout
+checks also run on failure. The workflow need
 not be merged into `main` to rerun an existing push-triggered run. Dispatch
 requires GitHub's default-branch workflow registration, so do not change `main`
 merely to enable dispatch.
@@ -249,10 +252,12 @@ error alone cannot distinguish SCRAM defects from pooler credential cache state.
 The verifier was independently accepted by isolated PostgreSQL 17 with a
 wrong-password negative control; the stored credential remained SCRAM. It is
 retained, and transaction-local `password_encryption` is explicitly SCRAM.
-The broker now requires a fresh direct PostgreSQL login using the raw temporary
-role name, its generated password, and the pinned CA with strict chain/hostname
-verification. User/database identity and session TLS must match before URLs are
-returned. Failure invokes revocation/drop and returns only the generic failure.
+The broker requires a fresh direct PostgreSQL login using the raw CI role
+name, its generated or retrieved Vault password, and the pinned CA with strict
+chain/hostname verification. User/database identity and session TLS must match
+before URLs are
+returned. Failure returns only the generic error and preserves the matched
+role/Vault pair without rotation for investigation or explicit finalization.
 The runner requires the successful direct-test assertion in the response.
 
 Only Session/Transaction authentication preflight retries exact `28P01`:
@@ -261,11 +266,38 @@ five-second connection limits and a 110-second overall deadline. Credentials
 and endpoints remain fixed; other errors and all post-connect operations fail
 without authentication retries. Logs contain retry count and final outcome.
 
-Authorized deployment of this update and another hosted run are still needed
-to classify the actual Supabase failure: direct failure blocks credentials and
-requires broker/SCRAM investigation; direct success rules out an invalid
-role/password pair, while later pooler success with the unchanged pair supplies
-evidence for propagation/cache. Persistent pooler failure after direct success
-requires further Supavisor diagnosis and must not be called resolved. No live
-deployment or migration was performed from Codex for this fix, and no Phase 2
-acceptance or Phase 3 implementation is implied.
+Independently verified run `37056114267`, attempt 2, subsequently passed OIDC,
+role creation, direct generated-password authentication and strict TLS. Session
+Supavisor still failed after five retries (approximately 110 seconds); multiple
+nodes recorded `auth_scram_final_wait` for `wizpay_p2_37056114267_2` in the correct
+project/database. Cleanup and unchanged checkout passed, with no managed roles
+or public application tables remaining. This establishes correct credentials
+and direct TLS; persistent Shared Pooler authentication remains unresolved.
+
+The corrected lifecycle uses the fixed `wizpay_phase2_ci` role, marker
+`wizpay-phase2-ci:v1` and Vault secret `wizpay_phase2_ci_password_v1`. The
+connector independently confirmed `supabase_vault` and schema `vault` exist.
+Bootstrap creates a matched role/secret transactionally only when both are
+absent, or validates and reuses both without rotation. Partial or unsafe state
+fails closed. The password is parameterized into `vault.create_secret` and only
+the broker's privileged connection reads the exact named decrypted value.
+Effective Vault/provider permissions and memberships are checked before URLs
+are issued; the CI role must lack Vault schema access, which blocks Vault table,
+view and function calls, including PUBLIC-executable functions. Shared ACLs are
+never weakened or rewritten. The direct self-test remains mandatory each time.
+
+Normal cleanup retains the stable login/password/Vault pair and removes only
+bounded run objects/sessions. Separate strict-OIDC `finalize` revokes login,
+cleans/reassigns canonical owned objects, drops the fixed role and deletes only
+the named Vault record. It is absent from the runner/workflow and must be invoked
+by the authorized process only after independent Phase 2 acceptance.
+
+The runner requires the fixed role and `phase2-vault-v1` lifecycle response,
+while OIDC remains bound to run/attempt. Masking, verified TLS, secret-free
+workflow permissions and the bounded `28P01` policy are unchanged. A hosted
+run triggered before updated broker deployment is expected to fail and is not
+acceptance evidence. After authorized deployment, the first run may still fail
+pooler propagation; subsequent hosted reruns reuse the exact same credential.
+Successful hosted migration/tests, Vault isolation and final cleanup after
+acceptance remain live evidence. No deployment, live migration, finalization,
+production-data movement or Phase 3 implementation occurs from Codex.

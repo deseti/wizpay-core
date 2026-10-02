@@ -14,7 +14,11 @@ export const TARGET = Object.freeze({
   caFingerprint:
     "807025AD50D4ED219D2C9C7D299C004F824EB00CF7F65AFEF607D07B72E6CAFA",
 });
-export const ROLE_TTL_SECONDS = 30 * 60;
+export const CI = Object.freeze({
+  role: "wizpay_phase2_ci",
+  secret: "wizpay_phase2_ci_password_v1",
+  marker: "wizpay-phase2-ci:v1",
+});
 export type RunIdentity = { runId: string; attempt: string };
 export class Denied extends Error {
   constructor() {
@@ -53,22 +57,8 @@ export function runIdentity(runId: unknown, attempt: unknown): RunIdentity {
   );
   return { runId, attempt };
 }
-export function roleName(identity: RunIdentity): string {
-  const run = runIdentity(identity.runId, identity.attempt);
-  const role = `wizpay_p2_${run.runId}_${run.attempt}`;
-  requireCondition(role.length <= 63);
-  return role;
-}
-export function marker(identity: RunIdentity): string {
-  return `wizpay-phase2-broker:v1:${roleName(identity)}`;
-}
-export function managedIdentity(name: string): RunIdentity {
-  const match = /^wizpay_p2_([1-9][0-9]{0,19})_([1-9][0-9]{0,5})$/.exec(name);
-  requireCondition(match);
-  return runIdentity(match[1], match[2]);
-}
-export function expiresAt(now = Date.now()): Date {
-  return new Date(now + ROLE_TTL_SECONDS * 1000);
+export function requireCiRole(name: unknown): void {
+  requireCondition(name === CI.role);
 }
 
 // Only this fixed JWKS origin is trusted. Header jku/x5u never select keys.
@@ -205,7 +195,8 @@ export async function scramVerifier(password: string): Promise<string> {
   }:${base64(new Uint8Array(server))}`;
 }
 export function connectionUrls(role: string, password: string) {
-  managedIdentity(role);
+  requireCiRole(role);
+  requireCondition(/^[A-Za-z0-9_-]{64}$/.test(password));
   const make = (port: number) => {
     const url = new URL(
       `postgresql://${TARGET.pooler}:${port}/${TARGET.database}`,
