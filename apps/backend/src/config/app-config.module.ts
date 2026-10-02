@@ -40,6 +40,7 @@ function resolveEnvFilePath(): string | undefined {
 }
 
 const envFilePath = resolveEnvFilePath();
+let runtimeConfiguration: ReturnType<typeof validateEnvironment>;
 
 @Module({
   imports: [
@@ -49,8 +50,14 @@ const envFilePath = resolveEnvFilePath();
       expandVariables: true,
       envFilePath,
       ignoreEnvFile: envFilePath === undefined,
-      load: [configuration],
-      validate: validateEnvironment,
+      load: [configuration, () => runtimeConfiguration],
+      validate: (environment: Record<string, unknown>) => {
+        runtimeConfiguration = validateEnvironment(environment);
+        // Keep derived database/queue settings in DI. ConfigModule otherwise
+        // copies them into process.env, where the next cold-start retry would
+        // correctly reject them as unscoped operator-supplied configuration.
+        return environment;
+      },
     }),
   ],
   exports: [ConfigModule],

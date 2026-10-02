@@ -1,10 +1,16 @@
 import {
   Injectable,
+  Inject,
+  Optional,
   Logger,
   OnModuleDestroy,
   OnModuleInit,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import {
+  WIZPAY_RUNTIME_MODE,
+  type WizPayRuntimeMode,
+} from '../../runtime/runtime.module';
 import { Job, Worker } from 'bullmq';
 import { QueueName } from '../queue.constants';
 import { TaskQueueJobData } from '../queue.types';
@@ -24,7 +30,7 @@ import {
  * - Worker NEVER calls agents directly
  *
  * Lifecycle:
- * - Worker starts automatically on module init (OnModuleInit)
+ * - Worker starts on module init in server mode only (OnModuleInit)
  * - Worker closes gracefully on module destroy (OnModuleDestroy)
  */
 @Injectable()
@@ -35,9 +41,13 @@ export class PayrollWorker implements OnModuleInit, OnModuleDestroy {
   constructor(
     private readonly configService: ConfigService,
     private readonly payrollProcessor: PayrollProcessor,
+    @Optional()
+    @Inject(WIZPAY_RUNTIME_MODE)
+    private readonly runtimeMode: WizPayRuntimeMode = 'server',
   ) {}
 
   onModuleInit(): void {
+    if (this.runtimeMode === 'serverless') return;
     this.logger.log('Starting payroll worker...');
 
     this.worker = new Worker<TaskQueueJobData>(

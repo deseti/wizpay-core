@@ -4,6 +4,7 @@ import {
 } from '@wizpay/arc-network';
 import { normalizeMainnetRuntimeEnvironmentValues } from './runtime-env';
 import { resolveRuntimeIsolationConfiguration } from './runtime-isolation.config';
+import { resolveRuntimeMode } from '../runtime/runtime.module';
 
 type EnvironmentValues = Record<string, unknown> & {
   WIZPAY_ARC_NETWORK?: string;
@@ -19,6 +20,7 @@ export function validateEnvironment(config: Record<string, unknown>) {
 
   return {
     ...environment,
+    WIZPAY_RUNTIME_MODE: resolveRuntimeMode(environment.WIZPAY_RUNTIME_MODE),
     DATABASE_URL: isolation.databaseUrl,
     REDIS_URL: isolation.redisUrl,
     REDIS_HOST: isolation.redis.host,

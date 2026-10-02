@@ -1,10 +1,16 @@
 import {
   Injectable,
+  Inject,
+  Optional,
   Logger,
   OnModuleDestroy,
   OnModuleInit,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import {
+  WIZPAY_RUNTIME_MODE,
+  type WizPayRuntimeMode,
+} from '../../runtime/runtime.module';
 import { Job, Worker } from 'bullmq';
 import { QueueName } from '../queue.constants';
 import { TaskQueueJobData } from '../queue.types';
@@ -23,9 +29,13 @@ export class SwapWorker implements OnModuleInit, OnModuleDestroy {
   constructor(
     private readonly configService: ConfigService,
     private readonly swapProcessor: SwapProcessor,
+    @Optional()
+    @Inject(WIZPAY_RUNTIME_MODE)
+    private readonly runtimeMode: WizPayRuntimeMode = 'server',
   ) {}
 
   onModuleInit(): void {
+    if (this.runtimeMode === 'serverless') return;
     this.logger.log('Starting swap worker...');
 
     this.worker = new Worker<TaskQueueJobData>(

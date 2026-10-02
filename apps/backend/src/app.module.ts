@@ -1,4 +1,8 @@
-import { Module } from '@nestjs/common';
+import { Module, type DynamicModule } from '@nestjs/common';
+import {
+  RuntimeModule,
+  type WizPayRuntimeMode,
+} from './runtime/runtime.module';
 import { APP_FILTER } from '@nestjs/core';
 import { BridgeModule } from './bridge/bridge.module';
 import { AdaptersModule } from './adapters/adapters.module';
@@ -49,4 +53,8 @@ import { ExecutionIntentModule } from './execution-intent/execution-intent.modul
     ActivityModule,
   ],
 })
-export class AppModule {}
+export class AppModule {
+  static forRuntime(mode: WizPayRuntimeMode): DynamicModule {
+    return { module: AppModule, imports: [RuntimeModule.forRoot(mode)] };
+  }
+}

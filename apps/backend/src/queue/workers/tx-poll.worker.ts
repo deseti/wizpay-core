@@ -1,10 +1,16 @@
 import {
   Injectable,
+  Inject,
+  Optional,
   Logger,
   OnModuleDestroy,
   OnModuleInit,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import {
+  WIZPAY_RUNTIME_MODE,
+  type WizPayRuntimeMode,
+} from '../../runtime/runtime.module';
 import { Job, Worker } from 'bullmq';
 import { QueueName } from '../queue.constants';
 import { TxPollJobData } from '../queue.types';
@@ -35,9 +41,13 @@ export class TxPollWorker implements OnModuleInit, OnModuleDestroy {
   constructor(
     private readonly configService: ConfigService,
     private readonly txPollProcessor: TxPollProcessor,
+    @Optional()
+    @Inject(WIZPAY_RUNTIME_MODE)
+    private readonly runtimeMode: WizPayRuntimeMode = 'server',
   ) {}
 
   onModuleInit(): void {
+    if (this.runtimeMode === 'serverless') return;
     this.logger.log('Starting tx_poll worker...');
 
     this.worker = new Worker<TxPollJobData>(

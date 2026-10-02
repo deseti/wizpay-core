@@ -22,6 +22,32 @@ described below remain unchanged.
 
 The production backend stack is defined in `deploy/arc-mainnet/compose.yml`. Frontend configuration selects its backend with `NEXT_PUBLIC_API_URL`.
 
+## HTTP runtime composition (Phase 3)
+
+[createWizPayApplication](../apps/backend/src/application.ts) constructs the
+shared Express/Nest application and applies the existing network/configuration
+validation and CORS policy. Both modes retain `AppModule`'s controllers,
+authentication, local validation and global exception filter.
+[main.ts](../apps/backend/src/main.ts) owns shutdown hooks and `app.listen()`
+for VPS/local startup. [serverless.ts](../apps/backend/src/serverless.ts)
+exports a Node HTTP handler that calls `app.init()` and dispatches through the
+Express adapter without listening or installing process signal handlers.
+
+The handler creates one lazy initialization promise, shares it across concurrent
+cold requests, and reuses the application and Prisma lifecycle on warm requests.
+A failed initialization closes partial resources, returns a generic 503, and
+clears the promise so a later request can retry. Prisma is not disconnected
+after requests. Derived database/queue configuration stays in dependency
+injection rather than contaminating the next initialization's environment.
+
+`WIZPAY_RUNTIME_MODE` accepts only `server` or `serverless`; an explicit value
+must match the selected entrypoint. When absent, `main.ts` selects `server` and
+the handler selects `serverless`. Only server mode starts payroll, swap and
+transaction-poll BullMQ consumers. Request services and lazy Redis/BullMQ queue
+producers remain available in both modes. Redis/BullMQ replacement is Phase 4;
+no queue migration or backend deployment is included here. Serverless requests
+that enqueue work still require an existing long-lived consumer.
+
 ## Payment Flow
 
 ```mermaid

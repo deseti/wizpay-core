@@ -1,6 +1,6 @@
 ---
 title: "Runtime Architecture Boundaries"
-description: "Phase 1 VPS baseline preservation and the future serverless boundary."
+description: "Preserved VPS baseline and shared server/serverless HTTP runtime boundaries."
 ---
 
 # Runtime Architecture Boundaries
@@ -83,12 +83,11 @@ lease semantics unchanged. No schema or production migration is part of Phase 1.
 | Docker/VPS topology | [production Compose](../deploy/arc-mainnet/compose.yml) runs backend/workers, PostgreSQL 15, Redis 7 with persistent volumes and a separate migration profile; readiness/health checks order services and the API binds to loopback on the host. [backend Dockerfile](../apps/backend/Dockerfile), [entrypoint](../apps/backend/docker-entrypoint.sh), [frontend Dockerfile](../apps/frontend/Dockerfile), [contract Dockerfile](../packages/contracts/Dockerfile.dev), [local Compose](../docker-compose.yml) and [development overlay](../docker-compose.dev.yml) all remain available. Production Compose overrides the migration service entrypoint; do not change startup/migration topology here. |
 | Deployment and CI | [deployment guide](../deploy/README.md), [environment template](../deploy/arc-mainnet/environment.template), [cutover runbook](../deploy/arc-mainnet/PRODUCTION_CUTOVER_RUNBOOK.md), [CI](../.github/workflows/ci.yml) and [manual production workflow](../.github/workflows/cd-production.yml) are retained. Existing CI covers main pushes/PRs, dependency install, Prisma generation, Foundry, tests and builds; a feature-branch change alone does not establish a CI run. Do not invoke the manual deployment workflow. |
 
-Worker providers initialize as part of the current Nest application. Merely
-reusing `AppModule` in a short-lived HTTP function could start BullMQ workers
-and database lifecycle hooks. Phase 1 does not alter this dependency injection
-graph, its `forwardRef` relationships, Redis, queues, processors, retries or
-shutdown behavior. Source preservation does not by itself prove service
-availability in the cloud development environment.
+At the Phase 1 baseline, worker providers initialize as part of the Nest
+application. Phase 3 now gates only their startup hooks on the selected runtime
+mode, preserving this dependency graph, its `forwardRef` relationships, Redis,
+queues, processors and retries. Database hooks remain application-owned in both
+modes. Source preservation does not by itself prove live service availability.
 
 ## Future serverless boundary — design only
 
@@ -124,6 +123,19 @@ migration, TLS/pooler and persistence evidence still require the authorized
 test project's securely supplied endpoints. Phase 2 acceptance is not recorded
 in the migration log until independently audited.
 
+### Phase 3 HTTP runtime update
+
+The shared [application factory](../apps/backend/src/application.ts) configures
+HTTP without listening or owning signals. [main.ts](../apps/backend/src/main.ts)
+retains VPS/local listener and shutdown ownership;
+[serverless.ts](../apps/backend/src/serverless.ts) lazily initializes one cached
+Express/Nest application, shares concurrent cold starts, and retries after a
+failed initialization. See [HTTP runtime composition](architecture.md#http-runtime-composition-phase-3)
+for the strict runtime selector and resource lifecycle. The focused factory,
+handler, root-composition and worker tests cover both runtime paths. The
+future HTTP test plan below is now implemented for initialization and transport;
+queue/scheduler replacements and deployment remain later-phase work.
+
 ## Configuration boundaries
 
 | Configuration class | Current source and boundary |
@@ -133,7 +145,7 @@ in the migration log until independently audited.
 | Redis/BullMQ | `ARC_MAINNET_REDIS_URL` and `ARC_MAINNET_QUEUE_PREFIX` are validated before internal Redis options and `BULLMQ_PREFIX` are derived. Prefixes include `arc-mainnet`; jobs must match the selected network. Unscoped Redis/queue configuration is rejected. Redis TLS/auth options and existing job/retry policies remain unchanged. |
 | VPS deployment | The production template/Compose and manual workflow supply PostgreSQL/Redis targets, volumes, ports, health checks, CORS and process environment. [AppConfigModule](../apps/backend/src/config/app-config.module.ts) reads the root local `.env` or injected container environment, and ignores developer env files in tests. [host normalization](../apps/backend/src/config/runtime-env.ts) distinguishes Compose hostnames from loopback host ports. Credentials stay outside tracked source. |
 | External services and frontend | Existing Circle Iris and destination RPC configuration is route-specific verification I/O, not custody. `NEXT_PUBLIC_API_URL` selects the frontend backend origin; existing Mainnet/Reown/public-app settings remain unchanged. [frontend root-env loader](../apps/frontend/scripts/with-root-env.sh) and production build/runtime configuration are retained. |
-| Future serverless | A design placeholder for transport/connection/queue/scheduler lifetime configuration only. No new variables, provider bindings or alternate network/capability registry are introduced. Existing production variables are not replaced. |
+| Serverless HTTP (Phase 3) | `WIZPAY_RUNTIME_MODE=server\|serverless` selects process lifecycle explicitly and must match the entrypoint; absence preserves server startup through `main.ts` and selects serverless through the handler. Database profiles, network/capability registries and production bindings remain unchanged. Queue/scheduler replacements remain future work. |
 
 ## Frontend cooperation with durable backend state
 
