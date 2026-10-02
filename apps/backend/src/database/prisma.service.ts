@@ -7,6 +7,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from '@prisma/client';
+import { runtimeDatabasePool } from './database-connection.config';
 
 const MAX_RETRIES = 5;
 const RETRY_DELAY_MS = 3000;
@@ -21,7 +22,16 @@ export class PrismaService
   constructor(configService: ConfigService) {
     const connectionString = configService.getOrThrow<string>('DATABASE_URL');
 
-    const adapter = new PrismaPg({ connectionString });
+    const adapter = new PrismaPg(
+      runtimeDatabasePool(connectionString, {
+        WIZPAY_DATABASE_PROFILE: configService.get<string>(
+          'WIZPAY_DATABASE_PROFILE',
+        ),
+        WIZPAY_DATABASE_POOL_MAX: configService.get<string>(
+          'WIZPAY_DATABASE_POOL_MAX',
+        ),
+      }),
+    );
 
     super({
       adapter,

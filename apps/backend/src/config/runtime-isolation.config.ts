@@ -1,5 +1,6 @@
 import { parseArcNetworkKey } from '@wizpay/arc-network';
 import { assertDeploymentManifestIsolation } from './deployment-manifest.config';
+import { runtimeDatabasePool } from '../database/database-connection.config';
 
 type Environment = Record<string, string | undefined>;
 
@@ -13,6 +14,7 @@ const MAINNET_VARIABLES = Object.freeze({
 
 const FORBIDDEN_UNSCOPED_RUNTIME_KEYS = Object.freeze([
   'DATABASE_URL',
+  'DIRECT_URL',
   'REDIS_URL',
   'REDIS_HOST',
   'REDIS_PORT',
@@ -66,7 +68,7 @@ export function resolveRuntimeIsolationConfiguration(
   const network = parseArcNetworkKey(environment.WIZPAY_ARC_NETWORK);
   if (network !== MAINNET_NETWORK) {
     fail(
-      `Unsupported Arc network: ${JSON.stringify(network)}. WizPay backend requires ${MAINNET_NETWORK}.`,
+      `Unsupported Arc network: ${JSON.stringify(network)}. WizPay backend requires arc-mainnet.`,
     );
   }
   assertRuntimeIdentityAgreement(environment);
@@ -77,11 +79,12 @@ export function resolveRuntimeIsolationConfiguration(
   const manifest = assertDeploymentManifestIsolation(network, environment);
   if (manifest.network !== MAINNET_NETWORK) {
     fail(
-      `Unsupported deployment manifest network: ${JSON.stringify(manifest.network)}. WizPay backend requires ${MAINNET_NETWORK}.`,
+      `Unsupported deployment manifest network: ${JSON.stringify(manifest.network)}. WizPay backend requires arc-mainnet.`,
     );
   }
 
   const databaseUrl = requireExact(environment, MAINNET_VARIABLES.databaseUrl);
+  runtimeDatabasePool(databaseUrl, environment);
   const redisUrl = requireExact(environment, MAINNET_VARIABLES.redisUrl);
   const queuePrefix = requireQueuePrefix(
     environment,

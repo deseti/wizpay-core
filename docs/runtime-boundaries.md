@@ -103,10 +103,26 @@ interfaces or implementations in this phase:
 | Reconciliation/scheduler boundary | Trigger/resume reads of known submission evidence, bounded retries, lease coordination and observable recovery | Known-hash reconciliation, operation-specific receipt checks and terminal-state rules; unresolved wallet outcomes cannot trigger automatic rebroadcast |
 | Runtime-specific worker/recovery adapter | Invocation/bootstrap/shutdown and execution budgets around the existing orchestration/recovery responsibilities | Shared business services and persisted state machines rather than duplicate VPS/serverless financial logic |
 
-No Supabase connectivity, schema compatibility, Supavisor configuration,
-Vercel handler, Redis/BullMQ removal, pgmq/Queues, Cron, pg_net, Vault or
-production cutover is implemented or configured here. No future runtime env
-variables are added. Domain services remain in their existing locations.
+Phase 1 introduced no Supabase connectivity, schema compatibility, Supavisor
+configuration, Vercel handler, Redis/BullMQ removal, pgmq/Queues, Cron, pg_net,
+Vault or production cutover. It added no future runtime environment variables.
+Domain services remain in their existing locations.
+
+### Phase 2 database-layer update
+
+Phase 2 adds the explicit `supavisor-transaction` database profile described in
+[Supabase PostgreSQL Compatibility](supabase-postgresql-compatibility.md).
+`ARC_MAINNET_DATABASE_URL` is its transaction-pool runtime connection;
+`ARC_MAINNET_MIGRATION_DATABASE_URL` is its separately supplied direct/session
+CLI connection. Runtime defaults to one application-side connection (bounded
+override up to three), uses verified TLS and unnamed queries, and retains the
+existing PrismaService lifecycle. The default VPS database profile, HTTP
+composition, Redis/BullMQ and canonical schema/migration remain intact.
+Connection-profile support and isolated PostgreSQL tests do not constitute a
+Supabase production cutover or a serverless HTTP handler. Live clean-Supabase
+migration, TLS/pooler and persistence evidence still require the authorized
+test project's securely supplied endpoints. Phase 2 acceptance is not recorded
+in the migration log until independently audited.
 
 ## Configuration boundaries
 

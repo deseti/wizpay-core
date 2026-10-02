@@ -1,74 +1,43 @@
-import { readFile } from 'node:fs/promises';
-import { randomUUID } from 'node:crypto';
-import { join } from 'node:path';
-import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from '@prisma/client';
-import { Client } from 'pg';
 import { ExecutionIntentService } from './execution-intent.service';
 import type { PrismaService } from '../database/prisma.service';
 import type { PaymentRoutingService } from '../routing/payment-routing.service';
 
-const databaseUrl = process.env.EXECUTION_INTENT_TEST_DATABASE_URL;
-const describePostgres = databaseUrl ? describe : describe.skip;
+import {
+  hasPostgresTarget,
+  openPostgresHarness,
+} from '../../test/postgres-harness';
+
+const describePostgres = hasPostgresTarget('EXECUTION_INTENT_TEST_DATABASE_URL')
+  ? describe
+  : describe.skip;
 const sender = '0x1000000000000000000000000000000000000001';
 const recipient = '0x2000000000000000000000000000000000000002';
 const usdc = '0x3000000000000000000000000000000000000003';
 
 describePostgres('ExecutionIntentService PostgreSQL integration', () => {
-  let admin: Client;
-  let migrationClient: Client;
+  let harness: Awaited<ReturnType<typeof openPostgresHarness>>;
   let prisma: PrismaClient;
   let service: ExecutionIntentService;
-  let databaseName: string;
-  let isolatedUrl: string;
 
   beforeAll(async () => {
-    const parsed = new URL(databaseUrl!);
-    if (
-      !['127.0.0.1', 'localhost', '::1'].includes(parsed.hostname) ||
-      parsed.pathname !== '/wizpay_execution_intent_test_admin'
-    )
-      throw new Error(
-        'EXECUTION_INTENT_TEST_DATABASE_URL must target the local wizpay_execution_intent_test_admin database.',
-      );
-    databaseName = `wizpay_execution_intent_${randomUUID().replaceAll('-', '')}`;
-    admin = new Client({ connectionString: databaseUrl });
-    await admin.connect();
-    await admin.query(`CREATE DATABASE "${databaseName}"`);
-    const clientUrl = new URL(databaseUrl!);
-    clientUrl.pathname = `/${databaseName}`;
-    isolatedUrl = clientUrl.toString();
-    migrationClient = new Client({ connectionString: isolatedUrl });
-    await migrationClient.connect();
-    const migration = await readFile(
-      join(
-        __dirname,
-        '../database/migrations/20260922210000_arc_mainnet_fresh_baseline/migration.sql',
-      ),
-      'utf8',
+    harness = await openPostgresHarness(
+      'EXECUTION_INTENT_TEST_DATABASE_URL',
+      'wizpay_execution_intent_test_admin',
     );
-    await migrationClient.query(migration);
-    await migrationClient.end();
-    prisma = new PrismaClient({
-      adapter: new PrismaPg({ connectionString: isolatedUrl }),
-    });
-    await prisma.$connect();
+    prisma = harness.prisma;
     service = createService(prisma);
   });
 
   afterAll(async () => {
-    await prisma?.$disconnect();
-    if (admin && databaseName) {
-      await admin.query(`DROP DATABASE "${databaseName}"`);
-      await admin.end();
-    }
+    await harness?.close();
   });
 
   it('proves durable uniqueness, leases, immutable evidence, and restart recovery', async () => {
     const indexes = await prisma.$queryRaw<Array<{ indexdef: string }>>`
       SELECT indexdef
       FROM pg_indexes
-      WHERE schemaname = 'public' AND tablename = 'ExecutionIntent'
+      WHERE schemaname = ${harness.schema} AND tablename = 'ExecutionIntent'
     `;
     const definitions = indexes.map((index) => index.indexdef).join('\n');
     expect(definitions).toMatch(/UNIQUE.*"logicalKey"/);
@@ -165,9 +134,22 @@ describePostgres('ExecutionIntentService PostgreSQL integration', () => {
       response: { code: 'EXECUTION_INTENT_INVALID_TRANSITION' },
     });
 
-    const restartedPrisma = new PrismaClient({
-      adapter: new PrismaPg({ connectionString: isolatedUrl }),
+    const cancelled = await service.acquire(sendInput('terminal-guard'));
+    await service.cancelUnsubmitted(cancelled.id, cancelled.idempotencyKey);
+    await expect(
+      service.acquireLease(cancelled.id, 'worker-terminal', 60_000),
+    ).rejects.toMatchObject({
+      response: { code: 'EXECUTION_INTENT_TERMINAL' },
     });
+    await expect(
+      service.bindKnownTransactionHash(
+        cancelled.id,
+        cancelled.idempotencyKey,
+        `0x${'c'.repeat(64)}`,
+      ),
+    ).rejects.toThrow();
+
+    const restartedPrisma = harness.createPrisma();
     await restartedPrisma.$connect();
     const restartedService = createService(restartedPrisma);
     await expect(restartedService.get(intent.id)).resolves.toMatchObject({

@@ -10,6 +10,9 @@ describe('Arc Mainnet deployment isolation files', () => {
   const workflow = read('.github/workflows/cd-production.yml');
   const packageJson = read('apps/backend/package.json');
   const prismaConfig = read('apps/backend/prisma.config.ts');
+  const databaseConfig = read(
+    'apps/backend/src/database/database-connection.config.ts',
+  );
 
   it('uses distinct Mainnet project, network, PostgreSQL, and Redis volume identities', () => {
     for (const identity of [
@@ -108,9 +111,12 @@ describe('Arc Mainnet deployment isolation files', () => {
 
   it('requires an explicit matching Mainnet network for migration commands', () => {
     expect(packageJson).toContain('prisma:migrate:arc-mainnet');
-    expect(prismaConfig).toContain('ARC_MAINNET_DATABASE_URL');
+    expect(prismaConfig).toContain('migrationDatabaseUrl(process.env)');
+    expect(databaseConfig).toContain('ARC_MAINNET_DATABASE_URL');
     expect(prismaConfig).not.toMatch(/testnet/i);
-    expect(prismaConfig).toContain('migrationNetwork !== selectedNetwork');
-    expect(prismaConfig).toContain('process.env.DATABASE_URL !== undefined');
+    expect(databaseConfig).toContain(
+      'environment.WIZPAY_MIGRATION_NETWORK !== environment.WIZPAY_ARC_NETWORK',
+    );
+    expect(databaseConfig).toContain('environment.DATABASE_URL !== undefined');
   });
 });

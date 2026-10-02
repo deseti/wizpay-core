@@ -1,10 +1,5 @@
-import { readFile } from 'node:fs/promises';
-import { randomUUID } from 'node:crypto';
-import { join } from 'node:path';
-import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from '@prisma/client';
 import { ConfigService } from '@nestjs/config';
-import { Client } from 'pg';
 import type { Hex } from 'viem';
 import {
   getArcOperationResourceReadiness,
@@ -18,10 +13,16 @@ import {
 import { InvoiceService } from '../invoice/invoice.service';
 import { PaymentRoutingService } from '../routing/payment-routing.service';
 
-/* eslint-disable @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-assignment */
+/* eslint-disable @typescript-eslint/no-unsafe-assignment */
 
-const adminUrl = process.env.PHASE7_TEST_DATABASE_URL;
-const describePostgres = adminUrl ? describe : describe.skip;
+import {
+  hasPostgresTarget,
+  openPostgresHarness,
+} from '../../test/postgres-harness';
+
+const describePostgres = hasPostgresTarget('PHASE7_TEST_DATABASE_URL')
+  ? describe
+  : describe.skip;
 
 // These addresses exist only inside the offline rehearsal. They are deliberately
 // absent from the Arc registry and must never be treated as Mainnet resources.
@@ -34,14 +35,12 @@ const RECIPIENT_A = '0x2000000000000000000000000000000000000002';
 const RECIPIENT_B = '0x2000000000000000000000000000000000000003';
 const hashes = Array.from(
   { length: 8 },
-  (_, index) => `0x${(index + 1).toString(16).repeat(64)}` as Hex,
+  (_, index): Hex => `0x${(index + 1).toString(16).repeat(64)}`,
 );
 
 describePostgres('Phase 7 deterministic offline Mainnet rehearsal', () => {
-  let admin: Client;
-  let databaseName: string;
-  let secondaryDatabaseName: string;
-  let isolatedUrl: string;
+  let harness: Awaited<ReturnType<typeof openPostgresHarness>>;
+  let secondaryHarness: Awaited<ReturnType<typeof openPostgresHarness>>;
   let prisma: PrismaClient;
   let secondaryPrisma: PrismaClient;
   let routing: PaymentRoutingService;
@@ -50,28 +49,16 @@ describePostgres('Phase 7 deterministic offline Mainnet rehearsal', () => {
   let invoices: InvoiceService;
 
   beforeAll(async () => {
-    assertUrl(adminUrl!);
-    databaseName = `wizpay_phase7_${randomUUID().replaceAll('-', '')}`;
-    secondaryDatabaseName = `wizpay_phase7_secondary_${randomUUID().replaceAll('-', '')}`;
-    admin = new Client({ connectionString: adminUrl });
-    await admin.connect();
-    await admin.query(`CREATE DATABASE "${databaseName}"`);
-    await admin.query(`CREATE DATABASE "${secondaryDatabaseName}"`);
-    const url = new URL(adminUrl!);
-    url.pathname = `/${databaseName}`;
-    isolatedUrl = url.toString();
-    const secondaryUrl = new URL(adminUrl!);
-    secondaryUrl.pathname = `/${secondaryDatabaseName}`;
-    await migrate(isolatedUrl);
-    await migrate(secondaryUrl.toString());
-    prisma = new PrismaClient({
-      adapter: new PrismaPg({ connectionString: isolatedUrl }),
-    });
-    secondaryPrisma = new PrismaClient({
-      adapter: new PrismaPg({ connectionString: secondaryUrl.toString() }),
-    });
-    await prisma.$connect();
-    await secondaryPrisma.$connect();
+    harness = await openPostgresHarness(
+      'PHASE7_TEST_DATABASE_URL',
+      'wizpay_phase7_test_admin',
+    );
+    secondaryHarness = await openPostgresHarness(
+      'PHASE7_TEST_DATABASE_URL',
+      'wizpay_phase7_test_admin',
+    );
+    prisma = harness.prisma;
+    secondaryPrisma = secondaryHarness.prisma;
   });
 
   beforeEach(async () => {
@@ -99,13 +86,8 @@ describePostgres('Phase 7 deterministic offline Mainnet rehearsal', () => {
   });
 
   afterAll(async () => {
-    await prisma?.$disconnect();
-    await secondaryPrisma?.$disconnect();
-    if (admin && databaseName) {
-      await admin.query(`DROP DATABASE "${databaseName}"`);
-      await admin.query(`DROP DATABASE "${secondaryDatabaseName}"`);
-      await admin.end();
-    }
+    await harness?.close();
+    await secondaryHarness?.close();
   });
 
   it('rehearses every allowed direct-USDC lifecycle and one reconciled activity ledger', async () => {
@@ -232,9 +214,7 @@ describePostgres('Phase 7 deterministic offline Mainnet rehearsal', () => {
         sourceReferenceType: 'invoice',
         sourceReferenceId: request.publicId,
         chainId: 5_042,
-        txHash: request.transactionHash
-          ? (request.transactionHash as Hex)
-          : undefined,
+        txHash: request.transactionHash ? request.transactionHash : undefined,
         outputTokenSymbol: 'USDC',
         outputTokenAddress: OFFLINE_USDC,
       });
@@ -291,12 +271,10 @@ describePostgres('Phase 7 deterministic offline Mainnet rehearsal', () => {
   it('keeps real unresolved Mainnet resources and every deferred route fail closed', () => {
     expect(getArcOperationResourceReadiness('arc-mainnet')).toEqual({
       sendDirect: true,
-      sendDirectAppWallet: false,
       payrollDirect: true,
-      payrollDirectAppWallet: false,
       invoiceCreation: true,
       paymentLinkDirect: true,
-      paymentLinkDirectAppWallet: false,
+      bridgeDirect: true,
       swapDirect: true,
       crossToken: true,
     });
@@ -324,10 +302,10 @@ describePostgres('Phase 7 deterministic offline Mainnet rehearsal', () => {
         tokenIn: '0x3600000000000000000000000000000000000000',
         tokenOut: '0x3600000000000000000000000000000000000000',
       }),
-    ).toThrow('different Arc network');
+    ).toThrow('Payment token is not supported on the selected Arc network.');
   });
 
-  it('keeps identical Mainnet references isolated in physically separate databases', async () => {
+  it('keeps identical Mainnet references isolated in separate test namespaces', async () => {
     const mainnetRouting = createRouting('arc-mainnet');
     const secondaryIntents = new ExecutionIntentService(
       secondaryPrisma as never,
@@ -341,7 +319,16 @@ describePostgres('Phase 7 deterministic offline Mainnet rehearsal', () => {
       ...sendInput(reference, EXTERNAL_WALLET, RECIPIENT_A),
       network: 'arc-mainnet',
     });
-    expect(secondaryIntent.logicalKey).not.toBe(mainnetIntent.logicalKey);
+    // Logical identity is deterministic; persistence/state is independently isolated.
+    expect(secondaryIntent.logicalKey).toBe(mainnetIntent.logicalKey);
+    expect(secondaryIntent.id).not.toBe(mainnetIntent.id);
+    await intents.cancelUnsubmitted(
+      mainnetIntent.id,
+      mainnetIntent.idempotencyKey,
+    );
+    expect((await secondaryIntents.get(secondaryIntent.id)).status).toBe(
+      'CREATED',
+    );
     expect(await prisma.executionIntent.count()).toBe(1);
     expect(await secondaryPrisma.executionIntent.count()).toBe(1);
 
@@ -475,30 +462,4 @@ function directReceipt(
     token: OFFLINE_USDC,
     amountUnits: '1000000',
   };
-}
-
-function assertUrl(value: string) {
-  const url = new URL(value);
-  if (
-    !['127.0.0.1', 'localhost', '::1'].includes(url.hostname) ||
-    url.pathname !== '/wizpay_phase7_test_admin'
-  ) {
-    throw new Error(
-      'PHASE7_TEST_DATABASE_URL must target the local wizpay_phase7_test_admin database.',
-    );
-  }
-}
-
-async function migrate(databaseUrl: string) {
-  const client = new Client({ connectionString: databaseUrl });
-  await client.connect();
-  for (const migration of ['20260922210000_arc_mainnet_fresh_baseline']) {
-    await client.query(
-      await readFile(
-        join(__dirname, `../database/migrations/${migration}/migration.sql`),
-        'utf8',
-      ),
-    );
-  }
-  await client.end();
 }

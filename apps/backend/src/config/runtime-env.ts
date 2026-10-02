@@ -6,9 +6,7 @@ const DOCKER_REDIS_HOST = 'redis';
 
 type RuntimeEnvironment = Record<string, string | undefined>;
 
-export function isDockerRuntime(
-  environment: RuntimeEnvironment = process.env,
-) {
+export function isDockerRuntime(environment: RuntimeEnvironment = process.env) {
   return environment.DOCKER === 'true';
 }
 
@@ -27,10 +25,13 @@ export function normalizeMainnetRuntimeEnvironmentValues<
     return environment;
   }
 
-  const normalizedDatabaseUrl = normalizeDatabaseUrlForHostRun(
-    environment.ARC_MAINNET_DATABASE_URL,
-    environment,
-  );
+  const normalizedDatabaseUrl =
+    environment.WIZPAY_DATABASE_PROFILE === 'supavisor-transaction'
+      ? undefined
+      : normalizeDatabaseUrlForHostRun(
+          environment.ARC_MAINNET_DATABASE_URL,
+          environment,
+        );
   const normalizedRedisUrl = normalizeRedisUrlForHostRun(
     environment.ARC_MAINNET_REDIS_URL,
   );
