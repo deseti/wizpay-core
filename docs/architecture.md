@@ -5,6 +5,11 @@ description: "The production application, wallet signing, and backend verificati
 
 # System Architecture
 
+See [Runtime Architecture Boundaries](runtime-boundaries.md) for the Phase 1
+source map, exact stable VPS recovery references, future runtime adapter
+responsibilities and shared test strategy. The current deployment and behavior
+described below remain unchanged.
+
 ## Deployment
 
 | Component | Production deployment | Responsibility |

@@ -1,5 +1,12 @@
 # WizPay Arc Mainnet production configuration
 
+The stable VPS source baseline is commit
+`9900052a04ba807d937a9687f21d9933ffee33dd`, preserved by
+`archive/vps-production` and the annotated tag `vps-production-9900052`.
+See [Runtime Architecture Boundaries](../docs/runtime-boundaries.md) for the
+Phase 1 preservation policy and runtime/test boundaries. These references do
+not authorize deployment or replaying migrations against production data.
+
 The canonical VPS topology is `deploy/arc-mainnet/compose.yml`. It runs only:
 
 - the WizPay backend and workers;
