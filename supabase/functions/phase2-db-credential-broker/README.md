@@ -9,11 +9,12 @@ or live migration is performed by preparing this source.
 ## Deployment contract
 
 Use `index.ts` as the entrypoint, with `security.ts`, `database.ts`,
-`handler.ts`, `deno.json` and `deno.lock` included in the deployment bundle. The
-project-level function configuration is in `supabase/config.toml`. Supabase
-gateway JWT verification is disabled for this function because GitHub OIDC has a
-different issuer; the function itself always performs signature and claim
-verification. There is no unauthenticated bootstrap or cleanup path.
+`direct-credentials.ts`, `handler.ts`, `deno.json` and `deno.lock` included in
+the deployment bundle. The project-level function configuration is in
+`supabase/config.toml`. Supabase gateway JWT verification is disabled for this
+function because GitHub OIDC has a different issuer; the function itself always
+performs signature and claim verification. There is no unauthenticated bootstrap
+or cleanup path.
 
 The only privileged database binding is the platform-injected `SUPABASE_DB_URL`.
 `SUPABASE_URL` is checked against the fixed clean project identity. The database
@@ -46,6 +47,37 @@ URLs are delivered only in the authenticated HTTPS response with `no-store`. The
 runner immediately issues GitHub mask commands for JWT, URLs, password and role,
 then supplies the validation environment only to its child process. No database
 credential is written to GitHub outputs/environment files or artifacts.
+
+Before returning either URL, the broker opens a separate connection to
+`db.tsvzblikmgocgksgxguc.supabase.co:5432`, database `postgres`, using only the
+raw temporary role name and its freshly generated password. It reuses the
+already fingerprint-verified Supabase CA with `rejectUnauthorized: true`
+(certificate chain and hostname verification); TLS options have no permissive
+fallback. The query must confirm `current_user`, `current_database()` and this
+session's `pg_stat_ssl.ssl`. This is real password authentication, never
+privileged `SET ROLE`. The separate client closes on success and failure. A
+failed check revokes/drops its role through the existing cleanup routine and
+returns only `request_denied`; credentials cannot be returned even if cleanup
+encounters an unexpected object. Successful responses assert
+`directCredentialVerified: true`; the runner requires this flag before starting
+validation.
+
+The hand-built verifier is retained after an independent PostgreSQL 17
+interoperability check: the server stores the supplied SCRAM verifier unchanged,
+accepts its generated password over SCRAM-enforced loopback TCP, and rejects an
+incorrect password. Bootstrap explicitly sets transaction-local
+`password_encryption = 'scram-sha-256'`; plaintext still never enters SQL. This
+proves interoperability, not the original Supavisor failure's cause. The exact
+deployed role/password must also pass the new direct self-test.
+
+Session preflight (and then Transaction preflight) retries only exact SQLSTATE
+`28P01`, using the same role, password and endpoint. Waits are 5, 10, 15, 20 and
+30 seconds: at most six attempts and 80 seconds of scheduled delay. Individual
+connections have a five-second limit and the overall deadline is 110 seconds.
+Failed clients close before waiting. DNS, TLS, permission and other SQLSTATE
+errors fail immediately; post-connect checks, queries and migrations are never
+retried by this policy. Retry evidence contains only retry count and final
+PASS/FAIL, never raw driver data.
 
 The role is LOGIN, NOINHERIT, NOSUPERUSER, NOCREATEDB, NOCREATEROLE,
 NOREPLICATION and NOBYPASSRLS, with a 30-minute password expiry. Runtime pools
@@ -85,6 +117,15 @@ terminates sessions. After Phase 2 evidence is collected, remove this temporary
 function through the authorized connector. It must not become a permanent
 production credential API.
 
-The workflow and broker are tested locally with synthetic tokens and mocked SQL.
+The workflow and broker are tested locally with synthetic tokens and mocked SQL,
+plus this explicit isolated PostgreSQL 17 SCRAM interoperability test using a
+cached image (no pulls, host ports, persistent volumes or migrations):
+
+```sh
+deno test --config supabase/functions/phase2-db-credential-broker/deno.json \
+  --allow-run=env \
+  supabase/functions/phase2-db-credential-broker/scram-postgres-integration.ts
+```
+
 Deployment, actual Supabase role permissions/custom-role pooler authentication,
 live migrations, certificate trust and cleanup remain separate live evidence.

@@ -1,6 +1,7 @@
 import postgres from "postgres";
 import { X509Certificate } from "node:crypto";
 import type { Database, Query } from "./database.ts";
+import { verifyDirectCredentials } from "./direct-credentials.ts";
 import { createHandler } from "./handler.ts";
 import { requireCondition, TARGET } from "./security.ts";
 
@@ -64,6 +65,21 @@ async function connect(): Promise<Database> {
     });
     return {
       ...adapter(sql),
+      verifyCredentials: (role, password) =>
+        verifyDirectCredentials(role, password, ca, (options) => {
+          const client = postgres(options);
+          return {
+            query: async () => [
+              ...await client`
+              SELECT current_user, current_database(), ssl
+              FROM pg_stat_ssl WHERE pid = pg_backend_pid()
+            `,
+            ],
+            close: async () => {
+              await client.end({ timeout: 5 });
+            },
+          };
+        }),
       transaction: async (work) =>
         await sql.begin(async (transaction) =>
           await work(adapter(transaction as unknown as typeof sql))

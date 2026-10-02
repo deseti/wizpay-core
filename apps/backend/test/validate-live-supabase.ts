@@ -13,6 +13,7 @@ import {
 } from '../src/database/database-connection.config';
 import { checkPostgresCatalog } from './check-postgres-catalog';
 import { externalTestConnection, migrationsRoot } from './postgres-harness';
+import { connectWithAuthRetry } from './supavisor-auth-retry';
 
 // Child output stays in memory. Only selected nonsecret results are published;
 // driver errors, environment values and connection strings are never printed.
@@ -165,9 +166,12 @@ async function main() {
   for (let index = 0; index < configurations.length; index++) {
     stage = index === 0 ? 'session preflight' : 'transaction preflight';
     const config = configurations[index];
-    const client = new Client(config);
+    const client = await connectWithAuthRetry(
+      (connectionTimeoutMillis) =>
+        new Client({ ...config, connectionTimeoutMillis }),
+      (outcome) => console.log(JSON.stringify({ stage, ...outcome })),
+    );
     try {
-      await client.connect();
       const stream = (
         client as unknown as { connection: { stream: TLSSocket } }
       ).connection.stream;

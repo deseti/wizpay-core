@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import {
   brokerRequest,
   requestOidc,
+  run,
   SETTINGS,
   validationEnvironment,
   verifyCertificate,
@@ -26,6 +27,7 @@ const make = (port) =>
   `postgresql://${role}.${SETTINGS.project}:${password}@${SETTINGS.host}:${port}/postgres?sslmode=verify-full`;
 const body = {
   role,
+  directCredentialVerified: true,
   sessionUrl: make(5432),
   transactionUrl: make(6543),
   expiresAt: new Date(Date.now() + 1800_000).toISOString(),
@@ -96,6 +98,8 @@ test("guarded child environment binds run and endpoint modes and removes OIDC/Gi
     "6543",
   );
   for (const change of [
+    { directCredentialVerified: false },
+    { directCredentialVerified: undefined },
     { role: "postgres" },
     { expiresAt: new Date(Date.now() + 3600_000).toISOString() },
     { transactionUrl: make(5432) },
@@ -161,4 +165,46 @@ test("cleanup uses a fresh token and never requires persisted database credentia
     requests[1][1].headers.authorization,
     "Bearer fresh-cleanup-jwt",
   );
+});
+test("runner refuses unverified broker credentials before invoking the live validator", async () => {
+  let calls = 0;
+  const execute = () => {
+    throw new Error("Validator must not run");
+  };
+  const fetcher = async () => {
+    calls++;
+    assert(calls <= 2, "CA fetching must not start without direct proof");
+    return calls === 1
+      ? Response.json({ value: "synthetic-jwt" })
+      : Response.json({ ...body, directCredentialVerified: false });
+  };
+  await assert.rejects(() =>
+    run("bootstrap", environment, fetcher, () => undefined, execute),
+  );
+  assert.equal(calls, 2);
+});
+test("workflow stays secretless and cleanup/checkout checks run even on preflight failure", async () => {
+  const source = await readFile(
+    new URL("../workflows/phase2-supabase-validation.yml", import.meta.url),
+    "utf8",
+  );
+  assert(source.includes("id-token: write"));
+  assert(source.includes("contents: read"));
+  assert(source.includes("branches: [feat/serverless-free-stack]"));
+  assert(
+    source.includes(
+      "if: github.ref == 'refs/heads/feat/serverless-free-stack'",
+    ),
+  );
+  assert(
+    !/secrets\.|vars\.|GITHUB_ENV|GITHUB_OUTPUT|upload-artifact|supabase deploy|migrate reset|db push/.test(
+      source,
+    ),
+  );
+  assert(
+    /- name: Revoke[^\n]*\n\s+if: always\(\)\n\s+run: node \.github\/scripts\/phase2-oidc-bootstrap\.mjs cleanup/.test(
+      source,
+    ),
+  );
+  assert(/- name: Verify unchanged checkout\n\s+if: always\(\)/.test(source));
 });

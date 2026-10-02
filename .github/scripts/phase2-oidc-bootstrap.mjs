@@ -101,6 +101,7 @@ export function validationEnvironment(
   certificatePath,
   now = Date.now(),
 ) {
+  assert.equal(body.directCredentialVerified, true);
   assert(/^[1-9][0-9]{0,19}$/.test(environment.GITHUB_RUN_ID));
   assert(/^[1-9][0-9]{0,5}$/.test(environment.GITHUB_RUN_ATTEMPT));
   assert.equal(
@@ -171,6 +172,8 @@ export async function run(
   }
   let directory;
   try {
+    assert.equal(body.directCredentialVerified, true);
+    console.log("Phase 2 broker direct credential self-test PASS.");
     const response = await fetcher(SETTINGS.caUrl, {
       redirect: "error",
       signal: AbortSignal.timeout(10_000),

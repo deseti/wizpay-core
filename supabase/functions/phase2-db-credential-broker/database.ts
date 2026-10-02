@@ -14,6 +14,7 @@ export interface Query {
 }
 export interface Database extends Query {
   transaction<T>(work: (query: Query) => Promise<T>): Promise<T>;
+  verifyCredentials(role: string, password: string): Promise<void>;
   close(): Promise<void>;
 }
 const lock = (query: Query) =>
@@ -151,6 +152,7 @@ export async function bootstrap(
       await terminateSessions(query, row);
       await remove(query, row);
     }
+    await query.query("SET LOCAL password_encryption = 'scram-sha-256'");
     await query.query(
       `CREATE ROLE ${identifier(name)} WITH ${ROLE_PRIVILEGES} VALID UNTIL ${
         literal(expiry.toISOString())

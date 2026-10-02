@@ -236,5 +236,36 @@ run `37045203379` checked out commit `efb6ebc3190f073024098797709b8f8270eb9090`,
 installed dependencies and generated Prisma, then failed validation because all
 repository database bindings were empty. This confirms the runner path works;
 it does not prove database connectivity. The OIDC broker replaces those empty
-manual bindings. Live evidence remains pending authorized broker deployment,
-successful hosted validation and cleanup, and independent review.
+manual bindings.
+
+Subsequent evidence supplied independently confirms the broker is active:
+run `37052513797`, attempt 2, reached the broker through OIDC and created
+`wizpay_p2_37052513797_2`. Session preflight reached the correct project and
+database but failed with SQLSTATE `28P01` at `auth_scram_final_wait`. Cleanup and
+unchanged-checkout checks passed; independent inspection found zero managed
+roles and zero public tables. This establishes routing/role lifecycle, but the
+error alone cannot distinguish SCRAM defects from pooler credential cache state.
+
+The verifier was independently accepted by isolated PostgreSQL 17 with a
+wrong-password negative control; the stored credential remained SCRAM. It is
+retained, and transaction-local `password_encryption` is explicitly SCRAM.
+The broker now requires a fresh direct PostgreSQL login using the raw temporary
+role name, its generated password, and the pinned CA with strict chain/hostname
+verification. User/database identity and session TLS must match before URLs are
+returned. Failure invokes revocation/drop and returns only the generic failure.
+The runner requires the successful direct-test assertion in the response.
+
+Only Session/Transaction authentication preflight retries exact `28P01`:
+5/10/15/20/30-second waits, at most six attempts, 80 seconds of scheduled delay,
+five-second connection limits and a 110-second overall deadline. Credentials
+and endpoints remain fixed; other errors and all post-connect operations fail
+without authentication retries. Logs contain retry count and final outcome.
+
+Authorized deployment of this update and another hosted run are still needed
+to classify the actual Supabase failure: direct failure blocks credentials and
+requires broker/SCRAM investigation; direct success rules out an invalid
+role/password pair, while later pooler success with the unchanged pair supplies
+evidence for propagation/cache. Persistent pooler failure after direct success
+requires further Supavisor diagnosis and must not be called resolved. No live
+deployment or migration was performed from Codex for this fix, and no Phase 2
+acceptance or Phase 3 implementation is implied.

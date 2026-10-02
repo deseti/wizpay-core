@@ -9,6 +9,10 @@ import {
 } from "./database.ts";
 import { createHandler } from "./handler.ts";
 import {
+  directCredentialOptions,
+  verifyDirectCredentials,
+} from "./direct-credentials.ts";
+import {
   expiresAt,
   marker,
   randomPassword,
@@ -168,8 +172,11 @@ class FakeDatabase implements Database {
   schemas: Row[] = [];
   transactionCount = 0;
   closed = false;
+  verified: { role: string; password: string } | undefined;
+  verificationError: Error | undefined;
   async query(text: string): Promise<Row[]> {
     this.statements.push(text);
+    if (text.startsWith("CREATE ROLE")) this.entries = [managedRow()];
     if (text.includes("FROM pg_roles")) return this.entries;
     if (text.startsWith("ALTER ROLE")) {
       for (const entry of this.entries) entry.rolcanlogin = false;
@@ -186,6 +193,14 @@ class FakeDatabase implements Database {
   close(): Promise<void> {
     this.closed = true;
     return Promise.resolve();
+  }
+  verifyCredentials(role: string, password: string): Promise<void> {
+    assert(this.statements.some((sql) => sql.startsWith("CREATE ROLE")));
+    assert.equal(this.entries[0].rolcanlogin, true);
+    this.verified = { role, password };
+    return this.verificationError
+      ? Promise.reject(this.verificationError)
+      : Promise.resolve();
   }
 }
 function managedRow(): Row {
@@ -216,6 +231,7 @@ Deno.test("bootstrap privilege plan is bounded and never sends plaintext passwor
   assert(sql.includes("GRANT USAGE, CREATE ON SCHEMA public"));
   assert(!sql.includes(password));
   assert(sql.includes("SCRAM-SHA-256$"));
+  assert(sql.includes("SET LOCAL password_encryption = 'scram-sha-256'"));
   assert(!/GRANT (postgres|supabase_admin|pg_[a-z_]+) TO/.test(sql));
   assert(!sql.includes("ON ALL TABLES"));
 });
@@ -323,6 +339,13 @@ Deno.test("broker returns URLs only to authenticated invocation and never logs t
     assert.equal(response.status, 200);
     assert.equal(response.headers.get("cache-control"), "no-store");
     const body = await response.json();
+    assert.equal(body.directCredentialVerified, true);
+    assert.equal(db.verified?.role, roleName(identity));
+    assert.equal(
+      db.verified?.password,
+      decodeURIComponent(new URL(body.sessionUrl).password),
+    );
+    assert.equal(db.closed, true);
     assert.equal(
       new URL(body.sessionUrl).searchParams.get("sslmode"),
       "verify-full",
@@ -336,6 +359,109 @@ Deno.test("broker returns URLs only to authenticated invocation and never logs t
   } finally {
     [console.log, console.warn, console.error] = original;
   }
+});
+Deno.test("direct self-test uses raw role, fixed direct endpoint and pinned verified TLS", async () => {
+  const password = randomPassword();
+  const ca = "synthetic already-pinned CA";
+  const options = directCredentialOptions(roleName(identity), password, ca);
+  assert.equal(options.username, roleName(identity));
+  assert(!options.username.includes(TARGET.project));
+  assert.equal(options.host, `db.${TARGET.project}.supabase.co`);
+  assert.equal(options.port, 5432);
+  assert.equal(options.database, "postgres");
+  assert.equal(options.password, password);
+  assert.deepEqual(options.ssl, { rejectUnauthorized: true, ca });
+  assert.equal(options.debug, false);
+  let closed = 0;
+  for (
+    const row of [
+      {
+        current_user: roleName(identity),
+        current_database: "postgres",
+        ssl: true,
+      },
+      { current_user: "postgres", current_database: "postgres", ssl: true },
+      {
+        current_user: roleName(identity),
+        current_database: "wrong",
+        ssl: true,
+      },
+      {
+        current_user: roleName(identity),
+        current_database: "postgres",
+        ssl: false,
+      },
+    ]
+  ) {
+    const verification = () =>
+      verifyDirectCredentials(roleName(identity), password, ca, (actual) => {
+        assert.deepEqual(actual.ssl, options.ssl);
+        return {
+          query: () => Promise.resolve([row]),
+          close: () => {
+            closed++;
+            return Promise.resolve();
+          },
+        };
+      });
+    if (
+      row.current_user === roleName(identity) &&
+      row.current_database === "postgres" && row.ssl
+    ) {
+      await verification();
+    } else await assert.rejects(verification);
+  }
+  await assert.rejects(() =>
+    verifyDirectCredentials(roleName(identity), password, ca, () => ({
+      query: () => Promise.reject(new Error("synthetic credential failure")),
+      close: () => {
+        closed++;
+        return Promise.resolve();
+      },
+    }))
+  );
+  assert.equal(closed, 5);
+  assert.throws(() =>
+    directCredentialOptions(
+      `${roleName(identity)}.${TARGET.project}`,
+      password,
+      ca,
+    )
+  );
+});
+Deno.test("failed direct verification returns no credentials and revokes/drops its role", async () => {
+  for (const retentionFailure of [false, true]) {
+    const db = new FakeDatabase();
+    db.verificationError = new Error(
+      "postgresql://synthetic:synthetic-password@invalid/",
+    );
+    if (retentionFailure) db.schemas = [{ nspname: "public" }];
+    const handler = createHandler(() => Promise.resolve(db), fetchJwks);
+    const response = await handler(
+      new Request("https://broker.invalid", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${await token()}`,
+          "content-type": "application/json",
+        },
+        body: '{"action":"bootstrap"}',
+      }),
+    );
+    assert(response.status >= 400);
+    assert.deepEqual(await response.json(), { error: "request_denied" });
+    assert(db.statements.some((sql) => sql.includes("NOLOGIN PASSWORD NULL")));
+    assert.equal(db.closed, true);
+    if (retentionFailure) assert.equal(db.entries[0].rolcanlogin, false);
+    else assert.equal(db.entries.length, 0);
+  }
+});
+Deno.test("production adapter wires direct verification using the same pinned CA", async () => {
+  const source = await Deno.readTextFile(new URL("index.ts", import.meta.url));
+  assert(source.includes("verifyDirectCredentials(role, password, ca"));
+  assert(source.includes("const client = postgres(options)"));
+  assert(source.includes("FROM pg_stat_ssl WHERE pid = pg_backend_pid()"));
+  assert(!source.includes("rejectUnauthorized: false"));
+  assert(!source.includes("checkServerIdentity"));
 });
 Deno.test("workflow uses OIDC with no repository database bindings and always cleans up", async () => {
   const workflow = await Deno.readTextFile(

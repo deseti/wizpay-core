@@ -68,8 +68,20 @@ export function createHandler(
       }
       const password = randomPassword();
       const role = await bootstrap(database, identity, password);
+      try {
+        await database.verifyCredentials(role.role, password);
+      } catch {
+        // Commit NOLOGIN/password removal before bounded ownership cleanup.
+        // Never return credentials, even if termination/drop also fails.
+        await cleanup(database, identity, role.role);
+        throw new Error("Direct credential verification failed");
+      }
       return Response.json(
-        { ...role, ...connectionUrls(role.role, password) },
+        {
+          ...role,
+          directCredentialVerified: true,
+          ...connectionUrls(role.role, password),
+        },
         { headers: { "cache-control": "no-store" } },
       );
     } catch (error) {
