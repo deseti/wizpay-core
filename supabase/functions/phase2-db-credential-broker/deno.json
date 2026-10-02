@@ -1,0 +1,10 @@
+{
+  "imports": { "postgres": "npm:postgres@3.4.7" },
+  "compilerOptions": { "strict": true },
+  "tasks": {
+    "check": "deno check index.ts",
+    "test": "deno test",
+    "lint": "deno lint",
+    "fmt": "deno fmt --check"
+  }
+}

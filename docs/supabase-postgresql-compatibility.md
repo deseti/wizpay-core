@@ -193,17 +193,22 @@ integration suites. It runs only on `feat/serverless-free-stack`; it has no
 deployment steps or production credentials. Installation and Prisma generation
 run before database secrets are supplied to the validation step.
 
-Provision the existing authorized clean-project URLs as repository Actions
-secrets named `WIZPAY_EXTERNAL_TEST_DATABASE_URL` and
-`WIZPAY_EXTERNAL_TEST_RUNTIME_DATABASE_URL`. Set the independently confirmed
-endpoint hostnames as repository Actions variables
-`WIZPAY_EXTERNAL_TEST_TARGET_HOST` and
-`WIZPAY_EXTERNAL_TEST_RUNTIME_TARGET_HOST`. When the provider certificate needs
-an explicit trusted root, provision the provider-issued PEM as
-`WIZPAY_EXTERNAL_TEST_CA_PEM`; it is written only to a temporary runner file and
-removed afterward. Never substitute an unverified certificate or disable TLS.
-Credentials must be transferred through the GitHub secret API or browser
-settings, never through Git, workflow inputs or logs.
+The hosted workflow requires no manually provisioned repository database secrets
+or variables. It requests GitHub OIDC for audience `wizpay-phase2-supabase` and
+calls the temporary [credential broker](../supabase/functions/phase2-db-credential-broker/README.md).
+The separately deployed broker verifies GitHub's signature and strict
+repository/branch/workflow/run claims, then uses only its platform-injected
+database binding to create a bounded, nonprivileged 30-minute login role. The
+broker source is deployment-ready source, not evidence of a deployed function.
+
+[phase2-oidc-bootstrap.mjs](../.github/scripts/phase2-oidc-bootstrap.mjs) immediately
+masks the returned URLs/password and obtains the public Supabase Root 2021 CA
+over verified HTTPS. It verifies the certificate's SHA-256 fingerprint against
+the pinned expected identity and checks CA status/validity before using a
+temporary runner file. Database URLs retain `sslmode=verify-full`. Credentials
+exist only in the authenticated response and child-process environment; they
+are not put in GitHub outputs, environment files or artifacts. OIDC/GitHub
+request authority is removed from the validation child's environment.
 
 [validate-live-supabase.ts](../apps/backend/test/validate-live-supabase.ts)
 adds a missing `verify-full` option only in process, verifies both endpoint
@@ -216,15 +221,20 @@ or partially migrated schemas fail closed without reset or repair.
 
 Only selected metadata, command outcomes and numeric test summaries are emitted.
 Raw child-process/driver output stays in memory and is not uploaded. A workflow
-failure is evidence of its failed stage, not acceptance. Missing bindings fail
-before any database writes. A push changing the workflow/validator triggers the
-feature-branch run; after provisioning bindings, use the Actions browser or API
-to rerun it. The workflow need not be merged into `main` to rerun an existing
-push-triggered run. Dispatch requires GitHub's default-branch workflow
-registration, so do not change `main` merely to enable dispatch.
+failure is evidence of its failed stage, not acceptance. An `always()` cleanup
+step obtains fresh OIDC, revokes its own role, terminates sessions, transfers
+only expected retained migration objects to `postgres`, and drops the temporary
+role/grants/test schemas. Checkout checks also run on failure. The workflow need
+not be merged into `main` to rerun an existing push-triggered run. Dispatch
+requires GitHub's default-branch workflow registration, so do not change `main`
+merely to enable dispatch.
 
 During the cloud investigation, native DNS returned `EAI_AGAIN` and direct DNS
 queries returned `ECONNREFUSED`; GitHub API requests through the cloud proxy
-returned `Forbidden`. These observations do not establish a product defect or
-a failed Supabase TLS/authentication check. The remote workflow remains unproven
-until it executes with authorized bindings and its evidence is reviewed.
+returned `Forbidden`. Independently supplied evidence confirms GitHub Actions
+run `37045203379` checked out commit `efb6ebc3190f073024098797709b8f8270eb9090`,
+installed dependencies and generated Prisma, then failed validation because all
+repository database bindings were empty. This confirms the runner path works;
+it does not prove database connectivity. The OIDC broker replaces those empty
+manual bindings. Live evidence remains pending authorized broker deployment,
+successful hosted validation and cleanup, and independent review.

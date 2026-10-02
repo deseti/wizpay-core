@@ -1,0 +1,7 @@
+project_id = "wizpay-phase2-validation"
+
+[functions.phase2-db-credential-broker]
+# GitHub OIDC is verified inside the function; Supabase's JWT gateway cannot
+# authenticate this issuer. No request bypasses the function's strict verifier.
+verify_jwt = false
+entrypoint = "./functions/phase2-db-credential-broker/index.ts"

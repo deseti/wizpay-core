@@ -6,10 +6,12 @@ on:
     paths:
       - .github/workflows/phase2-supabase-validation.yml
       - apps/backend/test/validate-live-supabase.ts
+      - .github/scripts/phase2-oidc-bootstrap.mjs
   workflow_dispatch:
 
 permissions:
   contents: read
+  id-token: write
 
 concurrency:
   group: phase2-clean-supabase-validation
@@ -32,22 +34,13 @@ jobs:
         run: npm ci --no-audit --no-fund
       - name: Generate Prisma client without database credentials
         run: npm run prisma:generate -w backend
-      - name: Collect guarded live Phase 2 evidence
-        working-directory: apps/backend
-        env:
-          WIZPAY_DATABASE_PROFILE: supavisor-transaction
-          WIZPAY_MIGRATION_DATABASE_MODE: session
-          WIZPAY_ARC_NETWORK: arc-mainnet
-          WIZPAY_MIGRATION_NETWORK: arc-mainnet
-          WIZPAY_EXTERNAL_TEST_TARGET_DATABASE: postgres
-          WIZPAY_EXTERNAL_TEST_ACK: ISOLATED_NONPRODUCTION_SCHEMA
-          WIZPAY_EXTERNAL_TEST_TARGET_HOST: ${{ vars.WIZPAY_EXTERNAL_TEST_TARGET_HOST }}
-          WIZPAY_EXTERNAL_TEST_RUNTIME_TARGET_HOST: ${{ vars.WIZPAY_EXTERNAL_TEST_RUNTIME_TARGET_HOST }}
-          WIZPAY_EXTERNAL_TEST_DATABASE_URL: ${{ secrets.WIZPAY_EXTERNAL_TEST_DATABASE_URL }}
-          WIZPAY_EXTERNAL_TEST_RUNTIME_DATABASE_URL: ${{ secrets.WIZPAY_EXTERNAL_TEST_RUNTIME_DATABASE_URL }}
-          WIZPAY_EXTERNAL_TEST_CA_PEM: ${{ secrets.WIZPAY_EXTERNAL_TEST_CA_PEM }}
-        run: npm exec -- ts-node test/validate-live-supabase.ts
+      - name: Request OIDC, bootstrap role, verify CA, and collect live evidence
+        run: node .github/scripts/phase2-oidc-bootstrap.mjs bootstrap
+      - name: Revoke and remove the temporary role using fresh OIDC
+        if: always()
+        run: node .github/scripts/phase2-oidc-bootstrap.mjs cleanup
       - name: Verify unchanged checkout
+        if: always()
         run: |
           git diff --check
           test -z "$(git status --porcelain)"
