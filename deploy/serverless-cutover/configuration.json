@@ -1,0 +1,348 @@
+{
+  "version": 1,
+  "scope": "Names only. See README for placement, pinned values and conditional requirements.",
+  "variables": [
+    {
+      "name": "NODE_ENV",
+      "category": "VERCEL_BACKEND_CONFIG",
+      "status": "REQUIRED"
+    },
+    {
+      "name": "WIZPAY_RUNTIME_MODE",
+      "category": "VERCEL_BACKEND_CONFIG",
+      "status": "REQUIRED"
+    },
+    {
+      "name": "WIZPAY_DATABASE_PROFILE",
+      "category": "VERCEL_BACKEND_CONFIG",
+      "status": "REQUIRED"
+    },
+    {
+      "name": "ARC_MAINNET_DATABASE_URL",
+      "category": "VERCEL_BACKEND_CONFIG",
+      "status": "REQUIRED"
+    },
+    {
+      "name": "WIZPAY_DATABASE_POOL_MAX",
+      "category": "VERCEL_BACKEND_CONFIG",
+      "status": "OPTIONAL"
+    },
+    {
+      "name": "VERCEL_DEPLOYMENT_ID",
+      "category": "VERCEL_BACKEND_CONFIG",
+      "status": "DERIVED"
+    },
+    {
+      "name": "WIZPAY_MIGRATION_SOURCE_URL",
+      "category": "SUPABASE_CONFIG",
+      "status": "REQUIRED"
+    },
+    {
+      "name": "WIZPAY_MIGRATION_TARGET_URL",
+      "category": "SUPABASE_CONFIG",
+      "status": "REQUIRED"
+    },
+    {
+      "name": "WIZPAY_MIGRATION_TARGET_HOST",
+      "category": "SUPABASE_CONFIG",
+      "status": "REQUIRED"
+    },
+    {
+      "name": "WIZPAY_MIGRATION_TARGET_DATABASE",
+      "category": "SUPABASE_CONFIG",
+      "status": "REQUIRED"
+    },
+    {
+      "name": "WIZPAY_MIGRATION_TARGET_PROJECT_REF",
+      "category": "SUPABASE_CONFIG",
+      "status": "REQUIRED"
+    },
+    {
+      "name": "WIZPAY_MIGRATION_REHEARSAL_ACK",
+      "category": "SUPABASE_CONFIG",
+      "status": "REQUIRED"
+    },
+    {
+      "name": "WIZPAY_MIGRATION_BACKUP_DIRECTORY",
+      "category": "SUPABASE_CONFIG",
+      "status": "OPTIONAL"
+    },
+    {
+      "name": "WIZPAY_REHEARSAL_PG_BIN",
+      "category": "SUPABASE_CONFIG",
+      "status": "OPTIONAL"
+    },
+    {
+      "name": "ARC_MAINNET_MIGRATION_DATABASE_URL",
+      "category": "SUPABASE_CONFIG",
+      "status": "DERIVED"
+    },
+    {
+      "name": "WIZPAY_MIGRATION_NETWORK",
+      "category": "SUPABASE_CONFIG",
+      "status": "DERIVED"
+    },
+    {
+      "name": "WIZPAY_DATABASE_MIGRATION_MODE",
+      "category": "SUPABASE_CONFIG",
+      "status": "DERIVED"
+    },
+    {
+      "name": "NEXT_PUBLIC_API_URL",
+      "category": "FRONTEND_BACKEND_TARGET",
+      "status": "REQUIRED"
+    },
+    {
+      "name": "NEXT_PUBLIC_WIZPAY_ARC_NETWORK",
+      "category": "FRONTEND_BACKEND_TARGET",
+      "status": "REQUIRED"
+    },
+    {
+      "name": "NEXT_PUBLIC_REOWN_PROJECT_ID",
+      "category": "FRONTEND_BACKEND_TARGET",
+      "status": "OPTIONAL"
+    },
+    {
+      "name": "NEXT_PUBLIC_BACKEND_API_BASE_URL",
+      "category": "FRONTEND_BACKEND_TARGET",
+      "status": "FORBIDDEN"
+    },
+    {
+      "name": "NEXT_PUBLIC_BACKEND_URL",
+      "category": "FRONTEND_BACKEND_TARGET",
+      "status": "FORBIDDEN"
+    },
+    {
+      "name": "BACKEND_API_BASE_URL",
+      "category": "FRONTEND_BACKEND_TARGET",
+      "status": "FORBIDDEN"
+    },
+    {
+      "name": "API_URL",
+      "category": "FRONTEND_BACKEND_TARGET",
+      "status": "FORBIDDEN"
+    },
+    {
+      "name": "WIZPAY_ARC_NETWORK",
+      "category": "ARC_MAINNET_CONFIG",
+      "status": "REQUIRED"
+    },
+    {
+      "name": "WIZPAY_API_NETWORK",
+      "category": "ARC_MAINNET_CONFIG",
+      "status": "REQUIRED"
+    },
+    {
+      "name": "RPC_URL",
+      "category": "ARC_MAINNET_CONFIG",
+      "status": "DERIVED"
+    },
+    {
+      "name": "ARC_RPC_URL",
+      "category": "ARC_MAINNET_CONFIG",
+      "status": "DERIVED"
+    },
+    {
+      "name": "CHAIN_ID",
+      "category": "ARC_MAINNET_CONFIG",
+      "status": "DERIVED"
+    },
+    {
+      "name": "NEXT_PUBLIC_RPC_URL",
+      "category": "ARC_MAINNET_CONFIG",
+      "status": "DERIVED"
+    },
+    {
+      "name": "NEXT_PUBLIC_CONTRACT_ADDRESS",
+      "category": "ARC_MAINNET_CONFIG",
+      "status": "DERIVED"
+    },
+    {
+      "name": "NEXT_PUBLIC_WIZPAY_ADDRESS",
+      "category": "ARC_MAINNET_CONFIG",
+      "status": "DERIVED"
+    },
+    {
+      "name": "WIZPAY_SWAP_EXECUTOR_MAINNET_ADDRESS",
+      "category": "ARC_MAINNET_CONFIG",
+      "status": "DERIVED"
+    },
+    {
+      "name": "WIZPAY_ARC_MAINNET_CAPABILITY_SEND",
+      "category": "ARC_MAINNET_CONFIG",
+      "status": "OPTIONAL"
+    },
+    {
+      "name": "WIZPAY_ARC_MAINNET_CAPABILITY_SAME_TOKEN_PAYROLL",
+      "category": "ARC_MAINNET_CONFIG",
+      "status": "OPTIONAL"
+    },
+    {
+      "name": "WIZPAY_ARC_MAINNET_CAPABILITY_INVOICE",
+      "category": "ARC_MAINNET_CONFIG",
+      "status": "OPTIONAL"
+    },
+    {
+      "name": "WIZPAY_ARC_MAINNET_CAPABILITY_PAYMENT_LINK",
+      "category": "ARC_MAINNET_CONFIG",
+      "status": "OPTIONAL"
+    },
+    {
+      "name": "CCTP_IRIS_API_BASE_URL",
+      "category": "CIRCLE_CCTP_CONFIG",
+      "status": "OPTIONAL"
+    },
+    {
+      "name": "BRIDGE_DESTINATION_RPC_5042",
+      "category": "CIRCLE_CCTP_CONFIG",
+      "status": "OPTIONAL"
+    },
+    {
+      "name": "BRIDGE_DESTINATION_RPC_8453",
+      "category": "CIRCLE_CCTP_CONFIG",
+      "status": "OPTIONAL"
+    },
+    {
+      "name": "WIZPAY_ARC_MAINNET_CAPABILITY_BRIDGE",
+      "category": "CIRCLE_CCTP_CONFIG",
+      "status": "OPTIONAL"
+    },
+    {
+      "name": "WIZPAY_ARC_MAINNET_CAPABILITY_SWAP",
+      "category": "UNISWAP_CONFIG",
+      "status": "OPTIONAL"
+    },
+    {
+      "name": "WIZPAY_ARC_MAINNET_CAPABILITY_CROSS_TOKEN_PAYROLL",
+      "category": "UNISWAP_CONFIG",
+      "status": "OPTIONAL"
+    },
+    {
+      "name": "WIZPAY_SWAP_EXECUTOR_V2_ADDRESS",
+      "category": "UNISWAP_CONFIG",
+      "status": "DERIVED"
+    },
+    {
+      "name": "CORS_ORIGINS",
+      "category": "AUTH_CORS_CONFIG",
+      "status": "REQUIRED"
+    },
+    {
+      "name": "ARC_MAINNET_REDIS_URL",
+      "category": "RECONCILIATION_CONFIG",
+      "status": "FORBIDDEN"
+    },
+    {
+      "name": "ARC_MAINNET_QUEUE_PREFIX",
+      "category": "RECONCILIATION_CONFIG",
+      "status": "FORBIDDEN"
+    },
+    {
+      "name": "REDIS_URL",
+      "category": "RECONCILIATION_CONFIG",
+      "status": "FORBIDDEN"
+    },
+    {
+      "name": "REDIS_HOST",
+      "category": "RECONCILIATION_CONFIG",
+      "status": "FORBIDDEN"
+    },
+    {
+      "name": "REDIS_PORT",
+      "category": "RECONCILIATION_CONFIG",
+      "status": "FORBIDDEN"
+    },
+    {
+      "name": "REDIS_DB",
+      "category": "RECONCILIATION_CONFIG",
+      "status": "FORBIDDEN"
+    },
+    {
+      "name": "BULLMQ_PREFIX",
+      "category": "RECONCILIATION_CONFIG",
+      "status": "FORBIDDEN"
+    },
+    {
+      "name": "QUEUE_PREFIX",
+      "category": "RECONCILIATION_CONFIG",
+      "status": "FORBIDDEN"
+    },
+    {
+      "name": "WIZPAY_WORKER_NETWORK",
+      "category": "RECONCILIATION_CONFIG",
+      "status": "FORBIDDEN"
+    },
+    {
+      "name": "WIZPAY_CUTOVER_CANDIDATE_SHA",
+      "category": "OBSERVABILITY_CONFIG",
+      "status": "REQUIRED"
+    },
+    {
+      "name": "WIZPAY_CUTOVER_LIVE_SMOKE_ACK",
+      "category": "OBSERVABILITY_CONFIG",
+      "status": "OPTIONAL"
+    },
+    {
+      "name": "WIZPAY_CUTOVER_NONCE_ACK",
+      "category": "OBSERVABILITY_CONFIG",
+      "status": "OPTIONAL"
+    },
+    {
+      "name": "WIZPAY_CUTOVER_SMOKE_SESSION",
+      "category": "OBSERVABILITY_CONFIG",
+      "status": "OPTIONAL"
+    },
+    {
+      "name": "DATABASE_URL",
+      "category": "FORBIDDEN_CONFIG",
+      "status": "FORBIDDEN"
+    },
+    {
+      "name": "DIRECT_URL",
+      "category": "FORBIDDEN_CONFIG",
+      "status": "FORBIDDEN"
+    },
+    {
+      "name": "PRIVATE_KEY",
+      "category": "FORBIDDEN_CONFIG",
+      "status": "FORBIDDEN"
+    },
+    {
+      "name": "WALLET_PRIVATE_KEY",
+      "category": "FORBIDDEN_CONFIG",
+      "status": "FORBIDDEN"
+    },
+    {
+      "name": "CIRCLE_API_KEY",
+      "category": "FORBIDDEN_CONFIG",
+      "status": "FORBIDDEN"
+    },
+    {
+      "name": "WIZPAY_ARC_MAINNET_CAPABILITY_LIQUIDITY",
+      "category": "FORBIDDEN_CONFIG",
+      "status": "FORBIDDEN"
+    },
+    {
+      "name": "WIZPAY_ARC_MAINNET_CAPABILITY_CROSS_TOKEN_INVOICE",
+      "category": "FORBIDDEN_CONFIG",
+      "status": "FORBIDDEN"
+    },
+    {
+      "name": "WIZPAY_ARC_MAINNET_CAPABILITY_NANO_AGENT_API",
+      "category": "FORBIDDEN_CONFIG",
+      "status": "FORBIDDEN"
+    },
+    {
+      "name": "WIZPAY_PRODUCTION_CUTOVER_ACK",
+      "category": "OBSERVABILITY_CONFIG",
+      "status": "OPTIONAL"
+    }
+  ],
+  "non_environment_contracts": {
+    "reconciliation": "Trusted scheduler invocation, batch limit and budget are explicit function arguments; no public endpoint or cron activation.",
+    "observability": "Vercel deployment logs/metrics plus safe PostgreSQL SELECT; no paid dependency or monitoring token.",
+    "auth": "Wallet auth challenge/session rows; no backend signing key or alternate JWT secret.",
+    "arc": "Contract, chain and token registry pinned by release resourceDigest; derived aliases should stay unset.",
+    "bridge": "BRIDGE_DESTINATION_RPC_<chainId> only for enabled routes; Iris and RPC TLS validation retained."
+  }
+}

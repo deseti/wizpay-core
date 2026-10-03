@@ -1,0 +1,13 @@
+{
+  "candidateSha": "25b518217b46a7d45462c6fc610314b73a32a5c5",
+  "fallbackSha": "9900052a04ba807d937a9687f21d9933ffee33dd",
+  "acceptanceDigest": "ac5a66a6a762f110b54a3b9b56846001933a94aed267f714c1bfeb1344c2544e",
+  "resourceDigest": "186b749dc36cc802cbe7b2740b95af15468956188dc865596b61155f5a4648cf",
+  "approvedCapabilities": null,
+  "deploymentId": null,
+  "migrationEvidenceId": null,
+  "startedAt": null,
+  "targetProject": "tsvzblikmgocgksgxguc",
+  "targetOrigin": null,
+  "fallbackOrigin": null
+}

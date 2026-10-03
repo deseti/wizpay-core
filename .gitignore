@@ -20,3 +20,6 @@ internal/
 # Local acceptance browser output (may contain session data).
 apps/frontend/test-results/
 apps/frontend/playwright-report/
+
+# Private operator cutover evidence; never commit provider logs or auth data.
+.cutover-evidence/

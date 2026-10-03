@@ -68,6 +68,7 @@ ROOT_ENV_PATH=/dev/null NEXT_PUBLIC_WIZPAY_ARC_NETWORK=arc-mainnet NEXT_PUBLIC_A
 # wallet/provider authentication is needed; all browser remote calls are fixtures.
 (cd apps/frontend && ../../node_modules/.bin/playwright test --reporter=json > "$acceptance_temp/browser.json")
 node deploy/serverless-acceptance/verify-evidence.mjs "$acceptance_temp/backend.json" "$acceptance_temp/frontend.json" "$acceptance_temp/browser.json"
+node deploy/serverless-cutover/verify-evidence.mjs "$acceptance_temp/backend.json" "$acceptance_temp/frontend.json"
 git diff --check
 node - "$acceptance_temp/backend.json" <<'NODE'
 const fs = require('node:fs');
