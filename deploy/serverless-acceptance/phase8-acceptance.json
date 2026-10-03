@@ -1,0 +1,631 @@
+{
+  "phase": 8,
+  "baseline_sha": "9900052a04ba807d937a9687f21d9933ffee33dd",
+  "baseline_tag": "vps-production-9900052",
+  "candidate_sha_before_phase8": "602bc3b91616e8a43ba4ad998b92fb2ff0f4771d",
+  "branch": "feat/serverless-free-stack",
+  "date_utc": "2026-10-03",
+  "scope": "Implementation acceptance with synthetic wallets/RPC evidence and isolated PostgreSQL. This is not hosted, live wallet or production-data acceptance.",
+  "baseline_comparison": {
+    "frontend_source_diff_before_phase8": [],
+    "contract_diff": [],
+    "capability_profile": "Repository baseline supports seven configurable Mainnet capabilities: Send, same-token Payroll, Invoice, Payment Link, Swap, Bridge, cross-token Payroll. Test profile enables all seven. Actual hosted operator flags were not inspected. Liquidity, cross-token Invoice and NanoAgent API remain unavailable.",
+    "stable_signing_and_verifiers": "No application or financial-verifier code changed in Phase 8."
+  },
+  "features": [
+    {
+      "feature": "Wallet connect",
+      "production_route_component": "ExternalWalletProvider / dashboard wallet controls",
+      "serverless_route_component": "ExternalWalletProvider / dashboard wallet controls",
+      "persistence_dependency": "UserWallet",
+      "external_dependency": "Reown / EIP-1193 wallet",
+      "wallet_signing_responsibility": "External user wallet only; no backend financial signing/broadcast",
+      "acceptance_tests": [
+        "apps/frontend/e2e/phase8.spec.ts",
+        "apps/frontend/components/providers/MainnetWalletIsolation.test.tsx"
+      ],
+      "result": "PASS",
+      "evidence_type": "EXECUTED_LOCAL"
+    },
+    {
+      "feature": "Wallet auth challenge",
+      "production_route_component": "POST /wallets/auth/challenge",
+      "serverless_route_component": "POST /wallets/auth/challenge",
+      "persistence_dependency": "WalletAuthChallenge",
+      "external_dependency": "Arc chain identity",
+      "wallet_signing_responsibility": "External user wallet only; no backend financial signing/broadcast",
+      "acceptance_tests": [
+        "apps/backend/src/deployment/phase8-acceptance.postgres.spec.ts",
+        "apps/backend/src/modules/wallet/wallet-auth.service.spec.ts"
+      ],
+      "result": "PASS",
+      "evidence_type": "EXECUTED_ISOLATED_POSTGRES"
+    },
+    {
+      "feature": "Wallet auth verify",
+      "production_route_component": "POST /wallets/auth/verify",
+      "serverless_route_component": "POST /wallets/auth/verify",
+      "persistence_dependency": "WalletAuthChallenge, UserWallet, ActivityAuthSession",
+      "external_dependency": "External wallet message signature",
+      "wallet_signing_responsibility": "External user wallet only; no backend financial signing/broadcast",
+      "acceptance_tests": [
+        "apps/backend/src/deployment/phase8-acceptance.postgres.spec.ts",
+        "apps/backend/src/modules/wallet/wallet-auth.service.spec.ts"
+      ],
+      "result": "PASS",
+      "evidence_type": "EXECUTED_ISOLATED_POSTGRES"
+    },
+    {
+      "feature": "Wallet auth revoke",
+      "production_route_component": "POST /wallets/auth/revoke",
+      "serverless_route_component": "POST /wallets/auth/revoke",
+      "persistence_dependency": "ActivityAuthSession",
+      "external_dependency": "None",
+      "wallet_signing_responsibility": "External user wallet only; no backend financial signing/broadcast",
+      "acceptance_tests": [
+        "apps/backend/src/deployment/phase8-acceptance.postgres.spec.ts",
+        "apps/backend/src/modules/wallet/wallet-auth.service.spec.ts"
+      ],
+      "result": "PASS",
+      "evidence_type": "EXECUTED_ISOLATED_POSTGRES"
+    },
+    {
+      "feature": "Send",
+      "production_route_component": "/send; /execution-intents/*",
+      "serverless_route_component": "/send; /execution-intents/*",
+      "persistence_dependency": "ExecutionIntent, Activity",
+      "external_dependency": "Arc RPC / canonical token",
+      "wallet_signing_responsibility": "External user wallet only; no backend financial signing/broadcast",
+      "acceptance_tests": [
+        "apps/backend/src/deployment/phase8-acceptance.postgres.spec.ts",
+        "apps/backend/src/execution-intent/direct-transfer-receipt-verifier.service.spec.ts",
+        "apps/frontend/lib/send-transaction.test.ts"
+      ],
+      "result": "PASS",
+      "evidence_type": "EXECUTED_ISOLATED_POSTGRES"
+    },
+    {
+      "feature": "Same-token Payroll",
+      "production_route_component": "/payroll; POST /tasks/payroll/init; task unit report",
+      "serverless_route_component": "/payroll; POST /tasks/payroll/init; task unit report",
+      "persistence_dependency": "Task, TaskUnit, TaskTransaction, ExecutionIntent, Activity",
+      "external_dependency": "WizPayPayrollMainnet / Arc RPC",
+      "wallet_signing_responsibility": "External user wallet only; no backend financial signing/broadcast",
+      "acceptance_tests": [
+        "apps/backend/src/deployment/phase8-acceptance.postgres.spec.ts",
+        "apps/backend/src/task/payroll-receipt-verifier.service.spec.ts",
+        "apps/frontend/lib/mainnet-payroll-protocol.test.ts"
+      ],
+      "result": "PASS",
+      "evidence_type": "EXECUTED_ISOLATED_POSTGRES"
+    },
+    {
+      "feature": "Cross-token Payroll",
+      "production_route_component": "/payroll; /user-swap/mainnet/payroll-quote",
+      "serverless_route_component": "/payroll; /user-swap/mainnet/payroll-quote",
+      "persistence_dependency": "Task, TaskUnit, ExecutionIntent, VerifiedSwapTransaction",
+      "external_dependency": "Canonical Swap executor, quote/readiness and Payroll contract",
+      "wallet_signing_responsibility": "External user wallet only; no backend financial signing/broadcast",
+      "acceptance_tests": [
+        "apps/backend/src/user-swap/mainnet-uniswap-v4-payroll-quote.spec.ts",
+        "apps/frontend/lib/payroll-route-policy.test.ts",
+        "apps/frontend/lib/swap-cross-token-shared-readiness.test.ts",
+        "apps/frontend/lib/payroll-output-allocation.test.ts"
+      ],
+      "result": "PASS",
+      "evidence_type": "EXECUTED_LOCAL"
+    },
+    {
+      "feature": "Payroll history",
+      "production_route_component": "GET /tasks/payroll/history; /tasks; payroll history UI",
+      "serverless_route_component": "GET /tasks/payroll/history; /tasks; payroll history UI",
+      "persistence_dependency": "Task, TaskUnit, TaskTransaction",
+      "external_dependency": "Read-only Arc logs",
+      "wallet_signing_responsibility": "External user wallet only; no backend financial signing/broadcast",
+      "acceptance_tests": [
+        "apps/backend/src/deployment/phase8-acceptance.postgres.spec.ts",
+        "apps/backend/src/task/task.service.spec.ts",
+        "apps/frontend/app/page.activity.test.tsx"
+      ],
+      "result": "PASS",
+      "evidence_type": "EXECUTED_ISOLATED_POSTGRES"
+    },
+    {
+      "feature": "Invoice creation",
+      "production_route_component": "/invoices/new; POST /invoices",
+      "serverless_route_component": "/invoices/new; POST /invoices",
+      "persistence_dependency": "Invoice, UserWallet, ActivityAuthSession",
+      "external_dependency": "Canonical token / wallet session",
+      "wallet_signing_responsibility": "External user wallet only; no backend financial signing/broadcast",
+      "acceptance_tests": [
+        "apps/backend/src/deployment/phase8-acceptance.postgres.spec.ts",
+        "apps/backend/src/invoice/invoice.service.spec.ts",
+        "apps/frontend/components/invoices/invoice-pages.test.tsx"
+      ],
+      "result": "PASS",
+      "evidence_type": "EXECUTED_ISOLATED_POSTGRES"
+    },
+    {
+      "feature": "Invoice management",
+      "production_route_component": "/invoices; /invoices/:id; POST cancel",
+      "serverless_route_component": "/invoices; /invoices/:id; POST cancel",
+      "persistence_dependency": "Invoice, InvoicePayment",
+      "external_dependency": "Wallet session",
+      "wallet_signing_responsibility": "External user wallet only; no backend financial signing/broadcast",
+      "acceptance_tests": [
+        "apps/backend/src/deployment/phase8-acceptance.postgres.spec.ts",
+        "apps/backend/src/invoice/invoice.service.spec.ts",
+        "apps/frontend/components/invoices/invoice-pages.test.tsx"
+      ],
+      "result": "PASS",
+      "evidence_type": "EXECUTED_ISOLATED_POSTGRES"
+    },
+    {
+      "feature": "Payment Link",
+      "production_route_component": "/invoices/new PAYMENT_LINK; public checkout",
+      "serverless_route_component": "/invoices/new PAYMENT_LINK; public checkout",
+      "persistence_dependency": "Invoice.settlementKind, InvoicePayment, ExecutionIntent",
+      "external_dependency": "Canonical token",
+      "wallet_signing_responsibility": "External user wallet only; no backend financial signing/broadcast",
+      "acceptance_tests": [
+        "apps/backend/src/deployment/phase8-acceptance.postgres.spec.ts",
+        "apps/frontend/hooks/useInvoicePayment.test.tsx",
+        "apps/frontend/lib/invoice-links.test.ts"
+      ],
+      "result": "PASS",
+      "evidence_type": "EXECUTED_ISOLATED_POSTGRES"
+    },
+    {
+      "feature": "Public checkout",
+      "production_route_component": "/pay/:publicId; GET /public/invoices/:publicId",
+      "serverless_route_component": "/pay/:publicId; GET /public/invoices/:publicId",
+      "persistence_dependency": "Invoice, InvoicePayment",
+      "external_dependency": "External wallet / Arc RPC",
+      "wallet_signing_responsibility": "External user wallet only; no backend financial signing/broadcast",
+      "acceptance_tests": [
+        "apps/backend/src/deployment/phase8-acceptance.postgres.spec.ts",
+        "apps/frontend/e2e/phase8.spec.ts",
+        "apps/frontend/components/invoices/PublicInvoiceCheckout.test.tsx"
+      ],
+      "result": "PASS",
+      "evidence_type": "EXECUTED_ISOLATED_POSTGRES"
+    },
+    {
+      "feature": "Payment verification",
+      "production_route_component": "POST /public/invoices/:publicId/payments/verify",
+      "serverless_route_component": "POST /public/invoices/:publicId/payments/verify",
+      "persistence_dependency": "ExecutionIntent, InvoicePayment, Invoice",
+      "external_dependency": "Arc receipt and exact token event",
+      "wallet_signing_responsibility": "External user wallet only; no backend financial signing/broadcast",
+      "acceptance_tests": [
+        "apps/backend/src/deployment/phase8-acceptance.postgres.spec.ts",
+        "apps/backend/src/invoice/invoice-payment-verifier.service.spec.ts"
+      ],
+      "result": "PASS",
+      "evidence_type": "EXECUTED_ISOLATED_POSTGRES"
+    },
+    {
+      "feature": "Activity",
+      "production_route_component": "/; /assets; GET /activities",
+      "serverless_route_component": "/; /assets; GET /activities",
+      "persistence_dependency": "Activity",
+      "external_dependency": "Authenticated wallet session",
+      "wallet_signing_responsibility": "External user wallet only; no backend financial signing/broadcast",
+      "acceptance_tests": [
+        "apps/backend/src/deployment/phase8-acceptance.postgres.spec.ts",
+        "apps/backend/src/activity/activity.service.spec.ts",
+        "apps/frontend/hooks/useUnifiedActivity.test.tsx",
+        "apps/frontend/app/page.activity.test.tsx"
+      ],
+      "result": "PASS",
+      "evidence_type": "EXECUTED_ISOLATED_POSTGRES"
+    },
+    {
+      "feature": "Activity sync/recovery",
+      "production_route_component": "POST /activities/sync; runReconciliationBatch",
+      "serverless_route_component": "POST /activities/sync; runReconciliationBatch",
+      "persistence_dependency": "ActivitySyncState, Activity, ReconciliationWork",
+      "external_dependency": "Persisted eligible account state",
+      "wallet_signing_responsibility": "External user wallet only; no backend financial signing/broadcast",
+      "acceptance_tests": [
+        "apps/backend/src/deployment/phase8-acceptance.postgres.spec.ts",
+        "apps/backend/src/reconciliation/reconciliation.postgres.spec.ts",
+        "apps/backend/src/activity/activity.service.spec.ts"
+      ],
+      "result": "PASS",
+      "evidence_type": "EXECUTED_ISOLATED_POSTGRES"
+    },
+    {
+      "feature": "Swap",
+      "production_route_component": "/swap; /user-swap/mainnet/{quote,prepare,confirm}",
+      "serverless_route_component": "/swap; /user-swap/mainnet/{quote,prepare,confirm}",
+      "persistence_dependency": "VerifiedSwapTransaction, ExecutionIntent, ReconciliationWork, Activity",
+      "external_dependency": "Mainnet Uniswap V4 / WizPaySwapExecutorMainnet",
+      "wallet_signing_responsibility": "External user wallet only; no backend financial signing/broadcast",
+      "acceptance_tests": [
+        "apps/backend/src/user-swap/mainnet-uniswap-v4.service.spec.ts",
+        "apps/backend/src/user-swap/mainnet-uniswap-v4-protocol.spec.ts",
+        "apps/frontend/components/dashboard/SwapScreen.success.test.tsx",
+        "apps/frontend/lib/mainnet-uniswap-v4-protocol.test.ts"
+      ],
+      "result": "PASS",
+      "evidence_type": "EXECUTED_LOCAL"
+    },
+    {
+      "feature": "Bridge / CCTP V2",
+      "production_route_component": "/bridge; /bridge/intents/*",
+      "serverless_route_component": "/bridge; /bridge/intents/*",
+      "persistence_dependency": "BridgeTransaction, ReconciliationWork, Activity",
+      "external_dependency": "Official Circle fast-only CCTP V2; source/destination RPC",
+      "wallet_signing_responsibility": "External user wallet only; no backend financial signing/broadcast",
+      "acceptance_tests": [
+        "apps/backend/src/bridge/bridge-lifecycle.service.spec.ts",
+        "apps/backend/src/reconciliation/reconciliation.postgres.spec.ts",
+        "apps/frontend/lib/cctp.test.ts",
+        "apps/frontend/lib/bridge-service.test.ts"
+      ],
+      "result": "PASS",
+      "evidence_type": "EXECUTED_ISOLATED_POSTGRES"
+    },
+    {
+      "feature": "ExecutionIntent interruption/recovery",
+      "production_route_component": "/execution-intents/*; runReconciliationBatch",
+      "serverless_route_component": "/execution-intents/*; runReconciliationBatch",
+      "persistence_dependency": "ExecutionIntent, ReconciliationWork, TaskUnit",
+      "external_dependency": "Known hashes / operation-specific RPC verifier",
+      "wallet_signing_responsibility": "External user wallet only; no backend financial signing/broadcast",
+      "acceptance_tests": [
+        "apps/backend/src/deployment/phase8-acceptance.postgres.spec.ts",
+        "apps/backend/src/execution-intent/execution-intent.postgres.spec.ts",
+        "apps/backend/src/reconciliation/reconciliation.postgres.spec.ts"
+      ],
+      "result": "PASS",
+      "evidence_type": "EXECUTED_ISOLATED_POSTGRES"
+    },
+    {
+      "feature": "Receipt/domain verification",
+      "production_route_component": "Send, Payroll, Invoice, Swap and Bridge verifiers",
+      "serverless_route_component": "Send, Payroll, Invoice, Swap and Bridge verifiers",
+      "persistence_dependency": "Immutable intent and verified evidence",
+      "external_dependency": "Synthetic operation-specific receipts/events",
+      "wallet_signing_responsibility": "External user wallet only; no backend financial signing/broadcast",
+      "acceptance_tests": [
+        "apps/backend/src/execution-intent/direct-transfer-receipt-verifier.service.spec.ts",
+        "apps/backend/src/task/payroll-receipt-verifier.service.spec.ts",
+        "apps/backend/src/invoice/invoice-payment-verifier.service.spec.ts",
+        "apps/backend/src/user-swap/mainnet-uniswap-v4-protocol.spec.ts",
+        "apps/backend/src/bridge/bridge-lifecycle.service.spec.ts"
+      ],
+      "result": "PASS",
+      "evidence_type": "EXECUTED_LOCAL"
+    },
+    {
+      "feature": "Capability matrix",
+      "production_route_component": "GET /capabilities; CapabilityProvider",
+      "serverless_route_component": "GET /capabilities; CapabilityProvider",
+      "persistence_dependency": "None",
+      "external_dependency": "Pinned Arc resource registry / configured capability flags",
+      "wallet_signing_responsibility": "External user wallet only; no backend financial signing/broadcast",
+      "acceptance_tests": [
+        "apps/backend/src/deployment/phase8-acceptance.postgres.spec.ts",
+        "apps/backend/src/capabilities/capability.service.spec.ts",
+        "apps/frontend/lib/capabilities.test.tsx"
+      ],
+      "result": "PASS",
+      "evidence_type": "EXECUTED_LOCAL"
+    },
+    {
+      "feature": "Wrong network",
+      "production_route_component": "Auth, Send, Payroll, Swap, Bridge request guards",
+      "serverless_route_component": "Auth, Send, Payroll, Swap, Bridge request guards",
+      "persistence_dependency": "Selected Arc identity in durable state",
+      "external_dependency": "Pinned chain 5042 / bridge supported counterparties",
+      "wallet_signing_responsibility": "External user wallet only; no backend financial signing/broadcast",
+      "acceptance_tests": [
+        "apps/backend/src/deployment/phase8-acceptance.postgres.spec.ts",
+        "apps/backend/src/routing/payment-routing.service.spec.ts",
+        "apps/backend/src/bridge/bridge-lifecycle.service.spec.ts",
+        "apps/backend/src/user-swap/mainnet-uniswap-v4-protocol.spec.ts",
+        "apps/frontend/lib/external-wallet-policy.test.ts"
+      ],
+      "result": "PASS",
+      "evidence_type": "EXECUTED_LOCAL"
+    },
+    {
+      "feature": "Rejected wallet signature",
+      "production_route_component": "WalletAuthProvider; transaction executor; invoice hook; SwapScreen",
+      "serverless_route_component": "WalletAuthProvider; transaction executor; invoice hook; SwapScreen",
+      "persistence_dependency": "Unsubmitted/recoverable intent only; no completed payment",
+      "external_dependency": "Rejecting external wallet boundary",
+      "wallet_signing_responsibility": "External user wallet only; no backend financial signing/broadcast",
+      "acceptance_tests": [
+        "apps/frontend/components/providers/WalletAuthProvider.test.tsx",
+        "apps/frontend/hooks/useTransactionExecutor.test.tsx",
+        "apps/frontend/hooks/useInvoicePayment.test.tsx",
+        "apps/frontend/components/dashboard/SwapScreen.success.test.tsx"
+      ],
+      "result": "PASS",
+      "evidence_type": "EXECUTED_LOCAL"
+    },
+    {
+      "feature": "Duplicate/retry",
+      "production_route_component": "Repeated request/report/verify/sync/batch; cold-start retry",
+      "serverless_route_component": "Repeated request/report/verify/sync/batch; cold-start retry",
+      "persistence_dependency": "Unique identities, leases, fenced terminal states",
+      "external_dependency": "At-least-once delivery / synthetic receipts",
+      "wallet_signing_responsibility": "External user wallet only; no backend financial signing/broadcast",
+      "acceptance_tests": [
+        "apps/backend/src/deployment/phase8-acceptance.postgres.spec.ts",
+        "apps/backend/src/serverless.spec.ts",
+        "apps/backend/src/execution-intent/execution-intent.postgres.spec.ts",
+        "apps/backend/src/reconciliation/reconciliation.postgres.spec.ts",
+        "apps/frontend/hooks/useInvoicePayment.test.tsx"
+      ],
+      "result": "PASS",
+      "evidence_type": "EXECUTED_ISOLATED_POSTGRES"
+    },
+    {
+      "feature": "Desktop",
+      "production_route_component": "Connected dashboard routes, invoice/link forms, checkout and navigation",
+      "serverless_route_component": "Connected dashboard routes, invoice/link forms, checkout and navigation",
+      "persistence_dependency": "Synthetic API state",
+      "external_dependency": "Offline EIP-1193 browser wallet",
+      "wallet_signing_responsibility": "External user wallet only; no backend financial signing/broadcast",
+      "acceptance_tests": [
+        "apps/frontend/e2e/phase8.spec.ts"
+      ],
+      "result": "PASS",
+      "evidence_type": "EXECUTED_LOCAL"
+    },
+    {
+      "feature": "Mobile",
+      "production_route_component": "Same routes; Actions, Swap/Bridge tabs; 390x844 touch viewport",
+      "serverless_route_component": "Same routes; Actions, Swap/Bridge tabs; 390x844 touch viewport",
+      "persistence_dependency": "Synthetic API state",
+      "external_dependency": "Offline EIP-1193 browser wallet",
+      "wallet_signing_responsibility": "External user wallet only; no backend financial signing/broadcast",
+      "acceptance_tests": [
+        "apps/frontend/e2e/phase8.spec.ts"
+      ],
+      "result": "PASS",
+      "evidence_type": "EXECUTED_LOCAL"
+    },
+    {
+      "feature": "Vercel artifact parity",
+      "production_route_component": "api/index.cjs -> dist/serverless handler",
+      "serverless_route_component": "api/index.cjs -> dist/serverless handler",
+      "persistence_dependency": "Application-scoped Prisma/PostgreSQL",
+      "external_dependency": "Copied Build Output API bundle / Redis imports prohibited",
+      "wallet_signing_responsibility": "External user wallet only; no backend financial signing/broadcast",
+      "acceptance_tests": [
+        "apps/backend/src/deployment/phase8-acceptance.postgres.spec.ts",
+        "apps/backend/src/deployment/vercel-bundle.postgres.spec.ts",
+        "apps/backend/src/runtime/redis-free-runtime.spec.ts"
+      ],
+      "result": "PASS",
+      "evidence_type": "EXECUTED_ISOLATED_POSTGRES"
+    },
+    {
+      "feature": "Cold-restart persistence",
+      "production_route_component": "Independent packaged Node processes plus source-target rehearsal",
+      "serverless_route_component": "Independent packaged Node processes plus source-target rehearsal",
+      "persistence_dependency": "Auth, intents, invoice payments, activity, recovery, verified evidence",
+      "external_dependency": "Isolated PostgreSQL 15/17",
+      "wallet_signing_responsibility": "External user wallet only; no backend financial signing/broadcast",
+      "acceptance_tests": [
+        "apps/backend/src/deployment/phase8-acceptance.postgres.spec.ts",
+        "apps/backend/src/database/persistence.postgres.spec.ts",
+        "apps/backend/src/phase7/migration-rehearsal.postgres.spec.ts"
+      ],
+      "result": "PASS",
+      "evidence_type": "EXECUTED_ISOLATED_POSTGRES"
+    },
+    {
+      "feature": "Assets / balances",
+      "production_route_component": "/assets; canonical USDC/EURC balance surfaces",
+      "serverless_route_component": "/assets; canonical USDC/EURC balance surfaces",
+      "persistence_dependency": "Activity history; on-chain read balances",
+      "external_dependency": "Arc read-only token calls",
+      "wallet_signing_responsibility": "External user wallet only; no backend financial signing/broadcast",
+      "acceptance_tests": [
+        "apps/frontend/e2e/phase8.spec.ts",
+        "apps/frontend/lib/token-visuals.test.ts",
+        "apps/frontend/lib/arc-gas-reserve.test.ts"
+      ],
+      "result": "PASS",
+      "evidence_type": "EXECUTED_LOCAL"
+    },
+    {
+      "feature": "Account / profile",
+      "production_route_component": "/profile; account wallet menu",
+      "serverless_route_component": "/profile; account wallet menu",
+      "persistence_dependency": "Browser preferences and wallet auth session",
+      "external_dependency": "External connected wallet",
+      "wallet_signing_responsibility": "External user wallet only; no backend financial signing/broadcast",
+      "acceptance_tests": [
+        "apps/frontend/e2e/phase8.spec.ts",
+        "apps/frontend/components/dashboard/SidebarWalletSummary.test.tsx"
+      ],
+      "result": "PASS",
+      "evidence_type": "EXECUTED_LOCAL"
+    },
+    {
+      "feature": "Receive QR / recipient scan",
+      "production_route_component": "Home Receive QR; Actions Scan QR / Send scanner",
+      "serverless_route_component": "Home Receive QR; Actions Scan QR / Send scanner",
+      "persistence_dependency": "None",
+      "external_dependency": "Synthetic EIP-681 payment URI / QR payload",
+      "wallet_signing_responsibility": "External user wallet only; no backend financial signing/broadcast",
+      "acceptance_tests": [
+        "apps/frontend/e2e/phase8.spec.ts",
+        "apps/frontend/components/dashboard/RecipientScannerDialog.test.tsx",
+        "apps/frontend/lib/evm-payment-uri.test.ts",
+        "apps/frontend/lib/recipient-resolution.test.ts"
+      ],
+      "result": "PASS",
+      "evidence_type": "EXECUTED_LOCAL"
+    },
+    {
+      "feature": "PWA resources",
+      "production_route_component": "manifest.webmanifest; sw.js; profile installation surface",
+      "serverless_route_component": "manifest.webmanifest; sw.js; profile installation surface",
+      "persistence_dependency": "Browser install/cache state",
+      "external_dependency": "Local production Next resource responses",
+      "wallet_signing_responsibility": "External user wallet only; no backend financial signing/broadcast",
+      "acceptance_tests": [
+        "apps/frontend/e2e/phase8.spec.ts"
+      ],
+      "result": "PASS",
+      "evidence_type": "EXECUTED_LOCAL"
+    },
+    {
+      "feature": "Unsupported resource gates",
+      "production_route_component": "Liquidity, cross-token Invoice, NanoAgent API remain unavailable",
+      "serverless_route_component": "Liquidity, cross-token Invoice, NanoAgent API remain unavailable",
+      "persistence_dependency": "None",
+      "external_dependency": "Unavailable/pinned resources; no Testnet fallback",
+      "wallet_signing_responsibility": "External user wallet only; no backend financial signing/broadcast",
+      "acceptance_tests": [
+        "apps/backend/src/capabilities/capability.service.spec.ts",
+        "apps/backend/src/orchestrator/orchestrator-mainnet-liquidity.spec.ts",
+        "apps/frontend/lib/capabilities.test.tsx",
+        "apps/frontend/lib/arc-network.test.ts"
+      ],
+      "result": "PASS",
+      "evidence_type": "EXECUTED_LOCAL"
+    }
+  ],
+  "total_features": 32,
+  "intentional_architecture_differences": [
+    "Cached listener-free Nest HTTP application instead of process-owned server bootstrap.",
+    "Serverless API excludes Redis/BullMQ; legacy VPS source remains available.",
+    "Bounded PostgreSQL leases and idempotent known-evidence reconciliation replace useful polling recovery; no legacy payroll/swap execution was ported.",
+    "Scoped Supabase configuration and migration tooling; no generic database fallback or production-data copy."
+  ],
+  "executed_commands": [
+    {
+      "command": "WIZPAY_TEST_CHROMIUM_PATH=/usr/bin/chromium bash deploy/serverless-acceptance/run-isolated.sh",
+      "result": "PASS",
+      "evidence_type": "EXECUTED_ISOLATED_POSTGRES",
+      "includes": [
+        "Prisma generate/validate",
+        "backend and Vercel artifact build",
+        "all backend Jest tests with local PG15/PG17 integration targets",
+        "all frontend Vitest tests",
+        "frontend production build",
+        "backend/frontend tsc --noEmit",
+        "Chromium desktop/mobile acceptance",
+        "matrix-to-test-report evidence verification",
+        "git diff --check"
+      ]
+    },
+    {
+      "command": "npm test -w backend -- --runInBand",
+      "result": "PASS",
+      "evidence_type": "EXECUTED_ISOLATED_POSTGRES",
+      "suites_passed": 75,
+      "tests_passed": 608,
+      "tests_skipped": 1,
+      "skipped_reason": "Pre-existing obsolete direct Universal Router calldata test; active executor tests pass."
+    },
+    {
+      "command": "npm test -w frontend",
+      "result": "PASS",
+      "evidence_type": "EXECUTED_LOCAL",
+      "files_passed": 55,
+      "tests_passed": 241
+    },
+    {
+      "command": "WIZPAY_TEST_CHROMIUM_PATH=/usr/bin/chromium npm run test:acceptance -w frontend",
+      "result": "PASS",
+      "evidence_type": "EXECUTED_LOCAL",
+      "tests_passed": 6,
+      "viewports": [
+        [
+          1440,
+          1000
+        ],
+        [
+          390,
+          844
+        ]
+      ]
+    },
+    {
+      "command": "node deploy/serverless-acceptance/verify-evidence.mjs <backend.json> <frontend.json> <browser.json>",
+      "result": "PASS",
+      "evidence_type": "EXECUTED_LOCAL",
+      "features_verified": 32
+    },
+    {
+      "command": "npx eslint src/deployment/phase8-acceptance.postgres.spec.ts (backend workspace)",
+      "result": "PASS",
+      "evidence_type": "EXECUTED_LOCAL"
+    },
+    {
+      "command": "npx eslint playwright.config.ts e2e/phase8.spec.ts components/providers/WalletAuthProvider.test.tsx hooks/useTransactionExecutor.test.tsx hooks/useInvoicePayment.test.tsx test/start-acceptance.mjs (frontend workspace)",
+      "result": "PASS",
+      "evidence_type": "EXECUTED_LOCAL"
+    },
+    {
+      "command": "bash -n deploy/serverless-acceptance/run-isolated.sh; node --check (test drivers/evidence verifier)",
+      "result": "PASS",
+      "evidence_type": "EXECUTED_LOCAL"
+    },
+    {
+      "command": "git diff --check",
+      "result": "PASS",
+      "evidence_type": "EXECUTED_LOCAL"
+    },
+    {
+      "command": "Read-only eth_chainId request to pinned Arc Mainnet RPC through managed proxy",
+      "result": "BLOCKED_NETWORK_POLICY",
+      "evidence_type": "DEFERRED_HOSTED",
+      "observation": "CONNECT 403; no JSON-RPC response received, no chain connectivity PASS claimed."
+    }
+  ],
+  "limitations": [
+    "RPC/quote/CCTP provider results and financial receipts are synthetic in executable feature tests. No live transaction was submitted.",
+    "Desktop/mobile browser acceptance uses a connected offline EIP-1193 provider, synthetic API/session fixtures and blocked service workers to keep remote fixtures deterministic; PWA manifest/worker resources are tested separately. It does not prove camera permissions, actual PWA installation or a live WalletConnect mobile session.",
+    "One pre-existing skipped backend test describes obsolete direct Universal Router V4 calldata. Active executor calldata/receipt tests run and pass.",
+    "Arc public read-only RPC preflight through the managed proxy returned CONNECT 403; no chain response was claimed.",
+    "Seven existing NFT optional trace warnings remain; copied bundle runtime tests pass outside the checkout.",
+    "Build-time Reown remote configuration is unavailable in this environment; the build and offline browser wallet pass using existing local configuration behavior."
+  ],
+  "actual_code_regressions": [],
+  "fund_safety_changes": [],
+  "deferred_evidence": [
+    {
+      "feature": "Hosted Supabase authentication/connectivity and persistence",
+      "result": "DEFERRED",
+      "evidence_type": "DEFERRED_HOSTED"
+    },
+    {
+      "feature": "Vercel authentication, actual deployment and hosted API feature smoke",
+      "result": "DEFERRED",
+      "evidence_type": "DEFERRED_HOSTED"
+    },
+    {
+      "feature": "Production read-only export, hosted Supabase import and real-data integrity parity",
+      "result": "DEFERRED",
+      "evidence_type": "DEFERRED_HOSTED"
+    },
+    {
+      "feature": "Interactive real-wallet signatures, Mainnet financial flows, mobile WalletConnect/camera/PWA installation and live provider quote/readiness",
+      "result": "DEFERRED",
+      "evidence_type": "DEFERRED_HOSTED"
+    }
+  ],
+  "implementation_acceptance": "PASS",
+  "phase9_started": false,
+  "schema_version": 1,
+  "preserved_invariants": [
+    "External user wallet authority",
+    "Operation-specific receipt/domain-event verification",
+    "ExecutionIntent uniqueness, replay protection and terminal-state guards",
+    "Contract code and pinned Mainnet addresses",
+    "Serverless Redis-free runtime",
+    "Production VPS, app.wizpay.xyz, DNS, main, archive branch, stable tag and production data unchanged",
+    "No transaction execution or fund movement"
+  ]
+}

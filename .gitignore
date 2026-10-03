@@ -16,3 +16,7 @@ internal/
 .kiro/.vscode/
 
 *:Zone.Identifier
+
+# Local acceptance browser output (may contain session data).
+apps/frontend/test-results/
+apps/frontend/playwright-report/

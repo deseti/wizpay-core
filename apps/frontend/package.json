@@ -11,7 +11,8 @@
     "build": "./scripts/with-root-env.sh next build",
     "start": "./scripts/with-root-env.sh next start",
     "lint": "eslint",
-    "test": "vitest run --maxWorkers=1 --no-file-parallelism"
+    "test": "vitest run --maxWorkers=1 --no-file-parallelism",
+    "test:acceptance": "playwright test"
   },
   "dependencies": {
     "@radix-ui/react-toast": "^1.2.15",
@@ -46,6 +47,7 @@
     "wagmi": "^2.19.5"
   },
   "devDependencies": {
+    "@playwright/test": "1.63.0",
     "@tailwindcss/postcss": "^4",
     "@testing-library/dom": "^10.4.1",
     "@testing-library/jest-dom": "^7.0.0",

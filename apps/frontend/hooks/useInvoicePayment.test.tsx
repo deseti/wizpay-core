@@ -82,6 +82,33 @@ describe("useInvoicePayment", () => {
     });
   });
 
+  it("user rejection cannot report or verify a payment and permits a later retry", async () => {
+    account.chainId = 5042;
+    writeContractAsync.mockRejectedValueOnce(
+      Object.assign(new Error("User rejected request"), { code: 4001 }),
+    );
+    const onInvoice = vi.fn();
+    const { result } = renderHook(() =>
+      useInvoicePayment(invoice(), onInvoice),
+    );
+    await act(async () => {
+      await result.current.pay();
+    });
+    expect(verifyPublicInvoicePayment).not.toHaveBeenCalled();
+    expect(bindExecutionIntentTransactionHash).not.toHaveBeenCalled();
+    expect(onInvoice).not.toHaveBeenCalled();
+    expect(result.current.externalRecoveryNeedsHash).toBe(true);
+    await act(async () => {
+      await result.current.cancelExternalRecovery();
+    });
+    expect(cancelExecutionIntent).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      await result.current.pay();
+    });
+    expect(writeContractAsync).toHaveBeenCalledTimes(2);
+    expect(verifyPublicInvoicePayment).toHaveBeenCalledTimes(1);
+  });
+
   it("switches to Arc Mainnet, requests one exact transfer, locks duplicate submission, and verifies backend authority", async () => {
     const onInvoice = vi.fn();
     const { result } = renderHook(() =>
@@ -239,9 +266,7 @@ describe("useInvoicePayment", () => {
   it("rejects non-external payer selection without submitting", async () => {
     const { result } = renderHook(() => useInvoicePayment(invoice(), vi.fn()));
     act(() => result.current.selectMethod("app"));
-    expect(result.current.error).toContain(
-      "external wallet payments only",
-    );
+    expect(result.current.error).toContain("external wallet payments only");
     expect(result.current.method).toBe("external");
     await act(async () => {
       await result.current.pay();
@@ -284,9 +309,7 @@ describe("useInvoicePayment", () => {
       useInvoicePayment({ ...invoice(), status: "VERIFYING" }, vi.fn()),
     );
 
-    await waitFor(() =>
-      expect(writeContractAsync).not.toHaveBeenCalled(),
-    );
+    await waitFor(() => expect(writeContractAsync).not.toHaveBeenCalled());
     expect(verifyPublicInvoicePayment).not.toHaveBeenCalled();
   });
 });
