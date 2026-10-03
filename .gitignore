@@ -4,6 +4,10 @@ node_modules
 .next
 dist
 .vercel/
+*.dump
+*.backup
+*.sql.gz
+.migration-rehearsal/
 packages/contracts/lib/
 # Internal AI / audit workspace
 AGENTS.md

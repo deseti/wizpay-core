@@ -1,0 +1,13 @@
+# Supply URL credentials through a secure local environment, never this file.
+WIZPAY_MIGRATION_SOURCE_URL=
+WIZPAY_MIGRATION_TARGET_URL=
+WIZPAY_MIGRATION_REHEARSAL_ACK=ISOLATED_TARGET_ONLY
+WIZPAY_MIGRATION_TARGET_HOST=
+WIZPAY_MIGRATION_TARGET_DATABASE=
+# Required only for a designated hosted Supabase validation target:
+# WIZPAY_MIGRATION_TARGET_PROJECT_REF
+# Optional absolute PostgreSQL 17 binary directory:
+# WIZPAY_REHEARSAL_PG_BIN
+# Optional absolute directory OUTSIDE the checkout for retaining a successful backup:
+# WIZPAY_MIGRATION_BACKUP_DIRECTORY
+# DATABASE_URL/DIRECT_URL are rejected; no runtime/VPS database fallback exists.

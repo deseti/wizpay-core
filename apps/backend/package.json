@@ -24,7 +24,9 @@
     "test:cov": "jest --coverage",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
     "test:e2e": "jest --config ./test/jest-e2e.json",
-    "test:phase7:offline": "jest --runInBand src/phase7/phase7-offline-rehearsal.postgres.spec.ts",
+    "test:phase7:offline": "jest --runInBand src/phase7",
+    "migration:rehearse": "node dist/phase7/migration-rehearsal.js",
+    "migration:rehearse:isolated": "bash ../../deploy/serverless-data-migration/rehearse-isolated.sh",
     "build:vercel": "npm run prisma:generate && npm run build && node dist/deployment/vercel-build.js",
     "smoke:vercel": "node dist/deployment/vercel-smoke.js"
   },

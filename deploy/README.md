@@ -80,3 +80,10 @@ cutover. Repository preparation does not authorize deployment.
 Phase 6 backend packaging and deployment instructions are in
 [vercel-api/README.md](vercel-api/README.md). This dedicated project does not
 change the frontend deployment, production backend target, DNS or VPS.
+
+## Production-data rehearsal
+
+[serverless-data-migration/README.md](serverless-data-migration/README.md)
+documents the guarded native PostgreSQL rehearsal. Phase 7 validates synthetic
+isolated databases; real production export and hosted Supabase import remain
+deferred. Production data and traffic are unchanged.

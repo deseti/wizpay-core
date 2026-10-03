@@ -1,0 +1,158 @@
+{
+  "scope": "ISOLATED_ONLY",
+  "recordedAt": "2026-10-03T07:27:19+00:00",
+  "postgresVersions": {
+    "source": 150019,
+    "target": 170011
+  },
+  "schemaContract": [
+    {
+      "name": "20260922210000_arc_mainnet_fresh_baseline",
+      "checksum": "fb0e0a14bec4a19e3a1799a0488f6b8884649d092f6468dbb1c1781bb5c545ea"
+    },
+    {
+      "name": "20261003050000_serverless_reconciliation",
+      "checksum": "138fa16b0e1843cc400e5b58083888fecbc7059abb8a510e34141cf9b4714fb2"
+    }
+  ],
+  "firstRehearsal": "PASS",
+  "secondRehearsal": "PASS",
+  "immediateRevalidation": "PASS",
+  "sourceUnchanged": true,
+  "sourceTables": 15,
+  "targetTables": 15,
+  "rowComparison": [
+    {
+      "table": "Activity",
+      "source_count": "3",
+      "target_count": "3",
+      "match": true,
+      "integrity_match": true
+    },
+    {
+      "table": "ActivityAuthSession",
+      "source_count": "2",
+      "target_count": "2",
+      "match": true,
+      "integrity_match": true
+    },
+    {
+      "table": "ActivitySyncState",
+      "source_count": "2",
+      "target_count": "2",
+      "match": true,
+      "integrity_match": true
+    },
+    {
+      "table": "BridgeTransaction",
+      "source_count": "2",
+      "target_count": "2",
+      "match": true,
+      "integrity_match": true
+    },
+    {
+      "table": "ExecutionIntent",
+      "source_count": "11",
+      "target_count": "11",
+      "match": true,
+      "integrity_match": true
+    },
+    {
+      "table": "Invoice",
+      "source_count": "3",
+      "target_count": "3",
+      "match": true,
+      "integrity_match": true
+    },
+    {
+      "table": "InvoicePayment",
+      "source_count": "2",
+      "target_count": "2",
+      "match": true,
+      "integrity_match": true
+    },
+    {
+      "table": "ReconciliationWork",
+      "source_count": "4",
+      "target_count": "4",
+      "match": true,
+      "integrity_match": true
+    },
+    {
+      "table": "Task",
+      "source_count": "2",
+      "target_count": "2",
+      "match": true,
+      "integrity_match": true
+    },
+    {
+      "table": "TaskLog",
+      "source_count": "2",
+      "target_count": "2",
+      "match": true,
+      "integrity_match": true
+    },
+    {
+      "table": "TaskTransaction",
+      "source_count": "3",
+      "target_count": "3",
+      "match": true,
+      "integrity_match": true
+    },
+    {
+      "table": "TaskUnit",
+      "source_count": "3",
+      "target_count": "3",
+      "match": true,
+      "integrity_match": true
+    },
+    {
+      "table": "UserWallet",
+      "source_count": "2",
+      "target_count": "2",
+      "match": true,
+      "integrity_match": true
+    },
+    {
+      "table": "VerifiedSwapTransaction",
+      "source_count": "2",
+      "target_count": "2",
+      "match": true,
+      "integrity_match": true
+    },
+    {
+      "table": "WalletAuthChallenge",
+      "source_count": "2",
+      "target_count": "2",
+      "match": true,
+      "integrity_match": true
+    }
+  ],
+  "catalog": {
+    "parity": {
+      "columns": true,
+      "constraints": true,
+      "indexes": true,
+      "enums": true,
+      "triggers": true
+    },
+    "primaryKeys": 15,
+    "uniqueConstraints": 0,
+    "foreignKeys": 4,
+    "checks": 4,
+    "indexes": 66,
+    "uniqueIndexes": 40,
+    "enums": 6
+  },
+  "integrity": "ALL_APPLICATION_COLUMNS_EXACT",
+  "sourceWritesPerformed": false,
+  "productionExportPerformed": false,
+  "hostedSupabaseImportPerformed": false,
+  "blockchainExecutionPerformed": false,
+  "temporaryArchivesRemoved": true,
+  "deferred": [
+    "production-read-only-export",
+    "hosted-supabase-import",
+    "hosted-catalog-and-data-verification"
+  ]
+}
