@@ -1,6 +1,7 @@
 import { parseArcNetworkKey } from '@wizpay/arc-network';
 import { assertDeploymentManifestIsolation } from './deployment-manifest.config';
 import { runtimeDatabasePool } from '../database/database-connection.config';
+import { resolveRuntimeMode } from '../runtime/runtime.module';
 
 type Environment = Record<string, string | undefined>;
 
@@ -32,16 +33,16 @@ export type RuntimeIsolationDiagnostic = Readonly<{
   network: typeof MAINNET_NETWORK;
   environment: 'mainnet';
   database: Readonly<{ host: string; port: number; database: string }>;
-  redis: Readonly<{ host: string; port: number; databaseIndex: number }>;
-  queuePrefix: string;
+  redis?: Readonly<{ host: string; port: number; databaseIndex: number }>;
+  queuePrefix?: string;
   manifest: 'arc-mainnet-unavailable';
 }>;
 
 export type RuntimeIsolationConfiguration = Readonly<{
   network: typeof MAINNET_NETWORK;
   databaseUrl: string;
-  redisUrl: string;
-  redis: Readonly<{
+  redisUrl?: string;
+  redis?: Readonly<{
     host: string;
     port: number;
     databaseIndex: number;
@@ -49,7 +50,7 @@ export type RuntimeIsolationConfiguration = Readonly<{
     password?: string;
     tls: boolean;
   }>;
-  queuePrefix: string;
+  queuePrefix?: string;
   diagnostic: RuntimeIsolationDiagnostic;
 }>;
 
@@ -65,6 +66,7 @@ export class RuntimeIsolationConfigurationError extends Error {
 export function resolveRuntimeIsolationConfiguration(
   environment: Environment,
 ): RuntimeIsolationConfiguration {
+  const runtimeMode = resolveRuntimeMode(environment.WIZPAY_RUNTIME_MODE);
   const network = parseArcNetworkKey(environment.WIZPAY_ARC_NETWORK);
   if (network !== MAINNET_NETWORK) {
     fail(
@@ -85,16 +87,28 @@ export function resolveRuntimeIsolationConfiguration(
 
   const databaseUrl = requireExact(environment, MAINNET_VARIABLES.databaseUrl);
   runtimeDatabasePool(databaseUrl, environment);
+  const database = parseDatabaseTarget(
+    databaseUrl,
+    MAINNET_VARIABLES.databaseUrl,
+  );
+  if (runtimeMode === 'serverless') {
+    return Object.freeze({
+      network,
+      databaseUrl,
+      diagnostic: Object.freeze({
+        network,
+        environment: 'mainnet',
+        database: Object.freeze(database),
+        manifest: 'arc-mainnet-unavailable',
+      }),
+    });
+  }
   const redisUrl = requireExact(environment, MAINNET_VARIABLES.redisUrl);
   const queuePrefix = requireQueuePrefix(
     environment,
     MAINNET_VARIABLES.queuePrefix,
   );
 
-  const database = parseDatabaseTarget(
-    databaseUrl,
-    MAINNET_VARIABLES.databaseUrl,
-  );
   const redis = parseRedisTarget(redisUrl, MAINNET_VARIABLES.redisUrl);
 
   const diagnostic: RuntimeIsolationDiagnostic = Object.freeze({

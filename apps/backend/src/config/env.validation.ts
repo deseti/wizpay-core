@@ -22,14 +22,18 @@ export function validateEnvironment(config: Record<string, unknown>) {
     ...environment,
     WIZPAY_RUNTIME_MODE: resolveRuntimeMode(environment.WIZPAY_RUNTIME_MODE),
     DATABASE_URL: isolation.databaseUrl,
-    REDIS_URL: isolation.redisUrl,
-    REDIS_HOST: isolation.redis.host,
-    REDIS_PORT: String(isolation.redis.port),
-    REDIS_DB: String(isolation.redis.databaseIndex),
-    REDIS_USERNAME: isolation.redis.username ?? '',
-    REDIS_PASSWORD: isolation.redis.password ?? '',
-    REDIS_TLS: isolation.redis.tls ? 'true' : 'false',
-    BULLMQ_PREFIX: isolation.queuePrefix,
+    ...(isolation.redis
+      ? {
+          REDIS_URL: isolation.redisUrl,
+          REDIS_HOST: isolation.redis.host,
+          REDIS_PORT: String(isolation.redis.port),
+          REDIS_DB: String(isolation.redis.databaseIndex),
+          REDIS_USERNAME: isolation.redis.username ?? '',
+          REDIS_PASSWORD: isolation.redis.password ?? '',
+          REDIS_TLS: isolation.redis.tls ? 'true' : 'false',
+          BULLMQ_PREFIX: isolation.queuePrefix,
+        }
+      : {}),
     RUNTIME_ISOLATION_DIAGNOSTIC: isolation.diagnostic,
     WIZPAY_ARC_NETWORK: arcNetworkKey,
   };

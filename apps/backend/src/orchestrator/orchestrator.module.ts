@@ -8,12 +8,12 @@ import { QueueModule } from '../queue/queue.module';
 import { TaskModule } from '../task/task.module';
 import { UserSwapModule } from '../user-swap/user-swap.module';
 import { OrchestratorService } from './orchestrator.service';
-import { PayrollInitService } from './payroll-init.service';
-import { TaskController } from './task.controller';
+import { TaskHttpModule } from '../task/task-http.module';
 
 @Module({
   imports: [
     TaskModule,
+    TaskHttpModule,
     AdaptersModule,
     FxModule,
     InvoiceModule,
@@ -22,8 +22,7 @@ import { TaskController } from './task.controller';
     forwardRef(() => AgentsModule),
     ExecutionModule,
   ],
-  controllers: [TaskController],
-  providers: [OrchestratorService, PayrollInitService],
+  providers: [OrchestratorService],
   exports: [OrchestratorService],
 })
 export class OrchestratorModule {}

@@ -22,7 +22,7 @@ described below remain unchanged.
 
 The production backend stack is defined in `deploy/arc-mainnet/compose.yml`. Frontend configuration selects its backend with `NEXT_PUBLIC_API_URL`.
 
-## HTTP runtime composition (Phase 3)
+## HTTP runtime composition (Phases 3–4)
 
 [createWizPayApplication](../apps/backend/src/application.ts) constructs the
 shared Express/Nest application and applies the existing network/configuration
@@ -42,11 +42,18 @@ injection rather than contaminating the next initialization's environment.
 
 `WIZPAY_RUNTIME_MODE` accepts only `server` or `serverless`; an explicit value
 must match the selected entrypoint. When absent, `main.ts` selects `server` and
-the handler selects `serverless`. Only server mode starts payroll, swap and
-transaction-poll BullMQ consumers. Request services and lazy Redis/BullMQ queue
-producers remain available in both modes. Redis/BullMQ replacement is Phase 4;
-no queue migration or backend deployment is included here. Serverless requests
-that enqueue work still require an existing long-lived consumer.
+the handler selects `serverless`. Phase 4 excludes the legacy `QueueModule` and
+`OrchestratorModule` from serverless composition, including BullMQ producers,
+consumers and pollers. Shared task HTTP controllers retain payroll planning,
+reporting and account-scoped reads. Serverless startup requires no Redis URL or
+queue prefix; database/network/authority validation remains fail-closed.
+
+Server mode still loads the original Redis/BullMQ implementation and requires
+its scoped Redis settings. The VPS deployment is unchanged. No stable HTTP
+payment path currently enqueues work: legacy `handleTask()` dispatch and
+`tx_poll` re-enqueue remain server-only. There is no no-op queue replacement.
+See the [background responsibility inventory](serverless-background-responsibilities.md)
+for Phase 5 recovery work. No queue replacement or deployment is implemented here.
 
 ## Payment Flow
 
@@ -72,7 +79,7 @@ flowchart LR
 
 ## Queue Boundary
 
-BullMQ workers for payroll, swap, and transaction polling remain in the backend. Their presence does not mean the backend signs or submits user payments.
+BullMQ workers for payroll, swap, and transaction polling remain in the legacy server runtime. They are excluded from serverless HTTP composition. Their presence does not mean the backend signs or submits user payments.
 
 The legacy payroll and swap agents reject backend submission on Arc Mainnet. Current wallet payment flows must not be described as worker-owned transfers or as automatic retries of user payments.
 

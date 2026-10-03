@@ -1,9 +1,13 @@
-import { Module } from '@nestjs/common';
+import { Module, type DynamicModule } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import * as fs from 'fs';
 import * as path from 'path';
 import configuration from './configuration';
 import { validateEnvironment } from './env.validation';
+import {
+  resolveRuntimeMode,
+  type WizPayRuntimeMode,
+} from '../runtime/runtime.module';
 
 function resolveEnvFilePath(): string | undefined {
   // Automated tests must never load developer credentials from a real .env.
@@ -39,27 +43,40 @@ function resolveEnvFilePath(): string | undefined {
   return undefined;
 }
 
-const envFilePath = resolveEnvFilePath();
-let runtimeConfiguration: ReturnType<typeof validateEnvironment>;
-
-@Module({
-  imports: [
-    ConfigModule.forRoot({
-      isGlobal: true,
-      cache: true,
-      expandVariables: true,
-      envFilePath,
-      ignoreEnvFile: envFilePath === undefined,
-      load: [configuration, () => runtimeConfiguration],
-      validate: (environment: Record<string, unknown>) => {
-        runtimeConfiguration = validateEnvironment(environment);
-        // Keep derived database/queue settings in DI. ConfigModule otherwise
-        // copies them into process.env, where the next cold-start retry would
-        // correctly reject them as unscoped operator-supplied configuration.
-        return environment;
-      },
-    }),
-  ],
-  exports: [ConfigModule],
-})
-export class AppConfigModule {}
+@Module({})
+export class AppConfigModule {
+  static forRuntime(mode: WizPayRuntimeMode): DynamicModule {
+    resolveRuntimeMode(mode);
+    const envFilePath = resolveEnvFilePath();
+    let runtimeConfiguration: ReturnType<typeof validateEnvironment>;
+    return {
+      module: AppConfigModule,
+      imports: [
+        ConfigModule.forRoot({
+          isGlobal: true,
+          cache: true,
+          expandVariables: true,
+          envFilePath,
+          ignoreEnvFile: envFilePath === undefined,
+          load: [configuration, () => runtimeConfiguration],
+          validate: (environment: Record<string, unknown>) => {
+            if (
+              resolveRuntimeMode(environment.WIZPAY_RUNTIME_MODE, mode) !== mode
+            ) {
+              throw new Error(
+                'WIZPAY_RUNTIME_MODE does not match the selected entrypoint.',
+              );
+            }
+            runtimeConfiguration = validateEnvironment({
+              ...environment,
+              WIZPAY_RUNTIME_MODE: mode,
+            });
+            // Derived settings stay in DI, preserving fail-closed validation on retries.
+            return environment;
+          },
+        }),
+      ],
+      exports: [ConfigModule],
+    };
+  }
+}

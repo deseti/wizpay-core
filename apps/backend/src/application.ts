@@ -57,15 +57,18 @@ export async function createWizPayApplication(
     );
   }
   loadBackendArcNetworkConfiguration(environment);
-  const validated = validateEnvironment(environment);
+  const validated = validateEnvironment({
+    ...environment,
+    WIZPAY_RUNTIME_MODE: runtimeMode,
+  });
   const corsOrigins = resolveCorsOrigins(environment);
   new Logger('Bootstrap').log(
     `Runtime isolation: ${JSON.stringify(validated.RUNTIME_ISOLATION_DIAGNOSTIC)}`,
   );
   const app = await (options.createApplication
     ? options.createApplication(runtimeMode)
-    : import('./app.module.js').then(({ AppModule }) =>
-        NestFactory.create(AppModule.forRuntime(runtimeMode), {
+    : import('./app.module.js').then(async ({ AppModule }) =>
+        NestFactory.create(await AppModule.forRuntime(runtimeMode), {
           // A failed serverless cold start must reject, rather than exit the host.
           abortOnError: runtimeMode === 'server',
         }),

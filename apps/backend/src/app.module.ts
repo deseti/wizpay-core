@@ -16,9 +16,8 @@ import { IntegrationsModule } from './integrations/integrations.module';
 import { InvoiceModule } from './invoice/invoice.module';
 import { WalletModule } from './modules/wallet/wallet.module';
 import { OfficialSwapModule } from './official-swap/official-swap.module';
-import { OrchestratorModule } from './orchestrator/orchestrator.module';
-import { QueueModule } from './queue/queue.module';
 import { TaskModule } from './task/task.module';
+import { TaskHttpModule } from './task/task-http.module';
 import { UserSwapModule } from './user-swap/user-swap.module';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
@@ -33,7 +32,6 @@ import { ExecutionIntentModule } from './execution-intent/execution-intent.modul
     { provide: APP_FILTER, useClass: HttpExceptionCompatibilityFilter },
   ],
   imports: [
-    AppConfigModule,
     CapabilityModule,
     ExecutionIntentModule,
     DatabaseModule,
@@ -43,8 +41,7 @@ import { ExecutionIntentModule } from './execution-intent/execution-intent.modul
     IntegrationsModule,
     InvoiceModule,
     TaskModule,
-    QueueModule,
-    OrchestratorModule,
+    TaskHttpModule,
     OfficialSwapModule,
     WalletModule,
     UserSwapModule,
@@ -54,7 +51,18 @@ import { ExecutionIntentModule } from './execution-intent/execution-intent.modul
   ],
 })
 export class AppModule {
-  static forRuntime(mode: WizPayRuntimeMode): DynamicModule {
-    return { module: AppModule, imports: [RuntimeModule.forRoot(mode)] };
+  static async forRuntime(mode: WizPayRuntimeMode): Promise<DynamicModule> {
+    const imports: DynamicModule['imports'] = [
+      RuntimeModule.forRoot(mode),
+      AppConfigModule.forRuntime(mode),
+    ];
+    if (mode === 'server') {
+      const [{ QueueModule }, { OrchestratorModule }] = await Promise.all([
+        import('./queue/queue.module.js'),
+        import('./orchestrator/orchestrator.module.js'),
+      ]);
+      imports.push(QueueModule, OrchestratorModule);
+    }
+    return { module: AppModule, imports };
   }
 }

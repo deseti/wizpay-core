@@ -85,9 +85,10 @@ lease semantics unchanged. No schema or production migration is part of Phase 1.
 
 At the Phase 1 baseline, worker providers initialize as part of the Nest
 application. Phase 3 now gates only their startup hooks on the selected runtime
-mode, preserving this dependency graph, its `forwardRef` relationships, Redis,
-queues, processors and retries. Database hooks remain application-owned in both
-modes. Source preservation does not by itself prove live service availability.
+mode. Phase 4 excludes legacy queue composition entirely from serverless HTTP
+while retaining server workers, transports, processors and retries. Database
+hooks remain application-owned in both modes. Source preservation does not by
+itself prove live service availability.
 
 ## Future serverless boundary — design only
 
@@ -130,11 +131,28 @@ HTTP without listening or owning signals. [main.ts](../apps/backend/src/main.ts)
 retains VPS/local listener and shutdown ownership;
 [serverless.ts](../apps/backend/src/serverless.ts) lazily initializes one cached
 Express/Nest application, shares concurrent cold starts, and retries after a
-failed initialization. See [HTTP runtime composition](architecture.md#http-runtime-composition-phase-3)
+failed initialization. See [HTTP runtime composition](architecture.md#http-runtime-composition-phases-34)
 for the strict runtime selector and resource lifecycle. The focused factory,
 handler, root-composition and worker tests cover both runtime paths. The
 future HTTP test plan below is now implemented for initialization and transport;
 queue/scheduler replacements and deployment remain later-phase work.
+
+### Phase 4 Redis-free HTTP runtime
+
+Serverless composition excludes BullMQ/ioredis, queue producers, consumers and
+legacy orchestration. `TaskHttpModule` retains the same task controllers and
+payroll initialization service independently of worker composition. Unused
+agent-module imports no longer pull the legacy queues into request services.
+Serverless validation derives no Redis configuration or Redis health target;
+server validation continues requiring the existing scoped URL and queue prefix.
+
+Focused tests construct the real serverless module with BullMQ/ioredis imports
+forbidden, all TCP unavailable during initialization, and Prisma persistence
+stubbed. They exercise health, wallet challenge persistence, request validation,
+authorization and warm Prisma reuse. Live database/worker readiness is separate.
+The legacy source and VPS deployment remain available. Remaining recovery work
+is recorded in the [Phase 5 inventory](serverless-background-responsibilities.md),
+without implementing Queues, Cron or pg_net.
 
 ## Configuration boundaries
 
@@ -142,7 +160,7 @@ queue/scheduler replacements and deployment remain later-phase work.
 | --- | --- |
 | Domain/network | Arc and bridge registries above; [configuration.ts](../apps/backend/src/config/configuration.ts), [Arc configuration](../apps/backend/src/config/arc-network.config.ts), `WIZPAY_ARC_NETWORK`, matching API/worker identity selectors and existing `WIZPAY_ARC_MAINNET_CAPABILITY_*` flags. Resource unavailability, Mainnet-only checks and capabilities remain shared. No address or flag value changes. |
 | Database | `ARC_MAINNET_DATABASE_URL`, [Prisma CLI configuration](../apps/backend/prisma.config.ts), existing schema/migrations and explicit matching `WIZPAY_MIGRATION_NETWORK`. [runtime isolation](../apps/backend/src/config/runtime-isolation.config.ts) rejects user-supplied unscoped `DATABASE_URL`; [environment validation](../apps/backend/src/config/env.validation.ts) derives the internal `DATABASE_URL` consumed by PrismaService only after validation. Do not bypass this boundary. |
-| Redis/BullMQ | `ARC_MAINNET_REDIS_URL` and `ARC_MAINNET_QUEUE_PREFIX` are validated before internal Redis options and `BULLMQ_PREFIX` are derived. Prefixes include `arc-mainnet`; jobs must match the selected network. Unscoped Redis/queue configuration is rejected. Redis TLS/auth options and existing job/retry policies remain unchanged. |
+| Redis/BullMQ | Server mode requires `ARC_MAINNET_REDIS_URL` and `ARC_MAINNET_QUEUE_PREFIX` before deriving internal Redis options and `BULLMQ_PREFIX`. Serverless mode neither requires nor consumes these optional scoped values and derives no Redis settings. Unscoped Redis/queue configuration remains rejected. Server TLS/auth options and job/retry policies are unchanged. |
 | VPS deployment | The production template/Compose and manual workflow supply PostgreSQL/Redis targets, volumes, ports, health checks, CORS and process environment. [AppConfigModule](../apps/backend/src/config/app-config.module.ts) reads the root local `.env` or injected container environment, and ignores developer env files in tests. [host normalization](../apps/backend/src/config/runtime-env.ts) distinguishes Compose hostnames from loopback host ports. Credentials stay outside tracked source. |
 | External services and frontend | Existing Circle Iris and destination RPC configuration is route-specific verification I/O, not custody. `NEXT_PUBLIC_API_URL` selects the frontend backend origin; existing Mainnet/Reown/public-app settings remain unchanged. [frontend root-env loader](../apps/frontend/scripts/with-root-env.sh) and production build/runtime configuration are retained. |
 | Serverless HTTP (Phase 3) | `WIZPAY_RUNTIME_MODE=server\|serverless` selects process lifecycle explicitly and must match the entrypoint; absence preserves server startup through `main.ts` and selects serverless through the handler. Database profiles, network/capability registries and production bindings remain unchanged. Queue/scheduler replacements remain future work. |
