@@ -1,0 +1,146 @@
+{
+  "phase": 10,
+  "date_utc": "2026-10-03",
+  "scope": "EXECUTED_OFFLINE_PREPARATION",
+  "preparation": "COMPLETE",
+  "actual_decommission": "DEFERRED_NOT_EXECUTED",
+  "subscription_cancellation": "NOT_EXECUTED",
+  "live_phase9_acceptance": "DEFERRED",
+  "default_live_gate": "BLOCKED_PENDING_LIVE_EVIDENCE",
+  "branch": "feat/serverless-free-stack",
+  "starting_head": "3cd08a58da38bc401736e027df2068045a851785",
+  "stable_fallback_sha": "9900052a04ba807d937a9687f21d9933ffee33dd",
+  "archive_branch": "archive/vps-production",
+  "stable_tag": "vps-production-9900052",
+  "stable_tag_object": "426befe96592a662e4656299b5aa83350d8c8044",
+  "repository_refs_verification": "PASS_READ_ONLY_REMOTE_BRANCH_AND_ANNOTATED_PEELED_TAG",
+  "final_serverless_release": "PIN_IN_FINAL_MANUAL_PC_SESSION",
+  "changed_files": [
+    "apps/backend/package.json",
+    "apps/backend/src/phase10/cli.ts",
+    "apps/backend/src/phase10/decommission.spec.ts",
+    "apps/backend/src/phase10/decommission.ts",
+    "apps/backend/src/phase10/dns.spec.ts",
+    "apps/backend/src/phase10/dns.ts",
+    "apps/backend/src/phase10/fixtures.ts",
+    "apps/backend/src/phase10/inventory.spec.ts",
+    "apps/backend/src/phase10/reconciliation.postgres.spec.ts",
+    "apps/backend/src/phase10/repository.ts",
+    "deploy/serverless-acceptance/run-isolated.sh",
+    "deploy/serverless-decommission/README.md",
+    "deploy/serverless-decommission/checklist.md",
+    "deploy/serverless-decommission/dependency-inventory.json",
+    "deploy/serverless-decommission/environment-recovery.json",
+    "deploy/serverless-decommission/environment.template",
+    "deploy/serverless-decommission/preparation-evidence.json",
+    "deploy/serverless-decommission/reconciliation.sql",
+    "deploy/serverless-decommission/recovery.md",
+    "deploy/serverless-decommission/run-isolated.sh",
+    "deploy/serverless-decommission/verify-evidence.mjs",
+    "docs/serverless-migration-log.md"
+  ],
+  "inventory": {
+    "path": "deploy/serverless-decommission/dependency-inventory.json",
+    "dependencies": 24,
+    "classifications": {
+      "REPLACED": 5,
+      "REMOVED": 2,
+      "HISTORICAL_ONLY": 2,
+      "MUST_VERIFY_LIVE": 12,
+      "BLOCKS_DECOMMISSION": 3
+    },
+    "classification_scope": "Repository serverless design only; not proof of live retirement",
+    "host_sharing": "UNKNOWN"
+  },
+  "environment_recovery": {
+    "path": "deploy/serverless-decommission/environment-recovery.json",
+    "content": "Variable names, classifications, management location and consumers only; historical values require separate encrypted owner-controlled recovery"
+  },
+  "gates": {
+    "phase9": "Release-bound live acceptance and completed approved observation required",
+    "authority": "Supabase production writer/read target and current evidence; VPS production writes stopped",
+    "routing": "Pinned frontend API, complete active A/AAAA/CNAME chains, no VPS aliases/IPs or stale fallback",
+    "reconciliation": "Current authenticated bounded batch, approved backlog/retry/lease/failure/conflict limits",
+    "backups": "Frozen VPS Mainnet and current authoritative Supabase encrypted off-Git backups with checksums and independently verified restore/catalog/count/full-column integrity",
+    "integrations": "Complete inspected webhook/callback/cron/systemd/monitoring/SSH deployment inventory",
+    "host_sharing": "UNKNOWN blocks all eligibility; YES allows isolated WizPay workload review but blocks subscription; NO permits cancellation review only after every gate"
+  },
+  "validation": {
+    "isolated_command": "WIZPAY_TEST_CHROMIUM_PATH=/usr/bin/chromium bash deploy/serverless-decommission/run-isolated.sh",
+    "result": "PASS",
+    "backend": {
+      "suites_passed": 83,
+      "tests_passed": 703,
+      "tests_skipped": 1,
+      "skip_reason": "Pre-existing obsolete UniversalRouter test"
+    },
+    "phase10_focused_tests": 47,
+    "phase9_focused_tests": 48,
+    "frontend": {
+      "files_passed": 55,
+      "tests_passed": 244,
+      "backend_target_tests": 8,
+      "desktop_mobile_browser_tests": 6
+    },
+    "phase8_matrix_features": 32,
+    "phase8_evidence": "PASS",
+    "phase9_evidence": "PASS",
+    "phase10_evidence": "PASS",
+    "simulation": {
+      "cases": 13,
+      "result": "PASS",
+      "production_contacts": 0,
+      "actions_executed": 0
+    },
+    "isolated_postgresql": "PASS: PostgreSQL 15 -> 17 native dump/restore, clean retry, schema/catalog/count/full-column equality and unchanged source; read-only Phase 10 reconciliation SQL preserves all 15 application tables",
+    "serverless_artifact": "PASS: packaged Redis-free API and persistence/recovery tests; no Phase 10 code imported by application",
+    "prisma_generate": "PASS",
+    "prisma_validate": "PASS",
+    "backend_build": "PASS",
+    "vercel_artifact_build": "PASS",
+    "frontend_production_build": "PASS",
+    "backend_typecheck": "PASS",
+    "frontend_typecheck": "PASS",
+    "scoped_eslint": "PASS: apps/backend/src/phase10/*.ts and deployment evidence verifier",
+    "script_syntax": "PASS: bash -n and node --check",
+    "scoped_format": "PASS",
+    "git_diff_check": "PASS",
+    "repository_preflight": "PASS; actual decommission remains BLOCKED_PENDING_LIVE_EVIDENCE",
+    "non_blocking_warnings": [
+      "Existing artifact trace warnings covered by actual packaged tests",
+      "Frontend build Reown remote configuration DNS unavailable; local fixture build and browser tests passed. Hosted wallet/provider evidence remains deferred"
+    ]
+  },
+  "runbooks": {
+    "shutdown": "deploy/serverless-decommission/checklist.md",
+    "recovery": "deploy/serverless-decommission/recovery.md",
+    "overview": "deploy/serverless-decommission/README.md",
+    "ci_retirement": "Preserve manual SSH workflow until live Phase 9 acceptance and final approval; prevent dispatches/running deployments before scoped retirement; no workflow disabled now"
+  },
+  "deferred_manual_pc": [
+    "Hosted Supabase authentication/connectivity and designated target verification",
+    "Vercel authentication, dedicated backend deployment/environment configuration and hosted smoke",
+    "Final production read-only export, hosted Supabase import and complete integrity verification",
+    "Hosted feature acceptance and interactive wallet/provider evidence",
+    "Deliberate single-authority frontend switch, approved observation, Phase 9 live acceptance or safe rollback",
+    "Current Phase 10 read-only health/authority/reconciliation/routing/integration checks and private release-bound evidence",
+    "Both independently restored encrypted backups, archive/tag and secure secret-recovery verification",
+    "Inspect all host workloads/resource ownership; UNKNOWN is not cancellation eligibility",
+    "Final owner approval, scoped service retirement, post-shutdown safe checks, credential/CI retirement and evidence record",
+    "Subscription cancellation only if verified host-sharing NO and all other gates pass"
+  ],
+  "invariants": {
+    "vps_services_stopped": 0,
+    "production_data_changed": false,
+    "production_dns_changed": false,
+    "live_frontend_configuration_changed": false,
+    "main_archive_tag_changed": false,
+    "contracts_changed": false,
+    "wallet_authority_changed": false,
+    "backend_signing_or_custody_added": false,
+    "financial_transactions_executed": 0,
+    "funds_moved": false,
+    "subscription_cancelled": false
+  },
+  "evidence_policy": "Offline passing evidence never substitutes for hosted production acceptance or authorizes shutdown. Private operator receipts/backups/secrets stay outside Git. No real production data or credentials are included."
+}

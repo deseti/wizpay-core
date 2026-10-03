@@ -1,0 +1,639 @@
+{
+  "scope": "Names/management locations only; no values. Preserve scoped legacy values only in encrypted private recovery storage.",
+  "variables": [
+    {
+      "name": "ANALYTICS_CRON_SECRET",
+      "classification": "MANUAL_VERIFY",
+      "managed_in": "Protected VPS environment / Vercel backend if existing capability intentionally retained",
+      "previous_consumer": "Analytics cache maintenance; no installed scheduler established",
+      "required_by_serverless": false
+    },
+    {
+      "name": "API_URL",
+      "classification": "RETIRED",
+      "managed_in": "None; do not restore into target runtime",
+      "previous_consumer": "No authorized serverless consumer; historical aliases/transport only",
+      "required_by_serverless": false
+    },
+    {
+      "name": "ARCSCAN_API_BASE_URL",
+      "classification": "MANUAL_VERIFY",
+      "managed_in": "Protected VPS environment / Vercel backend if existing capability intentionally retained",
+      "previous_consumer": "Analytics cache maintenance; no installed scheduler established",
+      "required_by_serverless": false
+    },
+    {
+      "name": "ARC_MAINNET_DATABASE_URL",
+      "classification": "ACTIVE_SERVERLESS",
+      "managed_in": "Vercel backend project environment; historical VPS value separately in encrypted recovery vault, never reused blindly",
+      "previous_consumer": "Legacy VPS NestJS/Compose; current serverless API where enabled",
+      "required_by_serverless": true
+    },
+    {
+      "name": "ARC_MAINNET_MIGRATION_DATABASE_URL",
+      "classification": "MANUAL_VERIFY",
+      "managed_in": "Secure operator process / access-controlled migration evidence",
+      "previous_consumer": "Migration/cutover operator only; not deployed API",
+      "required_by_serverless": false
+    },
+    {
+      "name": "ARC_MAINNET_POSTGRES_DATABASE",
+      "classification": "HISTORICAL_VPS",
+      "managed_in": "Protected VPS arc-mainnet environment / encrypted recovery vault; never Git",
+      "previous_consumer": "Scoped legacy Docker Compose/Nest server",
+      "required_by_serverless": false
+    },
+    {
+      "name": "ARC_MAINNET_POSTGRES_PASSWORD",
+      "classification": "HISTORICAL_VPS",
+      "managed_in": "Protected VPS arc-mainnet environment / encrypted recovery vault; never Git",
+      "previous_consumer": "Scoped legacy Docker Compose/Nest server",
+      "required_by_serverless": false
+    },
+    {
+      "name": "ARC_MAINNET_POSTGRES_USER",
+      "classification": "HISTORICAL_VPS",
+      "managed_in": "Protected VPS arc-mainnet environment / encrypted recovery vault; never Git",
+      "previous_consumer": "Scoped legacy Docker Compose/Nest server",
+      "required_by_serverless": false
+    },
+    {
+      "name": "ARC_MAINNET_QUEUE_PREFIX",
+      "classification": "HISTORICAL_VPS",
+      "managed_in": "Protected VPS arc-mainnet environment / encrypted recovery vault; never Git",
+      "previous_consumer": "Scoped legacy Docker Compose/Nest server",
+      "required_by_serverless": false
+    },
+    {
+      "name": "ARC_MAINNET_REDIS_URL",
+      "classification": "HISTORICAL_VPS",
+      "managed_in": "Protected VPS arc-mainnet environment / encrypted recovery vault; never Git",
+      "previous_consumer": "Scoped legacy Docker Compose/Nest server",
+      "required_by_serverless": false
+    },
+    {
+      "name": "ARC_RPC_URL",
+      "classification": "ACTIVE_SERVERLESS",
+      "managed_in": "Vercel backend/frontend project environment (names only)",
+      "previous_consumer": "Serverless API",
+      "required_by_serverless": false
+    },
+    {
+      "name": "BACKEND_API_BASE_URL",
+      "classification": "RETIRED",
+      "managed_in": "None; do not restore into target runtime",
+      "previous_consumer": "No authorized serverless consumer; historical aliases/transport only",
+      "required_by_serverless": false
+    },
+    {
+      "name": "BRIDGE_DESTINATION_RPC_1",
+      "classification": "ACTIVE_SERVERLESS",
+      "managed_in": "Vercel backend project environment; historical VPS value separately in encrypted recovery vault, never reused blindly",
+      "previous_consumer": "Legacy VPS NestJS/Compose; current serverless API where enabled",
+      "required_by_serverless": false
+    },
+    {
+      "name": "BRIDGE_DESTINATION_RPC_10",
+      "classification": "ACTIVE_SERVERLESS",
+      "managed_in": "Vercel backend project environment; historical VPS value separately in encrypted recovery vault, never reused blindly",
+      "previous_consumer": "Legacy VPS NestJS/Compose; current serverless API where enabled",
+      "required_by_serverless": false
+    },
+    {
+      "name": "BRIDGE_DESTINATION_RPC_137",
+      "classification": "ACTIVE_SERVERLESS",
+      "managed_in": "Vercel backend project environment; historical VPS value separately in encrypted recovery vault, never reused blindly",
+      "previous_consumer": "Legacy VPS NestJS/Compose; current serverless API where enabled",
+      "required_by_serverless": false
+    },
+    {
+      "name": "BRIDGE_DESTINATION_RPC_42161",
+      "classification": "ACTIVE_SERVERLESS",
+      "managed_in": "Vercel backend project environment; historical VPS value separately in encrypted recovery vault, never reused blindly",
+      "previous_consumer": "Legacy VPS NestJS/Compose; current serverless API where enabled",
+      "required_by_serverless": false
+    },
+    {
+      "name": "BRIDGE_DESTINATION_RPC_43114",
+      "classification": "ACTIVE_SERVERLESS",
+      "managed_in": "Vercel backend project environment; historical VPS value separately in encrypted recovery vault, never reused blindly",
+      "previous_consumer": "Legacy VPS NestJS/Compose; current serverless API where enabled",
+      "required_by_serverless": false
+    },
+    {
+      "name": "BRIDGE_DESTINATION_RPC_5042",
+      "classification": "ACTIVE_SERVERLESS",
+      "managed_in": "Vercel backend/frontend project environment (names only)",
+      "previous_consumer": "Serverless API",
+      "required_by_serverless": false
+    },
+    {
+      "name": "BRIDGE_DESTINATION_RPC_8453",
+      "classification": "ACTIVE_SERVERLESS",
+      "managed_in": "Vercel backend project environment; historical VPS value separately in encrypted recovery vault, never reused blindly",
+      "previous_consumer": "Legacy VPS NestJS/Compose; current serverless API where enabled",
+      "required_by_serverless": false
+    },
+    {
+      "name": "BULLMQ_PREFIX",
+      "classification": "RETIRED",
+      "managed_in": "None; do not restore into target runtime",
+      "previous_consumer": "No authorized serverless consumer; historical aliases/transport only",
+      "required_by_serverless": false
+    },
+    {
+      "name": "CCTP_IRIS_API_BASE_URL",
+      "classification": "ACTIVE_SERVERLESS",
+      "managed_in": "Vercel backend project environment; historical VPS value separately in encrypted recovery vault, never reused blindly",
+      "previous_consumer": "Legacy VPS NestJS/Compose; current serverless API where enabled",
+      "required_by_serverless": false
+    },
+    {
+      "name": "CHAIN_ID",
+      "classification": "ACTIVE_SERVERLESS",
+      "managed_in": "Vercel backend/frontend project environment (names only)",
+      "previous_consumer": "Serverless API",
+      "required_by_serverless": false
+    },
+    {
+      "name": "CIRCLE_API_KEY",
+      "classification": "RETIRED",
+      "managed_in": "None \u2014 never collect, restore or introduce custody/signing material",
+      "previous_consumer": "No authorized Mainnet recovery consumer; retired/forbidden configuration names only",
+      "required_by_serverless": false
+    },
+    {
+      "name": "CIRCLE_APP_ID",
+      "classification": "RETIRED",
+      "managed_in": "None \u2014 never collect, restore or introduce custody/signing material",
+      "previous_consumer": "No authorized Mainnet recovery consumer; retired/forbidden configuration names only",
+      "required_by_serverless": false
+    },
+    {
+      "name": "CIRCLE_ENTITY_SECRET",
+      "classification": "RETIRED",
+      "managed_in": "None \u2014 never collect, restore or introduce custody/signing material",
+      "previous_consumer": "No authorized Mainnet recovery consumer; retired/forbidden configuration names only",
+      "required_by_serverless": false
+    },
+    {
+      "name": "CORS_ORIGINS",
+      "classification": "ACTIVE_SERVERLESS",
+      "managed_in": "Vercel backend project environment; historical VPS value separately in encrypted recovery vault, never reused blindly",
+      "previous_consumer": "Legacy VPS NestJS/Compose; current serverless API where enabled",
+      "required_by_serverless": true
+    },
+    {
+      "name": "DATABASE_URL",
+      "classification": "RETIRED",
+      "managed_in": "None; do not restore into target runtime",
+      "previous_consumer": "No authorized serverless consumer; historical aliases/transport only",
+      "required_by_serverless": false
+    },
+    {
+      "name": "DIRECT_URL",
+      "classification": "RETIRED",
+      "managed_in": "None; do not restore into target runtime",
+      "previous_consumer": "No authorized serverless consumer; historical aliases/transport only",
+      "required_by_serverless": false
+    },
+    {
+      "name": "DOCKER",
+      "classification": "HISTORICAL_VPS",
+      "managed_in": "Protected VPS arc-mainnet environment / encrypted recovery vault; never Git",
+      "previous_consumer": "Scoped legacy Docker Compose/Nest server",
+      "required_by_serverless": false
+    },
+    {
+      "name": "NEXT_PUBLIC_API_URL",
+      "classification": "ACTIVE_SERVERLESS",
+      "managed_in": "Vercel backend/frontend project environment (names only)",
+      "previous_consumer": "Frontend build",
+      "required_by_serverless": true
+    },
+    {
+      "name": "NEXT_PUBLIC_BACKEND_API_BASE_URL",
+      "classification": "RETIRED",
+      "managed_in": "None; do not restore into target runtime",
+      "previous_consumer": "No authorized serverless consumer; historical aliases/transport only",
+      "required_by_serverless": false
+    },
+    {
+      "name": "NEXT_PUBLIC_BACKEND_URL",
+      "classification": "RETIRED",
+      "managed_in": "None; do not restore into target runtime",
+      "previous_consumer": "No authorized serverless consumer; historical aliases/transport only",
+      "required_by_serverless": false
+    },
+    {
+      "name": "NEXT_PUBLIC_CONTRACT_ADDRESS",
+      "classification": "ACTIVE_SERVERLESS",
+      "managed_in": "Vercel backend/frontend project environment (names only)",
+      "previous_consumer": "Frontend build",
+      "required_by_serverless": false
+    },
+    {
+      "name": "NEXT_PUBLIC_REOWN_PROJECT_ID",
+      "classification": "ACTIVE_SERVERLESS",
+      "managed_in": "Vercel backend/frontend project environment (names only)",
+      "previous_consumer": "Frontend build",
+      "required_by_serverless": false
+    },
+    {
+      "name": "NEXT_PUBLIC_RPC_URL",
+      "classification": "ACTIVE_SERVERLESS",
+      "managed_in": "Vercel backend/frontend project environment (names only)",
+      "previous_consumer": "Frontend build",
+      "required_by_serverless": false
+    },
+    {
+      "name": "NEXT_PUBLIC_WIZPAY_ADDRESS",
+      "classification": "ACTIVE_SERVERLESS",
+      "managed_in": "Vercel backend/frontend project environment (names only)",
+      "previous_consumer": "Frontend build",
+      "required_by_serverless": false
+    },
+    {
+      "name": "NEXT_PUBLIC_WIZPAY_ARC_NETWORK",
+      "classification": "ACTIVE_SERVERLESS",
+      "managed_in": "Vercel backend/frontend project environment (names only)",
+      "previous_consumer": "Frontend build",
+      "required_by_serverless": true
+    },
+    {
+      "name": "NEXT_PUBLIC_WIZPAY_PUBLIC_APP_URL",
+      "classification": "ACTIVE_SERVERLESS",
+      "managed_in": "Vercel frontend/backend environment; per enabled route",
+      "previous_consumer": "Existing frontend or CCTP read/receipt verification",
+      "required_by_serverless": false
+    },
+    {
+      "name": "NODE_ENV",
+      "classification": "ACTIVE_SERVERLESS",
+      "managed_in": "Vercel backend project environment; historical VPS value separately in encrypted recovery vault, never reused blindly",
+      "previous_consumer": "Legacy VPS NestJS/Compose; current serverless API where enabled",
+      "required_by_serverless": true
+    },
+    {
+      "name": "PORT",
+      "classification": "HISTORICAL_VPS",
+      "managed_in": "Protected VPS arc-mainnet environment / encrypted recovery vault; never Git",
+      "previous_consumer": "Scoped legacy Docker Compose/Nest server",
+      "required_by_serverless": false
+    },
+    {
+      "name": "PRIVATE_KEY",
+      "classification": "RETIRED",
+      "managed_in": "None \u2014 never collect, restore or introduce custody/signing material",
+      "previous_consumer": "No authorized Mainnet recovery consumer; retired/forbidden configuration names only",
+      "required_by_serverless": false
+    },
+    {
+      "name": "QUEUE_PREFIX",
+      "classification": "RETIRED",
+      "managed_in": "None; do not restore into target runtime",
+      "previous_consumer": "No authorized serverless consumer; historical aliases/transport only",
+      "required_by_serverless": false
+    },
+    {
+      "name": "REDIS_DB",
+      "classification": "RETIRED",
+      "managed_in": "None; do not restore into target runtime",
+      "previous_consumer": "No authorized serverless consumer; historical aliases/transport only",
+      "required_by_serverless": false
+    },
+    {
+      "name": "REDIS_HOST",
+      "classification": "RETIRED",
+      "managed_in": "None; do not restore into target runtime",
+      "previous_consumer": "No authorized serverless consumer; historical aliases/transport only",
+      "required_by_serverless": false
+    },
+    {
+      "name": "REDIS_PORT",
+      "classification": "RETIRED",
+      "managed_in": "None; do not restore into target runtime",
+      "previous_consumer": "No authorized serverless consumer; historical aliases/transport only",
+      "required_by_serverless": false
+    },
+    {
+      "name": "REDIS_URL",
+      "classification": "RETIRED",
+      "managed_in": "None; do not restore into target runtime",
+      "previous_consumer": "No authorized serverless consumer; historical aliases/transport only",
+      "required_by_serverless": false
+    },
+    {
+      "name": "RPC_URL",
+      "classification": "ACTIVE_SERVERLESS",
+      "managed_in": "Vercel backend/frontend project environment (names only)",
+      "previous_consumer": "Serverless API",
+      "required_by_serverless": false
+    },
+    {
+      "name": "VERCEL_DEPLOYMENT_ID",
+      "classification": "ACTIVE_SERVERLESS",
+      "managed_in": "Vercel backend/frontend project environment (names only)",
+      "previous_consumer": "Serverless API",
+      "required_by_serverless": false
+    },
+    {
+      "name": "WALLET_PRIVATE_KEY",
+      "classification": "RETIRED",
+      "managed_in": "None \u2014 never collect, restore or introduce custody/signing material",
+      "previous_consumer": "No authorized Mainnet recovery consumer; retired/forbidden configuration names only",
+      "required_by_serverless": false
+    },
+    {
+      "name": "WIZPAY_ANALYTICS_CONTRACT_ADDRESS",
+      "classification": "MANUAL_VERIFY",
+      "managed_in": "Protected VPS environment / Vercel backend if existing capability intentionally retained",
+      "previous_consumer": "Analytics cache maintenance; no installed scheduler established",
+      "required_by_serverless": false
+    },
+    {
+      "name": "WIZPAY_API_NETWORK",
+      "classification": "ACTIVE_SERVERLESS",
+      "managed_in": "Vercel backend project environment; historical VPS value separately in encrypted recovery vault, never reused blindly",
+      "previous_consumer": "Legacy VPS NestJS/Compose; current serverless API where enabled",
+      "required_by_serverless": true
+    },
+    {
+      "name": "WIZPAY_ARC_MAINNET_CAPABILITY_BRIDGE",
+      "classification": "ACTIVE_SERVERLESS",
+      "managed_in": "Vercel backend project environment; historical VPS value separately in encrypted recovery vault, never reused blindly",
+      "previous_consumer": "Legacy VPS NestJS/Compose; current serverless API where enabled",
+      "required_by_serverless": false
+    },
+    {
+      "name": "WIZPAY_ARC_MAINNET_CAPABILITY_CROSS_TOKEN_INVOICE",
+      "classification": "RETIRED",
+      "managed_in": "None; do not restore into target runtime",
+      "previous_consumer": "No authorized serverless consumer; historical aliases/transport only",
+      "required_by_serverless": false
+    },
+    {
+      "name": "WIZPAY_ARC_MAINNET_CAPABILITY_CROSS_TOKEN_PAYROLL",
+      "classification": "ACTIVE_SERVERLESS",
+      "managed_in": "Vercel backend project environment; historical VPS value separately in encrypted recovery vault, never reused blindly",
+      "previous_consumer": "Legacy VPS NestJS/Compose; current serverless API where enabled",
+      "required_by_serverless": false
+    },
+    {
+      "name": "WIZPAY_ARC_MAINNET_CAPABILITY_INVOICE",
+      "classification": "ACTIVE_SERVERLESS",
+      "managed_in": "Vercel backend project environment; historical VPS value separately in encrypted recovery vault, never reused blindly",
+      "previous_consumer": "Legacy VPS NestJS/Compose; current serverless API where enabled",
+      "required_by_serverless": false
+    },
+    {
+      "name": "WIZPAY_ARC_MAINNET_CAPABILITY_LIQUIDITY",
+      "classification": "RETIRED",
+      "managed_in": "None; do not restore into target runtime",
+      "previous_consumer": "No authorized serverless consumer; historical aliases/transport only",
+      "required_by_serverless": false
+    },
+    {
+      "name": "WIZPAY_ARC_MAINNET_CAPABILITY_NANO_AGENT_API",
+      "classification": "RETIRED",
+      "managed_in": "None; do not restore into target runtime",
+      "previous_consumer": "No authorized serverless consumer; historical aliases/transport only",
+      "required_by_serverless": false
+    },
+    {
+      "name": "WIZPAY_ARC_MAINNET_CAPABILITY_PAYMENT_LINK",
+      "classification": "ACTIVE_SERVERLESS",
+      "managed_in": "Vercel backend project environment; historical VPS value separately in encrypted recovery vault, never reused blindly",
+      "previous_consumer": "Legacy VPS NestJS/Compose; current serverless API where enabled",
+      "required_by_serverless": false
+    },
+    {
+      "name": "WIZPAY_ARC_MAINNET_CAPABILITY_SAME_TOKEN_PAYROLL",
+      "classification": "ACTIVE_SERVERLESS",
+      "managed_in": "Vercel backend project environment; historical VPS value separately in encrypted recovery vault, never reused blindly",
+      "previous_consumer": "Legacy VPS NestJS/Compose; current serverless API where enabled",
+      "required_by_serverless": false
+    },
+    {
+      "name": "WIZPAY_ARC_MAINNET_CAPABILITY_SEND",
+      "classification": "ACTIVE_SERVERLESS",
+      "managed_in": "Vercel backend project environment; historical VPS value separately in encrypted recovery vault, never reused blindly",
+      "previous_consumer": "Legacy VPS NestJS/Compose; current serverless API where enabled",
+      "required_by_serverless": false
+    },
+    {
+      "name": "WIZPAY_ARC_MAINNET_CAPABILITY_SWAP",
+      "classification": "ACTIVE_SERVERLESS",
+      "managed_in": "Vercel backend project environment; historical VPS value separately in encrypted recovery vault, never reused blindly",
+      "previous_consumer": "Legacy VPS NestJS/Compose; current serverless API where enabled",
+      "required_by_serverless": false
+    },
+    {
+      "name": "WIZPAY_ARC_NETWORK",
+      "classification": "ACTIVE_SERVERLESS",
+      "managed_in": "Vercel backend project environment; historical VPS value separately in encrypted recovery vault, never reused blindly",
+      "previous_consumer": "Legacy VPS NestJS/Compose; current serverless API where enabled",
+      "required_by_serverless": true
+    },
+    {
+      "name": "WIZPAY_BACKEND_HOST_PORT",
+      "classification": "HISTORICAL_VPS",
+      "managed_in": "Protected VPS arc-mainnet environment / encrypted recovery vault; never Git",
+      "previous_consumer": "Scoped legacy Docker Compose/Nest server",
+      "required_by_serverless": false
+    },
+    {
+      "name": "WIZPAY_CUTOVER_CANDIDATE_SHA",
+      "classification": "MANUAL_VERIFY",
+      "managed_in": "Secure operator process / access-controlled migration evidence",
+      "previous_consumer": "Migration/cutover operator only; not deployed API",
+      "required_by_serverless": false
+    },
+    {
+      "name": "WIZPAY_CUTOVER_LIVE_SMOKE_ACK",
+      "classification": "MANUAL_VERIFY",
+      "managed_in": "Secure operator process / access-controlled migration evidence",
+      "previous_consumer": "Migration/cutover operator only; not deployed API",
+      "required_by_serverless": false
+    },
+    {
+      "name": "WIZPAY_CUTOVER_NONCE_ACK",
+      "classification": "MANUAL_VERIFY",
+      "managed_in": "Secure operator process / access-controlled migration evidence",
+      "previous_consumer": "Migration/cutover operator only; not deployed API",
+      "required_by_serverless": false
+    },
+    {
+      "name": "WIZPAY_CUTOVER_SMOKE_SESSION",
+      "classification": "MANUAL_VERIFY",
+      "managed_in": "Secure operator process / access-controlled migration evidence",
+      "previous_consumer": "Migration/cutover operator only; not deployed API",
+      "required_by_serverless": false
+    },
+    {
+      "name": "WIZPAY_DATABASE_MIGRATION_MODE",
+      "classification": "MANUAL_VERIFY",
+      "managed_in": "Secure operator process / access-controlled migration evidence",
+      "previous_consumer": "Migration/cutover operator only; not deployed API",
+      "required_by_serverless": false
+    },
+    {
+      "name": "WIZPAY_DATABASE_POOL_MAX",
+      "classification": "ACTIVE_SERVERLESS",
+      "managed_in": "Vercel backend/frontend project environment (names only)",
+      "previous_consumer": "Serverless API",
+      "required_by_serverless": false
+    },
+    {
+      "name": "WIZPAY_DATABASE_PROFILE",
+      "classification": "ACTIVE_SERVERLESS",
+      "managed_in": "Vercel backend/frontend project environment (names only)",
+      "previous_consumer": "Serverless API",
+      "required_by_serverless": true
+    },
+    {
+      "name": "WIZPAY_DECOMMISSION_CANDIDATE_SHA",
+      "classification": "MANUAL_VERIFY",
+      "managed_in": "Non-secret operator process, not an API environment",
+      "previous_consumer": "Phase 10 read-only eligibility tooling",
+      "required_by_serverless": false
+    },
+    {
+      "name": "WIZPAY_DECOMMISSION_READONLY_ACK",
+      "classification": "MANUAL_VERIFY",
+      "managed_in": "Non-secret operator process, not an API environment",
+      "previous_consumer": "Phase 10 read-only eligibility tooling",
+      "required_by_serverless": false
+    },
+    {
+      "name": "WIZPAY_DECOMMISSION_RELEASE_SHA",
+      "classification": "MANUAL_VERIFY",
+      "managed_in": "Non-secret operator process, not an API environment",
+      "previous_consumer": "Phase 10 read-only eligibility tooling",
+      "required_by_serverless": false
+    },
+    {
+      "name": "WIZPAY_MIGRATION_BACKUP_DIRECTORY",
+      "classification": "MANUAL_VERIFY",
+      "managed_in": "Secure operator process / access-controlled migration evidence",
+      "previous_consumer": "Migration/cutover operator only; not deployed API",
+      "required_by_serverless": false
+    },
+    {
+      "name": "WIZPAY_MIGRATION_NETWORK",
+      "classification": "MANUAL_VERIFY",
+      "managed_in": "Secure operator process / access-controlled migration evidence",
+      "previous_consumer": "Migration/cutover operator only; not deployed API",
+      "required_by_serverless": false
+    },
+    {
+      "name": "WIZPAY_MIGRATION_REHEARSAL_ACK",
+      "classification": "MANUAL_VERIFY",
+      "managed_in": "Secure operator process / access-controlled migration evidence",
+      "previous_consumer": "Migration/cutover operator only; not deployed API",
+      "required_by_serverless": false
+    },
+    {
+      "name": "WIZPAY_MIGRATION_SOURCE_URL",
+      "classification": "MANUAL_VERIFY",
+      "managed_in": "Secure operator process / access-controlled migration evidence",
+      "previous_consumer": "Migration/cutover operator only; not deployed API",
+      "required_by_serverless": false
+    },
+    {
+      "name": "WIZPAY_MIGRATION_TARGET_DATABASE",
+      "classification": "MANUAL_VERIFY",
+      "managed_in": "Secure operator process / access-controlled migration evidence",
+      "previous_consumer": "Migration/cutover operator only; not deployed API",
+      "required_by_serverless": false
+    },
+    {
+      "name": "WIZPAY_MIGRATION_TARGET_HOST",
+      "classification": "MANUAL_VERIFY",
+      "managed_in": "Secure operator process / access-controlled migration evidence",
+      "previous_consumer": "Migration/cutover operator only; not deployed API",
+      "required_by_serverless": false
+    },
+    {
+      "name": "WIZPAY_MIGRATION_TARGET_PROJECT_REF",
+      "classification": "MANUAL_VERIFY",
+      "managed_in": "Secure operator process / access-controlled migration evidence",
+      "previous_consumer": "Migration/cutover operator only; not deployed API",
+      "required_by_serverless": false
+    },
+    {
+      "name": "WIZPAY_MIGRATION_TARGET_URL",
+      "classification": "MANUAL_VERIFY",
+      "managed_in": "Secure operator process / access-controlled migration evidence",
+      "previous_consumer": "Migration/cutover operator only; not deployed API",
+      "required_by_serverless": false
+    },
+    {
+      "name": "WIZPAY_PRODUCTION_CUTOVER_ACK",
+      "classification": "MANUAL_VERIFY",
+      "managed_in": "Secure operator process / access-controlled migration evidence",
+      "previous_consumer": "Migration/cutover operator only; not deployed API",
+      "required_by_serverless": false
+    },
+    {
+      "name": "WIZPAY_REHEARSAL_PG_BIN",
+      "classification": "MANUAL_VERIFY",
+      "managed_in": "Secure operator process / access-controlled migration evidence",
+      "previous_consumer": "Migration/cutover operator only; not deployed API",
+      "required_by_serverless": false
+    },
+    {
+      "name": "WIZPAY_RUNTIME_MODE",
+      "classification": "ACTIVE_SERVERLESS",
+      "managed_in": "Vercel backend/frontend project environment (names only)",
+      "previous_consumer": "Serverless API",
+      "required_by_serverless": true
+    },
+    {
+      "name": "WIZPAY_SWAP_EXECUTOR_MAINNET_ADDRESS",
+      "classification": "ACTIVE_SERVERLESS",
+      "managed_in": "Vercel backend/frontend project environment (names only)",
+      "previous_consumer": "Serverless API",
+      "required_by_serverless": false
+    },
+    {
+      "name": "WIZPAY_SWAP_EXECUTOR_V2_ADDRESS",
+      "classification": "ACTIVE_SERVERLESS",
+      "managed_in": "Vercel backend/frontend project environment (names only)",
+      "previous_consumer": "Serverless API",
+      "required_by_serverless": false
+    },
+    {
+      "name": "WIZPAY_VM_HOST",
+      "classification": "HISTORICAL_VPS",
+      "managed_in": "GitHub Actions secret store; archive securely / revoke after approved retirement",
+      "previous_consumer": "Manual CD Production Backend SSH workflow",
+      "required_by_serverless": false
+    },
+    {
+      "name": "WIZPAY_VM_SSH_KEY",
+      "classification": "HISTORICAL_VPS",
+      "managed_in": "GitHub Actions secret store; archive securely / revoke after approved retirement",
+      "previous_consumer": "Manual CD Production Backend SSH workflow",
+      "required_by_serverless": false
+    },
+    {
+      "name": "WIZPAY_VM_USER",
+      "classification": "HISTORICAL_VPS",
+      "managed_in": "GitHub Actions secret store; archive securely / revoke after approved retirement",
+      "previous_consumer": "Manual CD Production Backend SSH workflow",
+      "required_by_serverless": false
+    },
+    {
+      "name": "WIZPAY_WORKER_NETWORK",
+      "classification": "HISTORICAL_VPS",
+      "managed_in": "Protected VPS arc-mainnet environment / encrypted recovery vault; never Git",
+      "previous_consumer": "Scoped legacy Docker Compose/Nest server",
+      "required_by_serverless": false
+    }
+  ],
+  "non_environment_secret_material": [
+    "TLS private certificate material and SSH known-host identity belong only to secure encrypted operator/provider recovery storage, never application wallet keys.",
+    "Supabase CI Vault credential is Phase 2 validation infrastructure, not app runtime; separate final cleanup after its acceptance, never automatically invoked here."
+  ]
+}

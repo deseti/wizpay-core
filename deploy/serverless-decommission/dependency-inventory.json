@@ -1,0 +1,229 @@
+{
+  "phase": 10,
+  "scope": "Repository inventory; target-design classification does not claim live replacement or shutdown.",
+  "current_host_sharing": "UNKNOWN",
+  "live_decommission": "DEFERRED",
+  "dependencies": [
+    {
+      "id": "vps-api",
+      "classification": "REPLACED",
+      "sources": [
+        "apps/backend/src/main.ts",
+        "apps/backend/src/serverless.ts",
+        "apps/backend/api/index.cjs"
+      ],
+      "finding": "Code supports dedicated Vercel function. Current live routing is unchanged/unverified.",
+      "live_evidence_required": "Pin deployed SHA, validate hosted health/routes/CORS and no VPS proxy."
+    },
+    {
+      "id": "vps-postgresql",
+      "classification": "REPLACED",
+      "sources": [
+        "deploy/arc-mainnet/compose.yml",
+        "apps/backend/src/database/database-connection.config.ts"
+      ],
+      "finding": "Supavisor transaction profile exists; VPS remains intact.",
+      "live_evidence_required": "Prove Supabase receives all writes, source fenced, current financial data verified."
+    },
+    {
+      "id": "redis-transport",
+      "classification": "REMOVED",
+      "sources": [
+        "apps/backend/src/app.module.ts",
+        "apps/backend/src/queue/queue.module.ts"
+      ],
+      "finding": "Removed from serverless graph only; legacy Redis source/dependency/volume retained.",
+      "live_evidence_required": "Packaged artifact and hosted enabled flows require no Redis."
+    },
+    {
+      "id": "bullmq-producers",
+      "classification": "REMOVED",
+      "sources": [
+        "apps/backend/src/app.module.ts",
+        "apps/backend/src/queue/queue.service.ts"
+      ],
+      "finding": "Serverless omits QueueModule; server profile retains it.",
+      "live_evidence_required": "No enabled path enqueues required legacy financial work."
+    },
+    {
+      "id": "legacy-workers",
+      "classification": "HISTORICAL_ONLY",
+      "sources": [
+        "apps/backend/src/queue",
+        "docs/serverless-background-responsibilities.md"
+      ],
+      "finding": "Legacy processors run inside backend process; no separate worker Compose service.",
+      "live_evidence_required": "Do not port Payroll/Swap signing/execution. Verify all active consumers stopped after approval."
+    },
+    {
+      "id": "durable-reconciliation",
+      "classification": "REPLACED",
+      "sources": [
+        "apps/backend/src/reconciliation.ts",
+        "apps/backend/src/reconciliation/postgres-delivery.service.ts"
+      ],
+      "finding": "Bounded DB claims/fencing/idempotent known-hash verification; no deployed schedule in source.",
+      "live_evidence_required": "Authenticated trusted invocation, recent successful/verified-empty batch, no growing retries/stuck leases."
+    },
+    {
+      "id": "activity-recovery",
+      "classification": "REPLACED",
+      "sources": [
+        "apps/backend/src/activity/activity.service.ts",
+        "apps/backend/src/reconciliation/reconciliation.service.ts"
+      ],
+      "finding": "Existing account-scoped durable sync/leases retained.",
+      "live_evidence_required": "Current ownership/cursors/projections and interrupted-client recovery verified hosted."
+    },
+    {
+      "id": "reverse-proxy",
+      "classification": "MUST_VERIFY_LIVE",
+      "sources": ["deploy/arc-mainnet/PRODUCTION_CUTOVER_RUNBOOK.md"],
+      "finding": "Caddy loopback backend proxy documented; no tracked Nginx config found.",
+      "live_evidence_required": "Inspect actual Caddy/Nginx/proxy includes and upstreams; preserve other projects."
+    },
+    {
+      "id": "systemd-host-cron",
+      "classification": "MUST_VERIFY_LIVE",
+      "sources": [
+        "deploy/arc-mainnet/PRODUCTION_CUTOVER_RUNBOOK.md",
+        "docs/analytics-cron.md"
+      ],
+      "finding": "Caddy systemd service documented; no WizPay unit/timer/host crontab tracked.",
+      "live_evidence_required": "Inspect units/timers/crontabs for all deployment users and root; repository absence is not live absence."
+    },
+    {
+      "id": "compose-services",
+      "classification": "MUST_VERIFY_LIVE",
+      "sources": ["deploy/arc-mainnet/compose.yml"],
+      "finding": "Scoped backend/postgres/redis plus on-demand migrate profile.",
+      "live_evidence_required": "Inventory running containers and ownership before any approved service-specific stop."
+    },
+    {
+      "id": "persistent-volumes",
+      "classification": "MUST_VERIFY_LIVE",
+      "sources": ["deploy/arc-mainnet/compose.yml"],
+      "finding": "Named PostgreSQL/Redis volumes and bridge network retained.",
+      "live_evidence_required": "Backup and prove no sharing; deletion is separately approved, never down -v/prune."
+    },
+    {
+      "id": "frontend-target",
+      "classification": "REPLACED",
+      "sources": [
+        "apps/frontend/lib/backend-api.ts",
+        "apps/frontend/lib/security-headers.ts"
+      ],
+      "finding": "Single explicit production NEXT_PUBLIC_API_URL; no automatic fallback.",
+      "live_evidence_required": "Verify actual production bundle/CSP/browser request origins and stale-client fencing."
+    },
+    {
+      "id": "production-dns",
+      "classification": "MUST_VERIFY_LIVE",
+      "sources": ["deploy/README.md", "deploy/serverless-cutover/README.md"],
+      "finding": "Public app domain known; API name/IP chosen by operator, not prescribed.",
+      "live_evidence_required": "Complete active A/AAAA/CNAME chains must avoid every actual VPS IP/alias."
+    },
+    {
+      "id": "tls-certificates",
+      "classification": "MUST_VERIFY_LIVE",
+      "sources": [
+        "deploy/arc-mainnet/PRODUCTION_CUTOVER_RUNBOOK.md",
+        "deploy/vercel-api/README.md"
+      ],
+      "finding": "Caddy TLS assumptions historical; target HTTPS/TLS provider-managed.",
+      "live_evidence_required": "Check renewal/ACME jobs and shared certificates; securely archive/revoke only scoped secrets."
+    },
+    {
+      "id": "ssh-deployment",
+      "classification": "MUST_VERIFY_LIVE",
+      "sources": [".github/workflows/cd-production.yml"],
+      "finding": "Manual workflow can build/migrate/restart VPS using WIZPAY_VM_* secrets.",
+      "live_evidence_required": "Disable dispatch access/retire VPS bindings after live acceptance and approved retirement; preserve source now."
+    },
+    {
+      "id": "provider-webhooks-callbacks",
+      "classification": "MUST_VERIFY_LIVE",
+      "sources": [
+        "apps/backend/src/bridge/bridge.controller.ts",
+        "apps/backend/src/bridge/bridge-lifecycle.service.ts"
+      ],
+      "finding": "Browser-direct CCTP/Iris polling; no configured VPS webhook found in repository.",
+      "live_evidence_required": "Inspect provider dashboards, callback URLs and external integrations; explicitly attest none/target."
+    },
+    {
+      "id": "analytics-scheduler",
+      "classification": "MUST_VERIFY_LIVE",
+      "sources": [
+        "docs/analytics-cron.md",
+        "apps/backend/src/analytics/analytics.controller.ts"
+      ],
+      "finding": "Protected internal analytics update exists; documentation does not install a scheduler.",
+      "live_evidence_required": "Inspect actual scheduler/cron destination; retire or repoint deliberately with auth, never public."
+    },
+    {
+      "id": "reconciliation-scheduler",
+      "classification": "MUST_VERIFY_LIVE",
+      "sources": [
+        "apps/backend/src/reconciliation.ts",
+        "deploy/vercel-api/README.md"
+      ],
+      "finding": "Trusted adapter ready, no public endpoint/activated Cron in repository.",
+      "live_evidence_required": "Verify live scheduler identity/endpoint and current healthy batches before decommission."
+    },
+    {
+      "id": "monitoring-probes",
+      "classification": "MUST_VERIFY_LIVE",
+      "sources": [
+        "deploy/arc-mainnet/compose.yml",
+        "deploy/serverless-cutover/observation.md"
+      ],
+      "finding": "Compose loopback health; external probes untracked.",
+      "live_evidence_required": "Inspect monitoring destinations/alerts and post-shutdown errors; no stale VPS targets."
+    },
+    {
+      "id": "backups",
+      "classification": "BLOCKS_DECOMMISSION",
+      "sources": [
+        "deploy/serverless-data-migration/README.md",
+        "deploy/serverless-decommission/recovery.md"
+      ],
+      "finding": "Historical Testnet backup path is documented; not a final Mainnet backup.",
+      "live_evidence_required": "Verified encrypted final VPS and CURRENT Supabase backups outside Git, checksums/restore/catalog/integrity."
+    },
+    {
+      "id": "secret-recovery",
+      "classification": "BLOCKS_DECOMMISSION",
+      "sources": [
+        "deploy/arc-mainnet/environment.template",
+        ".github/workflows/cd-production.yml",
+        "deploy/serverless-decommission/environment-recovery.json"
+      ],
+      "finding": "Names only; values remain managed securely outside Git.",
+      "live_evidence_required": "Encrypted access-controlled recovery bundle, restoration test and scoped revocation plan; no wallet keys."
+    },
+    {
+      "id": "host-sharing",
+      "classification": "BLOCKS_DECOMMISSION",
+      "sources": ["deploy/arc-mainnet/PRODUCTION_CUTOVER_RUNBOOK.md"],
+      "finding": "Historical Cooket/Zonk mention; current host sharing UNKNOWN.",
+      "live_evidence_required": "UNKNOWN blocks; YES allows only isolated WizPay workload retirement, never cancel subscription."
+    },
+    {
+      "id": "public-integrations",
+      "classification": "MUST_VERIFY_LIVE",
+      "sources": [
+        "packages/arc-network/index.js",
+        "apps/backend/src/bridge/bridge-quote.service.ts"
+      ],
+      "finding": "Public Arc RPC, Iris, Uniswap and Reown resources; no financial signing backend.",
+      "live_evidence_required": "Confirm enabled read/prepare integrations run independently of VPS network/proxy/credentials."
+    },
+    {
+      "id": "frontend-local-docker",
+      "classification": "HISTORICAL_ONLY",
+      "sources": ["apps/frontend/Dockerfile", "docker-compose.yml"],
+      "finding": "Local frontend Docker definition is not a VPS production service.",
+      "live_evidence_required": "Do not mistake local/test Compose containers for production; inspect actual running host workloads."
+    }
+  ]
+}

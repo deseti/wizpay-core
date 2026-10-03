@@ -29,7 +29,8 @@
     "migration:rehearse:isolated": "bash ../../deploy/serverless-data-migration/rehearse-isolated.sh",
     "build:vercel": "npm run prisma:generate && npm run build && node dist/deployment/vercel-build.js",
     "smoke:vercel": "node dist/deployment/vercel-smoke.js",
-    "cutover:prepare": "node dist/phase9/cli.js"
+    "cutover:prepare": "node dist/phase9/cli.js",
+    "decommission:check": "node dist/phase10/cli.js"
   },
   "dependencies": {
     "@nestjs/common": "11.2.4",
