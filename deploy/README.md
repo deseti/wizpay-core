@@ -74,3 +74,9 @@ that replayed the retired migration chain.
 
 See `deploy/arc-mainnet/PRODUCTION_CUTOVER_RUNBOOK.md` for the later manual
 cutover. Repository preparation does not authorize deployment.
+
+## Separate serverless API validation
+
+Phase 6 backend packaging and deployment instructions are in
+[vercel-api/README.md](vercel-api/README.md). This dedicated project does not
+change the frontend deployment, production backend target, DNS or VPS.

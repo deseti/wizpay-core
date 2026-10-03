@@ -1,0 +1,21 @@
+# Names/defaults for the separate serverless validation API only.
+# Supply the designated Supabase credential securely in Vercel, never here.
+NODE_ENV=production
+WIZPAY_RUNTIME_MODE=serverless
+WIZPAY_ARC_NETWORK=arc-mainnet
+WIZPAY_API_NETWORK=arc-mainnet
+CORS_ORIGINS=https://app.wizpay.xyz
+WIZPAY_DATABASE_PROFILE=supavisor-transaction
+WIZPAY_DATABASE_POOL_MAX=1
+ARC_MAINNET_DATABASE_URL=
+CCTP_IRIS_API_BASE_URL=https://iris-api.circle.com
+# Preserve approved true/false settings, or omit flags to keep them disabled:
+# WIZPAY_ARC_MAINNET_CAPABILITY_SEND
+# WIZPAY_ARC_MAINNET_CAPABILITY_SAME_TOKEN_PAYROLL
+# WIZPAY_ARC_MAINNET_CAPABILITY_INVOICE
+# WIZPAY_ARC_MAINNET_CAPABILITY_PAYMENT_LINK
+# WIZPAY_ARC_MAINNET_CAPABILITY_BRIDGE
+# WIZPAY_ARC_MAINNET_CAPABILITY_SWAP
+# WIZPAY_ARC_MAINNET_CAPABILITY_CROSS_TOKEN_PAYROLL
+# BRIDGE_DESTINATION_RPC_<chainId> for each enabled destination reader.
+# No DATABASE_URL, DIRECT_URL, Redis, BullMQ, Circle custody or wallet keys.
