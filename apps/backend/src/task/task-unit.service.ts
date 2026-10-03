@@ -1,5 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../database/prisma.service';
+import type { Prisma } from '@prisma/client';
 import { normalizeChainTxId } from '../common/multichain';
 import {
   ReportTaskUnitInput,
@@ -35,106 +36,121 @@ export class TaskUnitService {
     unitId: string,
     result: ReportTaskUnitInput,
   ): Promise<ReportTaskUnitResult> {
-    return this.prisma.$transaction(async (tx) => {
-      const normalizedTxHash =
-        result.txHash === undefined
-          ? undefined
-          : normalizeChainTxId(result.txHash);
+    return this.prisma.$transaction((tx) =>
+      this.reportUnitInTransaction(tx, taskId, unitId, result),
+    );
+  }
 
-      const unit = await tx.taskUnit.findFirst({
-        where: { id: unitId, taskId },
-      });
+  async reportUnitInTransaction(
+    tx: Prisma.TransactionClient,
+    taskId: string,
+    unitId: string,
+    result: ReportTaskUnitInput,
+  ): Promise<ReportTaskUnitResult> {
+    // Serialize request reports and background recovery on the same parent row.
+    await tx.task.updateMany({
+      where: { id: taskId },
+      data: { updatedAt: new Date() },
+    });
+    const normalizedTxHash =
+      result.txHash === undefined
+        ? undefined
+        : normalizeChainTxId(result.txHash);
 
-      if (!unit) {
-        throw new NotFoundException(
-          `Task unit ${unitId} for task ${taskId} not found`,
-        );
-      }
+    const unit = await tx.taskUnit.findFirst({
+      where: { id: unitId, taskId },
+    });
 
-      // Idempotent — if already reported, return current state
-      if (unit.status !== 'PENDING') {
-        const task = await this.taskMapper.getTaskDetailsInTransaction(
-          tx,
-          taskId,
-        );
-        return {
-          task,
-          unit: this.taskMapper.mapUnit(unit),
-          nextUnit: this.findNextPendingUnit(task),
-        };
-      }
+    if (!unit) {
+      throw new NotFoundException(
+        `Task unit ${unitId} for task ${taskId} not found`,
+      );
+    }
 
-      const updatedUnit = await tx.taskUnit.update({
-        where: { id: unit.id },
-        data: {
-          status: result.status,
-          ...(normalizedTxHash !== undefined
-            ? { txHash: normalizedTxHash }
-            : {}),
-          ...(result.error !== undefined ? { error: result.error } : {}),
-        },
-      });
-
-      const task = await tx.task.findUniqueOrThrow({
-        where: { id: taskId },
-      });
-
-      await tx.task.update({
-        where: { id: taskId },
-        data: {
-          completedUnits:
-            result.status === 'SUCCESS' ? { increment: 1 } : undefined,
-          failedUnits:
-            result.status === 'FAILED' ? { increment: 1 } : undefined,
-        },
-      });
-
-      const nextStatus = this.recomputeTaskStatus({
-        ...task,
-        completedUnits:
-          result.status === 'SUCCESS'
-            ? task.completedUnits + 1
-            : task.completedUnits,
-        failedUnits:
-          result.status === 'FAILED' ? task.failedUnits + 1 : task.failedUnits,
-      });
-
-      await tx.task.update({
-        where: { id: taskId },
-        data: { status: nextStatus },
-      });
-
-      await tx.taskLog.create({
-        data: {
-          taskId,
-          level: result.status === 'FAILED' ? 'ERROR' : 'INFO',
-          step: 'unit.reported',
-          status: nextStatus,
-          message:
-            result.status === 'SUCCESS'
-              ? `Unit ${updatedUnit.index + 1} reported success`
-              : `Unit ${updatedUnit.index + 1} reported failure`,
-          context: {
-            error: result.error ?? null,
-            txHash: normalizedTxHash ?? null,
-            unitId: updatedUnit.id,
-            unitIndex: updatedUnit.index,
-            unitStatus: result.status,
-          },
-        },
-      });
-
-      const fullTask = await this.taskMapper.getTaskDetailsInTransaction(
+    // Idempotent — if already reported, return current state
+    const parent = await tx.task.findUniqueOrThrow({ where: { id: taskId } });
+    if (
+      unit.status !== 'PENDING' ||
+      ['executed', 'completed', 'failed', 'partial'].includes(parent.status)
+    ) {
+      const task = await this.taskMapper.getTaskDetailsInTransaction(
         tx,
         taskId,
       );
-
       return {
-        task: fullTask,
-        unit: this.taskMapper.mapUnit(updatedUnit),
-        nextUnit: this.findNextPendingUnit(fullTask),
+        task,
+        unit: this.taskMapper.mapUnit(unit),
+        nextUnit: this.findNextPendingUnit(task),
       };
+    }
+
+    const updatedUnit = await tx.taskUnit.update({
+      where: { id: unit.id },
+      data: {
+        status: result.status,
+        ...(normalizedTxHash !== undefined ? { txHash: normalizedTxHash } : {}),
+        ...(result.error !== undefined ? { error: result.error } : {}),
+      },
     });
+
+    const task = await tx.task.findUniqueOrThrow({
+      where: { id: taskId },
+    });
+
+    await tx.task.update({
+      where: { id: taskId },
+      data: {
+        completedUnits:
+          result.status === 'SUCCESS' ? { increment: 1 } : undefined,
+        failedUnits: result.status === 'FAILED' ? { increment: 1 } : undefined,
+      },
+    });
+
+    const nextStatus = this.recomputeTaskStatus({
+      ...task,
+      completedUnits:
+        result.status === 'SUCCESS'
+          ? task.completedUnits + 1
+          : task.completedUnits,
+      failedUnits:
+        result.status === 'FAILED' ? task.failedUnits + 1 : task.failedUnits,
+    });
+
+    await tx.task.update({
+      where: { id: taskId },
+      data: { status: nextStatus },
+    });
+
+    await tx.taskLog.create({
+      data: {
+        taskId,
+        level: result.status === 'FAILED' ? 'ERROR' : 'INFO',
+        step: 'unit.reported',
+        status: nextStatus,
+        message:
+          result.status === 'SUCCESS'
+            ? `Unit ${updatedUnit.index + 1} reported success`
+            : `Unit ${updatedUnit.index + 1} reported failure`,
+        context: {
+          error: result.error ?? null,
+          txHash: normalizedTxHash ?? null,
+          unitId: updatedUnit.id,
+          unitIndex: updatedUnit.index,
+          unitStatus: result.status,
+        },
+      },
+    });
+
+    const fullTask = await this.taskMapper.getTaskDetailsInTransaction(
+      tx,
+      taskId,
+    );
+
+    return {
+      task: fullTask,
+      unit: this.taskMapper.mapUnit(updatedUnit),
+      nextUnit: this.findNextPendingUnit(fullTask),
+    };
   }
 
   /**

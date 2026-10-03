@@ -32,7 +32,7 @@ describePostgres('shared PostgreSQL persistence contracts', () => {
     await harness?.close();
   });
 
-  it('reproduces baseline tables, defaults, enums, indexes and foreign keys', async () => {
+  it('reproduces migrated tables, defaults, enums, indexes and foreign keys', async () => {
     // Prisma queries use the adapter schema; the read-only catalog checker can
     // run through that same driver without a second query-by-query connection.
     const facade = {
@@ -44,8 +44,8 @@ describePostgres('shared PostgreSQL persistence contracts', () => {
     expect(
       await checkPostgresCatalog(facade as unknown as Client, harness.schema),
     ).toEqual({
-      tables: 14,
-      indexes: 49,
+      tables: 15,
+      indexes: 51,
       foreignKeys: 4,
       enums: 6,
     });

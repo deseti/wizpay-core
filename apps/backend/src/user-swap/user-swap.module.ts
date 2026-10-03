@@ -7,9 +7,10 @@ import { MainnetUniswapV4Service } from './mainnet-uniswap-v4.service';
 import { MainnetUniswapV4Controller } from './mainnet-uniswap-v4.controller';
 import { DatabaseModule } from '../database/database.module';
 import { InvoiceModule } from '../invoice/invoice.module';
+import { PostgresDeliveryModule } from '../reconciliation/postgres-delivery.module';
 
 @Module({
-  imports: [DatabaseModule, InvoiceModule],
+  imports: [DatabaseModule, InvoiceModule, PostgresDeliveryModule],
   controllers: [UserSwapController, MainnetUniswapV4Controller],
   providers: [
     UserSwapService,

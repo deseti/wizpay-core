@@ -15,6 +15,6 @@ import { WalletModule } from '../modules/wallet/wallet.module';
     InvoicePaymentVerifierService,
     InvoiceService,
   ],
-  exports: [InvoiceAuthService],
+  exports: [InvoiceAuthService, InvoicePaymentVerifierService],
 })
 export class InvoiceModule {}

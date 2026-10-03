@@ -704,6 +704,85 @@ export class BridgeLifecycleService {
     return this.view(updated);
   }
 
+  /** Read-only observation for a trusted bounded reconciler; never submits a mint. */
+  async observeRecovery(id: string) {
+    const row = await this.required(id);
+    const view = this.view(row);
+    this.route(view.payload.sourceCode, view.payload.destinationCode);
+    this.ownership(row, view.payload.walletAddress);
+    if (
+      [
+        'completed',
+        'source_rejected',
+        'source_failed_before_burn',
+        'configuration_error',
+      ].includes(row.status)
+    )
+      return null;
+    const result = view.result ?? {};
+    if (!result.sourceTransactionHash) return null;
+    if (
+      result.destinationTransactionHash &&
+      result.attestation &&
+      result.attestedMessage
+    ) {
+      if (!(await this.proveDestinationReceipt(view))) {
+        throw new ServiceUnavailableException({
+          code: 'BRIDGE_DESTINATION_READER_REQUIRED',
+          retryable: true,
+        });
+      }
+      const now = new Date().toISOString();
+      return {
+        row,
+        status: 'completed',
+        result: {
+          ...result,
+          completedAt: now,
+          destinationReceiptVerified: true,
+          destinationVerifiedAt: now,
+        },
+        messageHash: row.messageHash,
+        nonce: row.nonce,
+      };
+    }
+    if (result.attestation && result.attestedMessage) return null;
+    const fetched = await this.fetchAttestation(
+      view.payload.sourceDomain,
+      result.sourceTransactionHash,
+    );
+    if (!fetched || 'pending' in fetched) {
+      throw new ServiceUnavailableException({
+        code: 'BRIDGE_ATTESTATION_PENDING',
+        retryable: true,
+      });
+    }
+    const decoded = decodeCctpV2Message(fetched.message as Hex);
+    if (!matchesBridgeAttestation(view.payload, decoded)) {
+      throw new ConflictException({
+        code: 'BRIDGE_ATTESTATION_MISMATCH',
+        retryable: false,
+      });
+    }
+    return {
+      row,
+      status: 'attestation_ready',
+      messageHash: decoded.messageHash,
+      nonce: decoded.nonce,
+      result: {
+        ...result,
+        attestedMessage: fetched.message as Hex,
+        attestation: fetched.attestation as Hex,
+        messageHash: decoded.messageHash,
+        nonce: decoded.nonce,
+        feeExecuted: decoded.feeExecuted.toString(),
+        mintAmount: decoded.amount.toString(),
+        attestationStatus: 'complete',
+        attestationDelayReason: null,
+      },
+    };
+  }
+
   /**
    * Arc Mainnet destinations use the configured Arc RPC. Other destination
    * chains are checked only when BRIDGE_DESTINATION_RPC_<chainId> is set.
@@ -895,7 +974,8 @@ export class BridgeLifecycleService {
     const failClosed = (): never => {
       throw new ServiceUnavailableException({
         code: 'BRIDGE_FAST_UNAVAILABLE',
-        message: 'Fast CCTP transfer is temporarily unavailable for this route.',
+        message:
+          'Fast CCTP transfer is temporarily unavailable for this route.',
       });
     };
     let feeBps: number;
@@ -912,7 +992,10 @@ export class BridgeLifecycleService {
           ? ((body as Record<string, unknown>)['fees'] as unknown[])
           : null;
       const entry = list
-        ?.filter((item): item is Record<string, unknown> => !!item && typeof item === 'object')
+        ?.filter(
+          (item): item is Record<string, unknown> =>
+            !!item && typeof item === 'object',
+        )
         .find(
           (item) =>
             Number(item['finalityThreshold'] ?? item['finality_threshold']) ===

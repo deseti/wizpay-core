@@ -24,6 +24,7 @@ import { AppService } from './app.service';
 import { CapabilityModule } from './capabilities/capability.module';
 import { HttpExceptionCompatibilityFilter } from './common/http-exception.compatibility-filter';
 import { ExecutionIntentModule } from './execution-intent/execution-intent.module';
+import { ReconciliationModule } from './reconciliation/reconciliation.module';
 
 @Module({
   controllers: [AppController],
@@ -48,6 +49,7 @@ import { ExecutionIntentModule } from './execution-intent/execution-intent.modul
     BridgeModule,
     AnalyticsModule,
     ActivityModule,
+    ReconciliationModule,
   ],
 })
 export class AppModule {

@@ -9,19 +9,36 @@ const baseline = readFileSync(
 );
 
 describe('fresh Arc Mainnet Prisma baseline', () => {
-  it('is the only deployable migration and contains SQL only', () => {
+  it('keeps the baseline first and adds only the Phase 5 migration as SQL', () => {
     const migrationDirectories = readdirSync(migrationsRoot, {
       withFileTypes: true,
     })
       .filter((entry) => entry.isDirectory())
       .map((entry) => entry.name);
 
-    expect(migrationDirectories).toEqual([baselineName]);
+    expect(migrationDirectories.sort()).toEqual([
+      baselineName,
+      '20261003050000_serverless_reconciliation',
+    ]);
+    const recovery = readFileSync(
+      join(
+        migrationsRoot,
+        '20261003050000_serverless_reconciliation',
+        'migration.sql',
+      ),
+      'utf8',
+    );
+    expect(recovery).not.toMatch(
+      /Loaded Prisma|injected env|◇|DROP TABLE|TRUNCATE|CREATE EXTENSION|CREATE FUNCTION|cron\.schedule/i,
+    );
+    expect(
+      [...recovery.matchAll(/CREATE TABLE "([^"]+)"/g)].map(([, name]) => name),
+    ).toEqual(['ReconciliationWork']);
     expect(baseline.startsWith('-- CreateSchema\n')).toBe(true);
     expect(baseline).not.toMatch(/Loaded Prisma|injected env|◇/i);
   });
 
-  it('creates exactly the current application tables', () => {
+  it('preserves the original baseline application tables', () => {
     const tables = [...baseline.matchAll(/CREATE TABLE "([^"]+)"/g)].map(
       ([, name]) => name,
     );

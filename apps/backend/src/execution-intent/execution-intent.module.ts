@@ -9,6 +9,6 @@ import { DirectTransferReceiptVerifierService } from './direct-transfer-receipt-
   imports: [DatabaseModule],
   controllers: [ExecutionIntentController],
   providers: [ExecutionIntentService, DirectTransferReceiptVerifierService],
-  exports: [ExecutionIntentService],
+  exports: [ExecutionIntentService, DirectTransferReceiptVerifierService],
 })
 export class ExecutionIntentModule {}

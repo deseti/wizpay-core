@@ -150,9 +150,10 @@ Focused tests construct the real serverless module with BullMQ/ioredis imports
 forbidden, all TCP unavailable during initialization, and Prisma persistence
 stubbed. They exercise health, wallet challenge persistence, request validation,
 authorization and warm Prisma reuse. Live database/worker readiness is separate.
-The legacy source and VPS deployment remain available. Remaining recovery work
-is recorded in the [Phase 5 inventory](serverless-background-responsibilities.md),
-without implementing Queues, Cron or pg_net.
+The legacy source and VPS deployment remain available. Phase 5 recovery
+is implemented by bounded PostgreSQL delivery and existing verifiers; see the
+[background responsibilities](serverless-background-responsibilities.md). No
+Cron/pg_net schedule or deployment is configured.
 
 ## Configuration boundaries
 
@@ -163,7 +164,7 @@ without implementing Queues, Cron or pg_net.
 | Redis/BullMQ | Server mode requires `ARC_MAINNET_REDIS_URL` and `ARC_MAINNET_QUEUE_PREFIX` before deriving internal Redis options and `BULLMQ_PREFIX`. Serverless mode neither requires nor consumes these optional scoped values and derives no Redis settings. Unscoped Redis/queue configuration remains rejected. Server TLS/auth options and job/retry policies are unchanged. |
 | VPS deployment | The production template/Compose and manual workflow supply PostgreSQL/Redis targets, volumes, ports, health checks, CORS and process environment. [AppConfigModule](../apps/backend/src/config/app-config.module.ts) reads the root local `.env` or injected container environment, and ignores developer env files in tests. [host normalization](../apps/backend/src/config/runtime-env.ts) distinguishes Compose hostnames from loopback host ports. Credentials stay outside tracked source. |
 | External services and frontend | Existing Circle Iris and destination RPC configuration is route-specific verification I/O, not custody. `NEXT_PUBLIC_API_URL` selects the frontend backend origin; existing Mainnet/Reown/public-app settings remain unchanged. [frontend root-env loader](../apps/frontend/scripts/with-root-env.sh) and production build/runtime configuration are retained. |
-| Serverless HTTP (Phase 3) | `WIZPAY_RUNTIME_MODE=server\|serverless` selects process lifecycle explicitly and must match the entrypoint; absence preserves server startup through `main.ts` and selects serverless through the handler. Database profiles, network/capability registries and production bindings remain unchanged. Queue/scheduler replacements remain future work. |
+| Serverless HTTP (Phase 3) | `WIZPAY_RUNTIME_MODE=server\|serverless` selects process lifecycle explicitly and must match the entrypoint; absence preserves server startup through `main.ts` and selects serverless through the handler. Database profiles, network/capability registries and production bindings remain unchanged. Bounded PostgreSQL reconciliation shares the serverless application; external scheduler deployment remains future work. |
 
 ## Frontend cooperation with durable backend state
 

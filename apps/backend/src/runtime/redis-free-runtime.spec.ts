@@ -13,6 +13,8 @@ import { ExecutionIntentService } from '../execution-intent/execution-intent.ser
 import { MainnetUniswapV4Service } from '../user-swap/mainnet-uniswap-v4.service';
 import { BridgeLifecycleService } from '../bridge/bridge-lifecycle.service';
 import { ActivityService } from '../activity/activity.service';
+import { ReconciliationService } from '../reconciliation/reconciliation.service';
+import { PostgresDeliveryService } from '../reconciliation/postgres-delivery.service';
 import { createServerlessHandler } from '../serverless';
 
 // Any import edge reaching legacy transports fails immediately, before a network retry.
@@ -113,6 +115,8 @@ describe('Redis-free serverless HTTP composition', () => {
       MainnetUniswapV4Service,
       BridgeLifecycleService,
       ActivityService,
+      ReconciliationService,
+      PostgresDeliveryService,
     ]) {
       expect(app.get(service)).toBeDefined();
     }

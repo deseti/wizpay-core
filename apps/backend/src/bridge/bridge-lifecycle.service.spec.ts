@@ -26,7 +26,6 @@ import { PrismaService } from '../database/prisma.service';
 const WALLET = '0x1111111111111111111111111111111111111111' as const;
 const RECIPIENT = '0x2222222222222222222222222222222222222222' as const;
 const MAINNET_MESSENGER = '0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d' as const;
-const SOURCE_USDC = '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48' as const;
 const ARC_USDC = '0x3600000000000000000000000000000000000000' as const;
 const OPERATION_ID = '11111111-1111-4111-8111-111111111111';
 const TX_HASH = `0x${'11'.repeat(32)}`;
@@ -439,6 +438,54 @@ describe('BridgeLifecycleService official CCTP intents', () => {
     });
     expect(completed.status).toBe('completed');
     expect(completed.result?.completedAt).toBeDefined();
+  });
+
+  it('observes attestation read-only for reconciliation and requires a destination receipt reader', async () => {
+    const { prisma, rows } = prismaMock();
+    const lifecycle = service(prisma);
+    const created = await lifecycle.createIntent(request());
+    await lifecycle.reportSource(created.id, {
+      walletAddress: WALLET,
+      transactionHash: TX_HASH,
+    });
+    const message = matchingAttestationMessage({
+      sourceDomain: 26,
+      destinationDomain: 6,
+      amount: 1_000_000n,
+      maxFee: 1000n,
+      sender: MAINNET_MESSENGER,
+      recipient: MAINNET_MESSENGER,
+      burnToken: ARC_USDC,
+      mintRecipient: RECIPIENT,
+      messageSender: WALLET,
+    });
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () =>
+        Promise.resolve({
+          messages: [
+            { message, attestation: '0xdeadbeef', status: 'complete' },
+          ],
+        }),
+    });
+    const previousWrites = prisma.bridgeTransaction.update.mock.calls.length;
+    const observed = await lifecycle.observeRecovery(created.id);
+    expect(observed?.status).toBe('attestation_ready');
+    expect(prisma.bridgeTransaction.update).toHaveBeenCalledTimes(
+      previousWrites,
+    );
+    const row = rows.get(created.id)!;
+    row.status = 'destination_submitted';
+    row.result = { ...observed?.result, destinationTransactionHash: TX_HASH };
+    await expect(lifecycle.observeRecovery(created.id)).rejects.toMatchObject({
+      response: { code: 'BRIDGE_DESTINATION_READER_REQUIRED', retryable: true },
+    });
+    expect(prisma.bridgeTransaction.update).toHaveBeenCalledTimes(
+      previousWrites,
+    );
+    row.status = 'completed';
+    await expect(lifecycle.observeRecovery(created.id)).resolves.toBeNull();
   });
 
   it('stays pending when the Circle attestation is not ready', async () => {

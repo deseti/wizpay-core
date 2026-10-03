@@ -18,6 +18,7 @@ import { ARC_MAINNET_UNISWAP_V4_ERROR_CODES } from './mainnet-uniswap-v4-readine
 import { MainnetUniswapV4Service } from './mainnet-uniswap-v4.service';
 import { InvoiceAuthService } from '../invoice/invoice-auth.service';
 import { PrismaService } from '../database/prisma.service';
+import { PostgresDeliveryService } from '../reconciliation/postgres-delivery.service';
 
 @Controller('user-swap/mainnet')
 @UsePipes(
@@ -37,6 +38,7 @@ export class MainnetUniswapV4Controller {
     private readonly mainnetUniswapV4: MainnetUniswapV4Service,
     private readonly auth: InvoiceAuthService,
     private readonly prisma: PrismaService,
+    private readonly delivery: PostgresDeliveryService,
   ) {}
 
   @Post('quote')
@@ -86,7 +88,10 @@ export class MainnetUniswapV4Controller {
   @Post('verify-receipt')
   async verifyReceipt(@Body() body: MainnetUniswapV4VerifyReceiptDto) {
     return {
-      data: await this.mainnetUniswapV4.verifyReceipt(body.receipt, body.request),
+      data: await this.mainnetUniswapV4.verifyReceipt(
+        body.receipt,
+        body.request,
+      ),
     };
   }
 
@@ -96,6 +101,20 @@ export class MainnetUniswapV4Controller {
     @Body() body: { transactionHash?: unknown },
   ) {
     const principal = await this.auth.authenticate(authorization);
+    const hash =
+      typeof body.transactionHash === 'string' ? body.transactionHash : '';
+    if (!/^0x[0-9a-fA-F]{64}$/.test(hash)) {
+      throw new BadRequestException({
+        code: ARC_MAINNET_UNISWAP_V4_ERROR_CODES.INVALID_REQUEST,
+        message: 'Arc Mainnet Uniswap V4 request validation failed.',
+      });
+    }
+    // Persist only a reported hash bound to the authenticated external wallet.
+    await this.delivery.enqueue(
+      'SWAP',
+      principal.merchantWalletAddress.toLowerCase(),
+      hash.toLowerCase(),
+    );
     const verified = await this.mainnetUniswapV4.confirmTransaction(
       typeof body.transactionHash === 'string' ? body.transactionHash : '',
       principal.merchantWalletAddress,
@@ -105,7 +124,10 @@ export class MainnetUniswapV4Controller {
       create: { ...verified, completedAt: new Date() },
       update: {},
     });
-    if (stored.walletAddress.toLowerCase() !== verified.walletAddress.toLowerCase()) {
+    if (
+      stored.walletAddress.toLowerCase() !==
+      verified.walletAddress.toLowerCase()
+    ) {
       throw new BadRequestException({
         code: 'SWAP_RECEIPT_OWNER_CONFLICT',
         message: 'The verified swap belongs to another wallet.',

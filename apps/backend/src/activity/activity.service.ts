@@ -1,4 +1,10 @@
-import { Injectable, Logger, NotFoundException, UnauthorizedException } from '@nestjs/common';
+import type { ExecutionIntent } from '@prisma/client';
+import {
+  Injectable,
+  Logger,
+  NotFoundException,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { Prisma, type Activity } from '@prisma/client';
 import { getAddress, isAddress, isAddressEqual } from 'viem';
@@ -20,26 +26,27 @@ import {
 } from './activity.types';
 
 type JsonObject = Record<string, unknown>;
+const PROJECTION_SOURCES = ['invoice', 'send', 'swap', 'bridge'] as const;
+type ProjectionSource = (typeof PROJECTION_SOURCES)[number];
+type ProjectionPage = {
+  source: ProjectionSource;
+  after: string | null;
+  limit: number;
+  ids: string[];
+};
 export type ActivityOwnerPrincipal = InvoiceMerchantPrincipal;
 
 @Injectable()
 export class ActivityService {
   private readonly logger = new Logger(ActivityService.name);
-  private readonly syncFlights = new Map<
-    string,
-    Promise<ActivitySyncResult>
-  >();
+  private readonly syncFlights = new Map<string, Promise<ActivitySyncResult>>();
   private static readonly WALLET_SOURCE = 'external_wallet' as const;
   private static readonly SYNC_THROTTLE_MS = 60_000;
   private static readonly SYNC_LEASE_MS = 120_000;
 
-  constructor(
-    private readonly prisma: PrismaService,
-  ) {}
+  constructor(private readonly prisma: PrismaService) {}
 
-  async sync(
-    principal: ActivityOwnerPrincipal,
-  ): Promise<ActivitySyncResult> {
+  async sync(principal: ActivityOwnerPrincipal): Promise<ActivitySyncResult> {
     const key = `${principal.merchantUserId}:${this.canonicalWallet(principal.merchantWalletAddress)}:${ActivityService.WALLET_SOURCE}`;
     const current = this.syncFlights.get(key);
     if (current) return current;
@@ -160,8 +167,7 @@ export class ActivityService {
       feeTokenSymbol: projection.feeTokenSymbol,
       counterparty: this.normalizedOptionalAddress(projection.counterparty),
       metadata: this.safeMetadata(projection.metadata) as
-        | Prisma.InputJsonValue
-        | undefined,
+        Prisma.InputJsonValue | undefined,
       occurredAt: projection.occurredAt,
     };
     if (
@@ -288,10 +294,7 @@ export class ActivityService {
         },
       });
       this.logger.warn('External wallet activity synchronization deferred.');
-      return this.emptySyncSummary(
-        'failed',
-        ActivityService.SYNC_THROTTLE_MS,
-      );
+      return this.emptySyncSummary('failed', ActivityService.SYNC_THROTTLE_MS);
     }
   }
 
@@ -318,30 +321,197 @@ export class ActivityService {
    * wallet). There is no provider enrichment: every projection below is
    * anchored to a verified on-chain receipt on chain 5042.
    */
-  async projectPersisted(principal: ActivityOwnerPrincipal): Promise<number> {
+  /** Only existing authenticated sync state and its registered wallet may be scheduled. */
+  async reconcileExistingState(
+    id: string,
+    limit = 20,
+    expectedEvidenceKey?: string,
+  ) {
+    if (!Number.isInteger(limit) || limit < 1 || limit > 25)
+      throw new Error('Invalid activity recovery page size.');
+    const state = await this.prisma.activitySyncState.findUnique({
+      where: { id },
+    });
+    if (!state || state.source !== 'external_wallet')
+      throw new UnauthorizedException('No eligible activity sync state.');
+    const owner = await this.prisma.userWallet.findFirst({
+      where: {
+        userId: state.ownerUserId,
+        blockchain: 'ARC-MAINNET',
+        chain: 'EVM',
+        address: { equals: state.walletAddress, mode: 'insensitive' },
+      },
+    });
+    if (!owner)
+      throw new UnauthorizedException('Activity recovery ownership conflict.');
+    const evidenceKey = `${state.lastCompletedAt?.getTime() ?? 'initial'}:${state.checkpointTransactionId ?? ''}`;
+    if (
+      expectedEvidenceKey !== undefined &&
+      expectedEvidenceKey !== evidenceKey
+    )
+      return true;
+    const principal: ActivityOwnerPrincipal = {
+      merchantUserId: state.ownerUserId,
+      merchantWalletAddress: getAddress(state.walletAddress),
+      merchantDisplayLabel: null,
+    };
+    const now = new Date();
+    const leaseId = randomUUID();
+    const claimed = await this.prisma.activitySyncState.updateMany({
+      where: {
+        id,
+        ownerUserId: state.ownerUserId,
+        walletAddress: state.walletAddress,
+        OR: [{ leaseExpiresAt: null }, { leaseExpiresAt: { lte: now } }],
+        AND: [
+          { OR: [{ nextAllowedAt: null }, { nextAllowedAt: { lte: now } }] },
+        ],
+      },
+      data: {
+        leaseId,
+        leaseExpiresAt: new Date(now.getTime() + 120_000),
+        lastStartedAt: now,
+      },
+    });
+    if (claimed.count !== 1) return false;
+    let sourceIndex = 0;
+    let after: string | null = null;
+    if (state.checkpointTransactionId?.startsWith('recovery-v1:')) {
+      const [index, cursor] = state.checkpointTransactionId
+        .slice('recovery-v1:'.length)
+        .split(':');
+      sourceIndex = Number(index);
+      after = cursor || null;
+      if (
+        !Number.isInteger(sourceIndex) ||
+        sourceIndex < 0 ||
+        sourceIndex >= PROJECTION_SOURCES.length ||
+        (after && !/^[0-9a-f-]{36}$/i.test(after))
+      )
+        throw new Error('Invalid activity recovery cursor.');
+    } else if (state.checkpointTransactionId) {
+      // Do not overwrite a cursor belonging to another sync adapter.
+      throw new Error('Activity cursor belongs to a different adapter.');
+    }
+    const page: ProjectionPage = {
+      source: PROJECTION_SOURCES[sourceIndex],
+      after,
+      limit,
+      ids: [],
+    };
+    await this.projectPersisted(principal, page);
+    let cycleComplete = false;
+    if (page.ids.length < limit) {
+      sourceIndex++;
+      after = null;
+    } else {
+      after = page.ids.at(-1) ?? null;
+    }
+    if (sourceIndex === PROJECTION_SOURCES.length) {
+      sourceIndex = 0;
+      cycleComplete = true;
+    }
+    const completedAt = new Date();
+    const released = await this.prisma.activitySyncState.updateMany({
+      where: { id, leaseId, leaseExpiresAt: { gt: completedAt } },
+      data: {
+        leaseId: null,
+        leaseExpiresAt: null,
+        checkpointTransactionId: `recovery-v1:${sourceIndex}:${after ?? ''}`,
+        ...(cycleComplete ? { lastCompletedAt: completedAt } : {}),
+        nextAllowedAt: new Date(
+          completedAt.getTime() + (cycleComplete ? 60_000 : 1_000),
+        ),
+      },
+    });
+    if (released.count !== 1) throw new Error('Activity recovery lease lost.');
+    return true;
+  }
+
+  async projectPersisted(
+    principal: ActivityOwnerPrincipal,
+    page?: ProjectionPage,
+  ): Promise<number> {
     const wallet = getAddress(principal.merchantWalletAddress);
     const [payments, intents, bridges, swaps] = await Promise.all([
-      this.prisma.invoicePayment.findMany({
-        where: {
-          status: 'VERIFIED',
-          invoice: { merchantUserId: principal.merchantUserId },
-        },
-        include: { invoice: true },
-      }),
-      this.prisma.executionIntent.findMany({
-        where: {
-          status: 'COMPLETED',
-          network: 'arc-mainnet',
-          transactionHash: { not: null },
-          operation: { in: ['SEND', 'PAYROLL'] },
-        },
-      }),
-      this.prisma.bridgeTransaction.findMany({ where: { status: 'completed' } }),
-      this.prisma.verifiedSwapTransaction.findMany({
-        where: { chainId: ARC_MAINNET_CHAIN_ID },
-      }),
+      page && page.source !== 'invoice'
+        ? Promise.resolve([])
+        : this.prisma.invoicePayment.findMany({
+            where: {
+              status: 'VERIFIED',
+              invoice: { merchantUserId: principal.merchantUserId },
+              ...(page?.after ? { id: { gt: page.after } } : {}),
+            },
+            include: { invoice: true },
+            ...(page
+              ? { take: page.limit, orderBy: { id: 'asc' as const } }
+              : {}),
+          }),
+      page && page.source !== 'send'
+        ? Promise.resolve([] as ExecutionIntent[])
+        : this.prisma.executionIntent.findMany({
+            where: {
+              status: 'COMPLETED',
+              network: 'arc-mainnet',
+              transactionHash: { not: null },
+              operation: { in: page ? ['SEND'] : ['SEND', 'PAYROLL'] },
+              ...(page
+                ? {
+                    sourceWallet: { equals: wallet, mode: 'insensitive' },
+                    ...(page.after ? { id: { gt: page.after } } : {}),
+                  }
+                : {}),
+            },
+            ...(page
+              ? { take: page.limit, orderBy: { id: 'asc' as const } }
+              : {}),
+          }),
+      page && page.source !== 'bridge'
+        ? Promise.resolve([])
+        : this.prisma.bridgeTransaction.findMany({
+            where: {
+              status: 'completed',
+              ...(page
+                ? {
+                    OR: [
+                      { payload: { path: ['walletAddress'], equals: wallet } },
+                      {
+                        payload: {
+                          path: ['walletAddress'],
+                          equals: wallet.toLowerCase(),
+                        },
+                      },
+                    ],
+                    ...(page.after ? { id: { gt: page.after } } : {}),
+                  }
+                : {}),
+            },
+            ...(page
+              ? { take: page.limit, orderBy: { id: 'asc' as const } }
+              : {}),
+          }),
+      page && page.source !== 'swap'
+        ? Promise.resolve([])
+        : this.prisma.verifiedSwapTransaction.findMany({
+            where: {
+              chainId: ARC_MAINNET_CHAIN_ID,
+              ...(page
+                ? {
+                    walletAddress: { equals: wallet, mode: 'insensitive' },
+                    ...(page.after ? { id: { gt: page.after } } : {}),
+                  }
+                : {}),
+            },
+            ...(page
+              ? { take: page.limit, orderBy: { id: 'asc' as const } }
+              : {}),
+          }),
     ]);
 
+    if (page)
+      page.ids = [...payments, ...intents, ...bridges, ...swaps].map(
+        (row) => row.id,
+      );
     let accepted = 0;
     for (const payment of payments) {
       const invoice = payment.invoice;
@@ -412,14 +582,18 @@ export class ActivityService {
     );
     const taskIds = [
       ...new Set(
-        payrollIntents.flatMap((intent) => (intent.taskId ? [intent.taskId] : [])),
+        payrollIntents.flatMap((intent) =>
+          intent.taskId ? [intent.taskId] : [],
+        ),
       ),
     ];
     const tasks = taskIds.length
       ? await this.prisma.task.findMany({ where: { id: { in: taskIds } } })
       : [];
     const tasksById = new Map(tasks.map((task) => [task.id, task]));
-    const refs = new Set(payrollIntents.map((intent) => intent.externalReference));
+    const refs = new Set(
+      payrollIntents.map((intent) => intent.externalReference),
+    );
     const payrollRuns = new Map<string, typeof payrollIntents>();
     for (const intent of payrollIntents) {
       const task = intent.taskId ? tasksById.get(intent.taskId) : undefined;
@@ -438,10 +612,14 @@ export class ActivityService {
         }),
       );
       const recipientCount = [...uniqueTasks.values()].reduce(
-        (sum, task) => sum + this.metadataNumber(task.metadata, 'totalRecipients'),
+        (sum, task) =>
+          sum + this.metadataNumber(task.metadata, 'totalRecipients'),
         0,
       );
-      const tokenTotals = new Map<string, { address: string; amount: bigint }>();
+      const tokenTotals = new Map<
+        string,
+        { address: string; amount: bigint }
+      >();
       for (const intent of run) {
         const symbol = this.tokenSymbol(intent.tokenOut);
         const current = tokenTotals.get(symbol) ?? {
@@ -454,18 +632,18 @@ export class ActivityService {
       const hashes = [
         ...new Set(
           run.flatMap((intent) =>
-            intent.transactionHash ? [intent.transactionHash.toLowerCase()] : [],
+            intent.transactionHash
+              ? [intent.transactionHash.toLowerCase()]
+              : [],
           ),
         ),
       ];
-      const single = tokenTotals.size === 1 ? [...tokenTotals.entries()][0] : null;
-      const occurredAt = run.reduce(
-        (latest, intent) => {
-          const value = intent.completedAt ?? intent.updatedAt;
-          return value > latest ? value : latest;
-        },
-        new Date(0),
-      );
+      const single =
+        tokenTotals.size === 1 ? [...tokenTotals.entries()][0] : null;
+      const occurredAt = run.reduce((latest, intent) => {
+        const value = intent.completedAt ?? intent.updatedAt;
+        return value > latest ? value : latest;
+      }, new Date(0));
       const sourceReferenceId = `${wallet.toLowerCase()}:${runReference}`;
       await this.upsert({
         ownerUserId: principal.merchantUserId,
@@ -488,7 +666,10 @@ export class ActivityService {
           transactionCount: recipientCount,
           transactionHashes: hashes,
           tokenTotals: Object.fromEntries(
-            [...tokenTotals].map(([symbol, total]) => [symbol, total.amount.toString()]),
+            [...tokenTotals].map(([symbol, total]) => [
+              symbol,
+              total.amount.toString(),
+            ]),
           ),
         },
         occurredAt,
@@ -554,7 +735,8 @@ export class ActivityService {
         inputAmount: this.string(payload.amount),
         outputTokenSymbol: 'USDC',
         outputTokenAddress: this.string(payload.destinationUsdcAddress),
-        outputAmount: this.string(result.mintAmount) ?? this.string(payload.amount),
+        outputAmount:
+          this.string(result.mintAmount) ?? this.string(payload.amount),
         counterparty: this.string(payload.recipientAddress),
         metadata: {
           sourceChainId: this.number(payload.sourceChainId) ?? 0,
@@ -708,7 +890,9 @@ export class ActivityService {
     const base = match[1];
     const other = match[2] === 'USDC' ? 'EURC' : 'USDC';
     const hasSibling = [...all].some((candidate) =>
-      new RegExp(`^${this.escapeRegex(base)}-${other}(?:-\\d+)?$`).test(candidate),
+      new RegExp(`^${this.escapeRegex(base)}-${other}(?:-\\d+)?$`).test(
+        candidate,
+      ),
     );
     return hasSibling ? base : reference.replace(/-\d+$/, '');
   }
@@ -750,5 +934,4 @@ export class ActivityService {
     const parsed = new Date(value);
     return Number.isNaN(parsed.getTime()) ? undefined : parsed;
   }
-
 }

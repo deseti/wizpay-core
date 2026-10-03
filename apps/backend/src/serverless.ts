@@ -6,36 +6,49 @@ import {
   type ApplicationOptions,
 } from './application';
 
-type ApplicationFactory = (
+export type ApplicationFactory = (
   options: ApplicationOptions,
 ) => Promise<INestApplication>;
 
-/** One lazy application per handler/module, shared by cold and warm requests. */
-export function createServerlessHandler(
+/** HTTP and trusted scheduler invocations share one application/Prisma lifecycle. */
+export function createServerlessApplicationProvider(
   factory: ApplicationFactory = createWizPayApplication,
 ) {
-  let initialization: Promise<Application> | undefined;
-  async function initialize(): Promise<Application> {
+  let initialization: Promise<INestApplication> | undefined;
+  async function initialize(): Promise<INestApplication> {
     const app = await factory({ runtimeMode: 'serverless' });
     try {
       await app.init();
-      return app.getHttpAdapter().getInstance() as Application;
+      return app;
     } catch (error) {
       // Release partially initialized resources; never disconnect on warm requests.
       await app.close().catch(() => undefined);
       throw error;
     }
   }
+  return function getApplication(): Promise<INestApplication> {
+    initialization ??= initialize().catch((error: unknown) => {
+      initialization = undefined;
+      throw error;
+    });
+    return initialization;
+  };
+}
+
+export const getServerlessApplication = createServerlessApplicationProvider();
+
+/** One lazy application per handler/module, shared by cold and warm requests. */
+export function createServerlessHandler(factory?: ApplicationFactory) {
+  const getApplication = factory
+    ? createServerlessApplicationProvider(factory)
+    : getServerlessApplication;
   return async function handler(
     request: IncomingMessage,
     response: ServerResponse,
   ): Promise<void> {
     try {
-      initialization ??= initialize().catch((error: unknown) => {
-        initialization = undefined;
-        throw error;
-      });
-      const express = await initialization;
+      const app = await getApplication();
+      const express = app.getHttpAdapter().getInstance() as Application;
       express(request, response);
     } catch {
       // Bootstrap errors may contain connection material. Return no diagnostics.
