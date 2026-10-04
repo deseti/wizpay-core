@@ -40,16 +40,25 @@ export function PublicInvoiceCheckout({ publicId }: { publicId: string }) {
 
   useEffect(() => {
     const controller = new AbortController();
+    setLoading(true);
+    setLoadError(null);
     void getPublicInvoice(publicId, controller.signal)
-      .then(applyInvoice)
-      .catch((error) =>
+      .then((next) => {
+        if (controller.signal.aborted) return;
+        setLoadError(null);
+        applyInvoice(next);
+      })
+      .catch((error) => {
+        if (controller.signal.aborted) return;
         setLoadError(
           error instanceof Error
             ? error.message
             : "Payment request could not be loaded.",
-        ),
-      )
-      .finally(() => setLoading(false));
+        );
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setLoading(false);
+      });
     return () => controller.abort();
   }, [applyInvoice, publicId]);
 

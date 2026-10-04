@@ -1,4 +1,5 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { StrictMode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { PublicInvoiceCheckout } from "./PublicInvoiceCheckout";
 
@@ -154,7 +155,69 @@ describe("PublicInvoiceCheckout", () => {
     expect(paymentState.pay).not.toHaveBeenCalled();
   });
 
-  it("shows a safe not-found/error state", async () => {
+  it.each(["before", "after"] as const)(
+    "ignores the StrictMode aborted request settling %s the replacement succeeds",
+    async (order) => {
+      const first = deferred<PublicInvoice>();
+      const replacement = deferred<PublicInvoice>();
+      vi.mocked(getPublicInvoice)
+        .mockImplementationOnce(() => first.promise)
+        .mockImplementationOnce(() => replacement.promise);
+      render(
+        <StrictMode>
+          <PublicInvoiceCheckout publicId={invoice().publicId} />
+        </StrictMode>,
+      );
+      expect(getPublicInvoice).toHaveBeenCalledTimes(2);
+      expect(vi.mocked(getPublicInvoice).mock.calls[0][1]?.aborted).toBe(true);
+      expect(vi.mocked(getPublicInvoice).mock.calls[1][1]?.aborted).toBe(false);
+
+      const abortFirst = async () => {
+        await act(async () => {
+          first.reject(new DOMException("signal is aborted without reason", "AbortError"));
+        });
+        expect(screen.queryByText("Payment request unavailable")).not.toBeInTheDocument();
+        expect(screen.queryByText("signal is aborted without reason")).not.toBeInTheDocument();
+      };
+      if (order === "before") await abortFirst();
+      await act(async () => replacement.resolve(invoice()));
+      expect(await screen.findByText("Test invoice")).toBeInTheDocument();
+      if (order === "after") await abortFirst();
+      expect(screen.getByText("Test invoice")).toBeInTheDocument();
+    },
+  );
+
+  it("ignores a stale success while the current invoice is still loading", async () => {
+    const first = deferred<PublicInvoice>();
+    const replacement = deferred<PublicInvoice>();
+    vi.mocked(getPublicInvoice)
+      .mockImplementationOnce(() => first.promise)
+      .mockImplementationOnce(() => replacement.promise);
+    const { rerender } = render(<PublicInvoiceCheckout publicId="first" />);
+    rerender(<PublicInvoiceCheckout publicId="replacement" />);
+    expect(vi.mocked(getPublicInvoice).mock.calls[0][1]?.aborted).toBe(true);
+    await act(async () => first.resolve({ ...invoice(), title: "Stale invoice" }));
+    expect(screen.queryByText("Stale invoice")).not.toBeInTheDocument();
+    expect(screen.queryByText("Payment request unavailable")).not.toBeInTheDocument();
+    await act(async () => replacement.resolve(invoice()));
+    expect(await screen.findByText("Test invoice")).toBeInTheDocument();
+  });
+
+  it("clears a previous API error when a new load starts and succeeds", async () => {
+    const replacement = deferred<PublicInvoice>();
+    vi.mocked(getPublicInvoice)
+      .mockRejectedValueOnce(new Error("Payment request not found."))
+      .mockImplementationOnce(() => replacement.promise);
+    const { rerender } = render(<PublicInvoiceCheckout publicId="first" />);
+    expect(await screen.findByText("Payment request not found.")).toBeInTheDocument();
+    rerender(<PublicInvoiceCheckout publicId="replacement" />);
+    expect(screen.queryByText("Payment request unavailable")).not.toBeInTheDocument();
+    await act(async () => replacement.resolve(invoice()));
+    expect(await screen.findByText("Test invoice")).toBeInTheDocument();
+    expect(screen.queryByText("Payment request not found.")).not.toBeInTheDocument();
+  });
+
+  it("preserves real API failures in the error state", async () => {
     vi.mocked(getPublicInvoice).mockRejectedValue(
       new Error("Payment request not found."),
     );
@@ -165,6 +228,16 @@ describe("PublicInvoiceCheckout", () => {
     expect(screen.getByText("Payment request not found.")).toBeInTheDocument();
   });
 });
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
 
 function invoice(): PublicInvoice {
   return {
