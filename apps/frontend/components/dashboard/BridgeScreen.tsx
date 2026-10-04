@@ -2,7 +2,14 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeftRight, Loader2, RefreshCw, ShieldCheck } from "lucide-react";
-import { formatUnits, getAddress, parseUnits, type Address, type Hex } from "viem";
+import {
+  formatUnits,
+  getAddress,
+  keccak256,
+  parseUnits,
+  type Address,
+  type Hex,
+} from "viem";
 import {
   useAccount,
   usePublicClient,
@@ -83,6 +90,10 @@ const COUNTERPARTIES = bridgeChains()
 export const BRIDGE_FAST_UNAVAILABLE_MESSAGE =
   "Fast CCTP transfer is temporarily unavailable for this route.";
 
+function claimKey(id: string) {
+  return `wizpay.bridge-destination.v1.${id}`;
+}
+
 function recoveryKey(address: string) {
   return `wizpay.bridge-intent.v1.${address.toLowerCase()}`;
 }
@@ -162,28 +173,54 @@ function BridgeWorkspace({ showHeading }: { showHeading: boolean }) {
   );
   const sourcePublicClient = usePublicClient({ chainId: sourceChain.id });
   const destinationPublicClient = usePublicClient({
-    chainId: destinationChain.id,
+    chainId: intent?.payload.destinationChainId ?? destinationChain.id,
   });
 
   useEffect(() => {
+    let cancelled = false;
     if (!address) {
-      setIntent(null);
-      setStage("idle");
-      return;
+      queueMicrotask(() => {
+        if (cancelled) return;
+        setIntent(null);
+        setStage("idle");
+      });
+      return () => {
+        cancelled = true;
+      };
     }
     const stored = window.localStorage.getItem(recoveryKey(address));
     if (!stored) return;
-    let cancelled = false;
+    queueMicrotask(() => {
+      if (!cancelled) setStage("recoverable_error");
+    });
     void getBridgeIntent(stored, address)
       .then((view) => {
-        if (cancelled || view.status === "completed") return;
+        if (cancelled) return;
+        setOutbound(view.payload.sourceCode === "ARC-MAINNET");
+        setCounterparty(
+          view.payload.sourceCode === "ARC-MAINNET"
+            ? view.payload.destinationCode
+            : view.payload.sourceCode,
+        );
+        if (view.status === "completed") {
+          setIntent(view);
+          setStage("completed");
+          window.localStorage.removeItem(recoveryKey(address));
+          window.localStorage.removeItem(claimKey(view.id));
+          return;
+        }
         setIntent(view);
         setStage("recoverable_error");
         setError(
-          "A previous bridge intent is still open. Review it before starting a new transfer.",
+          "A previous bridge intent is still open. Check status or resume its destination claim; no new source burn is needed.",
         );
       })
-      .catch(() => undefined);
+      .catch(() => {
+        if (!cancelled)
+          setError(
+            "Unable to load the saved bridge intent. Reload to recover it before starting another transfer.",
+          );
+      });
     return () => {
       cancelled = true;
     };
@@ -281,7 +318,12 @@ function BridgeWorkspace({ showHeading }: { showHeading: boolean }) {
 
   async function start() {
     bridgeCapability.assertEnabled();
-    if (running.current || !address) return;
+    if (
+      running.current ||
+      !address ||
+      (intent && intent.status !== "completed")
+    )
+      return;
     running.current = true;
     setError(null);
     try {
@@ -363,52 +405,7 @@ function BridgeWorkspace({ showHeading }: { showHeading: boolean }) {
       setStage("waiting_attestation");
       const attested = await pollAttestation(sourced, wallet);
 
-      setStage("authorizing");
-      const authorized = await authorizeBridgeDestination(attested.id, wallet);
-      if (!authorized.destinationLeaseId) {
-        throw new Error("Destination authorization did not return a lease.");
-      }
-      setIntent(authorized);
-
-      await ensureChain(destinationChain.id);
-      setStage("minting");
-      if (
-        !attested.result?.attestedMessage ||
-        !attested.result?.attestation ||
-        !attested.result?.messageHash
-      ) {
-        throw new Error("Circle attestation data is incomplete.");
-      }
-      const mintHash = await writeContractAsync({
-        address: created.payload.destinationMessageTransmitterV2,
-        abi: CCTP_MESSAGE_TRANSMITTER_ABI,
-        functionName: "receiveMessage",
-        args: [
-          attested.result.attestedMessage as Hex,
-          attested.result.attestation as Hex,
-        ],
-        account: wallet,
-        chainId: destinationChain.id,
-      });
-      await destinationPublicClient?.waitForTransactionReceipt({
-        hash: mintHash,
-      });
-      const submitted = await submitBridgeDestination(authorized.id, {
-        walletAddress: wallet,
-        transactionHash: mintHash,
-        messageHash: attested.result.messageHash,
-        leaseId: authorized.destinationLeaseId,
-      });
-      setIntent(submitted);
-
-      setStage("verifying");
-      const completed = await verifyBridgeDestination(submitted.id, wallet);
-      setIntent(completed);
-      setStage("completed");
-      toast({
-        title: "Bridge completed",
-        description: `Native USDC arrived on ${destination.name} via official Circle CCTP.`,
-      });
+      await claimDestination(attested, wallet);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Bridge failed.");
       setStage((previous) =>
@@ -419,21 +416,168 @@ function BridgeWorkspace({ showHeading }: { showHeading: boolean }) {
     }
   }
 
+  function finish(view: BridgeIntentView, wallet: Address) {
+    setIntent(view);
+    if (view.status !== "completed") {
+      throw new Error(
+        "Destination verification is still pending. Resume this claim again.",
+      );
+    }
+    window.localStorage.removeItem(recoveryKey(wallet));
+    window.localStorage.removeItem(claimKey(view.id));
+    setStage("completed");
+    toast({
+      title: "Bridge completed",
+      description: "Native USDC arrived via official Circle CCTP.",
+    });
+  }
+
+  async function claimDestination(view: BridgeIntentView, wallet: Address) {
+    if (getAddress(view.payload.walletAddress) !== wallet) {
+      throw new Error("Connect the wallet that owns this bridge intent.");
+    }
+    if (view.status === "completed") return finish(view, wallet);
+    if (!view.result?.sourceTransactionHash) {
+      throw new Error(
+        "A recorded source burn is required to resume the destination claim.",
+      );
+    }
+    // A recorded destination transaction must be verified, never minted again.
+    if (view.result.destinationTransactionHash) {
+      setStage("verifying");
+      return finish(await verifyBridgeDestination(view.id, wallet), wallet);
+    }
+    setStage("waiting_attestation");
+    const attested = await getBridgeAttestation(view.id, wallet);
+    setIntent(attested);
+    const { attestedMessage, attestation, messageHash } = attested.result ?? {};
+    if (
+      attested.status !== "attestation_ready" ||
+      !attestedMessage ||
+      !/^0x(?:[0-9a-fA-F]{2})+$/.test(attestedMessage) ||
+      !attestation ||
+      !/^0x(?:[0-9a-fA-F]{2})+$/.test(attestation) ||
+      !messageHash ||
+      !/^0x[0-9a-fA-F]{64}$/.test(messageHash) ||
+      keccak256(attestedMessage).toLowerCase() !== messageHash.toLowerCase()
+    ) {
+      throw new Error(
+        "Circle attestation is not ready or its data is invalid. Check status and resume this intent again.",
+      );
+    }
+    if (
+      !destinationPublicClient ||
+      destinationPublicClient.chain?.id !== view.payload.destinationChainId
+    ) {
+      throw new Error(
+        "Destination receipt client is unavailable. Resume this intent again.",
+      );
+    }
+    const stored = window.localStorage.getItem(claimKey(view.id));
+    let pending: {
+      transactionHash: Hex;
+      messageHash: Hex;
+      leaseId: string;
+    } | null = stored ? JSON.parse(stored) : null;
+    if (
+      pending &&
+      pending.messageHash.toLowerCase() !== messageHash.toLowerCase()
+    ) {
+      throw new Error(
+        "The saved destination transaction belongs to a different attested message.",
+      );
+    }
+    if (pending) {
+      // Renew through the backend before reporting an already broadcast claim.
+      const authorized = await authorizeBridgeDestination(view.id, wallet);
+      if (!authorized.destinationLeaseId)
+        throw new Error("Destination authorization did not return a lease.");
+      pending = { ...pending, leaseId: authorized.destinationLeaseId };
+      window.localStorage.setItem(claimKey(view.id), JSON.stringify(pending));
+    }
+    if (!pending) {
+      setStage("authorizing");
+      const authorized = await authorizeBridgeDestination(view.id, wallet);
+      if (!authorized.destinationLeaseId) {
+        throw new Error("Destination authorization did not return a lease.");
+      }
+      setIntent(authorized);
+      await ensureChain(view.payload.destinationChainId);
+      setStage("minting");
+      const transactionHash = await writeContractAsync({
+        address: view.payload.destinationMessageTransmitterV2,
+        abi: CCTP_MESSAGE_TRANSMITTER_ABI,
+        functionName: "receiveMessage",
+        args: [attestedMessage, attestation],
+        account: wallet,
+        chainId: view.payload.destinationChainId,
+      });
+      pending = {
+        transactionHash,
+        messageHash,
+        leaseId: authorized.destinationLeaseId,
+      };
+      // Persist immediately after broadcast; receipt/API retries must not mint again.
+      window.localStorage.setItem(claimKey(view.id), JSON.stringify(pending));
+    }
+    setStage("verifying");
+    const receipt = await destinationPublicClient.waitForTransactionReceipt({
+      hash: pending.transactionHash,
+    });
+    if (receipt.status !== "success") {
+      window.localStorage.removeItem(claimKey(view.id));
+      throw new Error(
+        "Destination transaction reverted. Resume the same claim to retry.",
+      );
+    }
+    const submitted = await submitBridgeDestination(view.id, {
+      walletAddress: wallet,
+      transactionHash: pending.transactionHash,
+      messageHash,
+      leaseId: pending.leaseId,
+    });
+    setIntent(submitted);
+    finish(await verifyBridgeDestination(view.id, wallet), wallet);
+  }
+
+  async function resumeDestination() {
+    if (!intent || !address || running.current || checking) return;
+    running.current = true;
+    setError(null);
+    try {
+      bridgeCapability.assertEnabled();
+      if (!isConnected) throw new Error("Connect an external wallet first.");
+      const wallet = getAddress(address);
+      const current = await getBridgeIntent(intent.id, wallet);
+      await claimDestination(current, wallet);
+    } catch (cause) {
+      setError(
+        cause instanceof Error ? cause.message : "Destination claim failed.",
+      );
+      setStage("recoverable_error");
+    } finally {
+      running.current = false;
+    }
+  }
+
   async function checkStatus() {
-    if (!intent || !address || checking) return;
+    if (!intent || !address || checking || running.current) return;
     setChecking(true);
     try {
-      const refreshed = await getBridgeAttestation(
-        intent.id,
-        getAddress(address),
-      );
+      const wallet = getAddress(address);
+      const current = await getBridgeIntent(intent.id, wallet);
+      const refreshed =
+        current.status === "completed" ||
+        current.result?.destinationTransactionHash
+          ? current
+          : await getBridgeAttestation(intent.id, wallet);
       setIntent(refreshed);
       setError(null);
-      if (refreshed.status === "completed") setStage("completed");
+      if (refreshed.status === "completed") finish(refreshed, wallet);
       else if (refreshed.status === "attestation_ready") {
         setStage("recoverable_error");
         setError(
-          "Attestation is ready. Start a new transfer only after completing the destination mint from the intent below.",
+          "Attestation is ready. Resume the destination claim for this intent. No new source burn is needed.",
         );
       } else if (
         refreshed.status === "waiting_for_attestation" &&
@@ -452,15 +596,14 @@ function BridgeWorkspace({ showHeading }: { showHeading: boolean }) {
         );
       }
     } catch (cause) {
-      setError(
-        cause instanceof Error ? cause.message : "Status check failed.",
-      );
+      setError(cause instanceof Error ? cause.message : "Status check failed.");
     } finally {
       setChecking(false);
     }
   }
 
   function startOver() {
+    if (intent && intent.status !== "completed") return;
     if (address) window.localStorage.removeItem(recoveryKey(address));
     setIntent(null);
     setError(null);
@@ -469,8 +612,10 @@ function BridgeWorkspace({ showHeading }: { showHeading: boolean }) {
 
   const sourceTx = intent?.result?.sourceTransactionHash ?? null;
   const destTx = intent?.result?.destinationTransactionHash ?? null;
-  const protocolFeeUnits = quoteCurrent && quote ? BigInt(quote.protocolFee) : null;
-  const receiveUnits = quoteCurrent && quote ? BigInt(quote.receiveAmount) : null;
+  const protocolFeeUnits =
+    quoteCurrent && quote ? BigInt(quote.protocolFee) : null;
+  const receiveUnits =
+    quoteCurrent && quote ? BigInt(quote.receiveAmount) : null;
   const routeLabel =
     quoteCurrent && quote
       ? quote.transferMode === "fast"
@@ -618,9 +763,7 @@ function BridgeWorkspace({ showHeading }: { showHeading: boolean }) {
                 role="alert"
                 className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-200"
               >
-                {fastUnavailable
-                  ? BRIDGE_FAST_UNAVAILABLE_MESSAGE
-                  : quoteError}
+                {fastUnavailable ? BRIDGE_FAST_UNAVAILABLE_MESSAGE : quoteError}
               </div>
             ) : null}
             {error ? (
@@ -648,9 +791,7 @@ function BridgeWorkspace({ showHeading }: { showHeading: boolean }) {
                         Source tx:{" "}
                         <a
                           className="text-primary hover:underline"
-                          href={
-                            explorerTxUrl(source, sourceTx) ?? "#"
-                          }
+                          href={explorerTxUrl(source, sourceTx) ?? "#"}
                           target="_blank"
                           rel="noreferrer"
                         >
@@ -663,9 +804,7 @@ function BridgeWorkspace({ showHeading }: { showHeading: boolean }) {
                         Destination tx:{" "}
                         <a
                           className="text-primary hover:underline"
-                          href={
-                            explorerTxUrl(destination, destTx) ?? "#"
-                          }
+                          href={explorerTxUrl(destination, destTx) ?? "#"}
                           target="_blank"
                           rel="noreferrer"
                         >
@@ -705,9 +844,20 @@ function BridgeWorkspace({ showHeading }: { showHeading: boolean }) {
               </Button>
               {intent && stage !== "idle" ? (
                 <>
+                  {intent.status !== "completed" &&
+                  intent.result?.sourceTransactionHash &&
+                  intent.result?.attestedMessage &&
+                  intent.result?.attestation ? (
+                    <Button
+                      disabled={checking || stage !== "recoverable_error"}
+                      onClick={() => void resumeDestination()}
+                    >
+                      Resume destination claim
+                    </Button>
+                  ) : null}
                   <Button
                     variant="outline"
-                    disabled={checking}
+                    disabled={checking || running.current}
                     onClick={() => void checkStatus()}
                   >
                     <RefreshCw
@@ -715,9 +865,11 @@ function BridgeWorkspace({ showHeading }: { showHeading: boolean }) {
                     />
                     Check status
                   </Button>
-                  <Button variant="ghost" onClick={startOver}>
-                    Start over
-                  </Button>
+                  {intent.status === "completed" ? (
+                    <Button variant="ghost" onClick={startOver}>
+                      Start over
+                    </Button>
+                  ) : null}
                 </>
               ) : null}
             </div>
