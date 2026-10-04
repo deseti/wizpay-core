@@ -1,4 +1,6 @@
 import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { X509Certificate } from 'node:crypto';
 import type { PoolConfig } from 'pg';
 
 type Environment = Record<string, string | undefined>;
@@ -38,20 +40,26 @@ export function postgresUrl(value: string | undefined, name: string): URL {
   }
 }
 
-function verifiedTls(url: URL): PoolConfig['ssl'] {
+function verifiedTls(url: URL, bundledPoolerCa = false): PoolConfig['ssl'] {
   if (url.searchParams.get('sslmode') !== 'verify-full')
     invalid('external connections require sslmode=verify-full.');
   for (const key of url.searchParams.keys()) {
     if (!['sslmode', 'sslrootcert'].includes(key))
       invalid('external URL options are limited to sslmode and sslrootcert.');
   }
-  const caFile = url.searchParams.get('sslrootcert');
+  const caFile = url.searchParams.has('sslrootcert')
+    ? url.searchParams.get('sslrootcert')!
+    : bundledPoolerCa && url.hostname.endsWith('.pooler.supabase.com')
+      ? resolve(__dirname, '../../certs/supabase-prod-ca-2021.crt')
+      : undefined;
   let ca: string | undefined;
-  if (caFile) {
+  if (caFile !== undefined) {
     try {
       ca = readFileSync(caFile, 'utf8');
+      // Reject empty or malformed assets before creating a connection pool.
+      new X509Certificate(ca);
     } catch {
-      invalid('sslrootcert must reference a readable trusted CA file.');
+      invalid('TLS CA must reference a readable valid certificate file.');
     }
   }
   return { rejectUnauthorized: true, ...(ca ? { ca } : {}) };
@@ -89,7 +97,7 @@ export function runtimeDatabasePool(
     user: decodeURIComponent(url.username),
     password: decodeURIComponent(url.password),
     database: decodeURIComponent(url.pathname.slice(1)),
-    ssl: verifiedTls(url),
+    ssl: verifiedTls(url, true),
     max: Number(rawMax),
     connectionTimeoutMillis: 10_000,
     idleTimeoutMillis: 10_000,

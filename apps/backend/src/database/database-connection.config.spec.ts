@@ -1,3 +1,5 @@
+import fs = require('node:fs');
+import { resolve } from 'node:path';
 import { PrismaPg } from '@prisma/adapter-pg';
 import {
   migrationDatabaseUrl,
@@ -20,6 +22,63 @@ const cli = {
 };
 
 describe('database connection purposes', () => {
+  const caPath = resolve(__dirname, '../../certs/supabase-prod-ca-2021.crt');
+  const pooler = runtime.replace(
+    'runtime.example.invalid',
+    'aws-0-ap-southeast-1.pooler.supabase.com',
+  );
+
+  afterEach(() => jest.restoreAllMocks());
+
+  it('uses the bundled CA with strict TLS only for Supabase pooler hosts', () => {
+    const ssl = runtimeDatabasePool(pooler, external).ssl;
+    expect(ssl).toEqual({
+      rejectUnauthorized: true,
+      ca: fs.readFileSync(caPath, 'utf8'),
+    });
+    for (const host of [
+      'runtime.example.invalid',
+      'pooler.supabase.com.evil.invalid',
+    ])
+      expect(
+        runtimeDatabasePool(
+          runtime.replace('runtime.example.invalid', host),
+          external,
+        ).ssl,
+      ).toEqual({ rejectUnauthorized: true });
+  });
+
+  it('preserves explicit CA support for pooler and generic hosts', () => {
+    const ca = fs.readFileSync(caPath, 'utf8');
+    const explicitPath = '/explicit-trusted-ca.crt';
+    const read = jest.spyOn(fs, 'readFileSync').mockReturnValue(ca);
+    for (const url of [runtime, pooler]) {
+      runtimeDatabasePool(
+        url + '&sslrootcert=' + encodeURIComponent(explicitPath),
+        external,
+      );
+      expect(read).toHaveBeenLastCalledWith(explicitPath, 'utf8');
+    }
+  });
+
+  it('fails closed with sanitized errors for missing, unreadable or invalid CAs', () => {
+    const read = jest.spyOn(fs, 'readFileSync');
+    for (const code of ['ENOENT', 'EACCES']) {
+      read.mockImplementationOnce(() => {
+        throw new Error(code + ' secret');
+      });
+      expect(() => runtimeDatabasePool(pooler, external)).toThrow(
+        'Database configuration: TLS CA must reference a readable valid certificate file.',
+      );
+    }
+    read.mockReturnValueOnce('');
+    expect(() => runtimeDatabasePool(pooler, external)).toThrow('TLS CA');
+    for (const path of ['', '/missing-private-path'])
+      expect(() =>
+        runtimeDatabasePool(pooler + '&sslrootcert=' + path, external),
+      ).toThrow('TLS CA');
+  });
+
   it('preserves VPS configuration and the explicit legacy shared direct connection', () => {
     expect(runtimeDatabasePool(runtime, {})).toEqual({
       connectionString: runtime,

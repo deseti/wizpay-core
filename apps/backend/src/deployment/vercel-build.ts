@@ -12,6 +12,7 @@ import {
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 
 const ENTRY = 'apps/backend/api/index.cjs';
+export const SUPABASE_CA_ASSET = 'apps/backend/certs/supabase-prod-ca-2021.crt';
 const RECOVERY = 'apps/backend/dist/reconciliation.js';
 const EXCLUDED = [
   'apps/backend/dist/queue/**',
@@ -60,7 +61,9 @@ export async function buildVercelOutput(
       ignore: EXCLUDED,
     },
   );
-  const files = [...traced.fileList]
+  // Explicit assets must be shipped even when the tracer cannot discover them.
+  const requiredCa = await readFile(join(repository, SUPABASE_CA_ASSET));
+  const files = [...new Set([...traced.fileList, SUPABASE_CA_ASSET])]
     .filter((path) => !excludedDeploymentFile(path))
     .sort();
   for (const required of [
@@ -98,6 +101,10 @@ export async function buildVercelOutput(
       await copyFile(source, destination);
     }
   }
+  if (
+    !(await readFile(join(functionRoot, SUPABASE_CA_ASSET))).equals(requiredCa)
+  )
+    throw new Error('Required deployment CA asset verification failed.');
   if (bytes >= 250 * 1024 * 1024)
     throw new Error('Vercel function exceeds the uncompressed size limit.');
   await writeFile(
